@@ -50,7 +50,7 @@ dependencies = [
   # MCP (the Claude Agent SDK and AstraBox share this protocol implementation)
   "mcp==2.1.1",
   # persistence (DEFAULT = PostgreSQL; SQLite remains for compatibility tests)
-  "sqlalchemy==2.0.52",
+  "sqlalchemy==2.0.54",
   "asyncpg==0.31.0",
   "aiosqlite==0.22.1",
   # Embedded durable schedule/run engine. DBOS owns cron dispatch, distributed
