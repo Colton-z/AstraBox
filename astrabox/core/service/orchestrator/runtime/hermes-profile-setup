@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [ "$#" -ne 1 ]; then
+  printf 'usage: %s <workspace-source>\n' "$0" >&2
+  exit 64
+fi
+
+required() {
+  name="$1"
+  value="${!name:-}"
+  if [ -z "$value" ]; then
+    printf 'HERMES_PROFILE_ENV_MISSING name=%s\n' "$name" >&2
+    exit 64
+  fi
+  printf '%s' "$value"
+}
+
+linux_user="$(required ASTRABOX_HERMES_PROFILE_LINUX_USER)"
+profile_home="$(required ASTRABOX_HERMES_PROFILE_HOME)"
+workspace="$(required ASTRABOX_HERMES_WORKSPACE)"
+workspace_source="$1"
+hermes_home="$(required HERMES_HOME)"
+
+case "$workspace_source" in
+  "$profile_home"/*) ;;
+  *)
+    printf 'HERMES_PROFILE_WORKSPACE_SOURCE_INVALID source=%s home=%s\n' \
+      "$workspace_source" "$profile_home" >&2
+    exit 65
+    ;;
+esac
+
+mkdir -p "$workspace_source" "$hermes_home/logs"
+
+if [ "$workspace" != "$workspace_source" ]; then
+  if [ -L "$workspace" ]; then
+    if [ "$(readlink "$workspace")" != "$workspace_source" ]; then
+      printf 'HERMES_PROFILE_WORKSPACE_ALIAS_MISMATCH visible=%s expected=%s actual=%s\n' \
+        "$workspace" "$workspace_source" "$(readlink "$workspace")" >&2
+      exit 66
+    fi
+  elif [ -e "$workspace" ]; then
+    printf 'HERMES_PROFILE_WORKSPACE_ALIAS_OCCUPIED visible=%s source=%s\n' \
+      "$workspace" "$workspace_source" >&2
+    exit 66
+  else
+    ln -s -- "$workspace_source" "$workspace"
+  fi
+fi
+
+python3 - "$profile_home" <<'PY'
+import base64
+import json
+import os
+from pathlib import Path
+import sys
+
+raw = (os.environ.get("ASTRABOX_HERMES_PLUGIN_FILES_B64") or "").strip()
+if not raw:
+    raise SystemExit(0)
+files = json.loads(base64.b64decode(raw.encode("ascii")).decode("utf-8"))
+profile_home = Path(sys.argv[1]).resolve()
+for rel_path, payload in files.items():
+    target = (profile_home / rel_path).resolve()
+    if not str(target).startswith(str(profile_home) + os.sep):
+        raise SystemExit("plugin config file path escapes the profile home: %s" % rel_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with open(target, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
+        handle.write("\n")
+    target.chmod(0o600)
+PY
+
+# This directory is the workload account's persistent profile, never a shared
+# system path. The env file was written through the sandbox file API as root;
+# hand the entire newly-provisioned profile back to its owner before Hermes
+# opens state.db or writes logs.
+chown -R "$linux_user:$linux_user" "$profile_home"
+if ! runuser -u "$linux_user" -- test -w "$workspace"; then
+  printf 'HERMES_PROFILE_WORKSPACE_NOT_WRITABLE user=%s workspace=%s source=%s\n' \
+    "$linux_user" "$workspace" "$workspace_source" >&2
+  exit 67
+fi
+printf 'HERMES_PROFILE_READY user=%s workspace=%s source=%s\n' \
+  "$linux_user" "$workspace" "$workspace_source"

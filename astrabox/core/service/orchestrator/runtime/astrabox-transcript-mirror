@@ -1,0 +1,532 @@
+#!/usr/bin/env python3
+"""Mirror this box's engine session logs into the platform store.
+
+Some engines keep the canonical record of a conversation to themselves: an
+append-only JSONL log the engine writes and never offers over its protocol.
+Codex does (`$CODEX_HOME/sessions/**/rollout-*-<uuid>.jsonl`, one line per
+`RolloutItem`) and so does the DeepSeek Harness
+(`$HOME/.dsh/sessions/<project>/session-<uuid>/session.jsonl`). Each is also
+the only thing its engine can rebuild a conversation from, so a box that dies
+takes the conversation with it unless the bytes have left first.
+
+Which files those are is configuration, not knowledge held here: the image
+that installs this program names the root, the pattern and the namespace, and
+this program never learns what any line means.
+
+**Why a resident program rather than a Codex hook.** Codex has a hook system and
+the vendor's own observability plugin uses it, but hooks live in the user's
+configuration namespace: the feature is opt-in, plugin installs change the hash
+Codex records trust against, and anything a user can turn off is not something a
+platform guarantee may rest on. The mirror is an obligation, not an extension,
+so it sits beside the app-server as a service of the image and never appears in
+Codex's own configuration.
+
+**Why bytes and not meaning.** Lines are relayed exactly as Codex wrote them.
+The rollout format is versioned and Codex migrates old files on read
+(`thread-store/src/local/rollout_migration/`); anything that parsed the lines
+into a vocabulary of ours would have to be taught each migration, and would be
+wrong in the window before it was. The one thing read out of a line is that it
+is a line — the batch stops at the last newline, so a half-written record is
+never sent as a whole one.
+
+**Restart is not a source of duplicates.** A batch's identity is its
+`append_id`, which is derived from the byte range it covers and written to disk
+before the request goes out. A process that dies mid-flight re-sends the same
+range under the same id, which the store answers with the sequence it already
+assigned and no new rows. That is why the intent is recorded first and the
+offset advanced second: the reverse order loses a batch on the same crash.
+
+Configuration arrives as box-create environment; a box that cannot reach the
+store is refused rather than run silently unmirrored. The one exception is a
+box prepared before its Session exists (a prepared engine slot): its create
+names a target FILE instead of the three per-session values, the claim path
+writes that file before the engine conversation is created, and the mirror
+relays nothing until the file holds a usable target — see
+``await_deferred_target`` for the fail-loud bound on that wait.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import sys
+import time
+import urllib.error
+import urllib.request
+from collections.abc import Callable
+from datetime import datetime, timezone
+from pathlib import Path
+
+BASE_URL = os.environ.get("_ASTRABOX_TRANSCRIPT_BACKEND_BASE_URL", "").strip()
+SESSION_ID = os.environ.get("_ASTRABOX_PLATFORM_SESSION_ID", "").strip()
+PROJECT_KEY = os.environ.get("_ASTRABOX_TRANSCRIPT_PROJECT_KEY", "").strip()
+#: The deferred-target alternative to the three variables above, for a box
+#: prepared before its Session exists (a prepared engine slot): the claim path
+#: writes the same three values into this file, and until it does the mirror
+#: has no destination and must not relay. The two configurations are mutually
+#: exclusive — a box given both has two answers to one question.
+TARGET_FILE = os.environ.get("ASTRABOX_TRANSCRIPT_MIRROR_TARGET_FILE", "").strip()
+#: How long a session log (or an unusable target file) may exist without a
+#: usable target before the mirror exits FATAL. Nothing writes a rollout
+#: before a Session claims the box and the claim writes the target before it
+#: creates the engine conversation, so in a healthy box this clock never
+#: starts; when it expires, work is being produced that cannot be mirrored,
+#: and going quiet would look exactly like having nothing to send.
+TARGET_GRACE_SECONDS = float(
+    os.environ.get("ASTRABOX_TRANSCRIPT_MIRROR_TARGET_GRACE_SECONDS", "120")
+)
+STATE_DIR = Path(
+    os.environ.get("ASTRABOX_TRANSCRIPT_MIRROR_STATE_DIR", "/tmp/astrabox-transcript-mirror")
+)
+POLL_SECONDS = float(os.environ.get("ASTRABOX_TRANSCRIPT_MIRROR_POLL_SECONDS", "0.5"))
+#: Bytes read per request. A cap, not a quantum: the range actually sent is
+#: whatever whole lines fit, and the append_id names that exact range.
+MAX_BATCH_BYTES = int(os.environ.get("ASTRABOX_TRANSCRIPT_MIRROR_BATCH_BYTES", str(1 << 20)))
+REQUEST_TIMEOUT_S = float(os.environ.get("ASTRABOX_TRANSCRIPT_MIRROR_TIMEOUT_SECONDS", "30"))
+
+#: The directory this engine writes its session logs under, the glob that
+#: selects them, and the namespace their scopes take in the platform's store.
+#: Required: an image that names none of them has no session log to mirror,
+#: and guessing one would mirror the wrong files or none at all.
+SESSIONS_ROOT = os.environ.get("ASTRABOX_TRANSCRIPT_MIRROR_ROOT", "").strip()
+SESSIONS_GLOB = os.environ.get("ASTRABOX_TRANSCRIPT_MIRROR_GLOB", "").strip()
+SUBPATH_PREFIX = os.environ.get("ASTRABOX_TRANSCRIPT_MIRROR_NAMESPACE", "").strip()
+
+
+def log(message: str) -> None:
+    print(f"astrabox-transcript-mirror: {message}", flush=True)
+
+
+def transcript_payload_digest(key: dict, entries: list) -> str:
+    """The digest an append declares over what it is sending.
+
+    Canonical (``sort_keys``) JSON, so the value depends on the key/entry
+    CONTENT and not on the order a serializer happened to emit fields in. The
+    platform recomputes it from the received body and refuses a mismatch;
+    ``tests/transcript_store_sequence_test.py`` holds every definition of this
+    to the same output, since a file copied into an image may not import the
+    platform's copy.
+    """
+    return hashlib.sha256(
+        json.dumps(
+            {"key": key, "entries": entries},
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+class PermanentRejection(RuntimeError):
+    """The store refused this batch and will refuse it again.
+
+    A 4xx is a broken promise between the two sides — a digest that does not
+    match its body, or an `append_id` already committed with different entries.
+    Retrying cannot fix it and continuing would mirror the rest of the session
+    onto a transcript that is already wrong, so this ends the program: a
+    supervised service in FATAL is visible, a silent one is not.
+    """
+
+
+class Sender:
+    """Appends to the platform transcript API, refusing a store that regressed.
+
+    ``store_sequence`` is the durable transcript's position. One that moves
+    backwards means the store lost entries this process was told were
+    committed, and mirroring the rest of the session onto a transcript missing
+    its middle would produce a rollout that resumes into a gap.
+    """
+
+    def __init__(self, base_url: str, session_id: str) -> None:
+        self._url = f"{base_url.rstrip('/')}/api/v1/transcript/{session_id}/append"
+        self._sequences: dict[str, int] = {}
+
+    def append(self, key: dict, entries: list, append_id: str) -> None:
+        payload = {
+            "key": key,
+            "entries": entries,
+            "append_id": append_id,
+            "payload_sha256": transcript_payload_digest(key, entries),
+        }
+        request = urllib.request.Request(
+            self._url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_S) as response:
+                body = json.loads(response.read().decode("utf-8") or "{}")
+        except urllib.error.HTTPError as exc:
+            detail = ""
+            try:
+                detail = exc.read().decode("utf-8", "replace")[:400]
+            except Exception:  # noqa: BLE001 - diagnostics only
+                pass
+            # 408 and 429 are the server asking for the same request later.
+            if 400 <= exc.code < 500 and exc.code not in (408, 429):
+                raise PermanentRejection(
+                    f"store refused batch {append_id}: HTTP {exc.code} {detail}"
+                ) from exc
+            raise
+        data = body.get("data") if isinstance(body, dict) else None
+        sequence = (data or {}).get("store_sequence")
+        if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 0:
+            raise RuntimeError(
+                f"transcript store returned no usable store_sequence: {sequence!r}"
+            )
+        scope = str(key.get("subpath"))
+        previous = self._sequences.get(scope)
+        if previous is not None and sequence < previous:
+            raise RuntimeError(
+                f"transcript store_sequence moved backwards ({previous} -> "
+                f"{sequence}) for {scope}"
+            )
+        self._sequences[scope] = sequence
+
+
+class FileMirror:
+    """One rollout file's position, and the batch that may be in flight."""
+
+    def __init__(self, path: Path, subpath: str, state_path: Path) -> None:
+        self.path = path
+        self.subpath = subpath
+        self._state_path = state_path
+        state = self._read_state()
+        self.offset: int = int(state.get("offset") or 0)
+        self.pending: dict | None = state.get("pending")
+        self._missing_reported = False
+
+    def _read_state(self) -> dict:
+        try:
+            return json.loads(self._state_path.read_text("utf-8"))
+        except FileNotFoundError:
+            return {}
+        except (OSError, ValueError) as exc:
+            raise RuntimeError(f"unreadable mirror state {self._state_path}: {exc}") from exc
+
+    def _write_state(self) -> None:
+        """Durable before it is believed: the offset is this box's only record
+        of what the store already holds, and a torn write would re-send or skip.
+        """
+        payload = {"offset": self.offset, "pending": self.pending}
+        tmp = self._state_path.with_suffix(".tmp")
+        with open(tmp, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, self._state_path)
+
+    def _read_range(self, start: int, end: int) -> list:
+        with open(self.path, "rb") as handle:
+            handle.seek(start)
+            raw = handle.read(end - start)
+        entries = []
+        for line in raw.decode("utf-8").splitlines():
+            line = line.strip()
+            if line:
+                entries.append(json.loads(line))
+        return entries
+
+    def _key(self) -> dict:
+        return {
+            "project_key": PROJECT_KEY,
+            "session_id": SESSION_ID,
+            "subpath": self.subpath,
+        }
+
+    def pump(self, sender: Sender) -> int:
+        """Send at most one batch. Returns the number of entries sent."""
+
+        if self.pending is not None:
+            # A batch was recorded and may or may not have landed. Re-sending it
+            # under the same append_id is how the store tells us which.
+            entries = self._read_range(int(self.pending["start"]), int(self.pending["end"]))
+            sender.append(self._key(), entries, str(self.pending["append_id"]))
+            self.offset = int(self.pending["end"])
+            self.pending = None
+            self._write_state()
+            return len(entries)
+
+        try:
+            size = self.path.stat().st_size
+        except FileNotFoundError:
+            # A rollout Codex was writing does not vanish, so this is the
+            # compression worker having renamed it to `.jsonl.zst`. Whatever it
+            # holds past this offset is no longer reachable as text, and a
+            # mirror that answered by going quiet would look exactly like one
+            # with nothing to send.
+            if not self._missing_reported:
+                self._missing_reported = True
+                log(f"STOPPED {self.path} disappeared at offset {self.offset}")
+            return 0
+        if size <= self.offset:
+            return 0
+
+        with open(self.path, "rb") as handle:
+            handle.seek(self.offset)
+            raw = handle.read(min(size - self.offset, MAX_BATCH_BYTES))
+        cut = raw.rfind(b"\n")
+        if cut < 0:
+            # No complete line yet. Codex writes a whole item at a time, so this
+            # is a partial record mid-write, not a stall.
+            return 0
+        end = self.offset + cut + 1
+
+        self.pending = {
+            "start": self.offset,
+            "end": end,
+            "append_id": f"{self.subpath}:{self.offset}-{end}",
+        }
+        self._write_state()
+        return self.pump(sender)
+
+
+def state_path_for(subpath: str) -> Path:
+    return STATE_DIR / (hashlib.sha256(subpath.encode("utf-8")).hexdigest() + ".json")
+
+
+def read_deferred_target(path: Path) -> tuple[str, str, str] | None:
+    """The ``(base_url, session_id, project_key)`` a claim wrote, or None.
+
+    A missing, unreadable, or incomplete file is one answer — "no usable
+    target yet" — because the write arrives over the sandbox filesystem API
+    and a reader between the file's creation and its content settling must
+    wait, not crash. Whether waiting is still legitimate is the caller's
+    clock, not this reader's.
+    """
+
+    try:
+        raw = json.loads(path.read_text("utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    base_url = str(raw.get("base_url") or "").strip()
+    session_id = str(raw.get("session_id") or "").strip()
+    project_key = str(raw.get("project_key") or "").strip()
+    if not (base_url and session_id and project_key):
+        return None
+    return base_url, session_id, project_key
+
+
+def read_unclaimed_deadline(path: Path) -> float | None:
+    """When this box's preparation stops being a legitimate reason to wait.
+
+    A box prepared before its Session exists may hold an engine process that
+    writes its conversation file immediately, and that file has no destination
+    until the claim binds one. Waiting is therefore correct — but only for as
+    long as the platform says the unclaimed unit may live, which it states here
+    rather than leaving this program to assume a bound it cannot know. A
+    missing or malformed value is not a deadline: the caller falls back to
+    treating logs without a target as work it cannot deliver.
+    """
+
+    try:
+        raw = json.loads(path.read_text("utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    stamp = str(raw.get("unclaimed_until") or "").strip()
+    if not stamp:
+        return None
+    try:
+        deadline = datetime.fromisoformat(stamp)
+    except ValueError:
+        return None
+    if deadline.tzinfo is None:
+        deadline = deadline.replace(tzinfo=timezone.utc)
+    return (deadline - datetime.now(timezone.utc)).total_seconds()
+
+
+def await_deferred_target() -> tuple[str, str, str] | int:
+    """Block until the claim writes the target file; refuse to outlive work.
+
+    While the box is unclaimed there is nothing to mirror and waiting is
+    correct. Two conditions start the grace clock, because each means bytes
+    exist (or are about to) with no destination: a session log under the
+    engine's root, and a target file that exists but never becomes usable.
+    A prepared unit that holds a running engine writes its conversation file
+    before any claim can bind a target, so the platform states how long that
+    is legitimate (``unclaimed_until``); past its own deadline the box is
+    overdue rather than prepared, and the clock applies as it would to any
+    other undeliverable work.
+    Past ``TARGET_GRACE_SECONDS`` the program exits FATAL (EX_CONFIG) so the
+    supervisor shows a failed service instead of a mirror that reads as
+    idle while the conversation it should be relaying is lost.
+    """
+
+    path = Path(TARGET_FILE)
+    root = Path(SESSIONS_ROOT)
+    overdue_since: float | None = None
+    while True:
+        target = read_deferred_target(path)
+        if target is not None:
+            return target
+        pending_reason: str | None = None
+        unclaimed_for = read_unclaimed_deadline(path)
+        if unclaimed_for is not None and unclaimed_for > 0:
+            # Prepared and not yet claimed, and the platform's own deadline for
+            # that state has not passed: logs here belong to the unit itself,
+            # and no destination exists yet by construction.
+            overdue_since = None
+            time.sleep(POLL_SECONDS)
+            continue
+        if unclaimed_for is not None:
+            pending_reason = (
+                f"target file {path} still says unclaimed "
+                f"{abs(unclaimed_for):.0f}s past its own deadline"
+            )
+        elif path.exists():
+            pending_reason = f"target file {path} exists but holds no usable target"
+        else:
+            try:
+                has_log = next(iter(root.rglob(SESSIONS_GLOB)), None) is not None
+            except OSError:
+                has_log = False
+            if has_log:
+                pending_reason = (
+                    f"a session log exists under {root} with no mirror target"
+                )
+        if pending_reason is None:
+            overdue_since = None
+        elif overdue_since is None:
+            overdue_since = time.monotonic()
+            log(f"waiting for mirror target: {pending_reason}")
+        elif time.monotonic() - overdue_since > TARGET_GRACE_SECONDS:
+            log(
+                f"FAILED {pending_reason} after {TARGET_GRACE_SECONDS:.0f}s — "
+                "a box producing session logs it cannot mirror is a "
+                "misconfiguration, not a degraded mode"
+            )
+            return 78  # EX_CONFIG
+        time.sleep(POLL_SECONDS)
+
+
+def discover(mirrors: dict[str, FileMirror]) -> None:
+    """Adopt every session log in the box, subagent conversations included.
+
+    A box serves one conversation, so every log under the root belongs to it —
+    a subagent writes its own file, and engines resolve those by their path or
+    filename, so mirroring the tree rather than one named file is what makes a
+    restored box find them again.
+    """
+
+    root = Path(SESSIONS_ROOT)
+    for path in sorted(root.rglob(SESSIONS_GLOB)):
+        subpath = SUBPATH_PREFIX + str(path.relative_to(root))
+        if subpath not in mirrors:
+            mirrors[subpath] = FileMirror(path, subpath, state_path_for(subpath))
+            log(f"mirroring {path}")
+
+
+def main() -> int:
+    global BASE_URL, SESSION_ID, PROJECT_KEY
+
+    image_missing = [
+        name
+        for name, value in (
+            ("ASTRABOX_TRANSCRIPT_MIRROR_ROOT", SESSIONS_ROOT),
+            ("ASTRABOX_TRANSCRIPT_MIRROR_GLOB", SESSIONS_GLOB),
+            ("ASTRABOX_TRANSCRIPT_MIRROR_NAMESPACE", SUBPATH_PREFIX),
+        )
+        if not value
+    ]
+    if image_missing:
+        log(
+            "refusing to start without " + ", ".join(image_missing) + " — the "
+            "image names what its engine writes; without it this program "
+            "would mirror the wrong files or none at all"
+        )
+        return 78  # EX_CONFIG
+
+    if TARGET_FILE:
+        conflicting = [
+            name
+            for name, value in (
+                ("_ASTRABOX_TRANSCRIPT_BACKEND_BASE_URL", BASE_URL),
+                ("_ASTRABOX_PLATFORM_SESSION_ID", SESSION_ID),
+                ("_ASTRABOX_TRANSCRIPT_PROJECT_KEY", PROJECT_KEY),
+            )
+            if value
+        ]
+        if conflicting:
+            log(
+                "refusing to start: ASTRABOX_TRANSCRIPT_MIRROR_TARGET_FILE and "
+                + ", ".join(conflicting)
+                + " are both set — a deferred target and a create-time target "
+                "are two answers to where this box's transcript goes"
+            )
+            return 78  # EX_CONFIG
+        # Created before the wait so the claim's target write finds the
+        # directory already owned by this account.
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        resolved = await_deferred_target()
+        if isinstance(resolved, int):
+            return resolved
+        BASE_URL, SESSION_ID, PROJECT_KEY = resolved
+        log(f"adopted deferred mirror target for session {SESSION_ID}")
+    else:
+        missing = [
+            name
+            for name, value in (
+                ("_ASTRABOX_TRANSCRIPT_BACKEND_BASE_URL", BASE_URL),
+                ("_ASTRABOX_PLATFORM_SESSION_ID", SESSION_ID),
+                ("_ASTRABOX_TRANSCRIPT_PROJECT_KEY", PROJECT_KEY),
+            )
+            if not value
+        ]
+        if missing:
+            log(
+                "refusing to start without " + ", ".join(missing) + " — a box whose "
+                "transcript is not mirrored loses the conversation when it is "
+                "reclaimed, which is a misconfiguration, not a degraded mode"
+            )
+            return 78  # EX_CONFIG
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+    sender = Sender(BASE_URL, SESSION_ID)
+    mirrors: dict[str, FileMirror] = {}
+    log(f"watching {SESSIONS_ROOT}/{SESSIONS_GLOB} for session {SESSION_ID}")
+
+    def pump() -> int:
+        discover(mirrors)
+        sent = 0
+        for mirror in list(mirrors.values()):
+            while True:
+                moved = mirror.pump(sender)
+                if not moved:
+                    break
+                sent += moved
+        return sent
+
+    return run_mirror(pump)
+
+
+def run_mirror(pump: Callable[[], int]) -> int:
+    """Drive an image's native-state adapter with the shared mirror backoff."""
+    backoff = POLL_SECONDS
+    while True:
+        try:
+            sent = pump()
+        except PermanentRejection as exc:
+            log(f"FAILED {exc}")
+            return 65  # EX_DATAERR
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+            # Adapters retain their pending bytes until the store acknowledges
+            # them. Report every failed attempt instead of looking idle.
+            log(f"RETRYING after {type(exc).__name__}: {exc} (in {backoff:.1f}s)")
+            time.sleep(backoff)
+            backoff = min(backoff * 2, 30.0)
+            continue
+        backoff = POLL_SECONDS
+        if not sent:
+            time.sleep(POLL_SECONDS)
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        sys.exit(0)

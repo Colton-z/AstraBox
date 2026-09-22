@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" id="fig-working-with-repos" viewBox="0 0 1080 400"
+     role="img" aria-labelledby="working-with-repos-title working-with-repos-desc">
+  <title id="working-with-repos-title">How repositories enter a Session</title>
+  <desc id="working-with-repos-desc">An Agent can name one default project repository and pinned repositories containing Skills or Plugins. AstraBox reads any deploy key on the server, clones the project before the first turn, and installs selected extension directories. The Agent program reads and edits the Session workspace. Pushing a branch or downloading files preserves work beyond a terminated sandbox.</desc>
+
+  <style data-standalone="true">
+    @media (prefers-color-scheme: dark) {
+      svg {
+        --ifm-background-color: #0e0e0e;
+        --fg-1: #ededed;
+        --fg-3: #909090;
+        --fg-4: #6f6f6f;
+        --line-strong: #383838;
+        --astra: #7877ff;
+        --astra-tint: #1a1b3a;
+        --plasma: #f08a59;
+      }
+    }
+  </style>
+
+  <style>
+    #fig-working-with-repos .box { fill: var(--ifm-background-color, #fafafa); stroke: var(--line-strong, #d4d4d4); stroke-width: 1 }
+    #fig-working-with-repos .store { fill: color-mix(in oklab, var(--fg-1, #0a0a0a) 5%, var(--ifm-background-color, #fafafa)); stroke: var(--line-strong, #d4d4d4); stroke-width: 1 }
+    #fig-working-with-repos .focal { fill: var(--astra-tint, #ecebff); stroke: var(--astra, #5c5bff); stroke-width: 1.5 }
+    #fig-working-with-repos .zone { fill: none; stroke: var(--line-strong, #d4d4d4); stroke-width: 1; stroke-dasharray: 4 4 }
+    #fig-working-with-repos .mask { fill: var(--ifm-background-color, #fafafa) }
+    #fig-working-with-repos .edge { fill: none; stroke: var(--fg-4, #999999); stroke-width: 1.25 }
+    #fig-working-with-repos .edge-out { fill: none; stroke: var(--plasma, #e8754a); stroke-width: 1.25 }
+    #fig-working-with-repos .name { fill: var(--fg-1, #0a0a0a); font: 600 12px Geist, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; text-anchor: middle }
+    #fig-working-with-repos .sub { fill: var(--fg-3, #666666); font: 400 9px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; text-anchor: middle }
+    #fig-working-with-repos .eyebrow { fill: var(--fg-3, #666666); font: 500 8px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.14em }
+    #fig-working-with-repos .arrow-label { fill: var(--fg-3, #666666); font: 400 8px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.06em; text-anchor: middle }
+    #fig-working-with-repos .legend-text { fill: var(--fg-3, #666666); font: 400 8px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.06em }
+    #fig-working-with-repos .rule { stroke: var(--line-strong, #d4d4d4); stroke-width: 0.8 }
+  </style>
+
+  <defs>
+    <marker id="working-with-repos-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="var(--fg-4, #999999)"/>
+    </marker>
+    <marker id="working-with-repos-arrow-start" markerWidth="8" markerHeight="6" refX="1" refY="3" orient="auto">
+      <polygon points="8 0, 0 3, 8 6" fill="var(--fg-4, #999999)"/>
+    </marker>
+    <marker id="working-with-repos-arrow-out" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="var(--plasma, #e8754a)"/>
+    </marker>
+  </defs>
+
+  <!-- zone first, then arrows, then boxes: nodes paint over the lines -->
+  <rect class="zone" x="504" y="56" width="328" height="248" rx="12"/>
+  <text class="eyebrow" x="504" y="44">MANAGED SANDBOX</text>
+
+  <path class="edge" d="M 200 120 H 216 V 160 H 228" marker-end="url(#working-with-repos-arrow)"/>
+  <path class="edge" d="M 200 232 H 216 V 192 H 228" marker-end="url(#working-with-repos-arrow)"/>
+  <path class="edge" d="M 408 160 H 440 V 120 H 532" marker-end="url(#working-with-repos-arrow)"/>
+  <path class="edge" d="M 408 192 H 440 V 240 H 532" marker-end="url(#working-with-repos-arrow)"/>
+  <path class="edge" d="M 668 156 V 204" marker-end="url(#working-with-repos-arrow)" marker-start="url(#working-with-repos-arrow-start)"/>
+  <path class="edge-out" d="M 800 240 H 876" marker-end="url(#working-with-repos-arrow-out)"/>
+
+  <rect class="mask" x="464" y="100" width="48" height="12" rx="2"/>
+  <text class="arrow-label" x="488" y="109">GIT CLONE</text>
+  <rect class="mask" x="456" y="220" width="64" height="12" rx="2"/>
+  <text class="arrow-label" x="488" y="229">SKILLS · PLUGINS</text>
+  <rect class="mask" x="678" y="178" width="124" height="12" rx="2"/>
+  <text class="arrow-label" x="740" y="187">READS · EDITS · COMMITS</text>
+  <rect class="mask" x="808" y="220" width="64" height="12" rx="2"/>
+  <text class="arrow-label" x="840" y="229">CLONE · PUSH</text>
+
+  <rect class="box" x="24" y="88" width="176" height="64" rx="8"/>
+  <text class="name" x="112" y="110">Agent configuration</text>
+  <text class="sub" x="112" y="126">default_repo · SSH url</text>
+  <text class="sub" x="112" y="140">plugin_repos · pinned sha</text>
+
+  <rect class="store" x="24" y="200" width="176" height="64" rx="8"/>
+  <text class="name" x="112" y="222">Secret source</text>
+  <text class="sub" x="112" y="238">deploy_key_secret_name</text>
+  <text class="sub" x="112" y="252">server environment variable</text>
+
+  <rect class="box" x="232" y="144" width="176" height="64" rx="8"/>
+  <text class="name" x="320" y="172">AstraBox service</text>
+  <text class="sub" x="320" y="190">clones before the first task</text>
+
+  <rect class="focal" x="536" y="88" width="264" height="64" rx="8"/>
+  <text class="name" x="668" y="110">Session workspace</text>
+  <text class="sub" x="668" y="126">a new clone for each Session</text>
+  <text class="sub" x="668" y="140">snapshot on pause · released on termination</text>
+
+  <rect class="box" x="536" y="208" width="264" height="64" rx="8"/>
+  <text class="name" x="668" y="230">Agent program</text>
+  <text class="sub" x="668" y="246">git is in the sandbox image</text>
+  <text class="sub" x="668" y="260">clones a public repository on request</text>
+
+  <rect class="box" x="880" y="208" width="176" height="64" rx="8"/>
+  <text class="name" x="968" y="230">Git host</text>
+  <text class="sub" x="968" y="246">github.com or your own</text>
+  <text class="sub" x="968" y="260">reachable from the sandbox</text>
+
+  <line class="rule" x1="24" y1="336" x2="1056" y2="336"/>
+  <text class="eyebrow" x="24" y="360">LEGEND</text>
+  <rect class="focal" x="112" y="352" width="16" height="10" rx="2"/>
+  <text class="legend-text" x="136" y="360">where the repository lands</text>
+  <line class="edge" x1="416" y1="357" x2="440" y2="357"/>
+  <text class="legend-text" x="448" y="360">settings, keys and files</text>
+  <line class="edge-out" x1="728" y1="357" x2="752" y2="357"/>
+  <text class="legend-text" x="760" y="360">leaves the sandbox</text>
+</svg>

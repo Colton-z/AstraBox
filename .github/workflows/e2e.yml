@@ -1,0 +1,244 @@
+name: e2e
+
+# Live end-to-end gate:
+# build the in-sandbox agent image, cold-start an agent container through the
+# OpenSandbox lifecycle server, and
+# stream a REAL `claude` turn end-to-end, proving at least one `text-delta` frame
+# (NOT the `(empty reply, exit=0)` fake success). Two layers, same path:
+#   1. scripts/e2e_smoke.sh   — headless curl-level proof (asserts a real text-delta).
+#   2. e2e/ Playwright        — the happy-path through the REAL redesigned console UI
+#                               (its webServer config boots backend :8000 + frontend
+#                                :5173 itself; see e2e/playwright.config.ts).
+#
+# Manual only (workflow_dispatch), with two deliberately separate modes:
+#   * live — GATED on the `ANTHROPIC_AUTH_TOKEN` repo secret; runs Docker + model.
+#   * artifact-smoke — secret-free; validates failure-artifact upload plumbing only.
+# Neither mode runs on push/PR (that fast, secret-free gate is ci.yml).
+#
+# ── REQUIRED repo secret (Settings ▸ Secrets and variables ▸ Actions ▸ Secrets) ──
+#   ANTHROPIC_AUTH_TOKEN   the token for your Anthropic-compatible endpoint
+#                          (any Anthropic-compatible key). The key is read
+#                          ONLY from `secrets` and written to a gitignored .env at
+#                          runtime — it is NEVER inlined in this file or printed.
+# ── OPTIONAL repo variables (…▸ Variables) — non-secret model pins ──────────────
+#   ANTHROPIC_BASE_URL     default https://api.anthropic.com
+#   ANTHROPIC_MODEL        default claude-opus-4-8
+# You may also dispatch with inputs to override the model pins for one run.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Validation mode"
+        required: true
+        type: choice
+        options:
+          - live
+          - artifact-smoke
+        default: live
+      anthropic_base_url:
+        description: "Live only: base URL (blank = repo var or Anthropic default)"
+        required: false
+        default: ""
+      anthropic_model:
+        description: "Live only: model id (blank = repo var or claude-opus-4-8 default)"
+        required: false
+        default: ""
+
+concurrency:
+  # A no-secret artifact smoke must not cancel a long-running live turn (or vice
+  # versa), while duplicate runs of the SAME mode on one ref still supersede.
+  group: e2e-${{ github.ref }}-${{ inputs.mode }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  live-turn:
+    if: ${{ inputs.mode == 'live' }}
+    name: live turn · build agent image + curl smoke + Playwright happy-path
+    runs-on: ubuntu-latest
+    # Hard gate: without the operator token there is nothing to verify — fail the
+    # run with a clear message instead of a misleading green (no fake success).
+    env:
+      ANTHROPIC_BASE_URL: ${{ inputs.anthropic_base_url || vars.ANTHROPIC_BASE_URL || 'https://api.anthropic.com' }}
+      ANTHROPIC_MODEL: ${{ inputs.anthropic_model || vars.ANTHROPIC_MODEL || 'claude-opus-4-8' }}
+    steps:
+      - name: Guard — require the ANTHROPIC_AUTH_TOKEN secret
+        env:
+          # Step-scoped: checkout/setup actions never inherit the model token.
+          ANTHROPIC_AUTH_TOKEN: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
+        run: |
+          if [ -z "${ANTHROPIC_AUTH_TOKEN}" ]; then
+            echo "::error::The 'ANTHROPIC_AUTH_TOKEN' repo secret is not set. Add it under" \
+                 "Settings ▸ Secrets and variables ▸ Actions, then re-run. (This gate verifies a" \
+                 "REAL live turn against your LLM endpoint; it cannot run without the key.)"
+            exit 1
+          fi
+
+      - uses: actions/checkout@v7
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+
+      - name: Show Docker daemon (present on GitHub-hosted ubuntu runners)
+        run: docker version --format 'server {{.Server.Version}}'
+
+      - name: Create the project venv with the package installed editable
+        # serve-backend.sh + scripts/e2e_smoke.sh both invoke ./.venv/bin/python,
+        # so the editable install must land in .venv (not the bare runner python).
+        run: |
+          python -m venv .venv
+          ./.venv/bin/python -m pip install -U pip
+          # The Python environment drives the smoke client and unit helpers. The
+          # live backend itself runs in the maintained server image below.
+          ./.venv/bin/python -m pip install -e '.[dev,sandbox-server]'
+
+      - name: Write the gitignored .env from the secret (key NEVER inlined/printed)
+        # The token comes from `secrets`; base_url/model from non-secret vars/inputs.
+        # serve-backend.sh + e2e_smoke.sh source this .env and map it onto the host
+        # ASTRABOX_MODEL_* namespace. `>>` with quoted heredoc, no echo of $value.
+        env:
+          # This is the only step that materializes the model token for the live
+          # processes; later run steps source the mode-0600 .env file explicitly.
+          ANTHROPIC_AUTH_TOKEN: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
+        run: |
+          umask 077
+          {
+            echo "ANTHROPIC_AUTH_TOKEN=${ANTHROPIC_AUTH_TOKEN}"
+            echo "ANTHROPIC_API_KEY=${ANTHROPIC_AUTH_TOKEN}"
+            echo "ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL}"
+            echo "ANTHROPIC_MODEL=${ANTHROPIC_MODEL}"
+            echo "ASTRABOX_AGENT_IMAGE=astrabox/sandbox-claude-code:latest"
+          } > .env
+          echo "wrote .env ($(wc -l < .env) lines; token redacted)"
+
+      - name: Build the in-sandbox agent image (astrabox/sandbox-claude-code:latest)
+        # image-is-the-contract: the build bakes + smoke-tests the pinned claude CLI
+        # and FAILS LOUD if it is missing/broken (no runtime npm install on the hot
+        # path). The .env above names it as ASTRABOX_AGENT_IMAGE.
+        run: make build-agent-image
+
+      - name: Build the source-development server image
+        # The live launchers mount the checkout over this image's installed
+        # package while reusing its pinned dependencies and maintained Compose
+        # network/security topology.
+        run: make build-server-image
+
+      - name: Pre-pull the execd image the lifecycle server injects
+        # The server injects this binary into every sandbox it creates, pulling it
+        # on first create. Pulling here turns a Docker Hub rate-limit into a clear
+        # step failure instead of a timeout in the middle of a turn. Tracks
+        # astrabox/deploy/sandbox_server.py::DEFAULT_EXECD_IMAGE.
+        run: docker pull opensandbox/execd:v1.1.0
+
+      - name: Smoke — headless curl live turn (scripts/e2e_smoke.sh)
+        # Boots a task-owned source-mounted Compose deployment, cold-starts an
+        # agent, drives one turn, and ASSERTS a real text-delta containing "2".
+        run: ./scripts/e2e_smoke.sh
+
+      - name: Install web deps (frontend proxy target + the Playwright project)
+        run: |
+          npm --prefix frontend ci
+          npm --prefix e2e ci
+
+      - name: Install the Playwright Chromium browser (+ OS deps)
+        # Run the e2e project's pinned Playwright (devDependency) from its own dir.
+        working-directory: e2e
+        run: npx playwright install --with-deps chromium
+
+      - name: Browser happy-path (e2e/ Playwright — boots backend :8000 + frontend :5173)
+        # The Playwright webServer config starts a source-mounted Compose backend
+        # and Vite, then drives the real console and asserts streamed model text.
+        env:
+          CI: "true"
+        run: npm --prefix e2e run test:happy
+
+      - name: Remove model credentials before artifact actions
+        # Runs after the last credential consumer even when an earlier live step
+        # failed. No third-party artifact action may see the token file.
+        if: ${{ always() }}
+        run: rm -f .env
+
+      - name: Upload Playwright report + traces on failure
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: playwright-report
+          path: |
+            e2e/playwright-report/
+            e2e/test-results/
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Collect agent-container + server logs on failure (evidence, creds filtered)
+        if: ${{ failure() }}
+        run: |
+          echo "── docker ps -a (managed agents) ──"
+          docker ps -a --filter "label=astrabox.managed-by=astrabox" \
+            --format '{{.ID}}  {{.Status}}  {{.Image}}' || true
+          for cid in $(docker ps -aq --filter "label=astrabox.managed-by=astrabox"); do
+            echo "── logs $cid (tail) ──"; docker logs --tail 80 "$cid" 2>&1 || true
+          done
+          echo "── smoke logs ──"
+          tail -n 120 /tmp/astrabox-e2e/server.log 2>/dev/null | grep -aiv -E 'AUTH_TOKEN|API_KEY' || true
+          tail -n 80 /tmp/astrabox-e2e/ai-stream.sse 2>/dev/null || true
+
+      - name: Clean up agent containers we spawned
+        if: ${{ always() }}
+        run: |
+          ids="$(docker ps -aq --filter 'label=astrabox.managed-by=astrabox')"
+          [ -n "$ids" ] && docker rm -f $ids || echo "no managed agent containers to remove"
+
+  artifact-smoke:
+    if: ${{ inputs.mode == 'artifact-smoke' }}
+    name: artifact smoke · upload multi-path diagnostics (no secret)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create dummy Playwright diagnostics
+        run: |
+          mkdir -p e2e/playwright-report e2e/test-results
+          printf '%s\n' '<html><body>artifact smoke</body></html>' \
+            > e2e/playwright-report/index.html
+          printf '%s\n' 'dummy trace payload' > e2e/test-results/trace.txt
+
+      - name: Upload dummy multi-path artifact
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: playwright-report-smoke
+          path: |
+            e2e/playwright-report/
+            e2e/test-results/
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Assert upload outputs
+        env:
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
+          ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+        run: |
+          test -n "$ARTIFACT_ID"
+          test -n "$ARTIFACT_URL"
+          test -n "$ARTIFACT_DIGEST"
+
+      - name: Prove a missing path is ignored
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: intentionally-empty
+          path: e2e/path-that-does-not-exist/
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Confirm missing-path upload did not stop the job
+        run: echo "if-no-files-found=ignore continued successfully"

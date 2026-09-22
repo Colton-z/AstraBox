@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" id="fig-team-login" viewBox="0 0 1080 568"
+     role="img" aria-labelledby="team-login-title team-login-desc">
+  <title id="team-login-title">How a browser signs in to AstraBox</title>
+  <desc id="team-login-desc">A browser opens the AstraBox console without a login cookie, and AstraBox redirects it to the identity provider with a PKCE challenge. The person signs in at the provider, which is either the bundled Casdoor or one the organization already runs, and the provider redirects the browser back to /api/v1/auth/callback with a one-time code. AstraBox exchanges that code, the PKCE verifier and its client secret for an ID token carrying the user and groups, verifies it, and returns its own signed HttpOnly login cookie.</desc>
+
+  <style data-standalone="true">
+    @media (prefers-color-scheme: dark) {
+      svg {
+        --ifm-background-color: #0e0e0e;
+        --fg-1: #ededed;
+        --fg-3: #909090;
+        --fg-4: #6f6f6f;
+        --line-strong: #383838;
+        --astra: #7877ff;
+        --astra-tint: #1a1b3a;
+      }
+    }
+  </style>
+
+  <style>
+    #fig-team-login .box { fill: var(--ifm-background-color, #fafafa); stroke: var(--line-strong, #d4d4d4); stroke-width: 1 }
+    #fig-team-login .focal { fill: var(--astra-tint, #ecebff); stroke: var(--astra, #5c5bff); stroke-width: 1.5 }
+    #fig-team-login .life { fill: none; stroke: var(--line-strong, #d4d4d4); stroke-width: 1; stroke-dasharray: 4 4 }
+    #fig-team-login .mask { fill: var(--ifm-background-color, #fafafa) }
+    #fig-team-login .edge { fill: none; stroke: var(--fg-4, #999999); stroke-width: 1.25 }
+    #fig-team-login .edge-dashed { fill: none; stroke: var(--fg-4, #999999); stroke-width: 1.25; stroke-dasharray: 3 4 }
+    #fig-team-login .edge-strong { fill: none; stroke: var(--fg-3, #666666); stroke-width: 2 }
+    #fig-team-login .name { fill: var(--fg-1, #0a0a0a); font: 600 12px Geist, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; text-anchor: middle }
+    #fig-team-login .sub { fill: var(--fg-3, #666666); font: 400 9px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; text-anchor: middle }
+    #fig-team-login .eyebrow { fill: var(--fg-3, #666666); font: 500 8px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.14em }
+    #fig-team-login .arrow-label { fill: var(--fg-3, #666666); font: 400 8px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.06em; text-anchor: middle }
+    #fig-team-login .legend-text { fill: var(--fg-3, #666666); font: 400 8px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.06em }
+    #fig-team-login .rule { stroke: var(--line-strong, #d4d4d4); stroke-width: 0.8 }
+  </style>
+
+  <defs>
+    <marker id="team-login-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="var(--fg-4, #999999)"/>
+    </marker>
+    <marker id="team-login-arrow-strong" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="var(--fg-3, #666666)"/>
+    </marker>
+  </defs>
+
+  <!-- lifelines first, then messages, then masks and their labels, then the actors -->
+  <line class="life" x1="124" y1="128" x2="124" y2="472"/>
+  <line class="life" x1="540" y1="128" x2="540" y2="472"/>
+  <line class="life" x1="956" y1="128" x2="956" y2="472"/>
+
+  <path class="edge" d="M 128 168 H 536" marker-end="url(#team-login-arrow)"/>
+  <path class="edge-dashed" d="M 536 208 H 128" marker-end="url(#team-login-arrow)"/>
+  <path class="edge" d="M 128 248 H 952" marker-end="url(#team-login-arrow)"/>
+  <path class="edge-dashed" d="M 952 288 H 128" marker-end="url(#team-login-arrow)"/>
+  <path class="edge" d="M 128 328 H 536" marker-end="url(#team-login-arrow)"/>
+  <path class="edge" d="M 544 368 H 952" marker-end="url(#team-login-arrow)"/>
+  <path class="edge-dashed" d="M 952 408 H 544" marker-end="url(#team-login-arrow)"/>
+  <path class="edge-strong" d="M 536 448 H 128" marker-end="url(#team-login-arrow-strong)"/>
+
+  <rect class="mask" x="236" y="148" width="192" height="12" rx="2"/>
+  <text class="arrow-label" x="332" y="156">opens the console, not signed in yet</text>
+  <rect class="mask" x="196" y="188" width="272" height="12" rx="2"/>
+  <text class="arrow-label" x="332" y="196">redirect to the provider, with a PKCE challenge</text>
+  <rect class="mask" x="586" y="228" width="324" height="12" rx="2"/>
+  <text class="arrow-label" x="748" y="236">the provider authenticates the user and returns identity</text>
+  <rect class="mask" x="234" y="268" width="196" height="12" rx="2"/>
+  <text class="arrow-label" x="332" y="276">redirect back with a one-time code</text>
+  <rect class="mask" x="258" y="308" width="148" height="12" rx="2"/>
+  <text class="arrow-label" x="332" y="316">GET /api/v1/auth/callback</text>
+  <rect class="mask" x="616" y="348" width="264" height="12" rx="2"/>
+  <text class="arrow-label" x="748" y="356">the code, the PKCE verifier, the client secret</text>
+  <rect class="mask" x="674" y="388" width="148" height="12" rx="2"/>
+  <text class="arrow-label" x="748" y="396">ID token: user and groups</text>
+  <rect class="mask" x="242" y="428" width="180" height="12" rx="2"/>
+  <text class="arrow-label" x="332" y="436">signed login cookie, HttpOnly</text>
+
+  <rect class="box" x="24" y="64" width="200" height="64" rx="8"/>
+  <text class="name" x="124" y="92">Browser</text>
+  <text class="sub" x="124" y="110">the person signing in</text>
+
+  <rect class="box" x="440" y="64" width="200" height="64" rx="8"/>
+  <text class="name" x="540" y="92">AstraBox service</text>
+  <text class="sub" x="540" y="110">verifies the ID token</text>
+
+  <rect class="focal" x="856" y="64" width="200" height="64" rx="8"/>
+  <text class="name" x="956" y="92">Identity provider</text>
+  <text class="sub" x="956" y="110">bundled Casdoor or your own</text>
+
+  <line class="rule" x1="24" y1="504" x2="1056" y2="504"/>
+  <text class="eyebrow" x="24" y="528">LEGEND</text>
+  <rect class="focal" x="112" y="520" width="16" height="12" rx="2"/>
+  <text class="legend-text" x="136" y="528">the identity provider you configure</text>
+  <line class="edge" x1="348" y1="525" x2="372" y2="525"/>
+  <text class="legend-text" x="380" y="528">one step of the sign-in</text>
+  <line class="edge-dashed" x1="524" y1="525" x2="548" y2="525"/>
+  <text class="legend-text" x="556" y="528">what comes back</text>
+  <line class="edge-strong" x1="656" y1="525" x2="680" y2="525"/>
+  <text class="legend-text" x="688" y="528">the login cookie AstraBox creates</text>
+</svg>

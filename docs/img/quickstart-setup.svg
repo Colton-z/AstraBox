@@ -1,0 +1,114 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" id="fig-quickstart-setup" viewBox="0 0 1080 368"
+     role="img" aria-labelledby="quickstart-setup-title quickstart-setup-desc">
+  <title id="quickstart-setup-title">Build the images, start AstraBox, and run a task</title>
+  <desc id="quickstart-setup-desc">Three numbered steps. Step one builds the server image and one Agent sandbox image. Step two starts AstraBox, PostgreSQL, and the bundled LiteLLM model gateway with one Compose command. Step three opens the console at 127.0.0.1 port 8088, selects the Agent created on first startup, and starts a Session. Its isolated sandbox comes from the image built in step one, while model calls go to the gateway outside the sandbox.</desc>
+
+  <style data-standalone="true">
+    @media (prefers-color-scheme: dark) {
+      svg {
+        --ifm-background-color: #0e0e0e;
+        --fg-1: #ededed;
+        --fg-3: #909090;
+        --fg-4: #6f6f6f;
+        --line-strong: #383838;
+        --astra: #7877ff;
+        --astra-tint: #1a1b3a;
+        --plasma: #f08a59;
+      }
+    }
+  </style>
+
+  <style>
+    #fig-quickstart-setup .box { fill: var(--ifm-background-color, #fafafa); stroke: var(--line-strong, #d4d4d4); stroke-width: 1 }
+    #fig-quickstart-setup .store { fill: color-mix(in oklab, var(--fg-1, #0a0a0a) 5%, var(--ifm-background-color, #fafafa)); stroke: var(--line-strong, #d4d4d4); stroke-width: 1 }
+    #fig-quickstart-setup .focal { fill: var(--astra-tint, #ecebff); stroke: var(--astra, #5c5bff); stroke-width: 1.5 }
+    #fig-quickstart-setup .mask { fill: var(--ifm-background-color, #fafafa) }
+    #fig-quickstart-setup .edge { fill: none; stroke: var(--fg-4, #999999); stroke-width: 1.25 }
+    #fig-quickstart-setup .edge-dashed { fill: none; stroke: var(--fg-4, #999999); stroke-width: 1.25; stroke-dasharray: 3 4 }
+    #fig-quickstart-setup .edge-out { fill: none; stroke: var(--plasma, #e8754a); stroke-width: 1.25 }
+    #fig-quickstart-setup .name { fill: var(--fg-1, #0a0a0a); font: 600 12px Geist, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; text-anchor: middle }
+    #fig-quickstart-setup .sub { fill: var(--fg-3, #666666); font: 400 9px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; text-anchor: middle }
+    #fig-quickstart-setup .note { fill: var(--fg-3, #666666); font: 400 9px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace }
+    #fig-quickstart-setup .eyebrow { fill: var(--fg-3, #666666); font: 500 8px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.14em }
+    #fig-quickstart-setup .arrow-label { fill: var(--fg-3, #666666); font: 400 8px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.06em; text-anchor: middle }
+    #fig-quickstart-setup .legend-text { fill: var(--fg-3, #666666); font: 400 8px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.06em }
+    #fig-quickstart-setup .rule { stroke: var(--line-strong, #d4d4d4); stroke-width: 0.8 }
+  </style>
+
+  <defs>
+    <marker id="quickstart-setup-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="var(--fg-4, #999999)"/>
+    </marker>
+    <marker id="quickstart-setup-arrow-out" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="var(--plasma, #e8754a)"/>
+    </marker>
+  </defs>
+
+  <!-- step headers -->
+  <text class="eyebrow" x="24" y="40">1 · BUILD THE IMAGES</text>
+  <text class="note" x="24" y="56">docker build · server + one sandbox</text>
+  <line class="rule" x1="24" y1="68" x2="312" y2="68"/>
+
+  <text class="eyebrow" x="360" y="40">2 · START THE LOCAL DEPLOYMENT</text>
+  <text class="note" x="360" y="56">scripts/compose.sh up</text>
+  <line class="rule" x1="360" y1="68" x2="712" y2="68"/>
+
+  <text class="eyebrow" x="760" y="40">3 · RUN A TASK</text>
+  <text class="note" x="760" y="56">http://127.0.0.1:8088</text>
+  <line class="rule" x1="760" y1="68" x2="1056" y2="68"/>
+
+  <!-- arrows first: the boxes paint over the lines -->
+  <path class="edge" d="M 296 120 H 368" marker-end="url(#quickstart-setup-arrow)"/>
+  <path class="edge" d="M 696 120 H 768" marker-end="url(#quickstart-setup-arrow)"/>
+  <path class="edge-dashed" d="M 452 152 V 176" marker-end="url(#quickstart-setup-arrow)"/>
+  <path class="edge" d="M 908 152 V 176" marker-end="url(#quickstart-setup-arrow)"/>
+  <path class="edge" d="M 168 248 V 288 H 840 V 256" marker-end="url(#quickstart-setup-arrow)"/>
+  <path class="edge-out" d="M 776 216 H 704" marker-end="url(#quickstart-setup-arrow-out)"/>
+
+  <rect class="mask" x="456" y="268" width="160" height="12" rx="2"/>
+  <text class="arrow-label" x="536" y="277">STARTS THE SESSION SANDBOX</text>
+  <rect class="mask" x="704" y="196" width="64" height="12" rx="2"/>
+  <text class="arrow-label" x="736" y="205">MODEL CALLS</text>
+
+  <rect class="box" x="40" y="88" width="256" height="64" rx="8"/>
+  <text class="name" x="168" y="116">Server image</text>
+  <text class="sub" x="168" y="134">astrabox/server</text>
+
+  <rect class="box" x="376" y="88" width="320" height="64" rx="8"/>
+  <text class="name" x="536" y="116">AstraBox server</text>
+  <text class="sub" x="536" y="134">console · API · sandbox management</text>
+
+  <rect class="box" x="776" y="88" width="264" height="64" rx="8"/>
+  <text class="name" x="908" y="116">Ready-to-use Agent</text>
+  <text class="sub" x="908" y="134">created on first startup</text>
+
+  <rect class="box" x="40" y="184" width="256" height="64" rx="8"/>
+  <text class="name" x="168" y="206">Agent sandbox image</text>
+  <text class="sub" x="168" y="222">Agent program · file service</text>
+  <text class="sub" x="168" y="236">command service · workspace</text>
+
+  <rect class="store" x="376" y="184" width="152" height="64" rx="8"/>
+  <text class="name" x="452" y="206">PostgreSQL</text>
+  <text class="sub" x="452" y="222">session history</text>
+  <text class="sub" x="452" y="236">astrabox-postgres volume</text>
+
+  <rect class="box" x="544" y="184" width="152" height="64" rx="8"/>
+  <text class="name" x="620" y="206">Model gateway</text>
+  <text class="sub" x="620" y="222">bundled LiteLLM</text>
+  <text class="sub" x="620" y="236">ANTHROPIC_API_KEY</text>
+
+  <rect class="focal" x="776" y="184" width="264" height="64" rx="8"/>
+  <text class="name" x="908" y="206">Session</text>
+  <text class="sub" x="908" y="222">isolated sandbox · live output</text>
+  <text class="sub" x="908" y="236">approve tool calls when asked</text>
+
+  <line class="rule" x1="24" y1="312" x2="1056" y2="312"/>
+  <text class="eyebrow" x="24" y="336">LEGEND</text>
+  <rect class="focal" x="112" y="328" width="16" height="12" rx="2"/>
+  <text class="legend-text" x="136" y="336">where your first task runs</text>
+  <line class="edge-dashed" x1="432" y1="332" x2="456" y2="332"/>
+  <text class="legend-text" x="464" y="336">written to PostgreSQL</text>
+  <line class="edge-out" x1="752" y1="332" x2="776" y2="332"/>
+  <text class="legend-text" x="784" y="336">leaves the sandbox</text>
+</svg>

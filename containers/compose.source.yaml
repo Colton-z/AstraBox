@@ -1,0 +1,28 @@
+# Source-development overlay. The deployment topology stays identical to the
+# maintained Compose stack; only the installed AstraBox package is replaced by
+# the checkout and uvicorn watches that mounted directory.
+services:
+  server:
+    command:
+      - python
+      - -m
+      - uvicorn
+      - astrabox.api.app:create_app
+      - --factory
+      - --reload
+      - --reload-dir
+      - /usr/local/lib/python3.12/site-packages/astrabox
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8000"
+    volumes:
+      - ../astrabox:/usr/local/lib/python3.12/site-packages/astrabox:ro
+      - ../channel-gateway/src:/opt/astrabox/channel-gateway/src:ro
+      - ./litellm/config.yaml:/opt/astrabox/litellm/config.yaml:ro
+      - ../astrabox/identity/oidc.py:/opt/astrabox/litellm/astrabox_oidc.py:ro
+      - ../astrabox/identity/session_signing.py:/opt/astrabox/litellm/astrabox_identity_session.py:ro
+      - ../astrabox/providers/litellm_shared_auth.py:/opt/astrabox/litellm/astrabox_litellm_auth.py:ro
+      - ./litellm/custom_auth.py:/opt/astrabox/litellm/custom_auth.py:ro
+      - ./litellm/langfuse_session_hook.py:/opt/astrabox/litellm/langfuse_session_hook.py:ro
+      - ./litellm/stream_normalization_hook.py:/opt/astrabox/litellm/stream_normalization_hook.py:ro

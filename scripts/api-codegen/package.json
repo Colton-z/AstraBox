@@ -1,0 +1,18 @@
+{
+  "name": "astrabox-api-codegen",
+  "private": true,
+  "version": "0.0.0",
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": "26.8.1"
+  },
+  "//": "A package of one tool, existing only because it cannot live in frontend/. openapi-typescript emits through the TypeScript compiler API, which typescript@7 (the Go port the console builds with) does not ship; npm refuses to nest a conflicting peer, and legacy-peer-deps would disable peer checking across the whole console tree. Here the tool gets the typescript@5 it asks for and the console keeps its own compiler. The paths are fixed rather than parameterised: there is exactly one snapshot and exactly one generated client, and `make check-api-client` compares this script's output against the committed file.",
+  "scripts": {
+    "gen": "openapi-typescript ../../tests/data/openapi_snapshot.json -o ../../frontend/src/api/schema.d.ts"
+  },
+  "devDependencies": {
+    "openapi-typescript": "^7.13.0",
+    "typescript": "^5.9.3"
+  }
+}

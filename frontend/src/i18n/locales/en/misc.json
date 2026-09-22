@@ -1,0 +1,342 @@
+{
+  "assistant": {
+    "loading": "Loading Assistants…",
+    "pick_title": "Choose an Assistant",
+    "pick_subtitle": "Each Assistant is a private, long-lived workspace for one user. Its files remain available across conversations.",
+    "creating": "Starting conversation…",
+    "start_conversation": "Start conversation",
+    "cards_empty": "No Assistants are available. Create one in the management console.",
+    "state_ready": "Ready",
+    "state_materializing": "Starting",
+    "state_hibernating": "Paused",
+    "state_recovery_required": "Needs attention",
+    "state_not_materialized": "Not started",
+    "state_unknown": "Unknown"
+  },
+  "diff": {
+    "unavailable": "Write completed. The engine did not provide a before-and-after diff.",
+    "empty_title": "No file changes yet.",
+    "empty_hint": "File changes from the Edit and Write tools show up here.",
+    "files_changed_one": "{{count}} file changed",
+    "files_changed_other": "{{count}} files changed"
+  },
+  "tool": {
+    "multi_select": "Multiple choice",
+    "single_select": "Single choice"
+  },
+  "terminal": {
+    "exit_code": "Exit code: {{code}}",
+    "interrupted": "Command interrupted by user",
+    "status_session_not_ready": "Session not ready",
+    "status_idle": "Idle",
+    "status_running": "Running",
+    "status_stopping": "Stopping",
+    "status_error": "Error",
+    "current_dir": "Current directory",
+    "ready_hint": "Terminal ready — type a command below.",
+    "not_ready_hint": "The terminal opens once the session is ready.",
+    "input_placeholder": "Type a command…",
+    "stop": "Stop",
+    "stopping": "Stopping…",
+    "copy_output": "Copy output"
+  },
+  "composer": {
+    "queue_n": "Queue {{index}}",
+    "queue_sending": "Sending",
+    "queue_failed": "Send failed",
+    "queue_waiting": "Queued",
+    "retry": "Retry",
+    "retry_queued": "Retry queued message",
+    "retry_disabled": "This session can't be retried",
+    "remove_queued": "Remove queued message",
+    "blocking": "Blocking",
+    "title_questionnaire": "Answer these questions",
+    "title_plan_confirmation": "Confirm whether to exit plan mode",
+    "title_tool_permission": "Confirm whether to allow this action",
+    "compact_questionnaire": "Awaiting answer",
+    "compact_confirm": "Awaiting confirmation",
+    "tab_questions_label": "Questions to answer",
+    "custom_answer": "Write your own",
+    "custom_answer_hint": "Skip the presets and type your own answer.",
+    "custom_answer_placeholder": "Type your own answer…",
+    "answer_placeholder": "Type your answer…",
+    "declining": "Declining…",
+    "submitting": "Submitting…",
+    "decline_answer": "Decline to answer",
+    "submit_answer": "Submit answer",
+    "allow_once_label": "Allow once",
+    "allow_once_desc": "Allow just this action without saving any permission rule.",
+    "tool_approval": "Approval",
+    "permission_options_label": "Permission options",
+    "view_tool_input": "View tool input",
+    "rejecting": "Rejecting…",
+    "reject_operation": "Reject this action",
+    "allow_continue": "Allow and continue",
+    "plan_bypass_label": "Approve, skip future confirmations",
+    "plan_bypass_desc": "Approve this plan and auto-allow the rest of this session's actions.",
+    "plan_accept_edits_label": "Approve, auto-accept edits",
+    "plan_accept_edits_desc": "Approve this plan; file edits are auto-accepted, other actions still need confirmation.",
+    "plan_once_label": "Approve once",
+    "plan_once_desc": "Approve this plan; later actions still get confirmed one by one.",
+    "plan_reject_label": "Reject",
+    "plan_reject_desc": "Reject this plan, optionally with feedback.",
+    "plan_message_summary": "Decide below whether to exit plan mode.",
+    "allowed_directions": "Allowed next steps",
+    "suggestion": "Suggestion",
+    "exit_plan_options_label": "Exit plan mode options",
+    "reject_feedback_label": "Why you're rejecting this plan",
+    "reject_feedback_placeholder": "Tell Claude why you're rejecting, or how to change it (optional)",
+    "reject_plan": "Reject this plan",
+    "approve_continue": "Approve and continue",
+    "question_answered": "Answered",
+    "question_unanswered": "Not answered yet",
+    "question_progress": "Answered {{answered}}/{{total}}",
+    "previous_question": "Previous question",
+    "next_question": "Next question",
+    "questions_remaining": "Questions remaining: {{remaining}}. Complete them before submitting.",
+    "questions_complete": "All questions answered. Ready to submit.",
+    "title_decision": "Confirm this request",
+    "decision_options_label": "Decision options",
+    "decision_message_summary": "Decide below how to answer this request.",
+    "decision_comment_label": "Add a note for the agent",
+    "decision_comment_placeholder": "Add a note the agent will see (optional)",
+    "decision_submit": "Send decision"
+  },
+  "permission_mode": {
+    "default": "Default mode",
+    "accept_edits": "Accept edits",
+    "plan": "Plan mode",
+    "bypass_permissions": "Skip confirmations",
+    "dont_ask": "Deny unapproved tools",
+    "auto": "Automatic approval"
+  },
+  "state": {
+    "unknown": "Unknown",
+    "creating": "Creating",
+    "sending": "Sending",
+    "ready": "Ready",
+    "background_running": "Running in background",
+    "waiting_input": "Awaiting answer",
+    "processing": "Working",
+    "provisioning": "Creating",
+    "active": "Active",
+    "hibernating": "Hibernating",
+    "failed": "Error",
+    "terminating": "Terminating",
+    "terminated": "Terminated",
+    "recovery_required": "Recovery needed",
+    "deleted": "Deleted"
+  },
+  "agent_runtime": {
+    "status_unknown": "Agent status unknown",
+    "with_progress": "Agent {{progress}}",
+    "initializing": "Agent initializing",
+    "terminated": "Terminated",
+    "wake": "Wake agent",
+    "wake_with_progress": "Wake agent: {{progress}}",
+    "failed": "Agent error",
+    "state_generic": "Agent {{label}}"
+  },
+  "progress": {
+    "creating_workspace": "Preparing workspace",
+    "creating_sandbox": "Creating sandbox",
+    "mounting_nas": "Mounting storage",
+    "starting_agent": "Starting agent",
+    "waiting_for_startup_lease": "Waiting for another startup to finish",
+    "probing_conversation_profile": "Checking runtime config",
+    "mounting_conversation_storage": "Mounting session storage",
+    "preparing_skill_cache": "Preparing skill cache",
+    "preparing_conversation_bootstrap": "Preparing session bootstrap",
+    "fetching_agent_metadata": "Reading agent metadata"
+  },
+  "summary": {
+    "items_one": "{{count}} item",
+    "items_other": "{{count}} items",
+    "fields_one": "{{count}} field",
+    "fields_other": "{{count}} fields",
+    "questions_prefix_one": "{{count}} question · ",
+    "questions_prefix_other": "{{count}} questions · ",
+    "todos_count_one": "{{count}} to-do",
+    "todos_count_other": "{{count}} to-dos",
+    "allowed_operations_one": "{{count}} allowed action",
+    "allowed_operations_other": "{{count}} allowed actions",
+    "params_count_one": "{{count}} parameter",
+    "params_count_other": "{{count}} parameters",
+    "question_n": "Question {{index}}",
+    "question_header": "Header: {{header}}",
+    "question_content": "Prompt: {{content}}",
+    "options_label": "Options:",
+    "option_n": "Option {{index}}",
+    "todo_n": "To-do {{index}}",
+    "allow_operation_prefix": "Allow action · {{prompt}}"
+  },
+  "todo": {
+    "completed": "Done",
+    "in_progress": "In progress",
+    "cancelled": "Cancelled",
+    "pending": "To do"
+  },
+  "wire": {
+    "answer_questions": "Answer these questions",
+    "exit_plan_mode": "Confirm whether to exit plan mode",
+    "interrupted_for_tool_use": "[Tool call interrupted by you]",
+    "response_to_questions": "Your answer to the previous questions:",
+    "declined_questions": "You chose not to answer these for now.",
+    "rejected_plan": "You rejected Claude's current plan.",
+    "response_to_plan": "Your response to the previous plan confirmation:",
+    "sandbox_expired": "Sandbox expired",
+    "sandbox_terminated_by_user": "You terminated the sandbox",
+    "reconnect_failed_expired_new_session": "Runtime reconnect failed, sandbox expired — start a new session",
+    "reconnect_failed_expired": "Runtime reconnect failed, sandbox expired",
+    "reconnect_failed_retry": "Runtime reconnect failed; retrying may help",
+    "reconnect_failed_recover": "Runtime reconnect failed; recover and retry",
+    "interrupt_requested": "Interrupt requested",
+    "stream_recovery_incomplete": "Stream recovery incomplete",
+    "turn_lock_expired": "Turn lock expired",
+    "killed_by_admin": "Terminated by admin",
+    "stale_creating_cleaned": "Stale creating session cleaned up",
+    "cannot_terminate_active_turn": "This session has a turn in progress or pending finalization, so the sandbox can't be terminated yet.",
+    "agent_sandbox_restarting": "The agent sandbox is restarting — please retry shortly",
+    "agent_sandbox_recycled": "The agent sandbox was recycled; rebuilding the runtime — please retry",
+    "session_creation_timed_out": "Session creation timed out",
+    "sandbox_terminated_abnormally": "Sandbox terminated abnormally",
+    "sandbox_unavailable": "Sandbox unavailable",
+    "sandbox_terminated": "Sandbox terminated",
+    "sandbox_did_not_receive": "The sandbox didn't receive this message",
+    "workspace_hibernated": "The sandbox timed out, so this workspace was paused. It will be restored the next time you open it."
+  },
+  "prompt_input": {
+    "stopping": "Stopping",
+    "stop_generating": "Stop generating",
+    "send": "Send"
+  },
+  "plan": {
+    "toggle": "Show or hide the plan"
+  },
+  "api_error": {
+    "network": "NETWORK_ERROR: can't reach the backend ({{url}}): {{detail}}",
+    "platform_unknown": "The platform returned an unclassified error ({{evidence}}). Check the backend logs to pin down the exact failure.",
+    "evidence": "HTTP {{status}}, {{url}}",
+    "platform_error": "{{message}} ({{evidence}})",
+    "malformed_list": "The server answered {{endpoint}} with {{got}} instead of a list, so this view cannot be rendered.",
+    "malformed_record": "The server answered {{endpoint}} with {{got}} instead of a record.",
+    "malformed_fields": "The server answered {{endpoint}} with an invalid record, so this view cannot be rendered."
+  },
+  "share": {
+    "title_fallback": "Shared conversation",
+    "cannot_open": "Can't open this share",
+    "link_invalid": "This share link doesn't exist, was revoked, or has expired.",
+    "readonly_badge": "Read-only",
+    "readonly_notice": "You're viewing a shared conversation (read-only).",
+    "no_messages": "This conversation has no messages yet."
+  },
+  "agent_form": {
+    "groups": {
+      "identity": {
+        "label": "Basic information",
+        "description": "Names and descriptions shown in the product"
+      },
+      "model": {
+        "label": "Model and prompt",
+        "description": "The model and reusable system prompt"
+      },
+      "tools": {
+        "label": "MCP, Skills and Plugins",
+        "description": "Agent runtime extensions; LiteLLM-managed and custom configuration are combined"
+      },
+      "workspace": {
+        "label": "Workspace configuration",
+        "description": "Project repositories and conversation panels"
+      },
+      "runtime": {
+        "label": "Runtime and availability",
+        "description": "Agent program, sandbox setup, entry points, and idle behavior"
+      }
+    },
+    "fields": {
+      "name": {
+        "label": "Name",
+        "example": "research-assistant",
+        "help": "Identifies this agent in lists and logs; it can be changed later"
+      },
+      "display_name": {
+        "label": "Display name",
+        "example": "Research assistant",
+        "help": "Name shown to users; falls back to the name if blank"
+      },
+      "description": {
+        "label": "Description",
+        "example": "Search project documents, compare solutions, and summarize findings.",
+        "help": "One line on what this agent does"
+      },
+      "icon": {
+        "label": "Icon",
+        "example": "🔎"
+      },
+      "tags": {
+        "label": "Tags",
+        "example": "research"
+      },
+      "use_cases": {
+        "label": "Use cases",
+        "example": "Compare technical solutions and write a recommendation"
+      },
+      "model": {
+        "label": "Model",
+        "manage_gateway": "Manage models in {{name}}",
+        "help": "Enter the model ID exposed by the model-service connection for the selected runtime environment"
+      },
+      "system": {
+        "label": "System prompt",
+        "example": "You are a research assistant. Clarify the goal, consult relevant sources, and provide a concise answer with references.",
+        "help": "Defines the agent’s role, style, and rules"
+      },
+      "engine_options": {
+        "label": "Agent runtime configuration (JSON)",
+        "help": "Native runtime JSON, separate from the gateway's model settings. The runtime defines the inner options; platform-managed keys cannot be overridden. {} supplies an empty object; leave the editor blank to remove this block."
+      },
+      "skills": {
+        "label": "Custom Skills",
+        "help": "Enter Skill sources to combine with LiteLLM-managed selections; identical sources are deduplicated"
+      },
+      "mcp_servers": {
+        "label": "Custom MCP",
+        "help": "Enter server definitions to combine with LiteLLM-managed selections; server names must be unique"
+      },
+      "default_repo": {
+        "label": "Project repository"
+      },
+      "terminal_panel": {
+        "label": "Terminal panel",
+        "help": "Show the terminal in this Agent's conversations. Hiding it does not restrict command execution or API access."
+      },
+      "diff_panel": {
+        "label": "Diff panel",
+        "help": "Show file changes in this Agent's conversations. This controls the panel's visibility, not the Agent's ability to edit files."
+      },
+      "plugin_repos": {
+        "label": "Plugin repositories"
+      },
+      "environment_name": {
+        "label": "Runtime environment",
+        "help": "Select the saved runtime setup that provides the Agent program, sandbox settings, network access, and model connection. Credential Vaults are assigned separately."
+      },
+      "exposure_mode": {
+        "label": "Available through",
+        "help": "Choose whether users can start conversations in the web app, through MCP, or both"
+      },
+      "idle_hibernate_seconds": {
+        "label": "Idle timeout (seconds)",
+        "help": "After this many idle seconds, AstraBox applies the pause or removal behavior saved in the runtime environment"
+      },
+      "prewarm_enabled": {
+        "label": "Keep a sandbox ready",
+        "help": "Prepare this Agent's image, Skills, and Plugins before a conversation starts. Works with both shared and conversation-specific sandboxes."
+      },
+      "enabled": {
+        "label": "Enabled",
+        "help": "When off, users cannot start a new conversation with this Agent"
+      }
+    }
+  }
+}

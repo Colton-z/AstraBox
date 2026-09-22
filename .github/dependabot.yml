@@ -1,0 +1,115 @@
+# Dependabot version-update policy. Keep routine minor/patch maintenance
+# grouped by compatibility family; major upgrades are maintainer-owned
+# migrations with an explicit test plan. Security updates remain enabled.
+version: 2
+updates:
+  # Python — group routine updates, but keep claude-agent-sdk isolated because
+  # its host/image/CLI pins and transport lifecycle must move together.
+  # No catch-all group: unrelated dependencies update individually so each PR
+  # stays reviewable; the open-PR limit keeps volume bounded.
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 3
+    groups:
+      python-tooling:
+        applies-to: "version-updates"
+        patterns:
+          - "ruff"
+          - "mypy"
+          - "pytest"
+          - "pytest-*"
+        update-types:
+          - "minor"
+          - "patch"
+    allow:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-minor"
+          - "version-update:semver-patch"
+
+  # Console web app — dependencies that share peer/runtime constraints move
+  # together. Unrelated dependencies update individually so each pull request
+  # has a reviewable compatibility surface.
+  - package-ecosystem: "npm"
+    directory: "/frontend"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 3
+    groups:
+      react-family:
+        applies-to: "version-updates"
+        patterns:
+          - "react"
+          - "react-dom"
+          - "@types/react"
+          - "@types/react-dom"
+        update-types:
+          - "minor"
+          - "patch"
+      vite-family:
+        applies-to: "version-updates"
+        patterns:
+          - "vite"
+          - "@vitejs/plugin-react"
+          - "vitest"
+          - "@vitest/*"
+        update-types:
+          - "minor"
+          - "patch"
+      tailwind-family:
+        applies-to: "version-updates"
+        patterns:
+          - "tailwindcss"
+          - "@tailwindcss/*"
+        update-types:
+          - "minor"
+          - "patch"
+      ai-sdk-family:
+        applies-to: "version-updates"
+        patterns:
+          - "ai"
+          - "@ai-sdk/*"
+        update-types:
+          - "minor"
+          - "patch"
+    allow:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-minor"
+          - "version-update:semver-patch"
+
+  # Playwright stays independent because every update needs its own browser
+  # install/config smoke. Major upgrades remain maintainer-owned.
+  - package-ecosystem: "npm"
+    directory: "/e2e"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 2
+    allow:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-minor"
+          - "version-update:semver-patch"
+
+  # Actions minor/patch updates can move together. Major runtime changes
+  # (for example Node 24 action migrations) require a maintainer review.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 2
+    groups:
+      actions-minor-patch:
+        applies-to: "version-updates"
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+    allow:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-minor"
+          - "version-update:semver-patch"

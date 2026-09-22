@@ -1,0 +1,209 @@
+/**
+ * Website palette and Infima mapping.
+ * This file defines paper (light) and ink (dark) surfaces, uses `astra`
+ * #5C5BFF in both modes, prefers borders to shadows, and assigns Geist to
+ * display/UI and JetBrains Mono to chrome.
+ */
+
+@import url("https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap");
+
+:root {
+  /* -- design-system tokens ------------------------------------------ */
+  --paper: #fafafa;
+  --paper-2: #f4f4f4;
+  --paper-3: #ebebeb;
+  --paper-line: #e5e5e5;
+  --paper-line-2: #d4d4d4;
+  --paper-card: #ffffff;
+  --ink: #0e0e0e;
+  --ink-2: #1a1a1a;
+  --ink-3: #242424;
+  --ink-line: #232323;
+  --ink-line-2: #383838;
+  --fg-1: #0a0a0a;
+  --fg-2: #2e2e2e;
+  --fg-3: #666666;
+  --fg-4: #999999;
+  --astra: #5c5bff;
+  --astra-2: #4140e0;
+  --astra-tint: #ecebff;
+  --plasma: #e8754a;
+  --mint: #3fb57f;
+  --citrine: #e0c341;
+  --crimson: #d54848;
+  --line: var(--paper-line);
+  --line-strong: var(--paper-line-2);
+  --shadow-card: 0 1px 0 rgba(11, 15, 20, 0.04), 0 8px 24px -12px rgba(11, 15, 20, 0.12);
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+
+  /* -- Infima mapping ------------------------------------------------- */
+  --ifm-color-primary: #5c5bff;
+  --ifm-color-primary-dark: #4140e0;
+  --ifm-color-primary-darker: #3a39d1;
+  --ifm-color-primary-darkest: #2f2eac;
+  --ifm-color-primary-light: #7877ff;
+  --ifm-color-primary-lighter: #8686ff;
+  --ifm-color-primary-lightest: #a9a8ff;
+  --ifm-background-color: var(--paper);
+  --ifm-background-surface-color: var(--paper-card);
+  --ifm-font-color-base: var(--fg-1);
+  --ifm-font-family-base: "Geist", "Geist Variable", ui-sans-serif, system-ui,
+    -apple-system, "Segoe UI", sans-serif;
+  --ifm-font-family-monospace: "JetBrains Mono", ui-monospace, "SF Mono", Menlo,
+    monospace;
+  --ifm-heading-font-weight: 600;
+  --ifm-code-font-size: 92%;
+  --ifm-global-radius: 8px;
+  --ifm-button-border-radius: 6px;
+  --ifm-code-border-radius: 6px;
+  --ifm-toc-border-color: var(--line);
+  --ifm-color-emphasis-300: var(--paper-line-2);
+  --ifm-table-border-color: var(--line);
+  --ifm-navbar-background-color: rgba(250, 250, 250, 0.85);
+  --ifm-navbar-shadow: none;
+  --ifm-footer-background-color: var(--paper);
+  --ifm-footer-color: var(--fg-2);
+  --ifm-footer-link-color: var(--fg-2);
+  --ifm-footer-title-color: var(--fg-1);
+  --docusaurus-highlighted-code-line-bg: rgba(92, 91, 255, 0.08);
+}
+
+[data-theme='dark'] {
+  --line: var(--ink-line);
+  --line-strong: var(--ink-line-2);
+  --fg-1: #ededed;
+  --fg-2: #a8a8a8;
+  --fg-3: #909090;
+  --fg-4: #555555;
+  --astra-tint: #1a1b3a;
+  --shadow-card: none;
+
+  --ifm-color-primary: #7877ff;
+  --ifm-color-primary-dark: #5c5bff;
+  --ifm-color-primary-darker: #4140e0;
+  --ifm-color-primary-darkest: #3a39d1;
+  --ifm-color-primary-light: #8686ff;
+  --ifm-color-primary-lighter: #a9a8ff;
+  --ifm-color-primary-lightest: #c6c6ff;
+  --ifm-background-color: var(--ink);
+  --ifm-background-surface-color: var(--ink-2);
+  --ifm-font-color-base: var(--fg-1);
+  --ifm-navbar-background-color: rgba(14, 14, 14, 0.85);
+  --ifm-footer-background-color: var(--ink);
+  --docusaurus-highlighted-code-line-bg: rgba(120, 119, 255, 0.12);
+}
+
+/* Type: tight display tracking (Geist 600, the brand's display voice). */
+h1 {
+  letter-spacing: -0.012em;
+}
+h2 {
+  letter-spacing: -0.01em;
+}
+h3 {
+  letter-spacing: -0.005em;
+}
+
+/* Chrome: hairline borders over shadows. */
+.navbar {
+  border-bottom: 1px solid var(--line);
+  backdrop-filter: blur(8px);
+}
+.footer {
+  border-top: 1px solid var(--line);
+}
+.footer__copyright {
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+  margin-top: 1.5rem;
+}
+.card,
+.dropdown__menu {
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow-card);
+}
+
+/* Navbar icon links (GitHub) sit at the same optical weight as a nav label. */
+.navbarIconLink {
+  display: flex;
+  align-items: center;
+  padding: 6px 8px;
+  border-radius: 6px;
+  color: var(--fg-2);
+  transition: color 120ms var(--ease), background 120ms var(--ease);
+}
+.navbarIconLink:hover {
+  color: var(--fg-1);
+  background: var(--paper-2);
+}
+[data-theme='dark'] .navbarIconLink:hover {
+  background: var(--ink-2);
+}
+
+/* Sidebar / TOC: quieter, mono-adjacent hierarchy. */
+.menu__link {
+  font-size: 14px;
+}
+.table-of-contents__link {
+  font-size: 13px;
+}
+
+/* Button presses move down one pixel without changing size. */
+.button {
+  transition: transform 120ms var(--ease), background 120ms var(--ease),
+    border-color 120ms var(--ease);
+}
+.button:active {
+  transform: translateY(1px);
+}
+
+/* Code blocks on paper sit sunken with a hairline. */
+[data-theme='light'] .theme-code-block {
+  --prism-background-color: var(--paper-2) !important;
+  border: 1px solid var(--line);
+  box-shadow: none;
+}
+[data-theme='dark'] .theme-code-block {
+  border: 1px solid var(--line);
+  box-shadow: none;
+}
+
+/* Figures written as `![alt](./img/name.svg#inline)` and inlined at build time
+   by src/remark/inlineDiagram.ts. Inlined rather than linked so one file reads
+   correctly in both themes: the colours are the page's own tokens. */
+.astraDiagram {
+  margin: 2rem 0;
+}
+.astraDiagram svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+/* Below tablet width a full-bleed schematic shrinks its 9px labels past
+   legibility. Scroll the figure instead, and keep the scroll inside it so the
+   page itself never moves sideways. */
+@media screen and (max-width: 768px) {
+  .astraDiagram {
+    overflow-x: auto;
+  }
+  .astraDiagram svg {
+    width: 720px;
+  }
+}
+
+/* Keyboard focus uses a two-pixel Astra outline. */
+:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--astra) 60%, transparent);
+  outline-offset: 2px;
+}
+
+/* Keep the search shortcut readable against the light search field. */
+.navbar__search kbd {
+  color: var(--fg-2);
+  border-color: var(--line-strong);
+  background: var(--ifm-background-surface-color);
+}

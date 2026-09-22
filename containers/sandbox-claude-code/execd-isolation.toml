@@ -1,0 +1,15 @@
+# OpenSandbox execd isolation-session policy for the AstraBox agent image.
+#
+# Keep the upstream writable roots and add only AstraBox's per-conversation
+# home root. Shared Agent sandboxes pass a child such as
+# /home/conversations/conv_xxx through execd's `extra_writable`; execd rejects
+# that request unless its resolved path is beneath this allowlist.
+upper_root = "/var/lib/execd/isolation"
+upper_max_bytes = 8589934592
+allowed_writable = [
+  "/workspace",
+  "/mnt",
+  "/media",
+  "/data",
+  "/home/conversations",
+]

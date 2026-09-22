@@ -1,0 +1,29 @@
+{
+  "name": "astrabox-community-e2e",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Browser e2e (Playwright) for the AstraBox Community INK console \u2014 drives the real redesigned UI against a live backend + a live agent turn.",
+  "engines": {
+    "node": "26.8.1"
+  },
+  "scripts": {
+    "test": "playwright test",
+    "test:headed": "playwright test --headed",
+    "test:happy": "playwright test specs/happy-path.spec.ts",
+    "test:website": "playwright test -c playwright.website.config.ts",
+    "test:api": "playwright test -c playwright.api.config.ts",
+    "report": "playwright show-report",
+    "install:browser": "playwright install chromium",
+    "test:layout": "playwright test -c playwright.layout.config.ts",
+    "utilisation": "playwright test -c playwright.utilisation.config.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "4.13.0",
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "@playwright/test": "1.63.0",
+    "@types/node": "^26.4.1",
+    "typescript": "^7.0.2"
+  }
+}

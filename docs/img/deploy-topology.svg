@@ -1,0 +1,116 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" id="fig-deploy-topology" viewBox="0 0 1080 512"
+     role="img" aria-labelledby="deploy-topology-title deploy-topology-desc">
+  <title id="deploy-topology-title">Bundled single-instance AstraBox deployment</title>
+  <desc id="deploy-topology-desc">In the bundled single-instance topology, users and integrations reach one AstraBox server, with an identity provider protecting team access. The server image provides the console, API, messaging gateway and bundled OpenSandbox management service. PostgreSQL stores product records and native Agent-program state; generated keys and local service state occupy the state volume. These are backed up together. Sandbox workloads run either as containers on the same Docker host or as Pods in your Kubernetes cluster, and their model calls reach the bundled LiteLLM gateway or an HTTPS endpoint you operate.</desc>
+
+  <style data-standalone="true">
+    @media (prefers-color-scheme: dark) {
+      svg {
+        --ifm-background-color: #0e0e0e;
+        --fg-1: #ededed;
+        --fg-3: #909090;
+        --fg-4: #6f6f6f;
+        --line-strong: #383838;
+        --astra: #7877ff;
+        --astra-tint: #1a1b3a;
+        --plasma: #f08a59;
+      }
+    }
+  </style>
+
+  <style>
+    #fig-deploy-topology .box { fill: var(--ifm-background-color, #fafafa); stroke: var(--line-strong, #d4d4d4); stroke-width: 1 }
+    #fig-deploy-topology .byo { fill: var(--ifm-background-color, #fafafa); stroke: var(--line-strong, #d4d4d4); stroke-width: 1; stroke-dasharray: 5 3 }
+    #fig-deploy-topology .store { fill: color-mix(in oklab, var(--fg-1, #0a0a0a) 5%, var(--ifm-background-color, #fafafa)); stroke: var(--line-strong, #d4d4d4); stroke-width: 1 }
+    #fig-deploy-topology .focal { fill: var(--astra-tint, #ecebff); stroke: var(--astra, #5c5bff); stroke-width: 1.5 }
+    #fig-deploy-topology .zone { fill: none; stroke: var(--line-strong, #d4d4d4); stroke-width: 1; stroke-dasharray: 4 4 }
+    #fig-deploy-topology .mask { fill: var(--ifm-background-color, #fafafa) }
+    #fig-deploy-topology .edge { fill: none; stroke: var(--fg-4, #999999); stroke-width: 1.25 }
+    #fig-deploy-topology .edge-out { fill: none; stroke: var(--plasma, #e8754a); stroke-width: 1.25 }
+    #fig-deploy-topology .name { fill: var(--fg-1, #0a0a0a); font: 600 12px Geist, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; text-anchor: middle }
+    #fig-deploy-topology .sub { fill: var(--fg-3, #666666); font: 400 9px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; text-anchor: middle }
+    #fig-deploy-topology .eyebrow { fill: var(--fg-3, #666666); font: 500 8px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.14em }
+    #fig-deploy-topology .arrow-label { fill: var(--fg-3, #666666); font: 400 8px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.06em; text-anchor: middle }
+    #fig-deploy-topology .legend-text { fill: var(--fg-3, #666666); font: 400 8px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.06em }
+    #fig-deploy-topology .rule { stroke: var(--line-strong, #d4d4d4); stroke-width: 0.8 }
+  </style>
+
+  <defs>
+    <marker id="deploy-topology-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="var(--fg-4, #999999)"/>
+    </marker>
+    <marker id="deploy-topology-arrow-start" markerWidth="8" markerHeight="6" refX="1" refY="3" orient="auto">
+      <polygon points="8 0, 0 3, 8 6" fill="var(--fg-4, #999999)"/>
+    </marker>
+    <marker id="deploy-topology-arrow-out" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="var(--plasma, #e8754a)"/>
+    </marker>
+  </defs>
+
+  <!-- zone first, then arrows, then masks and their labels, then boxes -->
+  <rect class="zone" x="688" y="64" width="368" height="232" rx="12"/>
+  <text class="eyebrow" x="688" y="52">SANDBOX WORKLOADS · CHOOSE ONE</text>
+
+  <path class="edge" d="M 240 180 H 332" marker-end="url(#deploy-topology-arrow)"/>
+  <path class="edge" d="M 132 212 V 332" marker-end="url(#deploy-topology-arrow)" marker-start="url(#deploy-topology-arrow-start)"/>
+  <path class="edge" d="M 460 228 V 332" marker-end="url(#deploy-topology-arrow)"/>
+  <path class="edge" d="M 584 180 H 684" marker-end="url(#deploy-topology-arrow)" marker-start="url(#deploy-topology-arrow-start)"/>
+  <path class="edge-out" d="M 872 296 V 332" marker-end="url(#deploy-topology-arrow-out)"/>
+
+  <rect class="mask" x="260" y="160" width="56" height="12" rx="2"/>
+  <text class="arrow-label" x="288" y="169">REQUESTS</text>
+  <rect class="mask" x="140" y="264" width="48" height="12" rx="2"/>
+  <text class="arrow-label" x="164" y="273">SIGN-IN</text>
+  <rect class="mask" x="468" y="272" width="88" height="12" rx="2"/>
+  <text class="arrow-label" x="512" y="281">RECORDS · KEYS</text>
+  <rect class="mask" x="592" y="160" width="88" height="12" rx="2"/>
+  <text class="arrow-label" x="636" y="169">TASKS · EVENTS</text>
+  <rect class="mask" x="880" y="308" width="72" height="12" rx="2"/>
+  <text class="arrow-label" x="916" y="317">MODEL CALLS</text>
+
+  <rect class="box" x="24" y="148" width="216" height="64" rx="8"/>
+  <text class="name" x="132" y="176">Users and integrations</text>
+  <text class="sub" x="132" y="194">console · API · chat platforms</text>
+
+  <rect class="focal" x="336" y="132" width="248" height="96" rx="8"/>
+  <text class="name" x="460" y="164">Single AstraBox instance</text>
+  <text class="sub" x="460" y="184">console · API · channel gateway</text>
+  <text class="sub" x="460" y="200">bundled OpenSandbox management</text>
+
+  <rect class="box" x="720" y="96" width="304" height="72" rx="8"/>
+  <text class="name" x="872" y="120">Sandbox containers</text>
+  <text class="sub" x="872" y="138">on the same Docker host</text>
+  <text class="sub" x="872" y="152">created through the mounted socket</text>
+
+  <rect class="byo" x="720" y="192" width="304" height="72" rx="8"/>
+  <text class="name" x="872" y="216">Sandbox Pods</text>
+  <text class="sub" x="872" y="234">in your Kubernetes cluster</text>
+  <text class="sub" x="872" y="248">prepared capacity · pause and resume</text>
+
+  <rect class="byo" x="24" y="336" width="216" height="80" rx="8"/>
+  <text class="name" x="132" y="364">Identity provider</text>
+  <text class="sub" x="132" y="382">OIDC · trusted headers · JWT</text>
+  <text class="sub" x="132" y="396">Casdoor in the SSO overlay</text>
+
+  <rect class="store" x="336" y="336" width="248" height="80" rx="8"/>
+  <text class="name" x="460" y="364">Database and state</text>
+  <text class="sub" x="460" y="382">PostgreSQL: events · native state</text>
+  <text class="sub" x="460" y="396">state volume · keys · back up together</text>
+
+  <rect class="box" x="688" y="336" width="368" height="80" rx="8"/>
+  <text class="name" x="872" y="364">Model gateway</text>
+  <text class="sub" x="872" y="382">bundled LiteLLM on one host</text>
+  <text class="sub" x="872" y="396">or an HTTPS endpoint you run</text>
+
+  <line class="rule" x1="24" y1="448" x2="1056" y2="448"/>
+  <text class="eyebrow" x="24" y="472">LEGEND</text>
+  <rect class="focal" x="112" y="464" width="16" height="10" rx="2"/>
+  <text class="legend-text" x="136" y="472">the server image you deploy</text>
+  <rect class="byo" x="304" y="464" width="16" height="10" rx="2"/>
+  <text class="legend-text" x="328" y="472">you provide this</text>
+  <line class="edge" x1="440" y1="469" x2="464" y2="469"/>
+  <text class="legend-text" x="472" y="472">requests, records and sign-in</text>
+  <line class="edge-out" x1="656" y1="469" x2="680" y2="469"/>
+  <text class="legend-text" x="688" y="472">model calls leaving the sandbox</text>
+</svg>

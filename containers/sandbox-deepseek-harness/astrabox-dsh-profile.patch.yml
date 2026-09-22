@@ -1,0 +1,24 @@
+# AstraBox's overlay on the harness's own web profile.
+#
+# One entry, and it exists so the session log can be mirrored out of the box.
+# The harness keeps each conversation in an append-only artifact and defaults
+# it to checksummed Zstandard frames; `none` selects the same log as plain
+# JSONL (`logSuffix` in the backend's own format module returns `.jsonl` for
+# it). Both encodings are the vendor's, and the choice between them is the
+# vendor's config field, and both encodings are the vendor's own.
+#
+# Why plaintext. A box is disposable and the conversation is not, so the log
+# has to leave while the box lives. Compressed, the only safe boundary to stop
+# a batch at is the start of the LAST frame, which is written when the NEXT
+# turn begins — a mirror that could never be less than one whole turn behind.
+# Uncompressed, the boundary is the last newline, and the exposure window is
+# whatever is mid-write.
+#
+# `root` is repeated because a patch entry REPLACES the config it targets
+# rather than merging into it (measured with `--dump-config`), and the backend
+# declares no default for it: "a default of `process.cwd()` would scatter
+# session files as the process's cwd changes".
+- id: session-persistence-jsonl
+  config:
+    root: !!js dshHomePath('sessions')
+    compression: none

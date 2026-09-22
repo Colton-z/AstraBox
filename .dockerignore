@@ -1,0 +1,22 @@
+# Keep the Docker build context (repo root, used by the agent image build:
+# `docker build -f containers/sandbox-claude-code/Dockerfile .`) small and reproducible.
+# The agent image only needs a couple of .py files from the repo; exclude
+# everything heavy/irrelevant so the daemon transfer stays fast.
+.git
+.venv
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.ruff_cache
+.mypy_cache
+node_modules
+**/node_modules
+frontend/dist
+e2e/test-results
+e2e/playwright-report
+e2e/node_modules
+*.log
+
+# Local env files (a working-tree .env may hold real keys; never ship it in a build context)
+.env
+.env.*

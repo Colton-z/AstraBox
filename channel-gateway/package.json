@@ -1,0 +1,48 @@
+{
+  "name": "@astrabox/channel-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.mjs",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@cordisjs/plugin-http": "0.6.3",
+    "@cordisjs/plugin-server": "0.2.9",
+    "@satorijs/adapter-dingtalk": "2.5.2",
+    "@satorijs/adapter-discord": "4.6.2",
+    "@satorijs/adapter-kook": "4.8.1",
+    "@satorijs/adapter-lark": "3.12.6",
+    "@satorijs/adapter-line": "2.5.0",
+    "@satorijs/adapter-mail": "2.3.2",
+    "@satorijs/adapter-matrix": "4.4.0",
+    "@satorijs/adapter-qq": "4.14.0",
+    "@satorijs/adapter-satori": "1.5.1",
+    "@satorijs/adapter-slack": "2.5.0",
+    "@satorijs/adapter-telegram": "4.5.11",
+    "@satorijs/adapter-wechat-official": "2.5.0",
+    "@satorijs/adapter-wecom": "2.5.0",
+    "@satorijs/adapter-whatsapp": "2.6.0",
+    "@satorijs/adapter-zulip": "1.4.0",
+    "@satorijs/core": "4.6.0",
+    "cosmokit": "1.8.1",
+    "file-type": "file:vendor/file-type-compat",
+    "file-type-modern": "npm:file-type@22.0.2",
+    "image-size": "1.2.1",
+    "ws": "8.21.3"
+  },
+  "overrides": {
+    "file-type": "$file-type",
+    "@satorijs/adapter-mail": {
+      "nodemailer": "10.0.10"
+    },
+    "utf7": {
+      "semver": "5.7.2"
+    }
+  },
+  "engines": {
+    "node": "26.8.1"
+  },
+  "license": "Apache-2.0"
+}

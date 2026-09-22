@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" id="fig-channels-round-trip" viewBox="0 0 1080 400"
+     role="img" aria-labelledby="channels-round-trip-title channels-round-trip-desc">
+  <title id="channels-round-trip-title">How a chat message reaches an Agent and comes back</title>
+  <desc id="channels-round-trip-desc">A message from a messaging platform arrives at the platform adapter inside the AstraBox server. The Deployment routes it to one Agent, a Session runs and returns a task result, AstraBox saves the reply, and the adapter sends that saved reply back to the same conversation. The adapter also loads the encrypted platform credentials, which are not sent to the sandbox.</desc>
+
+  <style data-standalone="true">
+    @media (prefers-color-scheme: dark) {
+      svg {
+        --ifm-background-color: #0e0e0e;
+        --fg-1: #ededed;
+        --fg-3: #909090;
+        --fg-4: #6f6f6f;
+        --line-strong: #383838;
+        --astra: #7877ff;
+        --astra-tint: #1a1b3a;
+        --plasma: #f08a59;
+      }
+    }
+  </style>
+
+  <style>
+    #fig-channels-round-trip .box { fill: var(--ifm-background-color, #fafafa); stroke: var(--line-strong, #d4d4d4); stroke-width: 1 }
+    #fig-channels-round-trip .store { fill: color-mix(in oklab, var(--fg-1, #0a0a0a) 5%, var(--ifm-background-color, #fafafa)); stroke: var(--line-strong, #d4d4d4); stroke-width: 1 }
+    #fig-channels-round-trip .focal { fill: var(--astra-tint, #ecebff); stroke: var(--astra, #5c5bff); stroke-width: 1.5 }
+    #fig-channels-round-trip .zone { fill: none; stroke: var(--line-strong, #d4d4d4); stroke-width: 1; stroke-dasharray: 4 4 }
+    #fig-channels-round-trip .mask { fill: var(--ifm-background-color, #fafafa) }
+    #fig-channels-round-trip .edge { fill: none; stroke: var(--fg-4, #999999); stroke-width: 1.25 }
+    #fig-channels-round-trip .edge-dashed { fill: none; stroke: var(--fg-4, #999999); stroke-width: 1.25; stroke-dasharray: 3 4 }
+    #fig-channels-round-trip .edge-out { fill: none; stroke: var(--plasma, #e8754a); stroke-width: 1.25 }
+    #fig-channels-round-trip .name { fill: var(--fg-1, #0a0a0a); font: 600 12px Geist, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; text-anchor: middle }
+    #fig-channels-round-trip .sub { fill: var(--fg-3, #666666); font: 400 9px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; text-anchor: middle }
+    #fig-channels-round-trip .eyebrow { fill: var(--fg-3, #666666); font: 500 8px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.14em }
+    #fig-channels-round-trip .arrow-label { fill: var(--fg-3, #666666); font: 400 8px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.06em; text-anchor: middle }
+    #fig-channels-round-trip .legend-text { fill: var(--fg-3, #666666); font: 400 8px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.06em }
+    #fig-channels-round-trip .rule { stroke: var(--line-strong, #d4d4d4); stroke-width: 0.8 }
+  </style>
+
+  <defs>
+    <marker id="channels-round-trip-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="var(--fg-4, #999999)"/>
+    </marker>
+    <marker id="channels-round-trip-arrow-out" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="var(--plasma, #e8754a)"/>
+    </marker>
+  </defs>
+
+  <!-- zone first, then arrows, then masks and labels, then boxes -->
+  <rect class="zone" x="280" y="72" width="776" height="248" rx="12"/>
+  <text class="eyebrow" x="280" y="60">ASTRABOX SERVER</text>
+
+  <path class="edge" d="M 200 128 H 296" marker-end="url(#channels-round-trip-arrow)"/>
+  <path class="edge" d="M 504 128 H 584" marker-end="url(#channels-round-trip-arrow)"/>
+  <path class="edge" d="M 784 128 H 864" marker-end="url(#channels-round-trip-arrow)"/>
+  <path class="edge" d="M 952 176 V 240" marker-end="url(#channels-round-trip-arrow)"/>
+  <path class="edge" d="M 864 272 H 544 V 160 H 504" marker-end="url(#channels-round-trip-arrow)"/>
+  <path class="edge-dashed" d="M 400 240 V 176" marker-end="url(#channels-round-trip-arrow)"/>
+  <path class="edge-out" d="M 296 160 H 200" marker-end="url(#channels-round-trip-arrow-out)"/>
+
+  <rect class="mask" x="208" y="108" width="64" height="12" rx="2"/>
+  <text class="arrow-label" x="240" y="117">MESSAGE IN</text>
+  <rect class="mask" x="520" y="108" width="48" height="12" rx="2"/>
+  <text class="arrow-label" x="544" y="117">DEDUPED</text>
+  <rect class="mask" x="802" y="108" width="44" height="12" rx="2"/>
+  <text class="arrow-label" x="824" y="117">STARTS</text>
+  <rect class="mask" x="876" y="208" width="68" height="12" rx="2"/>
+  <text class="arrow-label" x="910" y="217">TASK RESULT</text>
+  <rect class="mask" x="664" y="252" width="80" height="12" rx="2"/>
+  <text class="arrow-label" x="704" y="261">REPLY TO SEND</text>
+  <rect class="mask" x="208" y="168" width="64" height="12" rx="2"/>
+  <text class="arrow-label" x="240" y="177">REPLY OUT</text>
+
+  <rect class="box" x="24" y="112" width="176" height="64" rx="8"/>
+  <text class="name" x="112" y="140">Messaging platform</text>
+  <text class="sub" x="112" y="158">Telegram · Slack · Feishu</text>
+
+  <rect class="box" x="296" y="112" width="208" height="64" rx="8"/>
+  <text class="name" x="400" y="140">Platform adapter</text>
+  <text class="sub" x="400" y="158">WebSocket · polling · webhook</text>
+
+  <rect class="focal" x="584" y="112" width="200" height="64" rx="8"/>
+  <text class="name" x="684" y="140">Deployment</text>
+  <text class="sub" x="684" y="158">reply rules · one Agent</text>
+
+  <rect class="box" x="864" y="112" width="176" height="64" rx="8"/>
+  <text class="name" x="952" y="140">Session</text>
+  <text class="sub" x="952" y="158">one per conversation</text>
+
+  <rect class="store" x="296" y="240" width="208" height="64" rx="8"/>
+  <text class="name" x="400" y="268">Platform credentials</text>
+  <text class="sub" x="400" y="286">encrypted · not in the sandbox</text>
+
+  <rect class="store" x="864" y="240" width="176" height="64" rx="8"/>
+  <text class="name" x="952" y="268">Saved reply</text>
+  <text class="sub" x="952" y="286">retried after a restart</text>
+
+  <line class="rule" x1="24" y1="336" x2="1056" y2="336"/>
+  <text class="eyebrow" x="24" y="360">LEGEND</text>
+  <rect class="focal" x="112" y="352" width="16" height="10" rx="2"/>
+  <text class="legend-text" x="136" y="360">the Deployment this page creates</text>
+  <line class="edge" x1="336" y1="357" x2="360" y2="357"/>
+  <text class="legend-text" x="368" y="360">the round trip of one message</text>
+  <line class="edge-dashed" x1="548" y1="357" x2="572" y2="357"/>
+  <text class="legend-text" x="580" y="360">credentials the adapter loads</text>
+  <line class="edge-out" x1="760" y1="357" x2="784" y2="357"/>
+  <text class="legend-text" x="792" y="360">leaves AstraBox for the platform</text>
+</svg>

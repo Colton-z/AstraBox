@@ -1,0 +1,15 @@
+{
+  "load_failed": "Failed to load",
+  "state_active": "Active",
+  "state_provisioning": "Initializing",
+  "state_hibernating": "Hibernating",
+  "action_failed": "Action failed",
+  "home_loading": "Loading Agents…",
+  "home_title": "Start a conversation",
+  "home_subtitle": "Choose an Agent to start a conversation.",
+  "home_start": "Start conversation",
+  "home_starting": "Starting…",
+  "home_empty": "No Agents are available.",
+  "home_empty_hint": "An administrator must create and enable an Agent before users can start a conversation.",
+  "home_empty_cta": "Go to the management console"
+}

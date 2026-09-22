@@ -1,0 +1,54 @@
+# Builds and tests the Docusaurus site (website/ + the repo docs/ tree it
+# renders). AWS Amplify builds and hosts https://www.astrabox.ai from main, so
+# this workflow publishes nothing; it keeps a broken site from reaching main.
+name: website
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'website/**'
+      - 'docs/**'
+      - 'e2e/package.json'
+      - 'e2e/package-lock.json'
+      - 'e2e/playwright.website.config.ts'
+      - 'e2e/specs/website.spec.ts'
+      - '.nvmrc'
+      - '.github/workflows/website.yml'
+  pull_request:
+    paths:
+      - 'website/**'
+      - 'docs/**'
+      - 'e2e/package.json'
+      - 'e2e/package-lock.json'
+      - 'e2e/playwright.website.config.ts'
+      - 'e2e/specs/website.spec.ts'
+      - '.nvmrc'
+      - '.github/workflows/website.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+      - run: npm ci
+        working-directory: website
+      - run: npm run typecheck
+        working-directory: website
+      - run: npm run build
+        working-directory: website
+      - run: npm ci
+        working-directory: e2e
+      - run: npx playwright install --with-deps chromium
+        working-directory: e2e
+      - run: npm run test:website
+        working-directory: e2e

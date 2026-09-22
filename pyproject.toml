@@ -1,0 +1,402 @@
+[build-system]
+requires = ["hatchling==1.32.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "astrabox"
+version = "0.1.0"
+description = "AstraBox Community — an open, self-hosted agent runtime that streams a sandboxed coding agent to your frontend over the AI-SDK Data-Stream-Protocol."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Colton Qi" }]
+keywords = ["agent", "runtime", "sandbox", "claude", "mcp", "docker", "ai-sdk"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Apache Software License",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Software Development :: Libraries :: Application Frameworks",
+]
+
+# Core — always installed.
+dependencies = [
+  # web + async + http
+  "fastapi==0.141.1",
+  "uvicorn[standard]==0.52.4",
+  "httpx==0.28.1",
+  "anyio==4.15.0",
+  "websockets>=17.1",
+  # config + validation
+  "pydantic==2.13.5",
+  "pydantic-settings==2.15.0",
+  "pyyaml==6.0.3",
+  # agent loop (KEYSTONE, Anthropic official MIT package)
+  "claude-agent-sdk==0.2.152",
+  # default sandbox driver -> /var/run/docker.sock
+  # vault secret material at rest (AES-GCM in the local secret store)
+  # AWS's latest encryption SDK currently requires cryptography <47 through its
+  # material-provider runtime. This is the newest jointly installable release.
+  "cryptography==46.0.7",
+  # OpenSandbox lifecycle CLIENT: the sandbox handle/manager the open_sandbox
+  # backend drives, plus the request/response models the runtime speaks
+  # (execd commands, filesystem writes, network policy). Stay on the compatible
+  # 0.1 contract. Client-side pool coordination is OpenSandbox's maintained
+  # Redis-backed capability; the lifecycle SERVER is the separate
+  # `sandbox-server` extra below.
+  "opensandbox[pool-redis]==0.1.17.dev0",
+  # MCP (the Claude Agent SDK and AstraBox share this protocol implementation)
+  "mcp==2.1.1",
+  # persistence (DEFAULT = PostgreSQL; SQLite remains for compatibility tests)
+  "sqlalchemy==2.0.52",
+  "asyncpg==0.31.0",
+  "aiosqlite==0.22.1",
+  # Embedded durable schedule/run engine. DBOS owns cron dispatch, distributed
+  # idempotency, recovery, retries, and the workflow ledger; AstraBox keeps the
+  # public Deployment/Run vocabulary and exposes none of DBOS's control plane.
+  "dbos==2.31.0",
+  # observability seam — official Prometheus client (spec-correct exposition)
+  "prometheus-client==0.26.0",
+  # resilience + token decode + misc (source-real open deps)
+  "tenacity==9.1.4",
+  "pyjwt==2.13.0",
+  "python-dateutil==2.9.0.post0",
+  "dacite==1.9.2",
+  "markdown-it-py==4.2.0",
+  # Event models and message-element parser for the private channel-gateway
+  # boundary. Concrete products remain AstraBox channel providers; Koishi is
+  # not part of the runtime.
+  "satori-python-core==1.3.9.post1",
+]
+
+[project.optional-dependencies]
+# optional MongoDB collection backend behind the get_async_collection() seam
+mongo = ["pymongo==4.17.0"]
+# AWS KMS envelope encryption for stateless/multi-replica Credential Vaults.
+# The server image installs this extra; local library installs do not carry a
+# cloud SDK unless the operator selects it.
+aws-kms = ["aws-encryption-sdk[MPL]==4.0.6"]
+# OTEL_EXPORTER_OTLP_ENDPOINT-driven tracing (BYO Langfuse / any OTLP backend).
+# OFF unless OTEL_EXPORTER_OTLP_ENDPOINT is set (see astrabox/observability/tracing.py).
+otel = [
+  "opentelemetry-api==1.44.0",
+  "opentelemetry-sdk==1.44.0",
+  "opentelemetry-exporter-otlp==1.44.0",
+  # FastAPI request-span instrumentation — the tracing foundation's span source.
+  "opentelemetry-instrumentation-fastapi==0.65b0",
+]
+# The OpenSandbox lifecycle API server, run as AstraBox's own sandbox control
+# plane by `python -m astrabox.deploy.sandbox_server` (the container image
+# installs this extra, and the container image is the default way to run this).
+# Still OPTIONAL rather than a core dependency: it drags in docker + kubernetes
+# + redis, and a deployment that points ASTRABOX_SANDBOX_OPENAPI_BASE_URL at a
+# lifecycle server it already runs needs none of that. `import astrabox` must
+# never depend on an extra, so astrabox/deploy/sandbox_server.py imports it
+# lazily and reports a missing install as an actionable error. This is also what
+# keeps the CI unit lane installable with `.[dev]` alone.
+#
+# Exact-pinned because this module rebinds two upstream module constants
+# (port_allocator.DOCKER_PUBLISH_HOST, metadata.DEFAULT_STORE_DIR) that have no
+# configuration field behind them. Both rebinds verify themselves and fail loud,
+# but one reproducible server release must be what development, CI, and images run.
+sandbox-server = ["opensandbox-server==0.2.3"]
+dev = [
+  "pytest==9.1.1",
+  "pytest-asyncio==1.4.0",
+  "pytest-timeout==2.4.0",
+  # Unit tests execute the live-runner contract in a fake environment. The
+  # runner proves its worker scheduler by importing pytest-xdist, so a fresh
+  # [dev] install must carry the same scheduler even though live tests remain
+  # deselected by default.
+  "pytest-xdist==3.8.0",
+  # `make build-dist` (the self-checking release artifact path) runs
+  # `python -m build`; keeping it in [dev] means the release flow works from
+  # any dev checkout without a side install.
+  "build==1.6.0",
+  # ruff + mypy are EXACT-pinned: this dev extra is the SINGLE source of truth for
+  # both CI (installs `.[dev]`, runs `python -m ruff`/`python -m mypy`) and local
+  # `make test`. The lint/type gate is calibrated to these versions, so a float
+  # could silently change lint/type output between a laptop and CI. Bump both here.
+  "ruff==0.16.5",
+  "mypy==2.3.1",
+]
+# Live end-to-end smoke (tests/e2e/): drives a real turn against a real Docker
+# daemon + the operator LLM key. httpx is already a core dep; pytest is pulled in
+# so `pip install -e .[e2e]` is a self-sufficient e2e install. These tests are
+# marked `e2e` and DESELECTED by default (see [tool.pytest.ini_options]).
+e2e = [
+  "pytest==9.1.1",
+  "pytest-asyncio==1.4.0",
+  # A live turn drives a real model; a hung turn must never wedge the suite, so
+  # the e2e tests run under a per-test timeout (--timeout, thread/signal method).
+  "pytest-timeout==2.4.0",
+  # Most live e2e are I/O-bound on a real model and a real cluster, so they run
+  # across workers (`-n`). Tests that restart a shared deployment service are
+  # marked separately and run only after the parallel phase has exited.
+  "pytest-xdist==3.8.0",
+  "httpx==0.28.1",
+]
+
+[project.urls]
+Homepage = "https://github.com/Colton-z/AstraBox"
+Repository = "https://github.com/Colton-z/AstraBox"
+Issues = "https://github.com/Colton-z/AstraBox/issues"
+Changelog = "https://github.com/Colton-z/AstraBox/blob/main/CHANGELOG.md"
+
+[project.scripts]
+astrabox = "astrabox.cli:main"
+
+# ---------------------------------------------------------------------------
+# Plugin registration seams (PEP 621 entry-points).
+# Third-party plugins can register their own provider names at these SAME
+# entry-point groups without touching this codebase. Unknown configured names
+# fail loud in the seam loaders (astrabox/providers/__init__.py::load_provider,
+# astrabox/persistence/repository/backend.py::_resolve_backend,
+# astrabox/providers/identity.py::load_web_identity_resolver) — no silent fallback.
+# ---------------------------------------------------------------------------
+
+# Built-in sandbox provider: open_sandbox (the OpenSandbox lifecycle API, reached
+# either at a URL you point it at or at the lifecycle server the image starts
+# alongside AstraBox). Entry-point names stay lowercase — load_provider lowercases
+# the requested name but preserves entry-point names as declared, so a cased name
+# would never match.
+[project.entry-points."astrabox.providers.sandbox"]
+open_sandbox = "astrabox.providers.open_sandbox.sandbox:OpenSandboxSandboxProvider"
+
+[project.entry-points."astrabox.providers.storage"]
+aws_efs = "astrabox.providers.storage.aws_efs:AwsEfsStorage"
+mounted_volume = "astrabox.providers.storage.mounted_volume:MountedVolumeStorage"
+
+[project.entry-points."astrabox.providers.engine"]
+claude_code = "astrabox.core.service.orchestrator.engine.claude_code:ClaudeCodeEngineAdapter"
+# The assistant engine drives the open-source Hermes TUI Gateway over stdio
+# JSON-RPC. One process is attached to each conversation through OpenSandbox
+# execd; the per-(user, assistant) profile and workspace remain long-lived.
+assistant = "astrabox.core.service.orchestrator.engine.hermes:HermesEngineAdapter"
+# The deepseek_harness engine drives the DeepSeek Harness web profile through
+# the same /api gateway its own browser client uses: unary calls plus one
+# downlink socket carrying events, approvals and questions.
+deepseek_harness = "astrabox.core.service.orchestrator.engine.deepseek_harness:DeepSeekHarnessEngineAdapter"
+# The pi engine drives earendil-works/pi through its documented headless
+# surface, `pi --mode rpc`: JSON lines on stdin/stdout over the same execd
+# pipe. Pi ships no permission system of its own — it recommends containment
+# instead, which the sandbox already provides.
+pi = "astrabox.core.service.orchestrator.engine.pi:PiEngineAdapter"
+
+# The codex engine drives OpenAI's Codex CLI through `codex app-server`, the
+# bidirectional JSON-RPC interface its own VS Code extension and desktop app
+# run on. The image binds the vendor-supported unix listener and a forwarder
+# publishes it, so the wire is a plain websocket.
+codex = "astrabox.core.service.orchestrator.engine.codex:CodexEngineAdapter"
+
+# Model endpoint provider: the LiteLLM gateway integration (multi-provider
+# model connectivity is delegated to LiteLLM, never reimplemented in-tree; a
+# custom gateway registers at this same group). There is deliberately no
+# bundled `direct` passthrough — see the reasoning in astrabox/providers/model.py.
+[project.entry-points."astrabox.providers.model"]
+litellm = "astrabox.providers.model:LiteLLMModelEndpointProvider"
+
+[project.entry-points."astrabox.providers.extensions"]
+litellm = "astrabox.providers.litellm_extensions:LiteLLMExtensionProvider"
+
+# Credential secret material at rest. Both built-ins keep ciphertext in the
+# regular metadata store: `local` uses a deployment master key and `aws_kms`
+# uses the AWS Encryption SDK. Another store registers at this same group.
+[project.entry-points."astrabox.providers.secrets"]
+local = "astrabox.providers.secret_store:LocalEncryptedSecretStore"
+aws_kms = "astrabox.providers.secret_store_aws_kms:AwsKmsSecretStore"
+
+# Channel providers (IM/messaging integrations over the channel spine — see
+# astrabox/seams/channel.py). `generic_json` is the IM-agnostic reference. The
+# gateway target imports the concrete provider catalog and registers Telegram,
+# Discord, Feishu, and the other bundled platforms by their own scene names.
+[project.entry-points."astrabox.providers.channel"]
+generic_json = "astrabox.providers.channel_generic:GenericJsonChannelProvider"
+gateway = "astrabox.providers.channel_satori:GatewayChannelProvider"
+
+# Admission controllers (deployment quota / rate / concurrency policy — see
+# astrabox/seams/admission.py). No built-in ships (the base admits everything);
+# a downstream registers its controller here (self-registers on import via
+# register_admission_controller) so the turn/session hot path never needs a fork.
+
+# Default persistence backend: PostgreSQL (SQLite compatibility and Mongo are
+# registered at the same group). Targets are plain MODULES (not classes) — no backend takes
+# a per-instance db_url; both resolve the store through settings/env at the
+# single get_async_collection() seam (see astrabox/persistence/repository/backend.py).
+[project.entry-points."astrabox.providers.repository"]
+postgresql = "astrabox.persistence.repository.postgresql"
+sqlite = "astrabox.persistence.repository.sqlite"
+mongo = "astrabox.persistence.repository.mongo"
+
+# Community default identity: no API auth. One web identity seam covers the
+# browser, JSON API, and public MCP transport.
+[project.entry-points."astrabox.web.identity"]
+local = "astrabox.providers.identity:LocalNoAuthWebIdentityResolver"
+# Config-only SSO resolvers (loader instantiates the class; VerifiedJwt fails
+# loud at construction when no key material is configured -> breaks boot, not
+# requests). See astrabox/providers/identity_sso.py.
+trusted_header = "astrabox.providers.identity_sso:TrustedHeaderWebIdentityResolver"
+jwt = "astrabox.providers.identity_sso:VerifiedJwtWebIdentityResolver"
+# Built-in OIDC login: AstraBox runs the authorization-code dance itself and
+# authenticates by its own session cookie; any standard OIDC IdP works (the
+# compose sso profile bundles Casdoor). See astrabox/providers/identity_oidc.py.
+oidc = "astrabox.providers.identity_oidc:OidcSessionWebIdentityResolver"
+
+[project.entry-points."astrabox.api.routers"]
+litellm_extensions = "astrabox.providers.litellm_extensions:register_litellm_extension_routes"
+
+# FLAT layout: the package lives at ./astrabox (there is no src/ directory), so the
+# wheel/sdist must point at the flat path or a built distribution would ship no
+# package and every entry-point would dangle post-install.
+#
+# The built console SPA ships INSIDE the package at astrabox/_frontend_dist —
+# `make build-dist` copies frontend/dist there before `hatch build`, and
+# api/app.py::_mount_frontend resolves that path second (after the
+# ASTRABOX_FRONTEND_DIST override, before the in-repo frontend/dist). The dir
+# is gitignored build output, so it must be listed under `artifacts` (which
+# overrides the VCS-ignore filter) — plain `packages`/`include` would silently
+# drop it and `pip install astrabox` would serve an API with no UI.
+[tool.hatch.build.targets.wheel]
+packages = ["astrabox"]
+artifacts = ["astrabox/_frontend_dist"]
+
+[tool.hatch.build.targets.sdist]
+include = ["astrabox", "README.md", "LICENSE", "NOTICE", "pyproject.toml"]
+artifacts = ["astrabox/_frontend_dist"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+# Lint the whole tree EXCEPT the generated/vendored dirs. Anchored, because a
+# bare name matches every path segment: "e2e" also excluded `tests/e2e`, the
+# live Python suite, so a syntax error there was found by paying for a live
+# run instead of by the gate.
+extend-exclude = [".venv", "/frontend", "/e2e"]
+
+[tool.ruff.lint]
+# Pin pyflakes and the pycodestyle error subsets used by this project so a Ruff
+# upgrade cannot expand the lint surface implicitly. E7xx, E9xx, and the
+# non-excluded pyflakes rules apply across source, scripts, and tests.
+#   E402  module-level import not at top — DELIBERATE: api/app.py & friends do lazy
+#         imports to keep create_app() import-time clean (the clean-boot invariant).
+#   F401  unused import       \  excluded from the repository-wide gate; avoid
+#   F811  redefinition         > these patterns in code changed by a contributor.
+#   F841  unused local var    /
+# F821 (undefined name) remains enforced as a correctness rule.
+select = ["E4", "E7", "E9", "F"]
+extend-ignore = ["E402", "F401", "F811", "F841"]
+
+# ---------------------------------------------------------------------------
+# mypy — two-tier strictness.
+#
+# Tier 1 (this section) checks the full tree with selected error categories
+# disabled. `ignore_missing_imports` covers optional dependencies such as Mongo,
+# OpenTelemetry, and OpenSandbox when their extras are not installed.
+#
+# Tier 2 ([[tool.mypy.overrides]] below) re-enables full checking for packages
+# that satisfy every configured category. Those packages must remain clean.
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+follow_imports = "silent"
+namespace_packages = true
+explicit_package_bases = true
+exclude = '(^|/)(\.venv|frontend|e2e|tests/e2e)/'
+# name-defined is deliberately NOT disabled — it is the mypy half of the
+# undefined-name gate (see the ruff F821 note above); the tree is clean under it.
+disable_error_code = [
+  "arg-type", "assignment", "union-attr", "misc", "no-redef", "attr-defined",
+  "dict-item", "return-value", "var-annotated", "type-var",
+  "index", "call-arg", "override", "method-assign", "operator", "return",
+  "has-type", "valid-type",
+]
+
+# Strict-mode ratchet (Tier 2, see header comment above). Each module pattern
+# below is probed clean with the disable list emptied entirely — run e.g.
+#   python -m mypy --config-file <copy of [tool.mypy] w/o disable_error_code> <path>
+# before adding to this list, and run the real gate (`python -m mypy
+# astrabox/`) after, since mypy's error-code merging is additive down the
+# module hierarchy: a child pattern's disable_error_code can only ADD to what
+# an ancestor pattern disabled, never remove it — restoring strictness for a
+# module requires enable_error_code (used here), and a wildcard here must
+# never be an ANCESTOR of a still-dirty module (it would sweep that module's
+# codes back off too — see the repository/sqlite carve-out below, which is
+# why persistence uses explicit sibling module names instead of a single
+# top-level "astrabox.persistence.*" wildcard).
+# A missing AstraBox module is a typo, not an uninstalled optional dependency.
+# `ignore_missing_imports` above is for optional third-party packages; left
+# global it also swallows a misspelled first-party import, which then passes
+# both static gates and fails at collection on the machine that runs the tests.
+[[tool.mypy.overrides]]
+module = ["astrabox.*"]
+ignore_missing_imports = false
+
+[[tool.mypy.overrides]]
+module = [
+  # seams/, testing/, config/, web/ — fully clean, no dirty descendants, so a
+  # wildcard is safe and auto-covers new files added under these packages.
+  "astrabox.seams.*",
+  "astrabox.testing.*",
+  "astrabox.config.*",
+  "astrabox.web.*",
+  # deploy/ — the container entry point and sandbox-server launcher.
+  "astrabox.deploy.*",
+  # providers/ — one wildcard also covers new provider modules.
+  "astrabox.providers.*",
+  # Persistence modules that satisfy the full configuration. The compatibility
+  # shim and SQLite collection use the base configuration above.
+  "astrabox.persistence",
+  "astrabox.persistence.models.*",
+  "astrabox.persistence.migrations.*",
+  "astrabox.persistence.repository.mongo.*",
+  # The codex engine adapter. Named rather than a wildcard because its
+  # siblings under engine/ are not clean yet, and a wildcard here would be an
+  # ancestor of theirs. Strictness matters most on this file: `manager` is
+  # typed `EnginePlatform`, and with `attr-defined` restored a platform method
+  # that is renamed on the other side becomes a typecheck failure instead of
+  # an AttributeError on a live turn — which is exactly how
+  # `resolve_model_config` becoming `resolve_model_access` was found.
+  "astrabox.core.service.orchestrator.engine.codex",
+  "astrabox.core.service.orchestrator.engine.codex_client",
+  "astrabox.core.service.orchestrator.engine.codex_events",
+  "astrabox.core.service.orchestrator.engine.codex_link",
+]
+enable_error_code = [
+  "arg-type", "assignment", "union-attr", "misc", "no-redef", "attr-defined",
+  "dict-item", "return-value", "var-annotated", "type-var",
+  "index", "call-arg", "override", "method-assign", "operator", "return",
+  "has-type", "valid-type",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+# The live-turn e2e (tests/e2e/) needs Docker + the operator LLM key, the
+# database conformance bindings need reachable PostgreSQL/MongoDB services, and
+# the opensandbox live lane needs a reachable opensandbox-server, so those
+# integration markers are DESELECTED by default — a
+# plain `pytest` run (unit CI) skips them. Run e2e explicitly with
+# `pytest -m e2e`, database bindings with their named markers, and the
+# opensandbox lane with `pytest -m opensandbox` (each overrides its own
+# deselect on the CLI).
+# --timeout=120 (pytest-timeout): a per-test ceiling so one hung async test can
+# never wedge the unit lane. Set HERE (not in the CI invocation) so `make test`
+# and CI share one source of truth and stay 1:1.
+# --strict-markers: a misspelled isolation marker must fail collection instead
+# of silently putting a deployment restart back into the parallel phase.
+# --ignore-glob='**/._*': macOS AppleDouble metadata files appear alongside
+# real files when the tree lives on a non-native volume (SMB); pytest must
+# never try to collect them.
+addopts = "-m 'not e2e and not mongo and not postgresql and not opensandbox' --timeout=120 --strict-markers --ignore-glob='**/._*'"
+markers = [
+  "e2e: live end-to-end turn (needs Docker + your Anthropic-compatible endpoint/model key); deselected by default in unit CI.",
+  "assistant_live: live contract that requires an Assistant/Hermes environment rather than the canonical Agent environment.",
+  "backend_restart: stops or restarts a shared backend, bundled sandbox server, or database; the live runner executes these tests in its exclusive serial phase.",
+  "xdist_group(name): pytest-xdist scheduling group; live e2e invocations with workers reject any scheduler other than loadgroup.",
+  "mongo: needs a reachable mongod + the [mongo] extra (pip install -e '.[mongo]'); deselected by default in unit CI.",
+  "postgresql: needs a reachable PostgreSQL service; deselected by default in unit CI.",
+  "opensandbox: needs a reachable opensandbox-server (ASTRABOX_SANDBOX_OPENAPI_BASE_URL); deselected by default in unit CI.",
+]

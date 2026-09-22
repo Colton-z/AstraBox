@@ -1,0 +1,237 @@
+{
+  "profiles": [
+    {
+      "agent_name": "Investment Research",
+      "child_completion": {
+        "engine_reasons": [],
+        "engine_statuses": [
+          "completed"
+        ]
+      },
+      "contracts": {
+        "approval_names_target": true,
+        "background_subagent": true,
+        "permission_modes": true,
+        "plan_interaction": true,
+        "question_interaction": true,
+        "tool_approval": true
+      },
+      "decisions": {
+        "approve": "approve",
+        "reject": "reject"
+      },
+      "engine_kind": "claude_code",
+      "engine_option_files": {},
+      "engine_options": {
+        "sdk_options": {"strict_mcp_config": true}
+      },
+      "environment_prefix": "astrabox-e2e-prewarm-shared",
+      "image_repository": "sandbox-claude-code",
+      "instructions": {
+        "controllable_child": "with run_in_background set to true"
+      },
+      "mirror_entry_types": [
+        "user",
+        "assistant"
+      ],
+      "model": "anthropic/deepseek-flash",
+      "modes": {
+        "alternate": "acceptEdits",
+        "gated": "default",
+        "plan": "plan",
+        "unattended": "bypassPermissions"
+      },
+      "presentation": "tool_approval",
+      "sandbox_tenancy": "agent",
+      "tools": {
+        "command": [
+          "Bash"
+        ],
+        "question": [
+          "AskUserQuestion"
+        ],
+        "subagent": [
+          "Task"
+        ],
+        "write": [
+          "Write"
+        ]
+      },
+      "sandbox_permission_level": "advanced"
+    },
+    {
+      "agent_name": "Investment Research (DeepSeek Harness)",
+      "child_completion": {
+        "engine_reasons": [
+          "completed"
+        ],
+        "engine_statuses": [
+          "inactive",
+          "running"
+        ]
+      },
+      "contracts": {
+        "approval_names_target": false,
+        "background_subagent": true,
+        "permission_modes": true,
+        "plan_interaction": false,
+        "question_interaction": true,
+        "tool_approval": true
+      },
+      "decisions": {
+        "approve": "approve",
+        "reject": "reject"
+      },
+      "engine_kind": "deepseek_harness",
+      "engine_option_files": {},
+      "engine_options": {
+        "session_create": {"agentPreset": "standard"}
+      },
+      "environment_prefix": "astrabox-e2e-investment-deepseek-harness",
+      "image_repository": "sandbox-deepseek-harness",
+      "instructions": {
+        "controllable_child": "as a continuable subagent that remains active"
+      },
+      "mirror_entry_types": [
+        "user/message",
+        "assistant/message"
+      ],
+      "model": "deepseek-flash",
+      "modes": {
+        "alternate": "workspace-write",
+        "gated": "read-only",
+        "unattended": "danger-full-access"
+      },
+      "presentation": "tool_approval",
+      "sandbox_tenancy": "agent",
+      "tools": {
+        "command": [
+          "bash"
+        ],
+        "question": [
+          "ask_user_question"
+        ],
+        "subagent": [
+          "subagent"
+        ],
+        "write": [
+          "write",
+          "edit"
+        ]
+      },
+      "sandbox_permission_level": "advanced"
+    },
+    {
+      "agent_name": "Investment Research (Codex)",
+      "child_completion": {
+        "engine_reasons": [],
+        "engine_statuses": [
+          "completed"
+        ]
+      },
+      "contracts": {
+        "approval_names_target": true,
+        "background_subagent": true,
+        "permission_modes": true,
+        "plan_interaction": false,
+        "question_interaction": false,
+        "tool_approval": true
+      },
+      "decisions": {
+        "approve": "accept",
+        "reject": "decline"
+      },
+      "engine_kind": "codex",
+      "engine_option_files": {
+        "model_catalog": "tests/e2e-contract/codex-model-catalog.json"
+      },
+      "engine_options": {
+        "config": {"approval_policy": "on-request"}
+      },
+      "environment_prefix": "astrabox-e2e-investment-codex",
+      "image_repository": "sandbox-codex",
+      "instructions": {
+        "controllable_child": "without waiting for it with wait_agent"
+      },
+      "mirror_entry_types": [
+        "session_meta",
+        "response_item"
+      ],
+      "model": "deepseek-flash",
+      "modes": {
+        "alternate": "workspace-write",
+        "gated": "read-only",
+        "unattended": "danger-full-access"
+      },
+      "presentation": "decision",
+      "sandbox_tenancy": "agent",
+      "tools": {
+        "command": [
+          "commandExecution"
+        ],
+        "question": [
+          "request_user_input"
+        ],
+        "subagent": [
+          "spawn_agent"
+        ],
+        "write": [
+          "commandExecution",
+          "fileChange"
+        ]
+      },
+      "sandbox_permission_level": "advanced"
+    },
+    {
+      "agent_name": "Investment Research (pi)",
+      "child_completion": {
+        "engine_reasons": [],
+        "engine_statuses": [
+          "complete"
+        ]
+      },
+      "contracts": {
+        "approval_names_target": false,
+        "background_subagent": true,
+        "permission_modes": false,
+        "plan_interaction": false,
+        "question_interaction": false,
+        "tool_approval": false
+      },
+      "decisions": {},
+      "engine_kind": "pi",
+      "engine_option_files": {},
+      "engine_options": {
+        "settings": {"defaultThinkingLevel": "off"}
+      },
+      "environment_prefix": "astrabox-e2e-investment-pi",
+      "image_repository": "sandbox-pi",
+      "instructions": {
+        "controllable_child": "with async set to true"
+      },
+      "mirror_entry_types": [
+        "session",
+        "message"
+      ],
+      "model": "deepseek-flash",
+      "modes": {},
+      "presentation": null,
+      "sandbox_tenancy": "agent",
+      "tools": {
+        "command": [
+          "bash"
+        ],
+        "subagent": [
+          "subagent"
+        ],
+        "write": [
+          "write",
+          "edit",
+          "bash"
+        ]
+      },
+      "sandbox_permission_level": "advanced"
+    }
+  ],
+  "version": 1
+}

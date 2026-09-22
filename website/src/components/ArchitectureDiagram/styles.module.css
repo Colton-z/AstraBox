@@ -1,0 +1,156 @@
+/**
+ * The diagram draws from the same tokens as the rest of the site, so light and
+ * dark come from one asset — no second render, no per-theme colour table.
+ */
+
+.diagram,
+.svg {
+  width: 100%;
+}
+
+.svg {
+  height: auto;
+  display: block;
+  font-family: var(--ifm-font-family-monospace);
+}
+
+.mobileFlow {
+  display: none;
+}
+
+/* -- frames ------------------------------------------------------------- */
+
+.group {
+  fill: none;
+  stroke: var(--line-strong);
+  stroke-width: 1;
+  stroke-dasharray: 4 4;
+}
+
+.box {
+  fill: var(--ifm-background-color);
+  stroke: var(--line-strong);
+  stroke-width: 1;
+}
+
+/* The vendor CLI runs the agent loop, so the accent distinguishes it from
+   AstraBox's orchestration components. */
+.boxAccent {
+  fill: var(--astra-tint);
+  stroke: var(--astra);
+  stroke-width: 1.5;
+}
+
+/* -- type --------------------------------------------------------------- */
+
+.boxTitle {
+  fill: var(--fg-1);
+  font-size: 13px;
+  font-weight: 500;
+  text-anchor: middle;
+}
+
+.boxSub,
+.caption {
+  fill: var(--fg-3);
+  font-size: 11px;
+  text-anchor: middle;
+}
+
+.groupLabel {
+  fill: var(--fg-3);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.edgeLabel {
+  fill: var(--fg-2);
+  font-size: 11px;
+  text-anchor: middle;
+}
+
+.chip {
+  fill: var(--ifm-background-color);
+}
+
+/* -- connectors --------------------------------------------------------- */
+
+.edge,
+.edgeDashed {
+  fill: none;
+  stroke: var(--fg-4);
+  stroke-width: 1.25;
+}
+
+.edgeDashed {
+  stroke-dasharray: 3 4;
+}
+
+.arrowHead {
+  fill: var(--fg-4);
+}
+
+/* -- note --------------------------------------------------------------- */
+
+.note {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--fg-3);
+  margin: 20px 0 0;
+  max-width: 640px;
+}
+
+@media screen and (max-width: 600px) {
+  .svg {
+    display: none;
+  }
+
+  .mobileFlow {
+    display: grid;
+    gap: 0;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .mobileStep {
+    position: relative;
+    display: grid;
+    grid-template-columns: 32px minmax(0, 1fr);
+    gap: 12px;
+    padding: 14px 0;
+    border-bottom: 1px solid var(--line);
+    font-size: 14px;
+  }
+
+  .mobileStep:last-child {
+    border-bottom: 0;
+  }
+
+  .mobileIndex {
+    font-family: var(--ifm-font-family-monospace);
+    font-size: 11px;
+    color: var(--astra);
+    padding-top: 2px;
+  }
+
+  .mobileTitle,
+  .mobileDetail {
+    display: block;
+  }
+
+  .mobileTitle {
+    color: var(--fg-1);
+    font-size: 14px;
+    font-weight: 600;
+  }
+
+  .mobileDetail {
+    margin-top: 3px;
+    color: var(--fg-3);
+    font-family: var(--ifm-font-family-monospace);
+    font-size: 12px;
+    line-height: 1.5;
+  }
+}

@@ -1,0 +1,290 @@
+{
+  "version": 1,
+  "upstream": {
+    "repository": "https://github.com/satorijs/satori",
+    "commit": "f2ccd69077b0b668f259c49dffe8e252c10549d9",
+    "packages": [
+      "@satorijs/adapter-dingtalk",
+      "@satorijs/adapter-discord",
+      "@satorijs/adapter-kook",
+      "@satorijs/adapter-lark",
+      "@satorijs/adapter-line",
+      "@satorijs/adapter-mail",
+      "@satorijs/adapter-matrix",
+      "@satorijs/adapter-qq",
+      "@satorijs/adapter-satori",
+      "@satorijs/adapter-slack",
+      "@satorijs/adapter-telegram",
+      "@satorijs/adapter-wechat-official",
+      "@satorijs/adapter-wecom",
+      "@satorijs/adapter-whatsapp",
+      "@satorijs/adapter-zulip"
+    ]
+  },
+  "providers": [
+    {
+      "name": "telegram",
+      "label": "Telegram",
+      "adapter": "@satorijs/adapter-telegram",
+      "adapter_export": "TelegramBot",
+      "fixed": {"protocol": "polling"},
+      "callback_path": null,
+      "setup_url": "https://t.me/BotFather",
+      "documentation_url": "https://astrabox.ai/docs/channels",
+      "config_fields": [],
+      "credential_fields": [
+        {"key": "token", "label": "Bot token", "required": true, "kind": "string", "placeholder": "123456:ABC…", "help": "Create the bot with BotFather, then paste its HTTP API token."}
+      ]
+    },
+    {
+      "name": "discord",
+      "label": "Discord",
+      "adapter": "@satorijs/adapter-discord",
+      "adapter_export": "DiscordBot",
+      "fixed": {"type": "bot"},
+      "setup_url": "https://discord.com/developers/applications",
+      "documentation_url": "https://astrabox.ai/docs/channels",
+      "config_fields": [],
+      "credential_fields": [
+        {"key": "token", "label": "Bot token", "required": true, "kind": "string", "help": "Use the token from the application's Bot page."}
+      ]
+    },
+    {
+      "name": "kook",
+      "label": "KOOK",
+      "adapter": "@satorijs/adapter-kook",
+      "adapter_export": "KookBot",
+      "fixed": {"protocol": "ws"},
+      "setup_url": "https://developer.kookapp.cn/app/index",
+      "documentation_url": "https://astrabox.ai/docs/channels",
+      "config_fields": [],
+      "credential_fields": [
+        {"key": "token", "label": "Bot token", "required": true, "kind": "string", "help": "Use the token from the KOOK application settings."}
+      ]
+    },
+    {
+      "name": "feishu",
+      "label": "Feishu",
+      "adapter": "@satorijs/adapter-lark",
+      "adapter_export": "LarkBot",
+      "fixed": {"platform": "feishu", "protocol": "ws"},
+      "setup_url": "https://open.feishu.cn/app",
+      "documentation_url": "https://astrabox.ai/docs/channels",
+      "config_fields": [
+        {"key": "appId", "label": "App ID", "required": true, "kind": "string"}
+      ],
+      "credential_fields": [
+        {"key": "appSecret", "label": "App secret", "required": true, "kind": "string"}
+      ]
+    },
+    {
+      "name": "lark",
+      "label": "Lark",
+      "adapter": "@satorijs/adapter-lark",
+      "adapter_export": "LarkBot",
+      "fixed": {"platform": "lark", "protocol": "ws"},
+      "setup_url": "https://open.larksuite.com/app",
+      "documentation_url": "https://astrabox.ai/docs/channels",
+      "config_fields": [
+        {"key": "appId", "label": "App ID", "required": true, "kind": "string"}
+      ],
+      "credential_fields": [
+        {"key": "appSecret", "label": "App secret", "required": true, "kind": "string"}
+      ]
+    },
+    {
+      "name": "dingtalk",
+      "label": "DingTalk",
+      "adapter": "@satorijs/adapter-dingtalk",
+      "adapter_export": "DingtalkBot",
+      "fixed": {"protocol": "ws"},
+      "setup_url": "https://open-dev.dingtalk.com/",
+      "documentation_url": "https://astrabox.ai/docs/channels",
+      "config_fields": [
+        {"key": "appkey", "label": "App key", "required": true, "kind": "string"},
+        {"key": "agentId", "label": "Agent ID", "required": false, "kind": "number", "help": "Optional for robot-only applications."}
+      ],
+      "credential_fields": [
+        {"key": "secret", "label": "App secret", "required": true, "kind": "string"}
+      ]
+    },
+    {
+      "name": "qq",
+      "label": "QQ Bot",
+      "adapter": "@satorijs/adapter-qq",
+      "adapter_export": "QQBot",
+      "fixed": {"protocol": "websocket"},
+      "setup_url": "https://q.qq.com/qqbot/#/developer/developer-setting",
+      "documentation_url": "https://astrabox.ai/docs/channels",
+      "config_fields": [
+        {"key": "id", "label": "Bot ID", "required": true, "kind": "string"},
+        {"key": "type", "label": "Bot type", "required": true, "kind": "select", "options": ["public", "private"], "default": "public"},
+        {"key": "sandbox", "label": "QQ sandbox", "required": false, "kind": "boolean", "default": false}
+      ],
+      "credential_fields": [
+        {"key": "secret", "label": "Bot secret", "required": true, "kind": "string"}
+      ]
+    },
+    {
+      "name": "slack",
+      "label": "Slack",
+      "adapter": "@satorijs/adapter-slack",
+      "adapter_export": "SlackBot",
+      "fixed": {"protocol": "ws"},
+      "setup_url": "https://api.slack.com/apps",
+      "documentation_url": "https://astrabox.ai/docs/channels",
+      "config_fields": [],
+      "credential_fields": [
+        {"key": "token", "label": "App-level token", "required": true, "kind": "string", "placeholder": "xapp-…"},
+        {"key": "botToken", "label": "Bot OAuth token", "required": true, "kind": "string", "placeholder": "xoxb-…"}
+      ]
+    },
+    {
+      "name": "zulip",
+      "label": "Zulip",
+      "adapter": "@satorijs/adapter-zulip",
+      "adapter_export": "ZulipBot",
+      "fixed": {"protocol": "polling"},
+      "setup_url": "https://zulip.com/api/bots",
+      "documentation_url": "https://astrabox.ai/docs/channels",
+      "config_fields": [
+        {"key": "baseUrl", "label": "Zulip server URL", "required": true, "kind": "string", "placeholder": "https://chat.example.com"},
+        {"key": "email", "label": "Bot email", "required": true, "kind": "string"}
+      ],
+      "credential_fields": [
+        {"key": "key", "label": "API key", "required": true, "kind": "string"}
+      ]
+    },
+    {
+      "name": "mail",
+      "label": "Email",
+      "adapter": "@satorijs/adapter-mail",
+      "adapter_export": "MailBot",
+      "fixed": {},
+      "documentation_url": "https://astrabox.ai/docs/channels",
+      "config_fields": [
+        {"key": "username", "label": "Username", "required": true, "kind": "string"},
+        {"key": "selfId", "label": "Email address", "required": false, "kind": "string", "help": "Defaults to the username."},
+        {"key": "name", "label": "Sender name", "required": false, "kind": "string"},
+        {"key": "subject", "label": "Reply subject", "required": false, "kind": "string", "default": "AstraBox"},
+        {"key": "imap.host", "label": "IMAP host", "required": true, "kind": "string"},
+        {"key": "imap.port", "label": "IMAP port", "required": false, "kind": "number", "default": 993},
+        {"key": "imap.tls", "label": "IMAP TLS", "required": false, "kind": "boolean", "default": true},
+        {"key": "smtp.host", "label": "SMTP host", "required": true, "kind": "string"},
+        {"key": "smtp.port", "label": "SMTP port", "required": false, "kind": "number", "default": 465},
+        {"key": "smtp.tls", "label": "SMTP TLS", "required": false, "kind": "boolean", "default": true}
+      ],
+      "credential_fields": [
+        {"key": "password", "label": "Password or app password", "required": true, "kind": "string"}
+      ]
+    },
+    {
+      "name": "line",
+      "label": "LINE",
+      "adapter": "@satorijs/adapter-line",
+      "adapter_export": "LineBot",
+      "fixed": {},
+      "callback_path": "/line",
+      "setup_url": "https://developers.line.biz/console/",
+      "documentation_url": "https://astrabox.ai/docs/channels",
+      "config_fields": [],
+      "credential_fields": [
+        {"key": "token", "label": "Channel access token", "required": true, "kind": "string"},
+        {"key": "secret", "label": "Channel secret", "required": true, "kind": "string"}
+      ]
+    },
+    {
+      "name": "matrix",
+      "label": "Matrix",
+      "adapter": "@satorijs/adapter-matrix",
+      "adapter_export": "MatrixBot",
+      "fixed": {"path": "/matrix"},
+      "callback_path": "/matrix",
+      "setup_url": "https://spec.matrix.org/latest/application-service-api/",
+      "documentation_url": "https://astrabox.ai/docs/channels",
+      "config_fields": [
+        {"key": "id", "label": "Bot localpart", "required": true, "kind": "string"},
+        {"key": "host", "label": "Homeserver domain", "required": true, "kind": "string"},
+        {"key": "endpoint", "label": "Homeserver URL", "required": false, "kind": "string", "help": "Leave empty to use https://<homeserver domain>."},
+        {"key": "name", "label": "Bot display name", "required": false, "kind": "string"}
+      ],
+      "credential_fields": [
+        {"key": "hsToken", "label": "Homeserver token", "required": true, "kind": "string"},
+        {"key": "asToken", "label": "Application service token", "required": true, "kind": "string"}
+      ]
+    },
+    {
+      "name": "satori",
+      "label": "Satori Protocol Server",
+      "adapter": "@satorijs/adapter-satori",
+      "adapter_export": "SatoriAdapter",
+      "fixed": {},
+      "callback_path": null,
+      "setup_url": null,
+      "documentation_url": "https://astrabox.ai/docs/channels",
+      "config_fields": [
+        {"key": "endpoint", "label": "Satori server URL", "required": true, "kind": "string", "placeholder": "https://satori.example.com"}
+      ],
+      "credential_fields": [
+        {"key": "token", "label": "Access token", "required": false, "kind": "string"}
+      ]
+    },
+    {
+      "name": "wechat-official",
+      "label": "WeChat Official Account",
+      "adapter": "@satorijs/adapter-wechat-official",
+      "adapter_export": "WechatOfficialBot",
+      "fixed": {},
+      "callback_path": "/wechat-official",
+      "setup_url": "https://mp.weixin.qq.com/",
+      "documentation_url": "https://astrabox.ai/docs/channels",
+      "config_fields": [
+        {"key": "account", "label": "Account ID", "required": true, "kind": "string"},
+        {"key": "appid", "label": "App ID", "required": true, "kind": "string"},
+        {"key": "customerService", "label": "Customer-service replies", "required": false, "kind": "boolean", "default": false}
+      ],
+      "credential_fields": [
+        {"key": "secret", "label": "App secret", "required": true, "kind": "string"},
+        {"key": "token", "label": "Webhook token", "required": true, "kind": "string"},
+        {"key": "aesKey", "label": "Encoding AES key", "required": false, "kind": "string"}
+      ]
+    },
+    {
+      "name": "wecom",
+      "label": "WeCom",
+      "adapter": "@satorijs/adapter-wecom",
+      "adapter_export": "WecomBot",
+      "fixed": {},
+      "callback_path": "/wecom",
+      "setup_url": "https://work.weixin.qq.com/wework_admin/frame#apps",
+      "documentation_url": "https://astrabox.ai/docs/channels",
+      "config_fields": [
+        {"key": "corpId", "label": "Corp ID", "required": true, "kind": "string"},
+        {"key": "agentId", "label": "Agent ID", "required": true, "kind": "string"}
+      ],
+      "credential_fields": [
+        {"key": "secret", "label": "App secret", "required": true, "kind": "string"},
+        {"key": "token", "label": "Webhook token", "required": true, "kind": "string"},
+        {"key": "aesKey", "label": "Encoding AES key", "required": false, "kind": "string"}
+      ]
+    },
+    {
+      "name": "whatsapp",
+      "label": "WhatsApp Business",
+      "adapter": "@satorijs/adapter-whatsapp",
+      "adapter_export": "WhatsAppAdapter",
+      "fixed": {},
+      "callback_path": "/whatsapp",
+      "setup_url": "https://developers.facebook.com/apps/",
+      "documentation_url": "https://astrabox.ai/docs/channels",
+      "config_fields": [
+        {"key": "id", "label": "Business account ID", "required": true, "kind": "string"}
+      ],
+      "credential_fields": [
+        {"key": "secret", "label": "App secret", "required": true, "kind": "string"},
+        {"key": "systemToken", "label": "System user token", "required": true, "kind": "string"},
+        {"key": "verifyToken", "label": "Webhook verify token", "required": true, "kind": "string"}
+      ]
+    }
+  ]
+}

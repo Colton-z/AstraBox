@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# The outward hop, opened only once the backend behind it can answer.
+#
+# The platform's readiness gate is a TCP connect to this port, and the seam
+# names a port rather than a protocol — so the provider cannot know what
+# "ready" means for an arbitrary image, and it is this image's job to make the
+# port's acceptance mean something. socat binds in milliseconds while Hermes
+# takes seconds to compose a profile; a forwarder started in parallel with the
+# backend publishes an open port to a server that is not there, the gate
+# passes, and the platform's very next call fails against a box it was told was
+# ready.
+#
+# So the wait is not a retry or a grace period. It is what makes the gate's
+# claim true, and it waits for an ANSWER rather than for the backend's own port
+# to bind, because those are two different mechanisms and nothing holds the
+# distance between them on a loaded host.
+set -euo pipefail
+
+UPSTREAM_PORT="${ASTRABOX_HERMES_LOOPBACK_PORT:-9119}"
+LISTEN_PORT="${ASTRABOX_HERMES_LISTEN_PORT:-9118}"
+DEADLINE_SECONDS="${ASTRABOX_HERMES_UPSTREAM_WAIT_SECONDS:-1800}"
+
+# The backend's own readiness sentinel is a line on stdout
+# (`HERMES_BACKEND_READY port=...`), which this process cannot see. What it can
+# see is the socket answering, and an unauthenticated request is enough: the
+# credential check is what returns 401/403, and either of those is an ANSWER
+# from a live server. A refused connection is not.
+probe() {
+  local code
+  code="$(curl -sS -o /dev/null -m 3 -w '%{http_code}' \
+    "http://127.0.0.1:${UPSTREAM_PORT}/api/auth/me" 2>/dev/null)" || return 1
+  case "$code" in
+    000|"") return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+deadline=$(( SECONDS + DEADLINE_SECONDS ))
+until probe; do
+  if [ "$SECONDS" -ge "$deadline" ]; then
+    echo "astrabox-hermes-forward: backend on 127.0.0.1:${UPSTREAM_PORT} did not" \
+         "answer within ${DEADLINE_SECONDS}s; refusing to publish ${LISTEN_PORT}" >&2
+    exit 1
+  fi
+  sleep 0.2
+done
+echo "astrabox-hermes-forward: backend answers; publishing ${LISTEN_PORT}"
+
+# Bytes pass through verbatim, which is what keeps the WebSocket upgrade and
+# its `?token=` credential intact end to end.
+exec /usr/bin/socat -d "TCP-LISTEN:${LISTEN_PORT},fork,reuseaddr" \
+  "TCP:127.0.0.1:${UPSTREAM_PORT}"

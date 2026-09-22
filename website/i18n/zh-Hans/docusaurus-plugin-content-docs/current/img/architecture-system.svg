@@ -1,0 +1,114 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" id="fig-architecture-system" viewBox="0 0 1080 496"
+     role="img" aria-labelledby="architecture-system-title architecture-system-desc">
+  <title id="architecture-system-title">AstraBox 部署中各组件的位置</title>
+  <desc id="architecture-system-desc">AstraBox 服务接收来自控制台、API 客户端和消息平台的请求，把 Session Event 和 Agent 程序原生状态保存在数据库中，并请求 OpenSandbox 创建沙箱或分配预热沙箱。沙箱内的 AstraBox 服务负责连接 Agent 程序，Agent 程序再调用已配置的模型服务。浏览器可以直接打开沙箱内的应用，不经过 AstraBox API。</desc>
+
+  <style data-standalone="true">
+    @media (prefers-color-scheme: dark) {
+      svg {
+        --ifm-background-color: #0e0e0e;
+        --fg-1: #ededed;
+        --fg-3: #909090;
+        --fg-4: #6f6f6f;
+        --line-strong: #383838;
+        --astra: #7877ff;
+        --astra-tint: #1a1b3a;
+        --plasma: #f08a59;
+      }
+    }
+  </style>
+
+  <style>
+    #fig-architecture-system .box { fill: var(--ifm-background-color, #fafafa); stroke: var(--line-strong, #d4d4d4); stroke-width: 1 }
+    #fig-architecture-system .store { fill: color-mix(in oklab, var(--fg-1, #0a0a0a) 5%, var(--ifm-background-color, #fafafa)); stroke: var(--line-strong, #d4d4d4); stroke-width: 1 }
+    #fig-architecture-system .focal { fill: var(--astra-tint, #ecebff); stroke: var(--astra, #5c5bff); stroke-width: 1.5 }
+    #fig-architecture-system .zone { fill: none; stroke: var(--line-strong, #d4d4d4); stroke-width: 1; stroke-dasharray: 4 4 }
+    #fig-architecture-system .mask { fill: var(--ifm-background-color, #fafafa) }
+    #fig-architecture-system .edge { fill: none; stroke: var(--fg-4, #999999); stroke-width: 1.25 }
+    #fig-architecture-system .edge-dashed { fill: none; stroke: var(--fg-4, #999999); stroke-width: 1.25; stroke-dasharray: 3 4 }
+    #fig-architecture-system .edge-out { fill: none; stroke: var(--plasma, #e8754a); stroke-width: 1.25 }
+    #fig-architecture-system .name { fill: var(--fg-1, #0a0a0a); font: 600 12px Geist, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; text-anchor: middle }
+    #fig-architecture-system .sub { fill: var(--fg-3, #666666); font: 400 10px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; text-anchor: middle }
+    #fig-architecture-system .eyebrow { fill: var(--fg-3, #666666); font: 500 9px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; letter-spacing: 0.14em }
+    #fig-architecture-system .arrow-label { fill: var(--fg-3, #666666); font: 400 9px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; letter-spacing: 0.06em; text-anchor: middle }
+    #fig-architecture-system .legend-text { fill: var(--fg-3, #666666); font: 400 9px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; letter-spacing: 0.06em }
+    #fig-architecture-system .rule { stroke: var(--line-strong, #d4d4d4); stroke-width: 0.8 }
+  </style>
+
+  <defs>
+    <marker id="architecture-system-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="var(--fg-4, #999999)"/>
+    </marker>
+    <marker id="architecture-system-arrow-start" markerWidth="8" markerHeight="6" refX="1" refY="3" orient="auto">
+      <polygon points="8 0, 0 3, 8 6" fill="var(--fg-4, #999999)"/>
+    </marker>
+    <marker id="architecture-system-arrow-out" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="var(--plasma, #e8754a)"/>
+    </marker>
+  </defs>
+
+  <!-- zone first, then arrows, then masks and their labels, then boxes -->
+  <rect class="zone" x="544" y="64" width="288" height="300" rx="12"/>
+  <text class="eyebrow" x="544" y="52">受管沙箱</text>
+
+  <path class="edge" d="M 204 136 H 252" marker-end="url(#architecture-system-arrow)" marker-start="url(#architecture-system-arrow-start)"/>
+  <path class="edge" d="M 492 120 H 564" marker-end="url(#architecture-system-arrow)"/>
+  <path class="edge" d="M 492 152 H 516 V 208 H 564" marker-end="url(#architecture-system-arrow)"/>
+  <path class="edge" d="M 372 168 V 212" marker-end="url(#architecture-system-arrow)"/>
+  <path class="edge" d="M 492 256 H 540" marker-end="url(#architecture-system-arrow)"/>
+  <path class="edge" d="M 256 152 H 216 V 336 H 252" marker-end="url(#architecture-system-arrow)"/>
+  <path class="edge-dashed" d="M 64 168 V 400 H 688 V 344" marker-end="url(#architecture-system-arrow)"/>
+  <path class="edge-out" d="M 808 120 H 860 V 164 H 884" marker-end="url(#architecture-system-arrow-out)"/>
+  <path class="edge-out" d="M 808 208 H 860 V 164"/>
+
+  <rect class="mask" x="212" y="112" width="32" height="12" rx="2"/>
+  <text class="arrow-label" x="228" y="121">请求</text>
+  <rect class="mask" x="380" y="184" width="96" height="12" rx="2"/>
+  <text class="arrow-label" x="428" y="193">创建 · 暂停 · 恢复</text>
+  <rect class="mask" x="164" y="240" width="44" height="12" rx="2"/>
+  <text class="arrow-label" x="186" y="249">保存状态</text>
+
+  <rect class="box" x="24" y="104" width="176" height="64" rx="8"/>
+  <text class="name" x="112" y="132">用户与客户端</text>
+  <text class="sub" x="112" y="150">控制台 · API · 消息平台</text>
+
+  <rect class="focal" x="256" y="104" width="232" height="64" rx="8"/>
+  <text class="name" x="372" y="132">AstraBox 服务</text>
+  <text class="sub" x="372" y="150">会话 · 访问控制 · 实时输出</text>
+
+  <rect class="box" x="256" y="216" width="232" height="60" rx="8"/>
+  <text class="name" x="372" y="242">OpenSandbox 服务</text>
+  <text class="sub" x="372" y="260">Docker 或 Kubernetes</text>
+
+  <rect class="store" x="256" y="304" width="232" height="60" rx="8"/>
+  <text class="name" x="372" y="330">数据库</text>
+  <text class="sub" x="372" y="348">Session 事件 · 原生状态</text>
+
+  <rect class="box" x="568" y="88" width="240" height="64" rx="8"/>
+  <text class="name" x="688" y="116">沙箱内的 AstraBox 服务</text>
+  <text class="sub" x="688" y="134">连接 Agent 程序</text>
+
+  <rect class="box" x="568" y="176" width="240" height="64" rx="8"/>
+  <text class="name" x="688" y="204">Agent 程序</text>
+  <text class="sub" x="688" y="222">原生能力 · 扩展</text>
+
+  <rect class="box" x="568" y="276" width="240" height="64" rx="8"/>
+  <text class="name" x="688" y="304">沙箱内的应用</text>
+  <text class="sub" x="688" y="322">HTTP · WebSocket</text>
+
+  <rect class="box" x="888" y="132" width="168" height="64" rx="8"/>
+  <text class="name" x="972" y="160">模型服务</text>
+  <text class="sub" x="972" y="178">由部署者配置</text>
+
+  <line class="rule" x1="24" y1="432" x2="1056" y2="432"/>
+  <text class="eyebrow" x="24" y="456">图例</text>
+  <rect class="focal" x="112" y="448" width="16" height="10" rx="2"/>
+  <text class="legend-text" x="136" y="456">你部署的 AstraBox 服务</text>
+  <line class="edge" x1="280" y1="453" x2="304" y2="453"/>
+  <text class="legend-text" x="312" y="456">请求与实时输出</text>
+  <line class="edge-dashed" x1="408" y1="453" x2="432" y2="453"/>
+  <text class="legend-text" x="440" y="456">浏览器直接打开，不经过 AstraBox</text>
+  <line class="edge-out" x1="628" y1="453" x2="652" y2="453"/>
+  <text class="legend-text" x="660" y="456">离开沙箱的模型调用</text>
+</svg>

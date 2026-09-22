@@ -1,0 +1,108 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" id="fig-agent-mcp" viewBox="0 0 1080 456"
+     role="img" aria-labelledby="agent-mcp-title agent-mcp-desc">
+  <title id="agent-mcp-title">How a call from an MCP client reaches an Agent</title>
+  <desc id="agent-mcp-desc">An HTTP MCP client registers one AstraBox endpoint and sends one accepted credential with every call. The endpoint resolves the credential to an identity, applies the credential scope and current Agent authorization, and reaches the AstraBox Session where the Agent works. The client checks that Session for its state and recent messages.</desc>
+
+  <style data-standalone="true">
+    @media (prefers-color-scheme: dark) {
+      svg {
+        --ifm-background-color: #0e0e0e;
+        --fg-1: #ededed;
+        --fg-3: #909090;
+        --fg-4: #6f6f6f;
+        --line-strong: #383838;
+        --astra: #7877ff;
+        --astra-tint: #1a1b3a;
+      }
+    }
+  </style>
+
+  <style>
+    #fig-agent-mcp .box { fill: var(--ifm-background-color, #fafafa); stroke: var(--line-strong, #d4d4d4); stroke-width: 1 }
+    #fig-agent-mcp .focal { fill: var(--astra-tint, #ecebff); stroke: var(--astra, #5c5bff); stroke-width: 1.5 }
+    #fig-agent-mcp .mask { fill: var(--ifm-background-color, #fafafa) }
+    #fig-agent-mcp .edge { fill: none; stroke: var(--fg-4, #999999); stroke-width: 1.25 }
+    #fig-agent-mcp .edge-dashed { fill: none; stroke: var(--fg-4, #999999); stroke-width: 1.25; stroke-dasharray: 3 4 }
+    #fig-agent-mcp .name { fill: var(--fg-1, #0a0a0a); font: 600 12px Geist, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; text-anchor: middle }
+    #fig-agent-mcp .sub { fill: var(--fg-3, #666666); font: 400 9px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; text-anchor: middle }
+    #fig-agent-mcp .eyebrow { fill: var(--fg-3, #666666); font: 500 8px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.14em }
+    #fig-agent-mcp .arrow-label { fill: var(--fg-3, #666666); font: 400 8px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.06em; text-anchor: middle }
+    #fig-agent-mcp .legend-text { fill: var(--fg-3, #666666); font: 400 8px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.06em }
+    #fig-agent-mcp .rule { stroke: var(--line-strong, #d4d4d4); stroke-width: 0.8 }
+  </style>
+
+  <defs>
+    <marker id="agent-mcp-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="var(--fg-4, #999999)"/>
+    </marker>
+  </defs>
+
+  <!-- arrows first, then masks and their labels, then the boxes: nodes paint over the lines -->
+  <path class="edge" d="M 192 128 H 284" marker-end="url(#agent-mcp-arrow)"/>
+  <path class="edge" d="M 472 128 H 564" marker-end="url(#agent-mcp-arrow)"/>
+  <path class="edge" d="M 776 128 H 868" marker-end="url(#agent-mcp-arrow)"/>
+  <path class="edge-dashed" d="M 964 88 V 56 H 108 V 84" marker-end="url(#agent-mcp-arrow)"/>
+
+  <path class="edge" d="M 188 272 V 232 H 380"/>
+  <path class="edge" d="M 540 272 V 232 H 380"/>
+  <path class="edge" d="M 892 272 V 232 H 380"/>
+  <path class="edge" d="M 380 232 V 172" marker-end="url(#agent-mcp-arrow)"/>
+
+  <rect class="mask" x="200" y="108" width="80" height="12" rx="2"/>
+  <text class="arrow-label" x="240" y="117">ONE CREDENTIAL</text>
+  <rect class="mask" x="492" y="108" width="56" height="12" rx="2"/>
+  <text class="arrow-label" x="520" y="117">IDENTITY + SCOPE</text>
+  <rect class="mask" x="788" y="108" width="72" height="12" rx="2"/>
+  <text class="arrow-label" x="824" y="117">AUTHORIZED</text>
+  <rect class="mask" x="472" y="36" width="132" height="12" rx="2"/>
+  <text class="arrow-label" x="538" y="45">STATUS · RECENT MESSAGES</text>
+  <rect class="mask" x="390" y="195" width="132" height="12" rx="2"/>
+  <text class="arrow-label" x="456" y="204">ONE REMOTE MCP SERVER</text>
+
+  <rect class="box" x="24" y="88" width="168" height="80" rx="8"/>
+  <text class="name" x="108" y="116">MCP client</text>
+  <text class="sub" x="108" y="134">any compatible</text>
+  <text class="sub" x="108" y="150">HTTP MCP client</text>
+
+  <rect class="focal" x="288" y="88" width="184" height="80" rx="8"/>
+  <text class="name" x="380" y="116">MCP endpoint</text>
+  <text class="sub" x="380" y="134">POST /api/v1/mcp</text>
+  <text class="sub" x="380" y="150">registered once</text>
+
+  <rect class="box" x="568" y="88" width="208" height="80" rx="8"/>
+  <text class="name" x="672" y="116">Agent authorization</text>
+  <text class="sub" x="672" y="134">key scope + current access</text>
+  <text class="sub" x="672" y="150">on every tool call</text>
+
+  <rect class="box" x="872" y="88" width="184" height="80" rx="8"/>
+  <text class="name" x="964" y="116">Session</text>
+  <text class="sub" x="964" y="134">AstraBox work record</text>
+  <text class="sub" x="964" y="150">the Agent runs each task</text>
+
+  <text class="eyebrow" x="24" y="264">ACCEPTED CREDENTIALS</text>
+
+  <rect class="box" x="24" y="272" width="328" height="80" rx="8"/>
+  <text class="name" x="188" y="300">A key issued in the console</text>
+  <text class="sub" x="188" y="318">astrabox_mcp_ prefix · shown once</text>
+  <text class="sub" x="188" y="334">lives until revoked, or an expiry you set</text>
+
+  <rect class="box" x="376" y="272" width="328" height="80" rx="8"/>
+  <text class="name" x="540" y="300">An identity provider token</text>
+  <text class="sub" x="540" y="318">OIDC · introspection or UserInfo</text>
+  <text class="sub" x="540" y="334">the provider is asked every request</text>
+
+  <rect class="box" x="728" y="272" width="328" height="80" rx="8"/>
+  <text class="name" x="892" y="300">A JWT the deployment signs</text>
+  <text class="sub" x="892" y="318">verified locally · exp required</text>
+  <text class="sub" x="892" y="334">ends at exp, with no leeway</text>
+
+  <line class="rule" x1="24" y1="392" x2="1056" y2="392"/>
+  <text class="eyebrow" x="24" y="416">LEGEND</text>
+  <rect class="focal" x="112" y="408" width="16" height="12" rx="2"/>
+  <text class="legend-text" x="136" y="416">the endpoint you register once</text>
+  <line class="edge" x1="344" y1="413" x2="368" y2="413"/>
+  <text class="legend-text" x="376" y="416">one hop of a tool call</text>
+  <line class="edge-dashed" x1="560" y1="413" x2="584" y2="413"/>
+  <text class="legend-text" x="592" y="416">what get_status brings back</text>
+</svg>

@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+uv.lock
+
+# Node / frontend
+node_modules/
+frontend/dist/
+
+# Playwright browser e2e (e2e/) — generated artifacts
+.e2e/
+e2e/test-results/
+e2e/playwright-report/
+e2e/blob-report/
+e2e/.playwright/
+playwright/.cache/
+
+# Runtime state
+*.sqlite
+*.sqlite3
+*.sqlite-wal
+*.sqlite-shm
+/data/
+.env
+.env.local
+.env.*.local
+
+# OS / editor
+.DS_Store
+
+# local scratch
+e2e/_*.cjs
+astrabox/_frontend_dist/
+
+# Local state dir (the default ASTRABOX_STATE_DIR "./.astrabox"): session
+# workspaces, generated keys, and the bundled lifecycle server's server.toml.
+# Running the test suite creates it, so leaving it untracked-but-not-ignored
+# invites committing local state by accident.
+.astrabox/
+website/build/
+
+# Box-rendered Caddyfile with inlined demo secret (never commit)
+containers/caddy/Caddyfile.local
+containers/caddy.env
+frontend/test-results/
+e2e/test-results-*/

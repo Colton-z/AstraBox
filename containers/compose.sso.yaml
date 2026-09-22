@@ -1,0 +1,112 @@
+# AstraBox Community — bundled SSO overlay (Casdoor + the oidc identity mode).
+#
+# For deployments that want a real login page but don't run an IdP of their
+# own. Casdoor (Apache-2.0) provides the login UI, the user directory (with a
+# management console at the loopback port below), MFA, and social/enterprise
+# brokering (GitHub, Google, DingTalk, WeCom, Feishu, LDAP, SAML…); AstraBox
+# only runs the standard OIDC authorization-code dance against it — the same
+# three ASTRABOX_OIDC_* variables point at Keycloak/Zitadel/your IdP instead,
+# with this file as the reference wiring.
+#
+# Usage (overlay on the base stack):
+#
+#   scripts/compose.sh -f containers/compose.sso.yaml up
+#
+# First sign-in: user `admin`; read the initial password from the deployment's
+# `casdoor_admin_password` secret file. Browser and API OAuth client secrets
+# come from the sibling `oidc_client_secret` and `oidc_api_client_secret` files.
+# The values are rendered into Casdoor's one-time seed document inside its
+# container and never enter Compose environment metadata. Later restarts seed
+# missing objects only. Members of the Casdoor group `astrabox-admin` get the
+# AstraBox admin role.
+#
+# Split horizon, spelled out: the BROWSER reaches Casdoor at the published
+# http://127.0.0.1:8087 by default (the issuer — id_token `iss` is validated against it),
+# while the SERVER reaches it as http://casdoor:8000 over the compose network
+# (the internal issuer used for discovery, token exchange, and JWKS).
+
+services:
+  server:
+    environment:
+      ASTRABOX_WEB_IDENTITY: oidc
+      ASTRABOX_OIDC_ISSUER: ${ASTRABOX_OIDC_ISSUER:-http://127.0.0.1:${ASTRABOX_CASDOOR_HOST_PORT:-8087}}
+      # An explicit browser-management capability marker. Generic OIDC does not
+      # imply Casdoor, so the console never guesses this from the issuer type.
+      ASTRABOX_CASDOOR_ADMIN_URL: ${ASTRABOX_CASDOOR_ADMIN_URL:-${ASTRABOX_OIDC_ISSUER:-http://127.0.0.1:${ASTRABOX_CASDOOR_HOST_PORT:-8087}}}
+      ASTRABOX_CASDOOR_API_ACCESS_URL: ${ASTRABOX_CASDOOR_API_ACCESS_URL:-${ASTRABOX_OIDC_ISSUER:-http://127.0.0.1:${ASTRABOX_CASDOOR_HOST_PORT:-8087}}/applications/astrabox/astrabox-api}
+      # Server-side discovery/token exchange stays on the platform network.
+      # The browser issuer remains the loopback-published URL above.
+      ASTRABOX_OIDC_INTERNAL_ISSUER: http://casdoor:8000
+      ASTRABOX_OIDC_CLIENT_ID: ${ASTRABOX_OIDC_CLIENT_ID:-astrabox-console}
+      ASTRABOX_OIDC_CLIENT_SECRET_FILE: /run/secrets/oidc_client_secret
+      ASTRABOX_OIDC_API_CLIENT_ID: ${ASTRABOX_OIDC_API_CLIENT_ID:-astrabox-api}
+      ASTRABOX_OIDC_API_CLIENT_SECRET_FILE: /run/secrets/oidc_api_client_secret
+      ASTRABOX_OIDC_REDIRECT_URL: ${ASTRABOX_OIDC_REDIRECT_URL:-}
+    secrets:
+      - oidc_client_secret
+      - oidc_api_client_secret
+    depends_on:
+      casdoor:
+        condition: service_healthy
+
+  casdoor:
+    # Pin the exact version (Casdoor releases weekly); bump deliberately.
+    image: casbin/casdoor:3.128.0
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - platform
+      - database
+    entrypoint: ["/bin/sh", "/conf/astrabox-entrypoint.sh"]
+    environment:
+      # Casdoor officially supports these app.conf keys as environment
+      # overrides. It gets its own database and non-superuser login rather than
+      # sharing either AstraBox's records or LiteLLM's virtual-key tables.
+      driverName: postgres
+      CASDOOR_DATABASE_PASSWORD_FILE: /run/secrets/casdoor_database_password
+      CASDOOR_OIDC_CLIENT_SECRET_FILE: /run/secrets/oidc_client_secret
+      CASDOOR_OIDC_API_CLIENT_SECRET_FILE: /run/secrets/oidc_api_client_secret
+      CASDOOR_ADMIN_PASSWORD_FILE: /run/secrets/casdoor_admin_password
+      CASDOOR_OIDC_CLIENT_ID: ${ASTRABOX_OIDC_CLIENT_ID:-astrabox-console}
+      CASDOOR_OIDC_API_CLIENT_ID: ${ASTRABOX_OIDC_API_CLIENT_ID:-astrabox-api}
+      ASTRABOX_CONSOLE_ORIGIN: ${ASTRABOX_CONSOLE_ORIGIN:-http://127.0.0.1:${ASTRABOX_SERVER_HOST_PORT:-8088}}
+      dbName: casdoor
+      # Casdoor publishes this issuer in discovery and tokens. Keep it exactly
+      # aligned with the browser-facing AstraBox setting when the host port is
+      # changed for a second stack on the same machine.
+      origin: ${ASTRABOX_OIDC_ISSUER:-http://127.0.0.1:${ASTRABOX_CASDOOR_HOST_PORT:-8087}}
+    secrets:
+      - casdoor_database_password
+      - oidc_client_secret
+      - oidc_api_client_secret
+      - casdoor_admin_password
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/.well-known/openid-configuration"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+    ports:
+      # The browser uses loopback. The AstraBox server reaches Casdoor by service
+      # name and does not need a second bridge-gateway publication.
+      - "127.0.0.1:${ASTRABOX_CASDOOR_HOST_PORT:-8087}:8000"
+    # The pinned image runs as uid/gid 1000 and keeps `/` read-only to that
+    # account. Render the one-time seed, which contains two secrets, into a
+    # small non-persistent filesystem owned only by Casdoor.
+    tmpfs:
+      - /run/astrabox-casdoor:rw,noexec,nosuid,nodev,size=65536,mode=0700,uid=1000,gid=1000
+    volumes:
+      - ./casdoor/app.conf:/conf/app.conf:ro
+      - ./casdoor/entrypoint.sh:/conf/astrabox-entrypoint.sh:ro
+      - ./casdoor/init_data.json:/conf/init_data.template.json:ro
+      - ../website/static/img/astrabox-mark.svg:/web/build/static/astrabox-mark.svg:ro
+
+secrets:
+  oidc_client_secret:
+    file: ${ASTRABOX_LOCAL_DATABASE_SECRET_DIR:-../.astrabox/database-secrets}/oidc_client_secret
+  oidc_api_client_secret:
+    file: ${ASTRABOX_LOCAL_DATABASE_SECRET_DIR:-../.astrabox/database-secrets}/oidc_api_client_secret
+  casdoor_admin_password:
+    file: ${ASTRABOX_LOCAL_DATABASE_SECRET_DIR:-../.astrabox/database-secrets}/casdoor_admin_password

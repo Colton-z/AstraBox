@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# AstraBox — one conversation's own Codex stack, inside its isolated session.
+#
+# The shared-box counterpart of astrabox-codex-serve + astrabox-codex-forward
+# + the mirror: under the Agent-shared tenancy every conversation runs in its
+# own OpenSandbox isolated session as its own account, so the box-level
+# services (one server holding every thread in the box) do not apply. The
+# platform triggers this script through the engine adapter's launch
+# declaration; the binaries are the image's, already present — the trigger
+# carries only the outward port, and everything else per-conversation derives
+# from $HOME.
+#
+# Order is the readiness contract, exactly as the box-level forwarder
+# documents: the platform's gate is a TCP listen-wait on the outward port, so
+# the port may not accept until the app-server behind it completes a real
+# websocket upgrade — forward.py owns that proof and binds only after it.
+set -euo pipefail
+
+OUTWARD_PORT="${1:?usage: astrabox-codex-serve-conversation <outward-port>}"
+
+LOG_DIR="${HOME}/.astrabox-logs"
+mkdir -p "${LOG_DIR}"
+
+# The engine's process environment (model catalog, diagnostics), written into
+# this home by the platform's placement — box-create env cannot carry it
+# because the box may predate this Session. Required: a Codex without its
+# model catalog answers one message twice against this gateway.
+ENGINE_ENV_FILE="${HOME}/.astrabox-engine-env"
+if [ ! -f "${ENGINE_ENV_FILE}" ]; then
+  echo "astrabox-codex-conversation: ${ENGINE_ENV_FILE} is missing;" \
+       "the placement did not deliver this conversation's engine environment" >&2
+  exit 1
+fi
+# shellcheck disable=SC1090
+. "${ENGINE_ENV_FILE}"
+
+# Threads, config and auth live under this conversation's own home; the unix
+# socket lives beside them because /run is not this account's to write.
+export CODEX_HOME="${HOME}/.codex"
+CODEX_SOCKET="${HOME}/.astrabox-codex/app-server.sock"
+mkdir -p "${CODEX_HOME}" "$(dirname "${CODEX_SOCKET}")"
+rm -f "${CODEX_SOCKET}"
+
+python3 /opt/codex/model-catalog.py "${CODEX_HOME}"
+
+# This conversation's own mirror, watching this home's session root with the
+# deferred-target contract the box-level mirror already honours. State lives
+# under HOME because the session's /tmp is a root-owned tmpfs this account
+# cannot write.
+ASTRABOX_TRANSCRIPT_MIRROR_ROOT="${HOME}/.codex/sessions" \
+ASTRABOX_TRANSCRIPT_MIRROR_GLOB='*.jsonl' \
+ASTRABOX_TRANSCRIPT_MIRROR_NAMESPACE='codex/' \
+ASTRABOX_TRANSCRIPT_MIRROR_TARGET_FILE="${HOME}/.astrabox-mirror-target" \
+ASTRABOX_TRANSCRIPT_MIRROR_STATE_DIR="${HOME}/.astrabox-mirror-state" \
+  python3 /opt/codex/mirror.py >>"${LOG_DIR}/mirror.log" 2>&1 &
+
+env \
+  "CODEX_HOME=${CODEX_HOME}" \
+  "RUST_LOG=${ASTRABOX_CODEX_LOG:-codex=info,codex_app_server=info}" \
+  "LOG_FORMAT=${ASTRABOX_CODEX_LOG_FORMAT:-json}" \
+  /opt/codex/node_modules/.bin/codex app-server \
+  --listen "unix://${CODEX_SOCKET}" \
+  >>"${LOG_DIR}/codex.log" 2>&1 &
+
+# forward.py proves a completed upgrade before binding the outward port, and
+# strips the extension offer the app-server refuses — both halves documented
+# in that file. exec: the forwarder IS this conversation's published face.
+exec env \
+  "ASTRABOX_CODEX_SOCKET=${CODEX_SOCKET}" \
+  "ASTRABOX_CODEX_LISTEN_PORT=${OUTWARD_PORT}" \
+  python3 /opt/codex/forward.py

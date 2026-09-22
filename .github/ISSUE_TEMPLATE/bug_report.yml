@@ -1,0 +1,79 @@
+name: Bug report
+description: Something in AstraBox is broken or behaving unexpectedly.
+title: "[bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug. The more of the environment fields you fill in,
+        the faster we can reproduce it. Please redact any secrets (API keys,
+        tokens) from logs before pasting.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: The actual behavior, plus the exact steps to reproduce it.
+      placeholder: |
+        1. Started the stack with ...
+        2. Sent a turn that ...
+        3. Observed ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen?
+      description: The behavior you expected instead.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: deployment-mode
+    attributes:
+      label: Deployment mode
+      description: How were you running AstraBox when this happened?
+      options:
+        - Docker quickstart (containers/compose.yaml)
+        - Local dev stack (make dev)
+        - Custom / self-assembled deployment
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: OS
+      description: Operating system and version.
+      placeholder: "e.g. Ubuntu 24.04 / macOS 14.5 / Windows 11 + WSL2"
+    validations:
+      required: true
+
+  - type: input
+    id: docker-version
+    attributes:
+      label: Docker version
+      description: Output of `docker version` (server + client). Write "n/a" if you are not using Docker.
+      placeholder: "e.g. 27.1.1"
+    validations:
+      required: true
+
+  - type: input
+    id: engine-model
+    attributes:
+      label: Engine + model
+      description: Which engine (e.g. claude_code, assistant) and which model / endpoint you used.
+      placeholder: "e.g. claude_code + claude-sonnet via an Anthropic-compatible endpoint"
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Server / container logs around the failure. This is rendered as code, so no backticks needed.
+      render: shell
+    validations:
+      required: false

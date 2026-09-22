@@ -1,0 +1,145 @@
+#!/usr/bin/env bash
+# AstraBox — one conversation's own harness stack, inside its isolated session.
+#
+# Each per-account conversation runs a harness, forwarder and transcript
+# mirror inside its OpenSandbox isolated session. The adapter's launch
+# declaration invokes this image-provided script with the conversation's
+# HOME, TMPDIR and outward port.
+#
+# Order is the readiness contract. The platform's gate is a TCP listen-wait on
+# the outward port, so that port may not accept until the harness behind it
+# ANSWERS — socat binds in milliseconds while the harness composes its profile
+# for about a second, and a gate has to spend the time that separates the two
+# mechanisms (see astrabox-dsh-forward for the measurement). The mirror starts
+# before the forwarder for the same reason the box-level one starts at boot:
+# nothing may be able to talk to the harness before its log has a relay.
+set -euo pipefail
+
+# The outward port is the platform's placement rule (derived from this
+# conversation's uid). The loopback upstream lives one span above it —
+# outward is 9000..9499, upstream 9500..9999 — so any two conversations in
+# one box get four distinct ports without a tracker.
+OUTWARD_PORT="${1:?usage: astrabox-dsh-serve-conversation <outward-port>}"
+UPSTREAM_PORT=$(( OUTWARD_PORT + 500 ))
+
+# The session runs this as the conversation's own account with HOME set by
+# the platform's bootstrap; the harness keeps its state under $HOME/.dsh and
+# the vendor derives that itself.
+LOG_DIR="${HOME}/.astrabox-logs"
+mkdir -p "${LOG_DIR}"
+
+# The engine's process environment (model route, credential placeholder,
+# workspace variable), written into this home by the platform's placement —
+# it cannot ride box-create env because the box may predate this Session.
+# Required: a harness started without its model route would boot healthy and
+# fail on the first turn, three layers from this cause.
+ENGINE_ENV_FILE="${HOME}/.astrabox-engine-env"
+if [ ! -f "${ENGINE_ENV_FILE}" ]; then
+  echo "astrabox-dsh-conversation: ${ENGINE_ENV_FILE} is missing;" \
+       "the placement did not deliver this conversation's engine environment" >&2
+  exit 1
+fi
+# shellcheck disable=SC1090
+. "${ENGINE_ENV_FILE}"
+
+# Same fence derivation as the box-level server: the session shares the box's
+# network namespace (that is what makes the outward port reachable at all),
+# so the authorities the box answers under are the ones this harness must
+# trust. Port-less entries match any port.
+default_gateway() {
+  # Capture output even if awk's early exit makes ip route receive SIGPIPE
+  # under pipefail. Consult /proc only when no address was captured, then
+  # emit at most one line: --trusted-host rejects a multiline authority.
+  local gateway=""
+  gateway=$(ip route 2>/dev/null | awk '/^default/ {print $3; exit}') || true
+  if [ -z "${gateway}" ]; then
+    # /proc has the same answer when iproute2 is absent: the little-endian hex
+    # gateway of the default route (destination 00000000).
+    gateway=$(awk '$2 == "00000000" && $3 != "00000000" {
+      g = $3
+      printf "%d.%d.%d.%d\n",
+        strtonum("0x" substr(g,7,2)), strtonum("0x" substr(g,5,2)),
+        strtonum("0x" substr(g,3,2)), strtonum("0x" substr(g,1,2))
+      exit
+    }' /proc/net/route 2>/dev/null) || true
+  fi
+  printf '%s\n' "${gateway%%$'\n'*}"
+}
+
+declare -a trusted=()
+declare -A seen=()
+for authority in \
+  $(hostname -I 2>/dev/null || true) \
+  "$(hostname 2>/dev/null || true)" \
+  "$(default_gateway)"
+do
+  [ -n "${authority}" ] || continue
+  # Whitespace inside an authority is a derivation that went wrong, and the
+  # harness rejects it at boot with an error three layers from the cause.
+  case "${authority}" in
+    *[[:space:]]*)
+      printf 'astrabox-dsh: refusing a malformed trusted authority: %q\n' \
+        "${authority}" >&2
+      exit 78
+      ;;
+  esac
+  [ -n "${seen[$authority]:-}" ] && continue
+  seen[$authority]=1
+  trusted+=(--trusted-host "${authority}")
+done
+# Printed like the box-level server prints it. Without this the harness's own
+# refusal ("trustedHosts entry ... is not a bare host[:port] authority") is
+# the first and only sign of a bad derivation, and it arrives with no way to
+# tell which of the three sources produced the value.
+printf 'astrabox-dsh-conversation: trusted authorities: %s\n' \
+  "${trusted[*]:-<none>}" >&2
+
+PROFILE_PATCH="${DSH_PROFILE_PATCH:-/opt/dsh/profile.patch.yml}"
+if [ ! -f "${PROFILE_PATCH}" ]; then
+  echo "astrabox-dsh-conversation: profile overlay ${PROFILE_PATCH} is missing;" \
+       "this conversation's sessions cannot be mirrored" >&2
+  exit 1
+fi
+
+python3 /opt/dsh/web.py serve /opt/dsh/node_modules/.bin/dsh --profile web \
+  --patch "${PROFILE_PATCH}" \
+  --no-open \
+  --host 127.0.0.1 \
+  --port "${UPSTREAM_PORT}" \
+  "${trusted[@]}" \
+  >>"${LOG_DIR}/dsh.log" 2>&1 &
+
+# This conversation's own mirror, watching this HOME's session root. The
+# platform session identity is deferred: the claim writes the target file
+# into this home before it creates the engine conversation, exactly the
+# prepared-slot contract the box-level mirror already honours. State goes
+# under HOME because the session's /tmp is a root-owned tmpfs this account
+# cannot write (the same trap the Claude runner's spool documented).
+ASTRABOX_TRANSCRIPT_MIRROR_ROOT="${HOME}/.dsh/sessions" \
+ASTRABOX_TRANSCRIPT_MIRROR_GLOB='*.jsonl' \
+ASTRABOX_TRANSCRIPT_MIRROR_NAMESPACE='dsh/' \
+ASTRABOX_TRANSCRIPT_MIRROR_TARGET_FILE="${HOME}/.astrabox-mirror-target" \
+ASTRABOX_TRANSCRIPT_MIRROR_STATE_DIR="${HOME}/.astrabox-mirror-state" \
+  python3 /opt/dsh/mirror.py >>"${LOG_DIR}/mirror.log" 2>&1 &
+
+# `session/list` needs no session to exist; a refused connection, a partial
+# boot and an error envelope all mean the same thing here: not yet.
+probe() {
+  python3 /opt/dsh/web.py probe "${UPSTREAM_PORT}"
+}
+
+DEADLINE_SECONDS="${ASTRABOX_DSH_UPSTREAM_WAIT_SECONDS:-120}"
+deadline=$(( SECONDS + DEADLINE_SECONDS ))
+until probe 2>/dev/null; do
+  if [ "$SECONDS" -ge "$deadline" ]; then
+    probe || true
+    echo "astrabox-dsh-conversation: harness on 127.0.0.1:${UPSTREAM_PORT}" \
+         "did not answer within ${DEADLINE_SECONDS}s; refusing to publish ${OUTWARD_PORT}" >&2
+    exit 1
+  fi
+  sleep 0.2
+done
+echo "astrabox-dsh-conversation: harness answers; publishing ${OUTWARD_PORT}"
+
+exec /usr/bin/socat -d "TCP-LISTEN:${OUTWARD_PORT},fork,reuseaddr" \
+  "TCP:127.0.0.1:${UPSTREAM_PORT}"

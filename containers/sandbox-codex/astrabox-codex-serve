@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+# AstraBox — serve `codex app-server` inside the sandbox.
+#
+# The image contract's other half: supervisord starts this at boot and the
+# codex adapter dials the forwarded port. One server per box holds every
+# conversation in it — a thread is a server-side object, not a process — so
+# nothing here is per-session and a pooled box can exist before the session
+# that claims it.
+#
+# The composition is the vendor's: `app-server` is the same interface the VS
+# Code extension and the desktop app run on. AstraBox supplies the box, the
+# credential, the workspace and the transport, and configures nothing about
+# what Codex IS.
+set -euo pipefail
+
+# ── which listener, and why not the obvious one ──────────────────────────
+#
+# `--listen ws://IP:PORT` would put the protocol on a TCP port directly and is
+# the shape this platform already runs for another engine. It is not used
+# here, because the vendor marks it experimental in the same paragraph that
+# documents it: "Websocket transport is currently experimental and
+# unsupported. Do not rely on it for production workloads."
+#
+# The unix listener carries the identical protocol — the same HTTP Upgrade
+# handshake, the same JSON-RPC frames — and is the transport the vendor's own
+# remote path runs on (`codex app-server proxy` pipes this socket to stdio for
+# an SSH client). A stock TCP forwarder publishes it, so what reaches the
+# adapter is a plain websocket and the supported listener is the one serving
+# it.
+#
+# It also removes an authentication question rather than answering it: the
+# websocket listener demands `--ws-auth` for non-loopback binds, which would
+# put a secret in the image or in this box's environment. A unix socket has
+# file permissions instead, and they are the workload account's own.
+CODEX_SOCKET="${ASTRABOX_CODEX_SOCKET:-/run/astrabox-codex/app-server.sock}"
+
+# `codex app-server daemon` is NOT used, and the reason is worth recording so
+# nobody reaches for it later: it requires the standalone install the Codex
+# installer manages ("managed standalone Codex install not found at
+# $CODEX_HOME/packages/standalone/current/codex"), which the npm distribution
+# this image pins does not create. The daemon is a manager for the same
+# listener this starts directly.
+
+# ── homes and ownership ──────────────────────────────────────────────────
+#
+# Codex keeps threads, config and auth under $CODEX_HOME, and refuses to place
+# helper binaries under a temporary directory, so this is a real directory in
+# the workload account's home rather than anything under /tmp.
+export CODEX_HOME="${CODEX_HOME:-/home/${USER}/.codex}"
+mkdir -p "${CODEX_HOME}" "$(dirname "${CODEX_SOCKET}")"
+
+# The model catalog, when the platform sends one — written by the shared
+# helper so the box-level server and a conversation's own instance cannot
+# drift on what the catalog IS (see astrabox-model-catalog.py for why the
+# file is load-bearing).
+python3 /opt/codex/model-catalog.py "${CODEX_HOME}"
+
+chown -R "${USER}:${USER}" "${CODEX_HOME}" "$(dirname "${CODEX_SOCKET}")"
+
+# The platform pre-creates the conversation's working directory at box-create
+# time and Docker makes a container's WorkingDir as root. This program starts
+# as root, hands the directory to the account the server runs as, and drops.
+# The same lesson as the harness image, for the same reason: an agent whose
+# cwd is root-owned cannot create a file in its own workspace and reports it
+# as a tool error rather than as a broken box. mkdir first because the
+# platform's own creation races this boot; its create is a no-op on a
+# directory that already exists, so the ownership set here survives.
+WORKSPACE="${ASTRABOX_WORKSPACE:-}"
+if [ -n "${WORKSPACE}" ]; then
+  mkdir -p "${WORKSPACE}"
+  chown "${USER}:${USER}" "${WORKSPACE}"
+  printf 'astrabox-codex: workspace %s -> %s\n' \
+    "${WORKSPACE}" "$(stat -c '%U:%G %a' "${WORKSPACE}" 2>/dev/null || echo unknown)"
+else
+  printf 'astrabox-codex: ASTRABOX_WORKSPACE is unset; the agent will not be able to write in its workspace\n' >&2
+fi
+
+# A stale socket from a previous run refuses the bind.
+rm -f "${CODEX_SOCKET}"
+
+# The engine's own diagnostics, on by default. Without them a turn that Codex
+# itself refuses is invisible from outside the box: the platform sees a turn
+# that ended in error and the log holds only this script's startup line, so
+# every such failure costs a round trip to learn what the vendor already knew.
+# `RUST_LOG` and `LOG_FORMAT` are the vendor's own controls, and supervisord
+# already captures this program's stderr.
+exec runuser -u "${USER}" -- env \
+  "CODEX_HOME=${CODEX_HOME}" \
+  "HOME=/home/${USER}" \
+  "RUST_LOG=${ASTRABOX_CODEX_LOG:-codex=info,codex_app_server=info}" \
+  "LOG_FORMAT=${ASTRABOX_CODEX_LOG_FORMAT:-json}" \
+  /opt/codex/node_modules/.bin/codex app-server \
+  --listen "unix://${CODEX_SOCKET}"

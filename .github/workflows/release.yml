@@ -1,0 +1,214 @@
+# Publishes what a first-time user installs, on every version tag:
+#
+#   ghcr.io/<owner>/astrabox-<component>   one image per containers/<component>/Dockerfile:
+#     server                               the platform (embedded gateway +
+#                                          lifecycle server included)
+#     sandbox-claude-code, sandbox-codex,  the per-session sandbox image of each
+#     sandbox-deepseek-harness,            bundled Agent program
+#     sandbox-hermes, sandbox-pi
+#     workspace-mounter                    the host-side helper for persistent
+#                                          workspaces
+#   astrabox-deploy-<version>.tar.gz       the Compose bundle scripts/install.sh
+#                                          installs, attached to a GitHub release
+#
+# Images build on NATIVE runners (public repos get arm runners free; QEMU
+# cross-builds of the heavy Python/npm layers would take an hour), pushed by
+# digest per architecture and merged into one tag afterwards. Every image is
+# amd64 + arm64 except workspace-mounter, which is amd64 only: its Dockerfile
+# downloads the amd64 mergerfs release archive and refuses other targets.
+#
+# Tagging: `v1.2.3` → `1.2.3` + `latest`. A manual dispatch publishes `edge`
+# from the chosen ref — useful for release rehearsal without minting a version.
+#
+# The version tag must equal pyproject.toml's version. The server names the
+# sandbox images it runs by its own package version
+# (astrabox/config/release_images.py), so images published under any other tag
+# would be ones no server asks for.
+#
+# The GitHub release, which is what the installer resolves as "latest", is
+# created only after every image manifest exists. A failed build of any image
+# or architecture skips every merge, so nothing is tagged; a failed merge can
+# leave the other images tagged, but no release is created.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: version
+        name: Tag matches pyproject version
+        run: |
+          version="$(grep -m1 '^version = ' pyproject.toml | cut -d'"' -f2)"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]] && [ "${GITHUB_REF_NAME#v}" != "$version" ]; then
+            echo "tag $GITHUB_REF_NAME disagrees with pyproject version $version"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        component:
+          - server
+          - sandbox-claude-code
+          - sandbox-codex
+          - sandbox-deepseek-harness
+          - sandbox-hermes
+          - sandbox-pi
+          - workspace-mounter
+        runner:
+          - os: ubuntu-24.04
+            arch: amd64
+          - os: ubuntu-24.04-arm
+            arch: arm64
+        exclude:
+          - component: workspace-mounter
+            runner:
+              os: ubuntu-24.04-arm
+              arch: arm64
+    runs-on: ${{ matrix.runner.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # GHCR image paths must be lowercase; the repo owner may not be.
+      - id: repo
+        run: echo "owner=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: containers/${{ matrix.component }}/Dockerfile
+          platforms: linux/${{ matrix.runner.arch }}
+          # Push by digest only; the merge job below owns the tags.
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ steps.repo.outputs.owner }}/astrabox-${{ matrix.component }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=astrabox-${{ matrix.component }}-${{ matrix.runner.arch }}
+          cache-to: type=gha,mode=max,scope=astrabox-${{ matrix.component }}-${{ matrix.runner.arch }}
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests/${{ matrix.component }}
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${{ matrix.component }}/${digest#sha256:}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.component }}-${{ matrix.runner.arch }}
+          path: /tmp/digests/${{ matrix.component }}/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    needs: build
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        component:
+          - server
+          - sandbox-claude-code
+          - sandbox-codex
+          - sandbox-deepseek-harness
+          - sandbox-hermes
+          - sandbox-pi
+          - workspace-mounter
+    steps:
+      - id: repo
+        run: echo "owner=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: digests-${{ matrix.component }}-*
+          path: /tmp/digests
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ steps.repo.outputs.owner }}/astrabox-${{ matrix.component }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=raw,value=edge,enable=${{ github.event_name == 'workflow_dispatch' }}
+
+      - name: Create multi-arch manifest
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.REGISTRY }}/${{ steps.repo.outputs.owner }}/astrabox-${{ matrix.component }}@sha256:%s ' *)
+
+      # Block scalar, not a plain one: the `: ` in `cut -d: -f2` reads as a
+      # mapping separator to YAML and makes the whole workflow unloadable.
+      - name: Inspect
+        run: |
+          docker buildx imagetools inspect "${{ env.REGISTRY }}/${{ steps.repo.outputs.owner }}/astrabox-${{ matrix.component }}:$(jq -r '.tags[0]' <<< "$DOCKER_METADATA_OUTPUT_JSON" | cut -d: -f2)"
+
+  # The installer's input. Built from the tagged commit by the same script CI's
+  # installer workflow uses, then published with the release only after every
+  # image it names exists.
+  bundle:
+    needs: [version, merge]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the deployment bundle
+        run: scripts/build-release-bundle.sh dist
+
+      - name: Publish the GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          assets=(dist/astrabox-deploy-"$VERSION".tar.gz dist/astrabox-deploy-"$VERSION".tar.gz.sha256)
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "${assets[@]}" \
+              --verify-tag --title "AstraBox $VERSION" --generate-notes
+          fi
+
+      # A manual dispatch keeps the bundle for inspection, matching what `edge`
+      # does for the images. It names the pyproject version, whose images a
+      # dispatch does not publish, so it is not an installable release.
+      - uses: actions/upload-artifact@v4
+        if: github.event_name == 'workflow_dispatch'
+        with:
+          name: deploy-bundle
+          path: dist/
+          if-no-files-found: error

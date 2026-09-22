@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" id="fig-adding-tools" viewBox="0 0 1080 576"
+     role="img" aria-labelledby="adding-tools-title adding-tools-desc">
+  <title id="adding-tools-title">Choose an MCP connection type and configuration source</title>
+  <desc id="adding-tools-desc">An MCP server is either remote over HTTP or SSE, or local over stdio. A remote definition can come from the Agent, an administrator-managed record, or a Plugin. Connection type and configuration source are separate choices.</desc>
+
+  <style data-standalone="true">
+    @media (prefers-color-scheme: dark) {
+      svg {
+        --ifm-background-color: #0e0e0e;
+        --fg-1: #ededed;
+        --fg-3: #909090;
+        --fg-4: #6f6f6f;
+        --line-strong: #383838;
+        --astra: #7877ff;
+        --astra-tint: #1a1b3a;
+      }
+    }
+  </style>
+
+  <style>
+    #fig-adding-tools .box { fill: var(--ifm-background-color, #fafafa); stroke: var(--line-strong, #d4d4d4); stroke-width: 1 }
+    #fig-adding-tools .focal { fill: var(--astra-tint, #ecebff); stroke: var(--astra, #5c5bff); stroke-width: 1.5 }
+    #fig-adding-tools .mask { fill: var(--ifm-background-color, #fafafa) }
+    #fig-adding-tools .edge { fill: none; stroke: var(--fg-4, #999999); stroke-width: 1.25 }
+    #fig-adding-tools .name { fill: var(--fg-1, #0a0a0a); font: 600 12px Geist, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; text-anchor: middle }
+    #fig-adding-tools .sub { fill: var(--fg-3, #666666); font: 400 9px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; text-anchor: middle }
+    #fig-adding-tools .eyebrow { fill: var(--fg-3, #666666); font: 500 8px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.14em }
+    #fig-adding-tools .arrow-label { fill: var(--fg-3, #666666); font: 400 8px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.06em; text-anchor: middle }
+    #fig-adding-tools .legend-text { fill: var(--fg-3, #666666); font: 400 8px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.06em }
+    #fig-adding-tools .rule { stroke: var(--line-strong, #d4d4d4); stroke-width: 0.8 }
+  </style>
+
+  <defs>
+    <marker id="adding-tools-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="var(--fg-4, #999999)"/>
+    </marker>
+  </defs>
+
+  <!-- column headers -->
+  <text class="eyebrow" x="24" y="44">ASK IN THIS ORDER</text>
+  <line class="rule" x1="24" y1="56" x2="368" y2="56"/>
+  <text class="eyebrow" x="560" y="44">THE CONFIGURED CONNECTION</text>
+  <line class="rule" x1="560" y1="56" x2="1056" y2="56"/>
+
+  <!-- arrows first: the boxes paint over the lines -->
+  <path class="edge" d="M 368 108 H 552" marker-end="url(#adding-tools-arrow)"/>
+  <path class="edge" d="M 196 144 V 180" marker-end="url(#adding-tools-arrow)"/>
+  <path class="edge" d="M 368 220 H 552" marker-end="url(#adding-tools-arrow)"/>
+  <path class="edge" d="M 196 256 V 292" marker-end="url(#adding-tools-arrow)"/>
+  <path class="edge" d="M 368 332 H 552" marker-end="url(#adding-tools-arrow)"/>
+  <path class="edge" d="M 196 368 V 444 H 552" marker-end="url(#adding-tools-arrow)"/>
+
+  <rect class="mask" x="412" y="88" width="96" height="12" rx="2"/>
+  <text class="arrow-label" x="460" y="97">LOCAL STDIO</text>
+  <rect class="mask" x="204" y="156" width="100" height="12" rx="2"/>
+  <text class="arrow-label" x="254" y="165">REMOTE HTTP / SSE</text>
+  <rect class="mask" x="420" y="200" width="80" height="12" rx="2"/>
+  <text class="arrow-label" x="460" y="209">YES</text>
+  <rect class="mask" x="204" y="268" width="104" height="12" rx="2"/>
+  <text class="arrow-label" x="256" y="277">AGENT OR PLUGIN</text>
+  <rect class="mask" x="400" y="312" width="120" height="12" rx="2"/>
+  <text class="arrow-label" x="460" y="321">PLUGIN</text>
+  <rect class="mask" x="204" y="384" width="124" height="12" rx="2"/>
+  <text class="arrow-label" x="266" y="393">AGENT</text>
+
+  <rect class="box" x="24" y="72" width="344" height="72" rx="8"/>
+  <text class="name" x="196" y="102">Is the MCP server remote or local?</text>
+  <text class="sub" x="196" y="120">HTTP / SSE, or a stdio command</text>
+
+  <rect class="box" x="24" y="184" width="344" height="72" rx="8"/>
+  <text class="name" x="196" y="214">Should administrators manage the definition?</text>
+  <text class="sub" x="196" y="232">one remote-server record assigned to Agents</text>
+
+  <rect class="box" x="24" y="296" width="344" height="72" rx="8"/>
+  <text class="name" x="196" y="326">Where does the definition live?</text>
+  <text class="sub" x="196" y="344">in the Agent, or in a Plugin</text>
+
+  <rect class="box" x="560" y="72" width="496" height="72" rx="8"/>
+  <text class="name" x="808" y="96">The Agent program starts it in the sandbox</text>
+  <text class="sub" x="808" y="114">stdio · npx, uvx, node, python3, git on PATH</text>
+  <text class="sub" x="808" y="128">definition in the Agent or a Plugin</text>
+
+  <rect class="focal" x="560" y="184" width="496" height="72" rx="8"/>
+  <text class="name" x="808" y="208">The Agent program connects to the remote server</text>
+  <text class="sub" x="808" y="226">administrator-managed definition · assigned to Agents</text>
+  <text class="sub" x="808" y="240">a Vault credential can target its exact URL</text>
+
+  <rect class="box" x="560" y="296" width="496" height="72" rx="8"/>
+  <text class="name" x="808" y="320">The Agent program connects to the remote server</text>
+  <text class="sub" x="808" y="338">definition from .mcp.json or plugin.json</text>
+  <text class="sub" x="808" y="352">managed credentials use an Agent or admin record</text>
+
+  <rect class="box" x="560" y="408" width="496" height="72" rx="8"/>
+  <text class="name" x="808" y="432">The Agent program connects to the remote server</text>
+  <text class="sub" x="808" y="450">the Agent entry carries the program's HTTP type + URL</text>
+  <text class="sub" x="808" y="464">a Vault credential can target its exact URL</text>
+
+  <line class="rule" x1="24" y1="520" x2="1056" y2="520"/>
+  <text class="eyebrow" x="24" y="544">LEGEND</text>
+  <rect class="focal" x="112" y="536" width="16" height="12" rx="2"/>
+  <text class="legend-text" x="136" y="544">administrator-managed configuration · not a third connection type</text>
+  <text class="eyebrow" x="520" y="544">NOTE</text>
+  <text class="legend-text" x="560" y="544">a personal OAuth grant is the signed-in user's own connection</text>
+</svg>

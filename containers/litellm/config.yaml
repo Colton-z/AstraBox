@@ -1,0 +1,171 @@
+# LiteLLM proxy config for the AstraBox compose stack.
+#
+# AstraBox delegates multi-provider model connectivity to LiteLLM instead of
+# implementing per-vendor adapters. Claude Code calls the proxy's Anthropic
+# /v1/messages endpoint; Hermes calls its OpenAI /chat/completions endpoint.
+# This file publishes the protocol-specific route names each client selects
+# and decides which upstream serves each one. Docs:
+# https://docs.litellm.ai/docs/simple_proxy
+#
+# The wildcard entries below route by model-name prefix using whichever provider
+# keys you exported (unset keys simply make that family unavailable). Replace or
+# extend with pinned entries for production.
+
+# The platform MCP facade is registered once. LiteLLM authenticates the caller
+# through the shared OIDC adapter and forwards that same Authorization header;
+# AstraBox then evaluates the caller's live Agent ACL on every tool call.
+mcp_servers:
+  astrabox_agents:
+    transport: "http"
+    url: "http://127.0.0.1:8000/api/v1/mcp"
+    auth_type: "none"
+    allow_all_keys: true
+    extra_headers: ["Authorization"]
+
+  # Who holds the upstream credential is the operator's choice, and both work.
+  #
+  #   the GATEWAY holds it — add `auth_type: "bearer_token"` and
+  #   `authentication_token: "<token>"` here. LiteLLM attaches
+  #   `Authorization: Bearer <token>` to its own upstream call, and the sandbox
+  #   never learns the credential exists. Note the value is literal: the MCP
+  #   server loader reads it straight from this file and does not resolve
+  #   `os.environ/` the way `model_list` entries do.
+  #
+  #   the CLIENT carries it — leave `auth_type: "none"`. The caller sends
+  #   `x-mcp-bright_data-authorization`, which LiteLLM consumes itself and
+  #   rewrites into the upstream Authorization header, so no `extra_headers`
+  #   forwarding entry is needed. Something has to put that header on the
+  #   request, and nothing in the platform does: a catalogue server's config
+  #   comes wholly from its provider, so an Agent has no entry point for one.
+  #
+  # Catalogue metadata only as shipped, which means anonymous upstream calls.
+  bright_data:
+    transport: "http"
+    url: "https://mcp.brightdata.com/mcp"
+    auth_type: "none"
+    allow_all_keys: true
+    description: "Web search and scraping through the hosted Bright Data MCP server"
+
+model_list:
+  # Keep the provider's full model id in the destination pattern. For example,
+  # `claude-sonnet-*` becomes `anthropic/claude-sonnet-*`, not
+  # `anthropic/sonnet-*`. ANTHROPIC_BASE_URL is optional.
+  - model_name: "claude-*"
+    litellm_params:
+      model: "anthropic/claude-*"
+      api_key: os.environ/ANTHROPIC_API_KEY
+      api_base: os.environ/ANTHROPIC_BASE_URL
+
+  # Custom Anthropic-compatible services can use the provider-prefixed route.
+  # `anthropic/provider-model-id` is sent upstream as `provider-model-id`.
+  - model_name: "anthropic/*"
+    litellm_params:
+      model: "anthropic/*"
+      api_key: os.environ/ANTHROPIC_API_KEY
+      api_base: os.environ/ANTHROPIC_BASE_URL
+
+  # One OpenAI-compatible service at a base URL of the operator's choice.
+  # `openai-compatible/provider-model-id` is sent to OPENAI_COMPATIBLE_BASE_URL
+  # as `provider-model-id` over Chat Completions. Its key has a name of its own
+  # so that it never reaches OpenAI through the `gpt-*` route below.
+  - model_name: "openai-compatible/*"
+    litellm_params:
+      model: "openai/*"
+      api_key: os.environ/OPENAI_COMPATIBLE_API_KEY
+      api_base: os.environ/OPENAI_COMPATIBLE_BASE_URL
+
+  # Preserve `gpt-` and `gemini-` for those providers in the same way.
+  - model_name: "gpt-*"
+    litellm_params:
+      model: "openai/gpt-*"
+      api_key: os.environ/OPENAI_API_KEY
+
+  - model_name: "gemini-*"
+    litellm_params:
+      model: "gemini/gemini-*"
+      api_key: os.environ/GEMINI_API_KEY
+
+  # DeepSeek — PINNED, not a wildcard like the three above. The wildcard form
+  # treats everything after the prefix as the upstream model name, and DeepSeek's
+  # own names already begin with `deepseek-`, so `deepseek-flash` would be
+  # sent upstream as `flash` and rejected by the vendor.
+  #
+  # Keep each route's destination model aligned with the identifiers returned
+  # by `GET https://api.deepseek.com/v1/models`; unsupported names are rejected.
+  # The public Anthropic aliases are protocol-qualified so an Agent can select
+  # the native Messages route explicitly.
+  # DeepSeek publishes native OpenAI and Anthropic surfaces. Keep one explicit
+  # route for each wire: Codex uses Responses, Hermes/DSH/pi use Chat
+  # Completions, and Claude Code uses Messages. Sending Claude Code through
+  # the OpenAI route makes LiteLLM translate tool histories between protocols,
+  # where a valid multi-step tool result can become orphaned.
+  - model_name: "deepseek-flash"
+    litellm_params:
+      model: "openai/deepseek-flash"
+      api_base: "https://api.deepseek.com"
+      api_key: os.environ/DEEPSEEK_API_KEY
+
+  - model_name: "anthropic/deepseek-flash"
+    litellm_params:
+      model: "anthropic/deepseek-flash"
+      api_base: "https://api.deepseek.com/anthropic"
+      api_key: os.environ/DEEPSEEK_API_KEY
+
+  - model_name: "deepseek-v4-pro"
+    litellm_params:
+      model: "openai/deepseek-v4-pro"
+      api_base: "https://api.deepseek.com"
+      api_key: os.environ/DEEPSEEK_API_KEY
+
+  - model_name: "anthropic/deepseek-v4-pro"
+    litellm_params:
+      model: "anthropic/deepseek-v4-pro"
+      api_base: "https://api.deepseek.com/anthropic"
+      api_key: os.environ/DEEPSEEK_API_KEY
+
+litellm_settings:
+  # Anthropic-format clients may send params an upstream doesn't accept;
+  # dropping them beats a 400 for cross-provider routing.
+  drop_params: true
+
+  # LLM-call observability (bring-your-own Langfuse). Every request/response
+  # through this gateway — tokens, cost, latency, prompt/completion — is emitted
+  # to your Langfuse project. This is the ecosystem-standard litellm mechanism;
+  # AstraBox itself writes no tracing code (all model traffic already transits
+  # this proxy — the endpoint_provider seam).
+  #
+  # INERT BY DEFAULT: the langfuse logger only ships spans when
+  # LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY (and optional LANGFUSE_HOST — cloud
+  # or self-hosted) are set on THIS litellm container. compose.yaml forwards
+  # those three from the host env with empty defaults; with them absent the
+  # bundled langfuse SDK self-disables ("Langfuse client is disabled since no
+  # public_key was provided") and the proxy runs normally — verified against
+  # v1.90.3 (langfuse 2.59.7): no crash, no failed requests.
+  success_callback: ["langfuse"]
+  failure_callback: ["langfuse"]
+
+  # Copies a Session-scoped virtual key's AstraBox identity metadata into the
+  # request metadata the langfuse callback reads. Prepared engine children
+  # cannot send langfuse_* headers (their environment is frozen before the
+  # Session exists); their identity rides the key minted at claim instead.
+  # Streamed tool-call deltas leave with the OpenAI shape: an upstream that
+  # repeats id and name as empty strings on later deltas would otherwise
+  # break clients that merge by field presence (the DeepSeek Harness does).
+  callbacks: ["langfuse_session_hook.handler_instance", "stream_normalization_hook.handler_instance"]
+
+general_settings:
+  # Custom auth accepts the private service credential, the same OIDC identity
+  # AstraBox uses, and the adapter's scoped browser sessions.
+  custom_auth: custom_auth.user_api_key_auth
+  # Without this, a custom_auth hook is the proxy's ONLY authenticator and
+  # LiteLLM's own key authentication never runs — virtual keys, their budgets,
+  # rate limits and route scoping all become unreachable. AstraBox wants the
+  # OIDC identity reused, not LiteLLM's key system replaced.
+  #
+  # "auto" runs custom auth first and falls back to LiteLLM's key auth when it
+  # declines, EXCEPT for ProxyException, which LiteLLM re-raises. The adapter
+  # depends on that distinction: a credential that is not AstraBox's raises a
+  # plain exception so LiteLLM decides, while an AstraBox credential that fails
+  # its own checks raises ProxyException and the request ends there.
+  custom_auth_settings:
+    mode: "auto"

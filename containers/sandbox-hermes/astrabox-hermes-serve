@@ -1,0 +1,192 @@
+#!/usr/bin/env bash
+# AstraBox — serve Hermes inside the sandbox, as a service of the image.
+#
+# `hermes serve` is the vendor's headless backend: the JSON-RPC/WebSocket
+# gateway its own desktop app and remote clients connect to. It fronts the same
+# `tui_gateway.server.dispatch` the TUI speaks over stdio — `tui_gateway/ws.py`
+# says the wire is "identical to stdio ... no framing differences" — so the
+# host's event translation is unchanged by running it here instead of down a
+# PTY. What changes is who owns the process: the image, from boot, the way
+# `astrabox-dsh-serve` owns the harness server.
+#
+# That ownership is the point, not a tidiness preference:
+#
+#   * A PTY makes `isatty()` true, and Hermes then decorates for a terminal —
+#     its spinner (`agent/display.py`, a face plus a verb) arrives inside the
+#     reasoning stream and renders as part of the model's thinking.
+#   * A pause commits the filesystem and kills every process, so a resumed box
+#     comes back with no engine. When the engine is the host's to start, it is
+#     not started until someone's first message pays for it.
+#
+# See `docs/maintainers/hermes-transport.md` for the surface comparison and the
+# probes behind it.
+set -euo pipefail
+
+mirror_mode=0
+if [ "${1:-}" = "--mirror" ] && [ "$#" -eq 1 ]; then
+  mirror_mode=1
+elif [ "$#" -ne 0 ]; then
+  printf 'astrabox-hermes-serve: expected no arguments or --mirror\n' >&2
+  exit 64
+fi
+
+# Loopback on purpose, and not only for hygiene: since Hermes' June 2026
+# hardening a non-loopback bind ALWAYS demands an auth provider (OAuth or the
+# bundled password provider), `--insecure` is a documented no-op, and the
+# `?token=` credential the host holds is refused in that mode. Binding here and
+# publishing through `astrabox-hermes-forward` is the vendor's own supported
+# shape. The host addresses this bind rather than the box — see
+# HERMES_BACKEND_BOUND_ADDRESS in astrabox/core/service/orchestrator/engine/
+# hermes.py, which explains why the two addresses differ.
+LOOPBACK_PORT="${ASTRABOX_HERMES_LOOPBACK_PORT:-9119}"
+
+# ── waiting for the profile ──────────────────────────────────────────────
+#
+# A Hermes profile is one (user, assistant) pair: its home, its Linux account,
+# its model route. None of that exists when the box is created — the host
+# writes this file after NAS and identity provisioning — so this service waits
+# for it rather than starting Hermes against the image's empty default profile.
+#
+# The profile may come from an optional workspace mount. Its old env is not
+# initialization evidence for a new box: the platform must publish the current
+# box's gate under /run before this service can restore native state and start.
+# One level under the root, matching `hermes_runtime_profile`'s
+# `home_template`. It was two while that template carried `{user_id}` as well;
+# a glob whose depth disagrees with the template finds nothing and this script
+# waits out its whole deadline for a profile that is already there.
+PROFILE_GLOB="/home/conversations/*/.hermes/astrabox-hermes.env"
+DEADLINE_SECONDS="${ASTRABOX_HERMES_PROFILE_WAIT_SECONDS:-1800}"
+
+# What "the profile is ready" means, and why it is two conditions rather than
+# one. The env file appears before the workspace directory it names does: the
+# first version of this service waited only for the file, then failed on
+# `cd: /workspace: No such file or directory` and was restarted by supervisord
+# until provisioning caught up. That works — it started on the fourth attempt —
+# but it is a crash loop standing in for a wait: three process starts burned,
+# a directory that appears more slowly than the restart interval never caught
+# at all, and "not ready yet" reported as a service dying.
+#
+# So the wait covers everything the launcher below dereferences.
+profile_ready() {
+  local env_file="$1"
+  "$HERMES_VENV/bin/python" /opt/astrabox/hermes/hermes_state_bootstrap.py \
+    ready --profile-env "$env_file" || return $?
+  if [ "$mirror_mode" -eq 1 ]; then
+    "$HERMES_VENV/bin/python" /opt/astrabox/hermes/hermes_state_mirror.py \
+      ready --profile-env "$env_file" || return $?
+  fi
+  # shellcheck disable=SC1090
+  ( source "$env_file" >/dev/null 2>&1 \
+    && [ -n "${ASTRABOX_HERMES_PROFILE_LINUX_USER:-}" ] \
+    && [ -n "${ASTRABOX_HERMES_PROFILE_HOME:-}" ] \
+    && [ -n "${ASTRABOX_HERMES_WORKSPACE:-}" ] \
+    && [ -n "${HERMES_DASHBOARD_SESSION_TOKEN:-}" ] \
+    && [ -d "$ASTRABOX_HERMES_PROFILE_HOME" ] \
+    && [ -d "$ASTRABOX_HERMES_WORKSPACE" ] \
+    && id -u "$ASTRABOX_HERMES_PROFILE_LINUX_USER" >/dev/null 2>&1 )
+}
+
+profile_env=""
+waited_for_workspace=0
+deadline=$(( $(date +%s) + DEADLINE_SECONDS ))
+while :; do
+  # shellcheck disable=SC2086
+  matches=( $(compgen -G "$PROFILE_GLOB" || true) )
+  if [ "${#matches[@]}" -gt 1 ]; then
+    # One box carries one Assistant workspace. Two profiles here means the box
+    # is serving something this design does not describe, and starting Hermes
+    # against an arbitrary one of them would bind the wrong account.
+    printf 'astrabox-hermes-serve: %d profiles under %s; refusing to guess\n' \
+      "${#matches[@]}" "$PROFILE_GLOB" >&2
+    exit 78
+  fi
+  if [ "${#matches[@]}" -eq 1 ]; then
+    if profile_ready "${matches[0]}"; then
+      profile_env="${matches[0]}"
+      break
+    else
+      ready_status=$?
+      if [ "$ready_status" -ne 1 ]; then
+        exit "$ready_status"
+      fi
+    fi
+    # The file is there and what it names is not, yet. Said once rather than
+    # every second: a line per poll would bury the readiness line this service
+    # exists to print.
+    if [ "$waited_for_workspace" -eq 0 ]; then
+      waited_for_workspace=1
+      printf 'astrabox-hermes-serve: profile env present, waiting for the '
+      printf 'current-box initialization, account and directories (%s)\n' "${matches[0]}"
+    fi
+  fi
+  if [ "$(date +%s)" -ge "$deadline" ]; then
+    printf 'astrabox-hermes-serve: no usable profile at %s after %ss\n' \
+      "$PROFILE_GLOB" "$DEADLINE_SECONDS" >&2
+    exit 75
+  fi
+  sleep 1
+done
+
+printf 'ASTRABOX_HERMES_PROFILE_FOUND path=%s\n' "$profile_env"
+
+# The file is the host's, and it already exports everything the launcher needs:
+# the Linux account, the profile home, the workspace, the model route, and the
+# dashboard session token the WebSocket credential is checked against.
+# shellcheck disable=SC1090
+source "$profile_env"
+
+: "${ASTRABOX_HERMES_PROFILE_LINUX_USER:?profile env names no Linux user}"
+: "${ASTRABOX_HERMES_PROFILE_HOME:?profile env names no profile home}"
+: "${ASTRABOX_HERMES_WORKSPACE:?profile env names no workspace}"
+: "${HERMES_DASHBOARD_SESSION_TOKEN:?profile env carries no dashboard token}"
+
+log_dir="${ASTRABOX_HERMES_PROFILE_HOME}/.hermes/logs"
+mkdir -p "$log_dir"
+
+# Loopback, for the reason `astrabox-dsh-serve` gives at length: this API runs
+# commands, a real sandbox exposes only nginx and execd outward, and
+# astrabox-hermes-forward publishes it on the adapter's port once it answers.
+#
+# It also keeps the credential simple. Hermes' dashboard auth gate (password or
+# OAuth providers) engages only on a NON-loopback bind; on loopback the WS
+# upgrade takes the session token as a `?token=` query parameter, which is what
+# the host presents.
+# The profile env is sourced again INSIDE the workload account's shell, and
+# every variable in it reaches the backend. Naming a few by hand instead — the
+# account, the home, the token — is what a first attempt did, and it started a
+# backend with no model: `astrabox-hermes-config-merge` is what turns the
+# platform's config blobs into `~/.hermes/config.json`, and without the blobs
+# in its environment it writes nothing, so the first turn came back "No
+# inference provider configured. Run 'hermes model'".
+#
+# Running config-merge here, on every start, is also what the PTY launcher did
+# for every conversation: it is idempotent, it is where skills, SOUL.md and
+# cron jobs are materialized, and a supervised service that restarts must come
+# back with the same profile rather than whatever the last start left behind.
+exec runuser -u "$ASTRABOX_HERMES_PROFILE_LINUX_USER" -- env \
+  HOME="$ASTRABOX_HERMES_PROFILE_HOME" \
+  USER="$ASTRABOX_HERMES_PROFILE_LINUX_USER" \
+  LOGNAME="$ASTRABOX_HERMES_PROFILE_LINUX_USER" \
+  bash --noprofile --norc -c "
+    set -euo pipefail
+    source $(printf '%q' "$profile_env")
+    export HOME=$(printf '%q' "$ASTRABOX_HERMES_PROFILE_HOME")
+    export USER=$(printf '%q' "$ASTRABOX_HERMES_PROFILE_LINUX_USER")
+    export LOGNAME=$(printf '%q' "$ASTRABOX_HERMES_PROFILE_LINUX_USER")
+    export TERMINAL_CWD=$(printf '%q' "$ASTRABOX_HERMES_WORKSPACE")
+    cd $(printf '%q' "$ASTRABOX_HERMES_WORKSPACE")
+    if [ $(printf '%q' "$mirror_mode") -eq 1 ]; then
+      exec \"\$HERMES_VENV/bin/python\" /opt/astrabox/hermes/hermes_state_mirror.py \
+        mirror --profile-env $(printf '%q' "$profile_env")
+    fi
+    \"\$HERMES_VENV/bin/python\" /opt/astrabox/hermes/hermes_state_bootstrap.py \
+      restore --profile-env $(printf '%q' "$profile_env") \
+      >> $(printf '%q' "$log_dir/astrabox-hermes-serve.log") 2>&1
+    \"\$HERMES_VENV/bin/python\" /usr/local/bin/astrabox-hermes-config-merge \
+      >> $(printf '%q' "$log_dir/astrabox-hermes-serve.log") 2>&1
+    # --skip-build: there is no npm in this image and no SPA to serve. The
+    # vendor added this flag for exactly this kind of non-interactive host.
+    exec \"\$HERMES_VENV/bin/hermes\" serve \
+      --host 127.0.0.1 --port $(printf '%q' "$LOOPBACK_PORT") --skip-build \
+      2>> $(printf '%q' "$log_dir/astrabox-hermes-serve.log")
+  "

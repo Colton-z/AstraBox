@@ -1,0 +1,35 @@
+# HTTPS model-gateway policy for a team deployment.
+#
+# This overlay does not run another LiteLLM instance. Production LiteLLM is
+# normally deployed behind an HTTPS load balancer or Kubernetes Ingress, with
+# its provider credentials, database, and scaling managed there. AstraBox needs
+# only the sandbox-facing inference URL and a scoped virtual key.
+#
+# ASTRABOX_LITELLM_API_KEY is required HERE and set nowhere else. A gateway that
+# runs AstraBox's own auth adapter accepts no third-party key — it takes a
+# capability this deployment mints and scopes to inference routes — so that
+# topology leaves the variable unset. Supplying a key there would mean supplying
+# the master key, which the adapter maps to PROXY_ADMIN, and the sandbox's model
+# binding admits every management route under the same /v1 prefix.
+#
+# Usage (compose with whichever identity and sandbox overlays the deployment
+# needs):
+#
+#   export ASTRABOX_LITELLM_BASE_URL=https://llm.example.com
+#   export ASTRABOX_LITELLM_API_KEY=sk-scoped-inference-key
+#   scripts/compose.sh \
+#     -f containers/compose.sso.yaml \
+#     -f containers/compose.team-gateway.yaml up -d
+#
+# The Credential Vault switch remains operator-controlled. It defaults on in
+# the base stack and may still be set to false explicitly; this overlay requires
+# HTTPS independently so disabling Vault never turns the gateway hop into
+# plaintext.
+
+services:
+  server:
+    environment:
+      ASTRABOX_MODEL_GATEWAY_REQUIRE_HTTPS: "true"
+      ASTRABOX_LITELLM_BASE_URL: ${ASTRABOX_LITELLM_BASE_URL:?set the sandbox-facing HTTPS LiteLLM URL}
+      ASTRABOX_LITELLM_API_KEY: ${ASTRABOX_LITELLM_API_KEY:?set a scoped LiteLLM inference key}
+      ASTRABOX_SANDBOX_CREDENTIAL_VAULT: ${ASTRABOX_SANDBOX_CREDENTIAL_VAULT:-true}

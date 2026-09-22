@@ -1,0 +1,14 @@
+{
+  "manage/SessionDetailPage.tsx": {
+    "count": 1,
+    "why": "The session's own last_error, inside a labelled field row. The row already names what the text is; a bordered note inside it frames the same thing twice."
+  },
+  "session/components/SessionHeader.tsx": {
+    "count": 1,
+    "why": "The session's last error under its title, truncated to one line. A box in the header band would stand taller than the band."
+  },
+  "session/components/ToolParts.tsx": {
+    "count": 1,
+    "why": "A tool's own stderr in a <pre>, where line breaks and spacing are the content. Wrapping it in a note would nest two boxes around one payload."
+  }
+}

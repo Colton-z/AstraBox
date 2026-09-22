@@ -1,0 +1,335 @@
+{
+  "assistant": {
+    "loading": "正在加载 Assistant…",
+    "pick_title": "选择 Assistant",
+    "pick_subtitle": "每个 Assistant 都是仅供一位用户使用的长期工作区，文件会在不同会话之间保留。",
+    "creating": "正在开始会话…",
+    "start_conversation": "开始对话",
+    "cards_empty": "暂无可用的 Assistant。请先在管理台创建。",
+    "state_ready": "就绪",
+    "state_materializing": "启动中",
+    "state_hibernating": "已暂停",
+    "state_recovery_required": "需要处理",
+    "state_not_materialized": "未启动",
+    "state_unknown": "未知"
+  },
+  "diff": {
+    "unavailable": "写入已完成；引擎未提供修改前后的差异。",
+    "empty_title": "还没有文件变更。",
+    "empty_hint": "来自 Edit 和 Write 工具的文件变更会显示在这里。",
+    "files_changed": "{{count}} 个文件已变更"
+  },
+  "tool": {
+    "multi_select": "可多选",
+    "single_select": "单选"
+  },
+  "terminal": {
+    "exit_code": "退出码: {{code}}",
+    "interrupted": "命令已被用户中断",
+    "status_session_not_ready": "会话未就绪",
+    "status_idle": "空闲",
+    "status_running": "运行中",
+    "status_stopping": "停止中",
+    "status_error": "异常",
+    "current_dir": "当前目录",
+    "ready_hint": "终端已就绪，可在下方输入命令。",
+    "not_ready_hint": "会话就绪后终端才可用。",
+    "input_placeholder": "输入命令...",
+    "stop": "停止",
+    "stopping": "停止中...",
+    "copy_output": "复制输出"
+  },
+  "composer": {
+    "queue_n": "队列 {{index}}",
+    "queue_sending": "发送中",
+    "queue_failed": "发送失败",
+    "queue_waiting": "等待发送",
+    "retry": "重试",
+    "retry_queued": "重试排队消息",
+    "retry_disabled": "当前会话不可重试",
+    "remove_queued": "删除排队消息",
+    "blocking": "阻塞中",
+    "title_questionnaire": "请回答以下问题",
+    "title_plan_confirmation": "请确认是否退出计划模式",
+    "title_tool_permission": "请确认是否允许此次操作",
+    "compact_questionnaire": "待回答",
+    "compact_confirm": "待确认",
+    "tab_questions_label": "待回答问题",
+    "custom_answer": "自己补充",
+    "custom_answer_hint": "不使用预设选项，直接输入你的回答。",
+    "custom_answer_placeholder": "输入你自己的回答...",
+    "answer_placeholder": "输入你的回答...",
+    "declining": "拒绝中...",
+    "submitting": "提交中...",
+    "decline_answer": "拒绝回答",
+    "submit_answer": "提交回答",
+    "allow_once_label": "仅允许本次",
+    "allow_once_desc": "只允许当前这次操作，不额外保存权限规则。",
+    "tool_approval": "审批",
+    "permission_options_label": "权限选项",
+    "view_tool_input": "查看工具输入",
+    "rejecting": "拒绝中...",
+    "reject_operation": "拒绝此次操作",
+    "allow_continue": "允许并继续",
+    "plan_bypass_label": "批准，后续跳过确认",
+    "plan_bypass_desc": "批准此计划，本次会话后续操作自动允许。",
+    "plan_accept_edits_label": "批准，自动接受编辑",
+    "plan_accept_edits_desc": "批准此计划，文件编辑自动接受，其他操作仍需确认。",
+    "plan_once_label": "仅批准本次",
+    "plan_once_desc": "批准此计划，后续操作仍逐一确认。",
+    "plan_reject_label": "拒绝",
+    "plan_reject_desc": "拒绝此计划，可附加反馈。",
+    "plan_message_summary": "请在底部决定是否退出计划模式。",
+    "allowed_directions": "允许的后续方向",
+    "suggestion": "建议",
+    "exit_plan_options_label": "退出计划模式选项",
+    "reject_feedback_label": "拒绝该计划的原因",
+    "reject_feedback_placeholder": "告诉 Claude 为什么拒绝，或该怎么改（可选）",
+    "reject_plan": "拒绝此计划",
+    "approve_continue": "批准并继续",
+    "question_answered": "已回答",
+    "question_unanswered": "尚未回答",
+    "question_progress": "已回答 {{answered}}/{{total}}",
+    "previous_question": "上一题",
+    "next_question": "下一题",
+    "questions_remaining": "还剩 {{remaining}} 题，请完成后提交",
+    "questions_complete": "已完成全部问题，可以提交",
+    "title_decision": "请确认此请求",
+    "decision_options_label": "决策选项",
+    "decision_message_summary": "请在下方决定如何答复此请求。",
+    "decision_comment_label": "给 agent 的补充说明",
+    "decision_comment_placeholder": "补充说明，agent 会看到（可选）",
+    "decision_submit": "提交决定"
+  },
+  "permission_mode": {
+    "default": "默认模式",
+    "accept_edits": "接受编辑",
+    "plan": "计划模式",
+    "bypass_permissions": "跳过确认",
+    "dont_ask": "拒绝未批准的工具",
+    "auto": "自动审批"
+  },
+  "state": {
+    "unknown": "未知",
+    "creating": "创建中",
+    "sending": "发送中",
+    "ready": "就绪",
+    "background_running": "后台运行中",
+    "waiting_input": "等待回答",
+    "processing": "处理中",
+    "provisioning": "创建中",
+    "active": "运行中",
+    "hibernating": "休眠中",
+    "failed": "异常",
+    "terminating": "终止中",
+    "terminated": "已终止",
+    "recovery_required": "待恢复",
+    "deleted": "已删除"
+  },
+  "agent_runtime": {
+    "status_unknown": "Agent 状态未知",
+    "with_progress": "Agent {{progress}}",
+    "initializing": "Agent 初始化中",
+    "terminated": "已终止",
+    "wake": "唤醒 Agent",
+    "wake_with_progress": "唤醒 Agent：{{progress}}",
+    "failed": "Agent 异常",
+    "state_generic": "Agent {{label}}"
+  },
+  "progress": {
+    "creating_workspace": "准备工作区",
+    "creating_sandbox": "创建沙箱",
+    "mounting_nas": "挂载存储",
+    "starting_agent": "启动 Agent",
+    "waiting_for_startup_lease": "正在等待另一个启动任务完成",
+    "probing_conversation_profile": "检查运行时配置",
+    "mounting_conversation_storage": "挂载会话存储",
+    "preparing_skill_cache": "准备技能缓存",
+    "preparing_conversation_bootstrap": "准备会话启动器",
+    "fetching_agent_metadata": "读取 Agent 元数据"
+  },
+  "summary": {
+    "items": "{{count}} 项",
+    "fields": "{{count}} 个字段",
+    "questions_prefix": "{{count}} 个问题 · ",
+    "todos_count": "{{count}} 项待办",
+    "allowed_operations": "{{count}} 个允许操作",
+    "params_count": "{{count}} 个参数",
+    "question_n": "问题 {{index}}",
+    "question_header": "标题: {{header}}",
+    "question_content": "内容: {{content}}",
+    "options_label": "选项:",
+    "option_n": "选项 {{index}}",
+    "todo_n": "待办 {{index}}",
+    "allow_operation_prefix": "允许操作 · {{prompt}}"
+  },
+  "todo": {
+    "completed": "已完成",
+    "in_progress": "进行中",
+    "cancelled": "已取消",
+    "pending": "待处理"
+  },
+  "wire": {
+    "answer_questions": "请回答以下问题",
+    "exit_plan_mode": "请确认是否退出计划模式",
+    "interrupted_for_tool_use": "【工具调用已被你中断】",
+    "response_to_questions": "你对上一轮问题的回答：",
+    "declined_questions": "你选择暂不回答这些问题。",
+    "rejected_plan": "你驳回了 Claude 当前提出的计划。",
+    "response_to_plan": "你对上一轮计划确认的回应：",
+    "sandbox_expired": "沙箱已过期",
+    "sandbox_terminated_by_user": "用户终止了沙箱",
+    "reconnect_failed_expired_new_session": "运行时重连失败，沙箱已过期 — 请创建新会话",
+    "reconnect_failed_expired": "运行时重连失败，沙箱已过期",
+    "reconnect_failed_retry": "运行时重连失败，重试可能有效",
+    "reconnect_failed_recover": "运行时重连失败，请恢复后重试",
+    "interrupt_requested": "用户中断请求",
+    "stream_recovery_incomplete": "流式恢复未完成",
+    "turn_lock_expired": "轮次锁已过期",
+    "killed_by_admin": "管理员终止",
+    "stale_creating_cleaned": "过期的创建中会话已被清理",
+    "cannot_terminate_active_turn": "当前会话有正在进行的轮次或未完成的持久化写入，暂不能终止沙箱。",
+    "agent_sandbox_restarting": "Agent 沙箱正在重启，请稍后重试",
+    "agent_sandbox_recycled": "Agent 沙箱已被回收，正在重建运行时，请重试",
+    "session_creation_timed_out": "会话创建超时",
+    "sandbox_terminated_abnormally": "沙箱异常终止",
+    "sandbox_unavailable": "沙箱不可用",
+    "sandbox_terminated": "沙箱已终止",
+    "sandbox_did_not_receive": "沙箱未接收到该消息",
+    "workspace_hibernated": "沙箱超时后，工作区已暂停；下次打开时会自动恢复。"
+  },
+  "prompt_input": {
+    "stopping": "停止中",
+    "stop_generating": "停止生成",
+    "send": "发送"
+  },
+  "plan": {
+    "toggle": "展开或收起计划"
+  },
+  "api_error": {
+    "network": "NETWORK_ERROR: 无法连接后端服务（{{url}}）：{{detail}}",
+    "platform_unknown": "平台层返回未分类错误（{{evidence}}），请查看后端日志定位具体异常。",
+    "evidence": "HTTP {{status}}，{{url}}",
+    "platform_error": "{{message}}（{{evidence}}）",
+    "malformed_list": "服务端对 {{endpoint}} 返回了 {{got}} 而不是列表，此视图无法渲染。",
+    "malformed_record": "服务端对 {{endpoint}} 返回了 {{got}} 而不是一条记录。",
+    "malformed_fields": "服务端对 {{endpoint}} 返回了无效记录，此视图无法显示。"
+  },
+  "share": {
+    "title_fallback": "共享对话",
+    "cannot_open": "无法打开分享",
+    "link_invalid": "该分享链接不存在、已撤销或已过期。",
+    "readonly_badge": "只读分享",
+    "readonly_notice": "你正在查看一个被分享的对话（只读）。",
+    "no_messages": "这个对话还没有消息。"
+  },
+  "agent_form": {
+    "groups": {
+      "identity": {
+        "label": "基本信息",
+        "description": "产品中显示的名称和说明"
+      },
+      "model": {
+        "label": "模型与提示词",
+        "description": "模型设置和系统提示词"
+      },
+      "tools": {
+        "label": "MCP、Skill 与 Plugin",
+        "description": "Agent Runtime 使用的扩展能力；LiteLLM 托管配置与自定义配置合并生效"
+      },
+      "workspace": {
+        "label": "工作区配置",
+        "description": "项目代码仓库和对话面板"
+      },
+      "runtime": {
+        "label": "运行设置",
+        "description": "Agent 程序、沙箱设置、使用入口和空闲处理方式"
+      }
+    },
+    "fields": {
+      "name": {
+        "label": "名称",
+        "example": "research-assistant",
+        "help": "用于在列表和日志中识别这个 Agent，保存后仍可修改"
+      },
+      "display_name": {
+        "label": "显示名称",
+        "example": "资料研究助手",
+        "help": "展示给用户的名字，留空则用名称"
+      },
+      "description": {
+        "label": "描述",
+        "example": "检索项目资料、比较方案，并整理有出处的结论。",
+        "help": "用一句话说明这个 Agent 的用途"
+      },
+      "icon": {
+        "label": "图标",
+        "example": "🔎"
+      },
+      "tags": {
+        "label": "标签",
+        "example": "资料研究"
+      },
+      "use_cases": {
+        "label": "使用场景",
+        "example": "比较技术方案并整理选型建议"
+      },
+      "model": {
+        "label": "模型",
+        "manage_gateway": "在 {{name}} 管理模型",
+        "help": "填写所选运行环境的模型服务连接所提供的模型 ID"
+      },
+      "system": {
+        "label": "系统提示词",
+        "example": "你是一位资料研究助手。先明确用户目标，再检索相关资料，最后给出简洁的结论并标注来源。",
+        "help": "定义 Agent 的角色、表达方式和行为规则"
+      },
+      "engine_options": {
+        "label": "Agent Runtime 配置（JSON）",
+        "help": "原生 Runtime JSON 配置，与模型网关中的模型参数分开管理。块内选项由 Runtime 定义，平台管理的字段不能覆盖。{} 表示传入空对象；清空输入可移除此块。"
+      },
+      "skills": {
+        "label": "自定义 Skill",
+        "help": "填写 Skill 来源，与 LiteLLM 托管配置中的选择合并；完全相同的来源会去重"
+      },
+      "mcp_servers": {
+        "label": "自定义 MCP",
+        "help": "填写服务配置，与 LiteLLM 托管配置中的选择合并；服务名称不能重复"
+      },
+      "default_repo": {
+        "label": "项目代码仓库"
+      },
+      "terminal_panel": {
+        "label": "终端面板",
+        "help": "在此 Agent 的对话中显示终端。隐藏面板不会限制命令执行或 API 访问。"
+      },
+      "diff_panel": {
+        "label": "文件差异面板",
+        "help": "在此 Agent 的对话中显示文件修改。此设置只控制面板显示，不限制 Agent 编辑文件的能力。"
+      },
+      "plugin_repos": {
+        "label": "Plugin 仓库"
+      },
+      "environment_name": {
+        "label": "运行环境",
+        "help": "选择已经保存的运行设置，其中包含 Agent 程序、沙箱设置、网络访问和模型连接。Credential Vault（凭证库）需要另行分配。"
+      },
+      "exposure_mode": {
+        "label": "使用入口",
+        "help": "选择用户可通过网页对话、MCP，或两者使用这个 Agent"
+      },
+      "idle_hibernate_seconds": {
+        "label": "空闲超时（秒）",
+        "help": "达到此空闲时间后，AstraBox 会按运行环境中保存的方式暂停或回收沙箱"
+      },
+      "prewarm_enabled": {
+        "label": "提前准备沙箱",
+        "help": "在对话开始前准备好该 Agent 的镜像、Skill 和 Plugin；共享沙箱和每个对话独立使用沙箱时都适用。"
+      },
+      "enabled": {
+        "label": "启用",
+        "help": "关闭后，用户不能再选择这个 Agent 开始会话"
+      }
+    }
+  }
+}

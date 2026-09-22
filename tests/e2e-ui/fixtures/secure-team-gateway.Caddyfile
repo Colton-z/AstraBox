@@ -1,0 +1,14 @@
+{
+	# The AWS Playwright fixture owns only 443. Port 80 may already serve the
+	# private LiteLLM endpoint, and TLS-ALPN-01 lets Caddy obtain a trusted test
+	# certificate without taking that port over.
+	auto_https disable_redirects
+}
+
+{$ASTRABOX_E2E_GATEWAY_DOMAIN} {
+	reverse_proxy {$ASTRABOX_E2E_GATEWAY_UPSTREAM} {
+		transport http {
+			keepalive 4s
+		}
+	}
+}

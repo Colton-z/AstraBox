@@ -1,0 +1,15 @@
+{
+  "load_failed": "加载失败",
+  "state_active": "运行中",
+  "state_provisioning": "初始化中",
+  "state_hibernating": "休眠中",
+  "action_failed": "操作失败",
+  "home_loading": "正在加载 Agent…",
+  "home_title": "开始一个对话",
+  "home_subtitle": "选择一个 Agent，开始新的会话。",
+  "home_start": "开始对话",
+  "home_starting": "正在启动…",
+  "home_empty": "暂无可用的 Agent。",
+  "home_empty_hint": "管理员创建并启用 Agent 后，用户才能开始会话。",
+  "home_empty_cta": "前往管理台"
+}

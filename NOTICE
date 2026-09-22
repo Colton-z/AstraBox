@@ -1,0 +1,75 @@
+AstraBox
+Copyright 2026 Colton Qi
+
+This product depends on and gratefully acknowledges:
+
+- claude-agent-sdk (Anthropic, MIT License) - the native Claude Code adapter's SDK.
+  As published by Anthropic, it bundles the Claude Code CLI; see below.
+- Hermes Agent (Nous Research, MIT License) - the Agent program installed in
+  the Assistant sandbox image. The packaged wheel retains its MIT license text.
+- AIO Sandbox (agent-infra/sandbox, Apache License 2.0) - the base image of the
+  Claude Code sandbox image (containers/sandbox-claude-code/Dockerfile), whose
+  entrypoint starts the in-sandbox workspace file API + terminal + code-server
+  the host's session file service speaks to. Used as a published image; no
+  agent-infra code is vendored.
+- OpenSandbox (Alibaba Group Holding Ltd., Apache License 2.0) - the sandbox
+  client model vocabulary, and the lifecycle server + injected execd daemon
+  behind the open_sandbox provider. Used as a published library; no opensandbox
+  code is vendored.
+- LiteLLM (BerriAI, MIT License) - the model gateway, run as a supervised bundled
+  service or an operator-managed external service; no LiteLLM code is vendored.
+- Casdoor (the Casbin organization, Apache License 2.0) - the identity provider
+  of the team-login deployment (containers/compose.sso.yaml). Used as its
+  published image; no Casdoor code is vendored.
+- mergerfs (Antonio SJ Musumeci, ISC License) - the workspace router's
+  host-side filesystem service. The workspace-mounter image uses release
+  2.42.0 and retains its license at /usr/share/doc/mergerfs/LICENSE.
+- DBOS Transact for Python (DBOS, Inc., MIT License) - the embedded durable
+  schedule and Run execution engine. Used as a released library; no DBOS code
+  is vendored and its hosted control plane is not required.
+- AWS Encryption SDK for Python (Amazon Web Services, Apache License 2.0) -
+  optional AWS KMS envelope encryption for stateless Credential Vault replicas.
+  Used as a released library; no SDK code is vendored.
+- Satori core and adapters (Shigma and contributors, MIT License) - the released
+  Node.js packages used by the private bundled channel gateway for Telegram,
+  Discord, KOOK, Feishu/Lark, DingTalk, QQ, Slack, Zulip, LINE, WhatsApp,
+  WeChat Official Account, WeCom, and other adapters pinned in
+  channel-gateway/package.json. No Satori or Koishi console is vendored.
+- satori-python-core (RF-Tar-Railt, MIT License) - the released Satori event
+  models and message-element parser used at the channel gateway boundary.
+- Cordis HTTP/server plugins and cosmokit (Shigma and contributors, MIT
+  License) - released runtime libraries used to host the Satori adapters in
+  the private channel gateway.
+- ImapFlow and mailparser (Postal Systems OÜ / Andris Reinman, MIT License),
+  Nodemailer (Andris Reinman, MIT-0), ws (Einar Otto Stangvik and contributors,
+  MIT), and file-type (Sindre Sorhus and contributors, MIT) - released packages
+  used by the Email adapter, authenticated gateway transport, and adapter
+  compatibility layer. Matrix uses the official Satori adapter.
+- shadcn/ui (shadcn, MIT License) - UI primitives vendored into the web console
+  under frontend/src/components/ui/ (generated with the shadcn CLI, then adapted).
+- AI Elements (Vercel, Apache License 2.0) - agent/chat UI components vendored
+  into the web console under frontend/src/components/ai-elements/.
+
+Agent programs installed in the published sandbox images. Each keeps its own
+license; AstraBox does not modify them.
+
+- Claude Code (Anthropic PBC) - installed in the Claude Code sandbox image from
+  the public npm registry, and bundled by claude-agent-sdk. Claude Code is not
+  open-source software: it is © Anthropic PBC, all rights reserved, and its use
+  is subject to Anthropic's Commercial Terms of Service
+  (https://www.anthropic.com/legal/commercial-terms). Running it through
+  AstraBox requires accepting those terms.
+- Codex CLI (OpenAI, Apache License 2.0) - `@openai/codex`, installed in the
+  Codex sandbox image.
+- DeepSeek Harness (DeepSeek, MIT License) - `@deepseek-ai/dsh`, installed in the
+  DeepSeek Harness sandbox image.
+- Pi coding agent (Mario Zechner, MIT License) - `@earendil-works/pi-coding-agent`,
+  and pi-subagents (Nico Bailon, MIT License), installed in the Pi sandbox image.
+- Hermes Agent - listed above.
+
+Trademarks
+
+Claude and Claude Code are trademarks of Anthropic PBC. OpenAI and Codex are
+trademarks of OpenAI. Other product names are trademarks of their respective
+owners. AstraBox is an independent project, not affiliated with or endorsed by
+these companies; names are used only to identify the software it runs.
