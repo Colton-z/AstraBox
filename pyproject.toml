@@ -119,7 +119,7 @@ dev = [
   # both CI (installs `.[dev]`, runs `python -m ruff`/`python -m mypy`) and local
   # `make test`. The lint/type gate is calibrated to these versions, so a float
   # could silently change lint/type output between a laptop and CI. Bump both here.
-  "ruff==0.16.5",
+  "ruff==0.16.8",
   "mypy==2.3.1",
 ]
 # Live end-to-end smoke (tests/e2e/): drives a real turn against a real Docker
