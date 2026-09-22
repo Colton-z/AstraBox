@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" id="fig-adding-tools" viewBox="0 0 1080 576"
+     role="img" aria-labelledby="adding-tools-title adding-tools-desc">
+  <title id="adding-tools-title">选择 MCP 连接类型和配置来源</title>
+  <desc id="adding-tools-desc">MCP 服务分为通过 HTTP 或 SSE 连接的远程服务，以及通过 stdio 连接的本地服务。远程服务的定义可以来自 Agent、管理员集中维护的记录或 Plugin。连接类型与配置来源是两个独立维度。</desc>
+
+  <style data-standalone="true">
+    @media (prefers-color-scheme: dark) {
+      svg {
+        --ifm-background-color: #0e0e0e;
+        --fg-1: #ededed;
+        --fg-3: #909090;
+        --fg-4: #6f6f6f;
+        --line-strong: #383838;
+        --astra: #7877ff;
+        --astra-tint: #1a1b3a;
+      }
+    }
+  </style>
+
+  <style>
+    #fig-adding-tools .box { fill: var(--ifm-background-color, #fafafa); stroke: var(--line-strong, #d4d4d4); stroke-width: 1 }
+    #fig-adding-tools .focal { fill: var(--astra-tint, #ecebff); stroke: var(--astra, #5c5bff); stroke-width: 1.5 }
+    #fig-adding-tools .mask { fill: var(--ifm-background-color, #fafafa) }
+    #fig-adding-tools .edge { fill: none; stroke: var(--fg-4, #999999); stroke-width: 1.25 }
+    #fig-adding-tools .name { fill: var(--fg-1, #0a0a0a); font: 600 12px Geist, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; text-anchor: middle }
+    #fig-adding-tools .sub { fill: var(--fg-3, #666666); font: 400 10px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; text-anchor: middle }
+    #fig-adding-tools .eyebrow { fill: var(--fg-3, #666666); font: 500 9px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; letter-spacing: 0.14em }
+    #fig-adding-tools .arrow-label { fill: var(--fg-3, #666666); font: 400 9px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; letter-spacing: 0.06em; text-anchor: middle }
+    #fig-adding-tools .legend-text { fill: var(--fg-3, #666666); font: 400 9px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; letter-spacing: 0.06em }
+    #fig-adding-tools .rule { stroke: var(--line-strong, #d4d4d4); stroke-width: 0.8 }
+  </style>
+
+  <defs>
+    <marker id="adding-tools-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="var(--fg-4, #999999)"/>
+    </marker>
+  </defs>
+
+  <!-- column headers -->
+  <text class="eyebrow" x="24" y="44">按顺序判断</text>
+  <line class="rule" x1="24" y1="56" x2="368" y2="56"/>
+  <text class="eyebrow" x="560" y="44">配置后的连接</text>
+  <line class="rule" x1="560" y1="56" x2="1056" y2="56"/>
+
+  <!-- arrows first: the boxes paint over the lines -->
+  <path class="edge" d="M 368 108 H 552" marker-end="url(#adding-tools-arrow)"/>
+  <path class="edge" d="M 196 144 V 180" marker-end="url(#adding-tools-arrow)"/>
+  <path class="edge" d="M 368 220 H 552" marker-end="url(#adding-tools-arrow)"/>
+  <path class="edge" d="M 196 256 V 292" marker-end="url(#adding-tools-arrow)"/>
+  <path class="edge" d="M 368 332 H 552" marker-end="url(#adding-tools-arrow)"/>
+  <path class="edge" d="M 196 368 V 444 H 552" marker-end="url(#adding-tools-arrow)"/>
+
+  <rect class="mask" x="432" y="88" width="56" height="12" rx="2"/>
+  <text class="arrow-label" x="460" y="97">本地 STDIO</text>
+  <rect class="mask" x="204" y="156" width="56" height="12" rx="2"/>
+  <text class="arrow-label" x="232" y="165">远程 HTTP / SSE</text>
+  <rect class="mask" x="432" y="200" width="56" height="12" rx="2"/>
+  <text class="arrow-label" x="460" y="209">是</text>
+  <rect class="mask" x="204" y="268" width="56" height="12" rx="2"/>
+  <text class="arrow-label" x="232" y="277">AGENT 或 PLUGIN</text>
+  <rect class="mask" x="420" y="312" width="80" height="12" rx="2"/>
+  <text class="arrow-label" x="460" y="321">PLUGIN</text>
+  <rect class="mask" x="204" y="384" width="76" height="12" rx="2"/>
+  <text class="arrow-label" x="242" y="393">AGENT</text>
+
+  <rect class="box" x="24" y="72" width="344" height="72" rx="8"/>
+  <text class="name" x="196" y="102">MCP 服务是远程还是本地？</text>
+  <text class="sub" x="196" y="120">HTTP / SSE，或 stdio 命令</text>
+
+  <rect class="box" x="24" y="184" width="344" height="72" rx="8"/>
+  <text class="name" x="196" y="214">是否由管理员集中维护定义？</text>
+  <text class="sub" x="196" y="232">一条远程服务记录可以分配给多个 Agent</text>
+
+  <rect class="box" x="24" y="296" width="344" height="72" rx="8"/>
+  <text class="name" x="196" y="326">定义保存在哪里？</text>
+  <text class="sub" x="196" y="344">Agent 中，或 Plugin 中</text>
+
+  <rect class="box" x="560" y="72" width="496" height="72" rx="8"/>
+  <text class="name" x="808" y="96">Agent 程序在沙箱中启动命令</text>
+  <text class="sub" x="808" y="114">stdio · 镜像 PATH 上有 npx uvx node python3 git</text>
+  <text class="sub" x="808" y="130">定义写在 Agent 或 Plugin 中</text>
+
+  <rect class="focal" x="560" y="184" width="496" height="72" rx="8"/>
+  <text class="name" x="808" y="208">Agent 程序连接远程 MCP 服务</text>
+  <text class="sub" x="808" y="226">管理员集中维护定义 · 分配给 Agent</text>
+  <text class="sub" x="808" y="242">Vault 凭证可以限定到准确 URL</text>
+
+  <rect class="box" x="560" y="296" width="496" height="72" rx="8"/>
+  <text class="name" x="808" y="320">Agent 程序连接远程 MCP 服务</text>
+  <text class="sub" x="808" y="338">定义来自 .mcp.json 或 plugin.json</text>
+  <text class="sub" x="808" y="354">托管凭证使用 Agent 或管理员记录</text>
+
+  <rect class="box" x="560" y="408" width="496" height="72" rx="8"/>
+  <text class="name" x="808" y="432">Agent 程序连接远程 MCP 服务</text>
+  <text class="sub" x="808" y="450">Agent 条目使用 Agent 程序原生 HTTP 类型与 URL</text>
+  <text class="sub" x="808" y="466">Vault 凭证可以限定到准确 URL</text>
+
+  <line class="rule" x1="24" y1="520" x2="1056" y2="520"/>
+  <text class="eyebrow" x="24" y="544">图例</text>
+  <rect class="focal" x="112" y="536" width="16" height="12" rx="2"/>
+  <text class="legend-text" x="136" y="544">管理员集中配置 · 不是第三种连接类型</text>
+  <text class="eyebrow" x="520" y="544">注意</text>
+  <text class="legend-text" x="560" y="544">用户个人的 OAuth 授权属于该用户自己的连接</text>
+</svg>

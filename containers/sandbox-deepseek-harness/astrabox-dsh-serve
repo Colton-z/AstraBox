@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+# AstraBox — serve the DeepSeek Harness web profile inside the sandbox.
+#
+# supervisord starts this box-level server at boot, before a pooled sandbox
+# has a Session. Per-account conversations start their own server through
+# astrabox-dsh-serve-conversation.
+#
+# The composition is `--profile web`, the vendor's own: their CLI decides what
+# the harness IS. AstraBox supplies the box, the credential, the workspace and
+# the transport.
+set -euo pipefail
+
+# The vendor refuses --host 0.0.0.0 outright ("it would expose remote code
+# execution to the network"), and it is right: this API runs commands. So the
+# server binds loopback like every other service in the AIO base — measured, a
+# real sandbox exposes exactly nginx and execd outward and keeps the rest on
+# 127.0.0.1 — and astrabox-dsh-forward publishes it on the adapter's port.
+DSH_LOOPBACK_PORT=44781
+
+# ── the /api browser-trust fence ─────────────────────────────────────────
+#
+# The fence binds on the Host header: loopback passes, any other authority must
+# be declared with --trusted-host. The forwarder in front of this server passes
+# bytes through verbatim, so the harness sees whatever Host the caller sent, and
+# nothing here forges one.
+#
+# The authority the platform dials is NOT always this box's own name, and that
+# is the part worth writing down. Measured on the sandbox backend: a box created
+# with an egress sidecar shares the sidecar's network namespace, so the backend
+# refuses to proxy to the container IP and targets a HOST-MAPPED port instead
+# (`services/docker/networking.py`, "the main container's private IP is not a
+# stable proxy target"); its proxy also drops the client's Host header, so the
+# Host that arrives is the host-side address it dialed. From in here that
+# address is the default gateway — the only name for the host a container can
+# derive. Without it every request is a 403 that looks like a dead box.
+#
+# So three authorities are declared: this box's own addresses (a backend that
+# proxies to the container IP, which is the non-sidecar and Kubernetes shape),
+# its hostname, and its default gateway (the host-mapped shape above). Port-less
+# entries match any port, which is required — the host-side port is assigned by
+# Docker per box.
+#
+# This is not a weaker boundary than the rest of the sandbox. The fence defends
+# a browser confused-deputy path (DNS rebinding, cross-site fetch) and says so;
+# it is not an auth layer. Reachability is the sandbox's deny-by-default egress
+# network and the backend's authenticated endpoint face — the same path that
+# already carries execd, which is an unfenced command-execution port.
+default_gateway() {
+  # Capture output even if awk's early exit makes ip route receive SIGPIPE
+  # under pipefail. Consult /proc only when no address was captured, then
+  # emit at most one line: --trusted-host rejects a multiline authority.
+  local gateway=""
+  gateway=$(ip route 2>/dev/null | awk '/^default/ {print $3; exit}') || true
+  if [ -z "${gateway}" ]; then
+    # /proc has the same answer when iproute2 is absent: the little-endian hex
+    # gateway of the default route (destination 00000000).
+    gateway=$(awk '$2 == "00000000" && $3 != "00000000" {
+      g = $3
+      printf "%d.%d.%d.%d\n",
+        strtonum("0x" substr(g,7,2)), strtonum("0x" substr(g,5,2)),
+        strtonum("0x" substr(g,3,2)), strtonum("0x" substr(g,1,2))
+      exit
+    }' /proc/net/route 2>/dev/null) || true
+  fi
+  printf '%s\n' "${gateway%%$'\n'*}"
+}
+
+declare -a trusted=()
+declare -A seen=()
+for authority in \
+  $(hostname -I 2>/dev/null || true) \
+  "$(hostname 2>/dev/null || true)" \
+  "$(default_gateway)"
+do
+  [ -n "${authority}" ] || continue
+  # Whitespace inside an authority is a derivation that went wrong, and the
+  # harness rejects it at boot with an error three layers from the cause.
+  case "${authority}" in
+    *[[:space:]]*)
+      printf 'astrabox-dsh: refusing a malformed trusted authority: %q\n' \
+        "${authority}" >&2
+      exit 78
+      ;;
+  esac
+  [ -n "${seen[$authority]:-}" ] && continue
+  seen[$authority]=1
+  trusted+=(--trusted-host "${authority}")
+done
+printf 'astrabox-dsh: trusted authorities: %s\n' "${trusted[*]:-<none>}"
+
+# ── the working directory has to belong to whoever works in it ────────────
+#
+# The platform pre-creates the conversation's working directory at box-create
+# time, and Docker makes a container's WorkingDir as root. Every engine before
+# this one started its runtime through execd, which also runs as root, so
+# nobody noticed. This one is a supervised service running as the image's
+# workload account — measured, an agent whose cwd is root-owned cannot create
+# a single file in its own workspace, and reports it as a tool error rather
+# than as a broken box.
+#
+# So this program starts as root, hands the directory over, and drops. The
+# path is not guessed: the adapter declares `cwd_env_var` and the platform
+# fills it, which is the whole point of that field existing.
+#
+# mkdir first, and that is not belt-and-braces: measured, the directory does
+# not exist yet when supervisord reaches this program — the platform creates
+# it into the running box, which races the boot. Creating it here wins the
+# race deterministically, and the platform's own creation is a no-op on a
+# directory that is already there, so the ownership set here survives.
+WORKSPACE="${ASTRABOX_WORKSPACE:-}"
+if [ -n "${WORKSPACE}" ]; then
+  mkdir -p "${WORKSPACE}"
+  chown "${USER}:${USER}" "${WORKSPACE}"
+  printf 'astrabox-dsh: workspace %s -> %s\n' \
+    "${WORKSPACE}" "$(stat -c '%U:%G %a' "${WORKSPACE}" 2>/dev/null || echo unknown)"
+else
+  # The adapter declares cwd_env_var; an empty one means the contract broke,
+  # and the agent would discover it as an unexplained tool failure.
+  printf 'astrabox-dsh: ASTRABOX_WORKSPACE is unset; the agent will not be able to write in its workspace\n' >&2
+fi
+
+# The overlay is an image file and is required, not optional: the profile it
+# patches decides whether this box's session log can be mirrored at all (see
+# profile.patch.yml). A missing one would boot a healthy harness whose
+# conversation cannot leave the box, and nothing would say so until someone
+# tried to resume it somewhere else.
+PROFILE_PATCH="${DSH_PROFILE_PATCH:-/opt/dsh/profile.patch.yml}"
+if [ ! -f "${PROFILE_PATCH}" ]; then
+  printf 'astrabox-dsh: profile overlay %s is missing; this image cannot mirror its sessions\n' \
+    "${PROFILE_PATCH}" >&2
+  exit 1
+fi
+printf 'astrabox-dsh: profile overlay %s\n' "${PROFILE_PATCH}"
+
+exec runuser -u "${USER}" -- python3 /opt/dsh/web.py serve \
+  /opt/dsh/node_modules/.bin/dsh --profile web \
+  --patch "${PROFILE_PATCH}" \
+  --no-open \
+  --host 127.0.0.1 \
+  --port "${DSH_LOOPBACK_PORT}" \
+  "${trusted[@]}"

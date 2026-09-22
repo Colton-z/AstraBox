@@ -1,0 +1,6 @@
+{
+  "components/AstraConsole.tsx": 3,
+  "components/ai-elements/file-tree.tsx": 2,
+  "components/ai-elements/terminal.tsx": 12,
+  "components/ai-elements/tool.tsx": 5
+}

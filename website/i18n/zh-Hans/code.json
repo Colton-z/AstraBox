@@ -1,0 +1,634 @@
+{
+  "home.hero.eyebrow": {
+    "message": "开源 · 自行部署 · Apache-2.0"
+  },
+  "home.hero.title": {
+    "message": "Claude Managed Agents 的"
+  },
+  "home.hero.titleSoft": {
+    "message": "开源替代。"
+  },
+  "home.hero.sub": {
+    "message": "在你自己的基础设施上，把 Claude Code、Codex、Hermes、DeepSeek Harness 和 Pi 作为托管 Agent 运行，模型任选。对话秒级拉起、秒级恢复；会话、沙箱、凭证和历史都留在你自己手里。"
+  },
+  "home.hero.ctaPrimary": {
+    "message": "快速开始"
+  },
+  "home.hero.ctaDocs": {
+    "message": "阅读概览"
+  },
+  "home.hero.termTitle": {
+    "message": "在一台机器上启动 AstraBox"
+  },
+  "home.concepts.eyebrow": {
+    "message": "核心概念"
+  },
+  "home.concepts.title": {
+    "message": "Agent、Environment、Session 与 Event"
+  },
+  "home.concepts.head.concept": {
+    "message": "概念"
+  },
+  "home.concepts.head.description": {
+    "message": "说明"
+  },
+  "home.concepts.head.analogy": {
+    "message": "类比"
+  },
+  "home.concepts.agent": {
+    "message": "由已安装 Agent 程序驱动的云端 Agent。"
+  },
+  "home.concepts.agent.analogy": {
+    "message": "云端同事"
+  },
+  "home.concepts.environment": {
+    "message": "Session 使用的 Agent 程序、沙箱、模型连接、网络访问和生命周期设置。"
+  },
+  "home.concepts.environment.analogy": {
+    "message": "办公桌和工具箱"
+  },
+  "home.concepts.session": {
+    "message": "Agent 的一次有状态运行，包含消息、Event 和当前状态。"
+  },
+  "home.concepts.session.analogy": {
+    "message": "一项具体工作"
+  },
+  "home.concepts.event": {
+    "message": "Session 产生的实时输出和状态变化。"
+  },
+  "home.concepts.event.analogy": {
+    "message": "工作进度实时播报"
+  },
+  "home.workflow.eyebrow": {
+    "message": "工作流程"
+  },
+  "home.workflow.title": {
+    "message": "从部署到运行 Agent"
+  },
+  "home.workflow.deploy.tag": {
+    "message": "第 1 步"
+  },
+  "home.workflow.deploy.title": {
+    "message": "部署 AstraBox"
+  },
+  "home.workflow.deploy.body": {
+    "message": "在 Docker 主机、Kubernetes 或已有基础设施中运行 AstraBox 服务和 OpenSandbox。"
+  },
+  "home.workflow.environment.tag": {
+    "message": "第 2 步"
+  },
+  "home.workflow.environment.title": {
+    "message": "配置 Environment"
+  },
+  "home.workflow.environment.body": {
+    "message": "选择 Agent 程序、沙箱镜像、模型连接、网络访问和生命周期。"
+  },
+  "home.workflow.agent.tag": {
+    "message": "第 3 步"
+  },
+  "home.workflow.agent.title": {
+    "message": "创建 Agent"
+  },
+  "home.workflow.agent.body": {
+    "message": "选择 Environment 和模型；只有 Agent 需要时，才添加系统提示词、MCP 服务器、Plugin、Skill 或代码仓库。"
+  },
+  "home.workflow.session.tag": {
+    "message": "第 4 步"
+  },
+  "home.workflow.session.title": {
+    "message": "启动 Session 并接收 Event"
+  },
+  "home.workflow.session.body": {
+    "message": "发送消息、查看实时输出、回答问题或审批；浏览器关闭后，稍后仍可回来继续。"
+  },
+  "home.use.eyebrow": {
+    "message": "适用场景"
+  },
+  "home.use.title": {
+    "message": "让云端 Agent 进入产品和日常工作"
+  },
+  "home.use.long.tag": {
+    "message": "长时间任务"
+  },
+  "home.use.long.title": {
+    "message": "断开连接后继续工作"
+  },
+  "home.use.long.body": {
+    "message": "运行编程、研究、运维和其他任务，不依赖开发者电脑或浏览器一直在线。"
+  },
+  "home.use.api.tag": {
+    "message": "API 集成"
+  },
+  "home.use.api.title": {
+    "message": "在自己的产品中使用 Agent"
+  },
+  "home.use.api.body": {
+    "message": "从应用中启动并跟踪 Agent 任务，不需要另外开发和维护 Agent 运行平台。"
+  },
+  "home.use.batch.tag": {
+    "message": "批量处理"
+  },
+  "home.use.batch.title": {
+    "message": "并行运行互不影响的任务"
+  },
+  "home.use.batch.body": {
+    "message": "使用多个 Session 处理批量请求，并分别保存每个 Session 的状态和输出。"
+  },
+  "home.use.trigger.tag": {
+    "message": "自动化"
+  },
+  "home.use.trigger.title": {
+    "message": "按计划或事件启动任务"
+  },
+  "home.use.trigger.body": {
+    "message": "把 Agent 接入定时任务、Webhook、外部系统或消息平台，并为每次执行保存 Run 记录。"
+  },
+  "home.arch.eyebrow": {
+    "message": "工作方式"
+  },
+  "home.arch.title": {
+    "message": "AstraBox 让 Agent 持续在线，OpenSandbox 负责沙箱"
+  },
+  "home.arch.body": {
+    "message": "客户端连接 AstraBox。AstraBox 对调用方进行身份验证、保存 Session 状态、通过 OpenSandbox 创建或恢复沙箱，再把任务交给所选 Agent 程序。Event 实时返回，Session 记录保存在沙箱之外。"
+  },
+  "home.next.eyebrow": {
+    "message": "下一步"
+  },
+  "home.next.title": {
+    "message": "选择接下来要做的事"
+  },
+  "home.next.start.tag": {
+    "message": "快速开始"
+  },
+  "home.next.start.title": {
+    "message": "在本地运行 AstraBox"
+  },
+  "home.next.start.body": {
+    "message": "启动官方维护的 Docker 部署，打开网页控制台，然后创建 Agent。"
+  },
+  "home.next.start.link": {
+    "message": "查看快速开始 →"
+  },
+  "home.next.deploy.tag": {
+    "message": "部署"
+  },
+  "home.next.deploy.title": {
+    "message": "为团队部署"
+  },
+  "home.next.deploy.body": {
+    "message": "配置身份验证、持久存储、TLS、备份，以及团队需要的沙箱容量。"
+  },
+  "home.next.deploy.link": {
+    "message": "查看部署指南 →"
+  },
+  "home.next.integrate.tag": {
+    "message": "集成"
+  },
+  "home.next.integrate.title": {
+    "message": "把 AstraBox 接入已有系统"
+  },
+  "home.next.integrate.body": {
+    "message": "通过 HTTP API 接入应用，并连接已有的身份认证、模型、存储和消息服务。"
+  },
+  "home.next.integrate.link": {
+    "message": "查看 API 指南 →"
+  },
+  "home.meta.description": {
+    "message": "Claude Managed Agents 的开源、自托管替代：秒级拉起和恢复对话，模型任选。"
+  },
+  "home.arch.note": {
+    "message": "实线表示正在传递的请求和 Event，虚线表示 AstraBox 单独保存的 Session 记录。在支持快照的部署中，暂停会保留沙箱文件；恢复时会基于这些文件重新启动进程。"
+  },
+  "home.arch.diagram.aria": {
+    "message": "AstraBox 接收网页控制台或 API 的请求，通过 OpenSandbox 创建或恢复沙箱，再把任务交给沙箱内的 Agent 程序。Session 记录保存在沙箱之外，Agent 程序连接到已配置的模型服务。"
+  },
+  "home.arch.diagram.backendGroup": {
+    "message": "AstraBox 服务"
+  },
+  "home.arch.diagram.sandboxGroup": {
+    "message": "Agent 沙箱"
+  },
+  "home.arch.diagram.console": {
+    "message": "网页控制台 / API"
+  },
+  "home.arch.diagram.consoleSub": {
+    "message": "请求 · 实时输出"
+  },
+  "home.arch.diagram.sessionService": {
+    "message": "Session 服务"
+  },
+  "home.arch.diagram.sessionServiceSub": {
+    "message": "流式输出 · 审批"
+  },
+  "home.arch.diagram.openSandbox": {
+    "message": "OpenSandbox"
+  },
+  "home.arch.diagram.openSandboxSub": {
+    "message": "沙箱生命周期"
+  },
+  "home.arch.diagram.sessionStore": {
+    "message": "Session 存储"
+  },
+  "home.arch.diagram.sessionStoreSub": {
+    "message": "记录 · 状态"
+  },
+  "home.arch.diagram.bridge": {
+    "message": "沙箱内的 AstraBox 服务"
+  },
+  "home.arch.diagram.bridgeSub": {
+    "message": "连接 Agent 程序"
+  },
+  "home.arch.diagram.program": {
+    "message": "Agent 程序"
+  },
+  "home.arch.diagram.programSub": {
+    "message": "由 Environment 选择"
+  },
+  "home.arch.diagram.workspace": {
+    "message": "工作区"
+  },
+  "home.arch.diagram.workspaceSub": {
+    "message": "文件 · 命令"
+  },
+  "home.arch.diagram.modelEndpoint": {
+    "message": "模型服务"
+  },
+  "home.arch.diagram.modelEndpointSub": {
+    "message": "由部署者配置"
+  },
+  "home.arch.diagram.tasksEvents": {
+    "message": "任务 · 事件"
+  },
+  "home.arch.diagram.lifecycle": {
+    "message": "创建 · 暂停 · 恢复"
+  },
+  "home.arch.diagram.modelRequests": {
+    "message": "模型请求"
+  },
+  "home.arch.diagram.history": {
+    "message": "Session 记录"
+  },
+  "theme.ErrorPageContent.title": {
+    "message": "页面已崩溃。",
+    "description": "The title of the fallback page when the page crashed"
+  },
+  "theme.BackToTopButton.buttonAriaLabel": {
+    "message": "回到顶部",
+    "description": "The ARIA label for the back to top button"
+  },
+  "theme.blog.archive.title": {
+    "message": "历史博文",
+    "description": "The page & hero title of the blog archive page"
+  },
+  "theme.blog.archive.description": {
+    "message": "历史博文",
+    "description": "The page & hero description of the blog archive page"
+  },
+  "theme.blog.paginator.navAriaLabel": {
+    "message": "博文列表分页导航",
+    "description": "The ARIA label for the blog pagination"
+  },
+  "theme.blog.paginator.newerEntries": {
+    "message": "较新的博文",
+    "description": "The label used to navigate to the newer blog posts page (previous page)"
+  },
+  "theme.blog.paginator.olderEntries": {
+    "message": "较旧的博文",
+    "description": "The label used to navigate to the older blog posts page (next page)"
+  },
+  "theme.blog.post.paginator.navAriaLabel": {
+    "message": "博文分页导航",
+    "description": "The ARIA label for the blog posts pagination"
+  },
+  "theme.blog.post.paginator.newerPost": {
+    "message": "较新一篇",
+    "description": "The blog post button label to navigate to the newer/previous post"
+  },
+  "theme.blog.post.paginator.olderPost": {
+    "message": "较旧一篇",
+    "description": "The blog post button label to navigate to the older/next post"
+  },
+  "theme.tags.tagsPageLink": {
+    "message": "查看所有标签",
+    "description": "The label of the link targeting the tag list page"
+  },
+  "theme.colorToggle.ariaLabel.mode.system": {
+    "message": "system mode",
+    "description": "The name for the system color mode"
+  },
+  "theme.colorToggle.ariaLabel.mode.light": {
+    "message": "浅色模式",
+    "description": "The name for the light color mode"
+  },
+  "theme.colorToggle.ariaLabel.mode.dark": {
+    "message": "暗黑模式",
+    "description": "The name for the dark color mode"
+  },
+  "theme.colorToggle.ariaLabel": {
+    "message": "切换浅色/暗黑模式（当前为{mode}）",
+    "description": "The ARIA label for the color mode toggle"
+  },
+  "theme.docs.paginator.navAriaLabel": {
+    "message": "文件选项卡",
+    "description": "The ARIA label for the docs pagination"
+  },
+  "theme.docs.paginator.previous": {
+    "message": "上一页",
+    "description": "The label used to navigate to the previous doc"
+  },
+  "theme.docs.paginator.next": {
+    "message": "下一页",
+    "description": "The label used to navigate to the next doc"
+  },
+  "theme.docs.tagDocListPageTitle.nDocsTagged": {
+    "message": "{count} 篇文档带有标签",
+    "description": "Pluralized label for \"{count} docs tagged\". Use as much plural forms (separated by \"|\") as your language support (see https://www.unicode.org/cldr/cldr-aux/charts/34/supplemental/language_plural_rules.html)"
+  },
+  "theme.docs.tagDocListPageTitle": {
+    "message": "{nDocsTagged}「{tagName}」",
+    "description": "The title of the page for a docs tag"
+  },
+  "theme.docs.breadcrumbs.navAriaLabel": {
+    "message": "页面路径",
+    "description": "The ARIA label for the breadcrumbs"
+  },
+  "theme.docs.versionBadge.label": {
+    "message": "版本：{versionLabel}"
+  },
+  "theme.docs.versions.unreleasedVersionLabel": {
+    "message": "此为 {siteTitle} {versionLabel} 版尚未发行的文档。",
+    "description": "The label used to tell the user that he's browsing an unreleased doc version"
+  },
+  "theme.docs.versions.unmaintainedVersionLabel": {
+    "message": "此为 {siteTitle} {versionLabel} 版的文档，该版本已停止维护。",
+    "description": "The label used to tell the user that he's browsing an unmaintained doc version"
+  },
+  "theme.docs.versions.latestVersionSuggestionLabel": {
+    "message": "最新的文档请参阅 {latestVersionLink} ({versionLabel})。",
+    "description": "The label used to tell the user to check the latest version"
+  },
+  "theme.docs.versions.latestVersionLinkLabel": {
+    "message": "最新版本",
+    "description": "The label used for the latest version suggestion link label"
+  },
+  "theme.common.editThisPage": {
+    "message": "编辑此页",
+    "description": "The link label to edit the current page"
+  },
+  "theme.common.headingLinkTitle": {
+    "message": "{heading}的直接链接",
+    "description": "Title for link to heading"
+  },
+  "theme.lastUpdated.atDate": {
+    "message": "于 {date} ",
+    "description": "The words used to describe on which date a page has been last updated"
+  },
+  "theme.lastUpdated.byUser": {
+    "message": "由 {user} ",
+    "description": "The words used to describe by who the page has been last updated"
+  },
+  "theme.lastUpdated.lastUpdatedAtBy": {
+    "message": "最后{byUser}{atDate}更新",
+    "description": "The sentence used to display when a page has been last updated, and by who"
+  },
+  "theme.navbar.mobileVersionsDropdown.label": {
+    "message": "选择版本",
+    "description": "The label for the navbar versions dropdown on mobile view"
+  },
+  "theme.NotFound.title": {
+    "message": "找不到页面",
+    "description": "The title of the 404 page"
+  },
+  "theme.tags.tagsListLabel": {
+    "message": "标签：",
+    "description": "The label alongside a tag list"
+  },
+  "theme.admonition.caution": {
+    "message": "警告",
+    "description": "The default label used for the Caution admonition (:::caution)"
+  },
+  "theme.admonition.danger": {
+    "message": "危险",
+    "description": "The default label used for the Danger admonition (:::danger)"
+  },
+  "theme.admonition.info": {
+    "message": "信息",
+    "description": "The default label used for the Info admonition (:::info)"
+  },
+  "theme.admonition.note": {
+    "message": "备注",
+    "description": "The default label used for the Note admonition (:::note)"
+  },
+  "theme.admonition.tip": {
+    "message": "提示",
+    "description": "The default label used for the Tip admonition (:::tip)"
+  },
+  "theme.admonition.warning": {
+    "message": "注意",
+    "description": "The default label used for the Warning admonition (:::warning)"
+  },
+  "theme.AnnouncementBar.closeButtonAriaLabel": {
+    "message": "关闭",
+    "description": "The ARIA label for close button of announcement bar"
+  },
+  "theme.blog.sidebar.navAriaLabel": {
+    "message": "最近博文导航",
+    "description": "The ARIA label for recent posts in the blog sidebar"
+  },
+  "theme.IconExternalLink.ariaLabel": {
+    "message": "(opens in new tab)",
+    "description": "The ARIA label for the external link icon"
+  },
+  "theme.DocSidebarItem.expandCategoryAriaLabel": {
+    "message": "展开侧边栏分类 '{label}'",
+    "description": "The ARIA label to expand the sidebar category"
+  },
+  "theme.DocSidebarItem.collapseCategoryAriaLabel": {
+    "message": "折叠侧边栏分类 '{label}'",
+    "description": "The ARIA label to collapse the sidebar category"
+  },
+  "theme.NavBar.navAriaLabel": {
+    "message": "主导航",
+    "description": "The ARIA label for the main navigation"
+  },
+  "theme.navbar.mobileLanguageDropdown.label": {
+    "message": "选择语言",
+    "description": "The label for the mobile language switcher dropdown"
+  },
+  "theme.NotFound.p1": {
+    "message": "我们找不到您要找的页面。",
+    "description": "The first paragraph of the 404 page"
+  },
+  "theme.NotFound.p2": {
+    "message": "请联系原链接网站的管理员，并告知他们链接已经失效。",
+    "description": "The 2nd paragraph of the 404 page"
+  },
+  "theme.TOCCollapsible.toggleButtonLabel": {
+    "message": "本页总览",
+    "description": "The label used by the button on the collapsible TOC component"
+  },
+  "theme.blog.post.readingTime.plurals": {
+    "message": "阅读需 {readingTime} 分钟",
+    "description": "Pluralized label for \"{readingTime} min read\". Use as much plural forms (separated by \"|\") as your language support (see https://www.unicode.org/cldr/cldr-aux/charts/34/supplemental/language_plural_rules.html)"
+  },
+  "theme.blog.post.readMore": {
+    "message": "阅读更多",
+    "description": "The label used in blog post item excerpts to link to full blog posts"
+  },
+  "theme.blog.post.readMoreLabel": {
+    "message": "阅读 {title} 的全文",
+    "description": "The ARIA label for the link to full blog posts from excerpts"
+  },
+  "theme.CodeBlock.copy": {
+    "message": "复制",
+    "description": "The copy button label on code blocks"
+  },
+  "theme.CodeBlock.copied": {
+    "message": "复制成功",
+    "description": "The copied button label on code blocks"
+  },
+  "theme.CodeBlock.copyButtonAriaLabel": {
+    "message": "复制代码到剪贴板",
+    "description": "The ARIA label for copy code blocks button"
+  },
+  "theme.docs.breadcrumbs.home": {
+    "message": "主页面",
+    "description": "The ARIA label for the home page in the breadcrumbs"
+  },
+  "theme.CodeBlock.wordWrapToggle": {
+    "message": "切换自动换行",
+    "description": "The title attribute for toggle word wrapping button of code block lines"
+  },
+  "theme.docs.sidebar.collapseButtonTitle": {
+    "message": "收起侧边栏",
+    "description": "The title attribute for collapse button of doc sidebar"
+  },
+  "theme.docs.sidebar.collapseButtonAriaLabel": {
+    "message": "收起侧边栏",
+    "description": "The title attribute for collapse button of doc sidebar"
+  },
+  "theme.docs.sidebar.navAriaLabel": {
+    "message": "文档侧边栏",
+    "description": "The ARIA label for the sidebar navigation"
+  },
+  "theme.docs.sidebar.closeSidebarButtonAriaLabel": {
+    "message": "关闭导航栏",
+    "description": "The ARIA label for close button of mobile sidebar"
+  },
+  "theme.navbar.mobileSidebarSecondaryMenu.backButtonLabel": {
+    "message": "← 回到主菜单",
+    "description": "The label of the back button to return to main menu, inside the mobile navbar sidebar secondary menu (notably used to display the docs sidebar)"
+  },
+  "theme.docs.sidebar.toggleSidebarButtonAriaLabel": {
+    "message": "切换导航栏",
+    "description": "The ARIA label for hamburger menu button of mobile navigation"
+  },
+  "theme.navbar.mobileDropdown.collapseButton.expandAriaLabel": {
+    "message": "Expand the dropdown",
+    "description": "The ARIA label of the button to expand the mobile dropdown navbar item"
+  },
+  "theme.navbar.mobileDropdown.collapseButton.collapseAriaLabel": {
+    "message": "Collapse the dropdown",
+    "description": "The ARIA label of the button to collapse the mobile dropdown navbar item"
+  },
+  "theme.docs.sidebar.expandButtonTitle": {
+    "message": "展开侧边栏",
+    "description": "The ARIA label and title attribute for expand button of doc sidebar"
+  },
+  "theme.docs.sidebar.expandButtonAriaLabel": {
+    "message": "展开侧边栏",
+    "description": "The ARIA label and title attribute for expand button of doc sidebar"
+  },
+  "theme.SearchBar.noResultsText": {
+    "message": "没有找到任何文档"
+  },
+  "theme.SearchBar.seeAllOutsideContext": {
+    "message": "查看“{context}”以外的全部结果"
+  },
+  "theme.SearchBar.searchInContext": {
+    "message": "查看“{context}”以内的全部结果"
+  },
+  "theme.SearchBar.seeAll": {
+    "message": "查看全部结果"
+  },
+  "theme.SearchBar.label": {
+    "message": "搜索",
+    "description": "The ARIA label and placeholder for search button"
+  },
+  "theme.SearchPage.existingResultsTitle": {
+    "message": "“{query}”的搜索结果",
+    "description": "The search page title for non-empty query"
+  },
+  "theme.SearchPage.emptyResultsTitle": {
+    "message": "搜索文档",
+    "description": "The search page title for empty query"
+  },
+  "theme.SearchPage.searchContext.everywhere": {
+    "message": "所有"
+  },
+  "theme.SearchPage.documentsFound.plurals": {
+    "message": "共找到 {count} 篇文档",
+    "description": "Pluralized label for \"{count} documents found\". Use as much plural forms (separated by \"|\") as your language support (see https://www.unicode.org/cldr/cldr-aux/charts/34/supplemental/language_plural_rules.html)"
+  },
+  "theme.SearchPage.noResultsText": {
+    "message": "没有找到任何文档",
+    "description": "The paragraph for empty search result"
+  },
+  "theme.blog.post.plurals": {
+    "message": "{count} 篇博文",
+    "description": "Pluralized label for \"{count} posts\". Use as much plural forms (separated by \"|\") as your language support (see https://www.unicode.org/cldr/cldr-aux/charts/34/supplemental/language_plural_rules.html)"
+  },
+  "theme.blog.tagTitle": {
+    "message": "{nPosts} 含有标签「{tagName}」",
+    "description": "The title of the page for a blog tag"
+  },
+  "theme.blog.author.pageTitle": {
+    "message": "{authorName} - {nPosts}",
+    "description": "The title of the page for a blog author"
+  },
+  "theme.blog.authorsList.pageTitle": {
+    "message": "作者",
+    "description": "The title of the authors page"
+  },
+  "theme.blog.authorsList.viewAll": {
+    "message": "查看所有作者",
+    "description": "The label of the link targeting the blog authors page"
+  },
+  "theme.blog.author.noPosts": {
+    "message": "该作者尚未撰写任何文章。",
+    "description": "The text for authors with 0 blog post"
+  },
+  "theme.contentVisibility.unlistedBanner.title": {
+    "message": "未列出页",
+    "description": "The unlisted content banner title"
+  },
+  "theme.contentVisibility.unlistedBanner.message": {
+    "message": "此页面未列出。搜索引擎不会对其索引，只有拥有直接链接的用户才能访问。",
+    "description": "The unlisted content banner message"
+  },
+  "theme.contentVisibility.draftBanner.title": {
+    "message": "草稿页",
+    "description": "The draft content banner title"
+  },
+  "theme.contentVisibility.draftBanner.message": {
+    "message": "此页面是草稿，仅在开发环境中可见，不会包含在正式版本中。",
+    "description": "The draft content banner message"
+  },
+  "theme.docs.DocCard.categoryDescription.plurals": {
+    "message": "{count} 个项目",
+    "description": "The default description for a category card in the generated index about how many items this category includes"
+  },
+  "theme.ErrorPageContent.tryAgain": {
+    "message": "重试",
+    "description": "The label of the button to try again rendering when the React error boundary captures an error"
+  },
+  "theme.common.skipToMainContent": {
+    "message": "跳到主要内容",
+    "description": "The skip to content label used for accessibility, allowing to rapidly navigate to main content with keyboard tab/enter navigation"
+  },
+  "theme.tags.tagsPageTitle": {
+    "message": "标签",
+    "description": "The title of the tag list page"
+  }
+}

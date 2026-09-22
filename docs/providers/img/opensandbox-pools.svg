@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" id="fig-opensandbox-pools" viewBox="0 0 1080 488"
+     role="img" aria-labelledby="opensandbox-pools-title opensandbox-pools-desc">
+  <title id="opensandbox-pools-title">How prepared capacity reaches a Session</title>
+  <desc id="opensandbox-pools-desc">A prewarm-enabled Agent keeps one complete runtime ready. With Agent tenancy, OpenSandbox's official SDK client pool supplies a shared base box and AstraBox prepares one isolated engine slot inside it. With conversation tenancy, AstraBox prepares one complete box for one conversation. A Session atomically claims the matching prepared unit; when no unit is claimable, ordinary startup uses the same current Agent configuration.</desc>
+
+  <style data-standalone="true">
+    @media (prefers-color-scheme: dark) {
+      svg {
+        --ifm-background-color: #0e0e0e;
+        --fg-1: #ededed;
+        --fg-3: #909090;
+        --fg-4: #6f6f6f;
+        --line-strong: #383838;
+        --astra: #7877ff;
+        --astra-tint: #1a1b3a;
+      }
+    }
+  </style>
+
+  <style>
+    #fig-opensandbox-pools .box { fill: var(--ifm-background-color, #fafafa); stroke: var(--line-strong, #d4d4d4); stroke-width: 1 }
+    #fig-opensandbox-pools .focal { fill: var(--astra-tint, #ecebff); stroke: var(--astra, #5c5bff); stroke-width: 1.5 }
+    #fig-opensandbox-pools .mask { fill: var(--ifm-background-color, #fafafa) }
+    #fig-opensandbox-pools .edge { fill: none; stroke: var(--fg-4, #999999); stroke-width: 1.25 }
+    #fig-opensandbox-pools .name { fill: var(--fg-1, #0a0a0a); font: 600 12px Geist, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; text-anchor: middle }
+    #fig-opensandbox-pools .sub { fill: var(--fg-3, #666666); font: 400 9px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; text-anchor: middle }
+    #fig-opensandbox-pools .eyebrow { fill: var(--fg-3, #666666); font: 500 8px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.14em }
+    #fig-opensandbox-pools .arrow-label { fill: var(--fg-3, #666666); font: 400 8px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.06em; text-anchor: middle }
+    #fig-opensandbox-pools .legend-text { fill: var(--fg-3, #666666); font: 400 8px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.06em }
+    #fig-opensandbox-pools .rule { stroke: var(--line-strong, #d4d4d4); stroke-width: 0.8 }
+  </style>
+
+  <defs>
+    <marker id="opensandbox-pools-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="var(--fg-4, #999999)"/>
+    </marker>
+  </defs>
+
+  <!-- column headers -->
+  <text class="eyebrow" x="24" y="44">START PATH · SELECTED BY TENANCY AND AVAILABILITY</text>
+  <line class="rule" x1="24" y1="56" x2="440" y2="56"/>
+  <text class="eyebrow" x="616" y="44">WHAT THE SESSION CLAIMS OR STARTS</text>
+  <line class="rule" x1="616" y1="56" x2="1056" y2="56"/>
+
+  <!-- arrows first: the boxes paint over the lines -->
+  <path class="edge" d="M 440 124 H 520 V 224 H 612" marker-end="url(#opensandbox-pools-arrow)"/>
+  <path class="edge" d="M 440 244 H 612" marker-end="url(#opensandbox-pools-arrow)"/>
+  <path class="edge" d="M 440 364 H 544 V 264 H 612" marker-end="url(#opensandbox-pools-arrow)"/>
+
+  <rect class="focal" x="24" y="88" width="416" height="72" rx="8"/>
+  <text class="name" x="232" y="112">Agent tenancy · shared box</text>
+  <text class="sub" x="232" y="130">OpenSandbox SDK client pool keeps one base box ready</text>
+  <text class="sub" x="232" y="144">AstraBox prepares one isolated engine slot inside it</text>
+
+  <rect class="box" x="24" y="208" width="416" height="72" rx="8"/>
+  <text class="name" x="232" y="232">Conversation tenancy · dedicated box</text>
+  <text class="sub" x="232" y="250">AstraBox keeps one complete sandbox ready</text>
+  <text class="sub" x="232" y="264">the claiming conversation adopts its workspace</text>
+
+  <rect class="box" x="24" y="328" width="416" height="72" rx="8"/>
+  <text class="name" x="232" y="352">Ordinary startup</text>
+  <text class="sub" x="232" y="370">used when no matching prepared unit can be claimed</text>
+  <text class="sub" x="232" y="384">creates or joins the Agent's current placement</text>
+
+  <rect class="box" x="616" y="208" width="440" height="72" rx="8"/>
+  <text class="name" x="836" y="232">The Session runtime</text>
+  <text class="sub" x="836" y="250">one prepared unit is claimed atomically, or startup runs now</text>
+  <text class="sub" x="836" y="264">workspace and protected credentials follow the Session</text>
+
+  <line class="rule" x1="24" y1="432" x2="1056" y2="432"/>
+  <text class="eyebrow" x="24" y="456">LEGEND</text>
+  <rect class="focal" x="112" y="448" width="16" height="12" rx="2"/>
+  <text class="legend-text" x="136" y="456">provider-managed base-box capacity</text>
+  <text class="eyebrow" x="336" y="456">NOTE</text>
+  <text class="legend-text" x="380" y="456">AstraBox owns the recipe, claim, workspace, credentials and startup</text>
+</svg>

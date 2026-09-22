@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" id="fig-overview-runtime" viewBox="0 0 1080 400"
+     role="img" aria-labelledby="overview-runtime-title overview-runtime-desc">
+  <title id="overview-runtime-title">How AstraBox runs an Agent task</title>
+  <desc id="overview-runtime-desc">Users reach AstraBox through the console, API, or a messaging platform. AstraBox saves Session history and runs the selected Agent program inside an isolated sandbox. That program works with files, commands, and MCP services, and calls the model through a gateway outside the sandbox.</desc>
+
+  <style data-standalone="true">
+    @media (prefers-color-scheme: dark) {
+      svg {
+        --ifm-background-color: #0e0e0e;
+        --fg-1: #ededed;
+        --fg-3: #909090;
+        --fg-4: #6f6f6f;
+        --line-strong: #383838;
+        --astra: #7877ff;
+        --astra-tint: #1a1b3a;
+        --plasma: #f08a59;
+      }
+    }
+  </style>
+
+  <style>
+    #fig-overview-runtime .box { fill: var(--ifm-background-color, #fafafa); stroke: var(--line-strong, #d4d4d4); stroke-width: 1 }
+    #fig-overview-runtime .store { fill: color-mix(in oklab, var(--fg-1, #0a0a0a) 5%, var(--ifm-background-color, #fafafa)); stroke: var(--line-strong, #d4d4d4); stroke-width: 1 }
+    #fig-overview-runtime .focal { fill: var(--astra-tint, #ecebff); stroke: var(--astra, #5c5bff); stroke-width: 1.5 }
+    #fig-overview-runtime .zone { fill: none; stroke: var(--line-strong, #d4d4d4); stroke-width: 1; stroke-dasharray: 4 4 }
+    #fig-overview-runtime .mask { fill: var(--ifm-background-color, #fafafa) }
+    #fig-overview-runtime .edge { fill: none; stroke: var(--fg-4, #999999); stroke-width: 1.25 }
+    #fig-overview-runtime .edge-dashed { fill: none; stroke: var(--fg-4, #999999); stroke-width: 1.25; stroke-dasharray: 3 4 }
+    #fig-overview-runtime .edge-out { fill: none; stroke: var(--plasma, #e8754a); stroke-width: 1.25 }
+    #fig-overview-runtime .name { fill: var(--fg-1, #0a0a0a); font: 600 12px Geist, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; text-anchor: middle }
+    #fig-overview-runtime .sub { fill: var(--fg-3, #666666); font: 400 9px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; text-anchor: middle }
+    #fig-overview-runtime .eyebrow { fill: var(--fg-3, #666666); font: 500 8px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.14em }
+    #fig-overview-runtime .arrow-label { fill: var(--fg-3, #666666); font: 400 8px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.06em; text-anchor: middle }
+    #fig-overview-runtime .legend-text { fill: var(--fg-3, #666666); font: 400 8px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.06em }
+    #fig-overview-runtime .rule { stroke: var(--line-strong, #d4d4d4); stroke-width: 0.8 }
+  </style>
+
+  <defs>
+    <marker id="overview-runtime-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="var(--fg-4, #999999)"/>
+    </marker>
+    <marker id="overview-runtime-arrow-start" markerWidth="8" markerHeight="6" refX="1" refY="3" orient="auto">
+      <polygon points="8 0, 0 3, 8 6" fill="var(--fg-4, #999999)"/>
+    </marker>
+    <marker id="overview-runtime-arrow-out" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="var(--plasma, #e8754a)"/>
+    </marker>
+  </defs>
+
+  <!-- zones first, then arrows, then boxes: nodes paint over the lines -->
+  <rect class="zone" x="544" y="64" width="280" height="248" rx="12"/>
+  <text class="eyebrow" x="544" y="52">MANAGED SANDBOX</text>
+
+  <path class="edge" d="M 192 136 H 244" marker-end="url(#overview-runtime-arrow)"/>
+  <path class="edge" d="M 476 128 H 572" marker-end="url(#overview-runtime-arrow)" marker-start="url(#overview-runtime-arrow-start)"/>
+  <path class="edge-dashed" d="M 360 168 V 244" marker-end="url(#overview-runtime-arrow)"/>
+  <path class="edge" d="M 684 168 V 208" marker-end="url(#overview-runtime-arrow)"/>
+  <path class="edge-out" d="M 792 136 H 884" marker-end="url(#overview-runtime-arrow-out)"/>
+
+  <rect class="mask" x="192" y="112" width="56" height="12" rx="2"/>
+  <text class="arrow-label" x="220" y="121">REQUESTS</text>
+  <rect class="mask" x="486" y="104" width="80" height="12" rx="2"/>
+  <text class="arrow-label" x="526" y="113">TASKS · EVENTS</text>
+  <rect class="mask" x="372" y="200" width="72" height="12" rx="2"/>
+  <text class="arrow-label" x="408" y="209">SAVED EVENTS</text>
+  <rect class="mask" x="802" y="112" width="76" height="12" rx="2"/>
+  <text class="arrow-label" x="840" y="121">MODEL CALLS</text>
+
+  <rect class="box" x="24" y="104" width="168" height="64" rx="8"/>
+  <text class="name" x="108" y="132">Users and clients</text>
+  <text class="sub" x="108" y="150">console · API · channels</text>
+
+  <rect class="box" x="248" y="104" width="228" height="64" rx="8"/>
+  <text class="name" x="362" y="132">AstraBox service</text>
+  <text class="sub" x="362" y="150">sessions · streaming · approvals</text>
+
+  <rect class="store" x="248" y="244" width="228" height="60" rx="8"/>
+  <text class="name" x="362" y="270">Session storage</text>
+  <text class="sub" x="362" y="288">history · state</text>
+
+  <rect class="focal" x="576" y="104" width="216" height="64" rx="8"/>
+  <text class="name" x="684" y="132">Agent program</text>
+  <text class="sub" x="684" y="150">chosen with the runtime setup</text>
+
+  <rect class="box" x="576" y="208" width="216" height="60" rx="8"/>
+  <text class="name" x="684" y="234">Workspace and actions</text>
+  <text class="sub" x="684" y="252">files · commands · MCP</text>
+
+  <rect class="box" x="888" y="104" width="168" height="64" rx="8"/>
+  <text class="name" x="972" y="132">Model endpoint</text>
+  <text class="sub" x="972" y="150">LiteLLM or your gateway</text>
+
+  <line class="rule" x1="24" y1="336" x2="1056" y2="336"/>
+  <text class="eyebrow" x="24" y="360">LEGEND</text>
+  <rect class="focal" x="112" y="352" width="16" height="10" rx="2"/>
+  <text class="legend-text" x="136" y="360">the program performing the task</text>
+  <line class="edge" x1="416" y1="357" x2="440" y2="357"/>
+  <text class="legend-text" x="448" y="360">requests and live output</text>
+  <line class="edge-dashed" x1="672" y1="357" x2="696" y2="357"/>
+  <text class="legend-text" x="704" y="360">written to AstraBox storage</text>
+  <line class="edge-out" x1="928" y1="357" x2="952" y2="357"/>
+  <text class="legend-text" x="960" y="360">leaves the sandbox</text>
+</svg>

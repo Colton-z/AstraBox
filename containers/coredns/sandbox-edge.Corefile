@@ -1,0 +1,8 @@
+# A sandbox may use this container as its DNS upstream without gaining access
+# to the Docker bridge gateway. The upstream CoreDNS process remains inside the
+# AstraBox server and resolves the private model-gateway name.
+.:53 {
+    errors
+    forward . {$ASTRABOX_EDGE_DNS_UPSTREAM}
+    cache 30
+}

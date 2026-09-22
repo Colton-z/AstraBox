@@ -1,0 +1,240 @@
+{
+  "workspace_storage": {
+    "order": ["no_volume_core", "persistent_files"],
+    "persistent_files": {
+      "python": {
+        "main": ["tests/e2e/test_durable_workspace.py::test_an_agent_conversation_keeps_its_files_after_its_box_is_destroyed", "tests/e2e/test_cold_conversation_resume.py::test_cold_rebuild_restores_existing_conversation", "tests/e2e/test_shared_persistent_warm_resume.py::test_shared_persistent_conversation_resumes_on_existing_sdk_pool_box"],
+        "assistant": []
+      },
+      "playwright": {
+        "parallel": [],
+        "exclusive": [
+          "specs/agent-workspace-resume.exclusive.spec.ts › the same Agent conversation reads its persisted workspace after sandbox rebuild",
+          "specs/agent-workspace-resume.exclusive.spec.ts › deepseek_harness: the same Agent conversation reads its persisted workspace after sandbox rebuild",
+          "specs/agent-workspace-resume.exclusive.spec.ts › pi: the same Agent conversation reads its persisted workspace after sandbox rebuild",
+          "specs/agent-workspace-resume.exclusive.spec.ts › codex: the same Agent conversation reads its persisted workspace after sandbox rebuild",
+          "specs/agent-workspace-resume.exclusive.spec.ts › cross-host: the same Agent conversation reads its persisted workspace after sandbox rebuild",
+          "specs/agent-workspace-resume.exclusive.spec.ts › cross-host: deepseek_harness: the same Agent conversation reads its persisted workspace after sandbox rebuild",
+          "specs/agent-workspace-resume.exclusive.spec.ts › cross-host: pi: the same Agent conversation reads its persisted workspace after sandbox rebuild",
+          "specs/agent-workspace-resume.exclusive.spec.ts › cross-host: codex: the same Agent conversation reads its persisted workspace after sandbox rebuild",
+          "specs/assistant-workspace-files-survive-park-and-wake.exclusive.spec.ts › assistant workspace profile survives hibernate and wake on a fresh box",
+          "specs/distributed-prewarm.exclusive.spec.ts › two live backends share prepared capacity without crossing conversation files or history",
+          "specs/cross-host-backend-claim.exclusive.spec.ts › backend on B claims the prepared sandbox on A and serves its files and live turn"
+        ]
+      }
+    },
+    "tests": {"no_volume_core": 496, "persistent_files": 23}
+  },
+  "max_test_seconds": 180,
+  "model_conditional_skips": [
+    "specs/evicted-runtime-recreates-resident-transport-on-next-message.exclusive.spec.ts",
+    "specs/sdk-contract-conversation.exclusive.spec.ts",
+    "specs/session-detail-pending-preserves-message-tree-order.exclusive.spec.ts"
+  ],
+  "playwright": {
+    "exclusive": {
+      "files": 141,
+      "parallel_files": 94,
+      "parallel_tests": 144,
+      "serial_files": [
+        "specs/a-turn-that-ends-in-an-error-is-not-missing-its-proof.exclusive.spec.ts",
+        "specs/admin-native-transcript-batch-export.exclusive.spec.ts",
+        "specs/agent-per-session-sandbox.exclusive.spec.ts",
+        "specs/agent-workspace-resume.exclusive.spec.ts",
+        "specs/aggregate-stopped-task-notification-recovery.exclusive.spec.ts",
+        "specs/an-idle-assistant-card-stops-reading-ready-on-an-open-page.exclusive.spec.ts",
+        "specs/assistant-record-page-reaches-ready-without-a-reload.exclusive.spec.ts",
+        "specs/assistant-tool-card-live-and-cold.exclusive.spec.ts",
+        "specs/assistant-workspace-files-survive-park-and-wake.exclusive.spec.ts",
+        "specs/assistant-workspace-oob-death-recovers-on-open.exclusive.spec.ts",
+        "specs/assistant-workspace-oob-death-recovers.exclusive.spec.ts",
+        "specs/backend-restart-completed-journal-projection-lag.exclusive.spec.ts",
+        "specs/backend-restart-delivered-answer-projection-gap.exclusive.spec.ts",
+        "specs/backend-restart-rehydrates-resident-session-and-pending-approval.exclusive.spec.ts",
+        "specs/channel-completed-before-receipt-survives-server-restart.exclusive.spec.ts",
+        "specs/channel-completed-outbox-survives-server-and-sandbox-loss.exclusive.spec.ts",
+        "specs/channel-message-supersedes-exited-question.exclusive.spec.ts",
+        "specs/console-axe.exclusive.spec.ts",
+        "specs/console-extension-save-reschedules-prewarm.exclusive.spec.ts",
+        "specs/cross-host-backend-claim.exclusive.spec.ts",
+        "specs/distributed-prewarm.exclusive.spec.ts",
+        "specs/expired-channel-question-continues-on-thread-reply.exclusive.spec.ts",
+        "specs/file-panel-uploads-file-larger-than-100mib.exclusive.spec.ts",
+        "specs/investment-research-production-journey.exclusive.spec.ts",
+        "specs/metadata-transient-fault-first-turn.exclusive.spec.ts",
+        "specs/native-diff-failure-and-recovery.exclusive.spec.ts",
+        "specs/non-terminal-background-bash-task-update.exclusive.spec.ts",
+        "specs/oidc-deployment-reset.exclusive.spec.ts",
+        "specs/opensandbox-agent-prewarm-real-extensions.exclusive.spec.ts",
+        "specs/ownerless-sandbox-reaping-preserves-prepared-capacity.exclusive.spec.ts",
+        "specs/pending-interaction-survives-server-restart.exclusive.spec.ts",
+        "specs/pre-result-history-survives-sandbox-death.exclusive.spec.ts",
+        "specs/prepared-capacity-returns-after-a-restart-mid-claim.exclusive.spec.ts",
+        "specs/prepared-slot-survives-a-claim-during-its-renewal.exclusive.spec.ts",
+        "specs/prewarm-rebuilds-a-lost-slot-before-the-next-conversation.exclusive.spec.ts",
+        "specs/prewarm-vault-lifecycle-browser.exclusive.spec.ts",
+        "specs/prewarm-yields-to-foreground-start.exclusive.spec.ts",
+        "specs/reclaimed-sandbox-reads-ready.exclusive.spec.ts",
+        "specs/reconcile-is-present-for-a-parked-session-without-recovering-it.exclusive.spec.ts",
+        "specs/runtime-recovery-ownership.exclusive.spec.ts",
+        "specs/sandbox-durable-binding-clear-rebuild.exclusive.spec.ts",
+        "specs/sandbox-oob-death-reborrow.exclusive.spec.ts",
+        "specs/sandbox-reclaimed-while-waiting-for-durable-interaction-approval.exclusive.spec.ts",
+        "specs/sandbox-replacement-preserves-conversation-identity.exclusive.spec.ts",
+        "specs/server-restart-reattaches-running-sandbox-turn.exclusive.spec.ts",
+        "specs/subagent-replay-recovery.exclusive.spec.ts",
+        "specs/turn-terminal-is-first-writer-not-last.exclusive.spec.ts"
+      ],
+      "serial_tests": 74,
+      "serial_workers": 1,
+      "tests": 218,
+      "workers": 5
+    },
+    "parallel": {
+      "files": 35,
+      "tests": 66,
+      "workers": 5
+    }
+  },
+  "python": {
+    "assistant": {
+      "parallel_node_ids": [
+        "tests/e2e/test_conversation_end.py::test_assistant_answers_a_second_message_in_the_same_conversation",
+        "tests/e2e/test_conversation_end.py::test_assistant_conversation_end_starts_fresh_context_on_same_workspace",
+        "tests/e2e/test_durable_workspace.py::test_an_assistant_remembers_its_conversations_after_its_box_is_destroyed"
+      ],
+      "restart_node_ids": [],
+      "tests": 3,
+      "workers": 1
+    },
+    "main": {
+      "engine_kinds": [
+        "claude_code",
+        "deepseek_harness",
+        "codex",
+        "pi"
+      ],
+      "matrix_tests": 232,
+      "parallel_node_ids": [
+        "tests/e2e/test_background_subagent.py::test_background_subagent_surfaces_on_stream_and_stays_sendable",
+        "tests/e2e/test_background_subagent.py::test_background_subagent_stop_is_accepted",
+        "tests/e2e/test_cli_journey.py::test_status_reports_a_live_deployment",
+        "tests/e2e/test_cli_journey.py::test_schema_serves_the_write_contract",
+        "tests/e2e/test_cli_journey.py::test_get_lists_what_the_deployment_holds",
+        "tests/e2e/test_cli_journey.py::test_a_missing_resource_exits_failed_not_zero",
+        "tests/e2e/test_cli_journey.py::test_an_unreachable_endpoint_is_its_own_exit_code",
+        "tests/e2e/test_cli_journey.py::test_export_round_trips_through_diff",
+        "tests/e2e/test_cli_journey.py::test_apply_creates_then_destroy_removes",
+        "tests/e2e/test_cli_journey.py::test_apply_refuses_an_assistant_only_environment",
+        "tests/e2e/test_cli_journey.py::test_dry_run_apply_writes_nothing",
+        "tests/e2e/test_cli_journey.py::test_the_mcp_facade_answers_the_same_deployment",
+        "tests/e2e/test_cli_journey.py::test_run_answers_a_task_end_to_end",
+        "tests/e2e/test_cold_conversation_resume.py::test_cold_rebuild_restores_existing_conversation",
+        "tests/e2e/test_conversation_end.py::test_conversation_end_rejects_chat_session_without_teardown",
+        "tests/e2e/test_delete_and_archive.py::test_archive_reclaims_sandbox_and_keeps_history_readable",
+        "tests/e2e/test_delete_and_archive.py::test_delete_makes_session_unreadable",
+        "tests/e2e/test_durable_workspace.py::test_an_agent_conversation_keeps_its_files_after_its_box_is_destroyed",
+        "tests/e2e/test_durable_workspace.py::test_a_conversation_comes_back_after_its_box_is_destroyed",
+        "tests/e2e/test_evict_runtime.py::test_evict_runtime_preserves_context",
+        "tests/e2e/test_files.py::test_files_list_returns_listing",
+        "tests/e2e/test_files.py::test_files_upload_list_download_round_trip",
+        "tests/e2e/test_interaction_ai_stream.py::test_legacy_ai_stream_answer_is_refused_and_the_command_path_settles",
+        "tests/e2e/test_interactions.py::test_exit_plan_mode_approve_settles",
+        "tests/e2e/test_interactions.py::test_ask_user_question_answer_settles",
+        "tests/e2e/test_interactions.py::test_codex_plan_mode_question_answer_settles",
+        "tests/e2e/test_interrupt.py::test_interrupt_streaming_turn_settles_and_session_stays_usable",
+        "tests/e2e/test_interrupt.py::test_interrupt_clears_pending_interaction_and_settles",
+        "tests/e2e/test_live_turn.py::test_live_turn_streams_text_delta",
+        "tests/e2e/test_mcp_client_journey.py::test_a_converse_key_carries_a_client_through_a_whole_conversation",
+        "tests/e2e/test_mcp_client_journey.py::test_a_read_key_is_refused_the_moment_it_tries_to_spend",
+        "tests/e2e/test_mcp_client_journey.py::test_a_revoked_key_stops_working_against_the_deployment",
+        "tests/e2e/test_messages.py::test_messages_transcript_has_user_and_assistant",
+        "tests/e2e/test_native_config.py::test_native_json_configuration_reaches_supplier",
+        "tests/e2e/test_permission_mode.py::test_accept_edits_writes_without_a_prompt",
+        "tests/e2e/test_prepared_runtime_activation.py::test_claim_activates_the_already_prepared_engine[conversation]",
+        "tests/e2e/test_prepared_runtime_activation.py::test_claim_activates_the_already_prepared_engine[agent]",
+        "tests/e2e/test_prepared_runtime_activation.py::test_prepared_runtime_resumes_native_history_without_disrupting_sibling[conversation]",
+        "tests/e2e/test_prepared_runtime_activation.py::test_prepared_runtime_resumes_native_history_without_disrupting_sibling[agent]",
+        "tests/e2e/test_reclaim_during_pending.py::test_reclaim_mid_pending_is_accepted_and_wakeable",
+        "tests/e2e/test_reclaim_during_pending.py::test_reclaim_during_pending_then_approve_recovers_without_hang",
+        "tests/e2e/test_sandbox_reborrow.py::test_deployment_provides_both_box_tenancies",
+        "tests/e2e/test_sandbox_reborrow.py::test_terminate_sandbox_keeps_session_wakeable",
+        "tests/e2e/test_sandbox_reborrow.py::test_next_turn_reborrows_a_fresh_sandbox",
+        "tests/e2e/test_shared_box_cohabitation.py::test_two_conversations_share_the_box_and_nothing_else",
+        "tests/e2e/test_shared_box_cohabitation.py::test_evicted_last_shared_conversation_reclaims_box",
+        "tests/e2e/test_shared_persistent_warm_resume.py::test_shared_persistent_conversation_resumes_on_existing_sdk_pool_box",
+        "tests/e2e/test_stale_interaction_answer_lands_nowhere.py::test_replaying_the_first_answer_does_not_resolve_the_second",
+        "tests/e2e/test_stream_close_admits_next_send.py::test_next_send_is_admissible_the_instant_the_body_ends",
+        "tests/e2e/test_stream_close_admits_next_send.py::test_a_send_during_a_running_turn_queues_behind_it",
+        "tests/e2e/test_stream_close_admits_next_send.py::test_the_session_is_usable_after_the_no_gap_pair",
+        "tests/e2e/test_terminal.py::test_terminal_nonzero_exit_propagates",
+        "tests/e2e/test_tool_permission.py::test_tool_permission_approve_runs_the_write",
+        "tests/e2e/test_tool_permission.py::test_tool_permission_deny_blocks_the_write",
+        "tests/e2e/test_transcript_mirror.py::test_transcript_mirror_lands_on_host",
+        "tests/e2e/test_transcript_mirror.py::test_a_replacement_box_answers_from_the_restored_transcript"
+      ],
+      "restart_node_ids": [
+        "tests/e2e/test_reattach.py::test_sandbox_and_session_survive_backend_restart",
+        "tests/e2e/test_reattach.py::test_reattach_turn_reuses_sandbox_without_rebuild"
+      ],
+      "tests": 58,
+      "workers": 5
+    },
+    "matrix_tests": 235,
+    "tests": 61
+  },
+  "suites": {
+    "audit": {
+      "entry": "make audit-console",
+      "role": "audit"
+    },
+    "exclusive": {
+      "entry": "run-playwright.sh --lane exclusive",
+      "role": "e2e"
+    },
+    "external": {
+      "entry": "npm --prefix tests/e2e-ui run e2e -- real-slack-feishu-dingtalk",
+      "role": "external"
+    },
+    "parallel": {
+      "entry": "run-playwright.sh --lane parallel",
+      "role": "e2e"
+    },
+    "tooling": {
+      "entry": "make screenshots",
+      "role": "tooling"
+    }
+  },
+  "version": 9,
+  "watchdog_grace_seconds": 30,
+  "substrate": {
+    "_why": "What each lane needs underneath, so a run does not have to be told by hand and cannot be told two contradictory things. Read by testbed-actions.py.",
+    "lanes": {
+      "exclusive": {
+        "fixture_agent_prewarm": true,
+        "concurrent_boxes": 5,
+        "one_engine_per_iteration": false
+      },
+      "parallel": {
+        "fixture_agent_prewarm": true,
+        "concurrent_boxes": 5,
+        "one_engine_per_iteration": false
+      },
+      "python": {
+        "fixture_agent_prewarm": true,
+        "concurrent_boxes": 6,
+        "one_engine_per_iteration": true
+      },
+      "assistant": {
+        "fixture_agent_prewarm": true,
+        "concurrent_boxes": 2,
+        "one_engine_per_iteration": false
+      },
+      "target": {
+        "fixture_agent_prewarm": true,
+        "concurrent_boxes": 1,
+        "one_engine_per_iteration": false
+      }
+    }
+  }
+}

@@ -1,0 +1,114 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" id="fig-quickstart-setup" viewBox="0 0 1080 368"
+     role="img" aria-labelledby="quickstart-setup-title quickstart-setup-desc">
+  <title id="quickstart-setup-title">构建镜像、启动 AstraBox 并运行任务</title>
+  <desc id="quickstart-setup-desc">三个编号步骤。第一步构建服务端镜像和一个 Agent 沙箱镜像。第二步用一条 Compose 命令启动 AstraBox、PostgreSQL 和内置 LiteLLM 模型网关。第三步打开 127.0.0.1:8088 的控制台，选择首次启动时创建的 Agent，然后开始 Session。隔离沙箱来自第一步构建的镜像，模型调用则发往沙箱之外的网关。</desc>
+
+  <style data-standalone="true">
+    @media (prefers-color-scheme: dark) {
+      svg {
+        --ifm-background-color: #0e0e0e;
+        --fg-1: #ededed;
+        --fg-3: #909090;
+        --fg-4: #6f6f6f;
+        --line-strong: #383838;
+        --astra: #7877ff;
+        --astra-tint: #1a1b3a;
+        --plasma: #f08a59;
+      }
+    }
+  </style>
+
+  <style>
+    #fig-quickstart-setup .box { fill: var(--ifm-background-color, #fafafa); stroke: var(--line-strong, #d4d4d4); stroke-width: 1 }
+    #fig-quickstart-setup .store { fill: color-mix(in oklab, var(--fg-1, #0a0a0a) 5%, var(--ifm-background-color, #fafafa)); stroke: var(--line-strong, #d4d4d4); stroke-width: 1 }
+    #fig-quickstart-setup .focal { fill: var(--astra-tint, #ecebff); stroke: var(--astra, #5c5bff); stroke-width: 1.5 }
+    #fig-quickstart-setup .mask { fill: var(--ifm-background-color, #fafafa) }
+    #fig-quickstart-setup .edge { fill: none; stroke: var(--fg-4, #999999); stroke-width: 1.25 }
+    #fig-quickstart-setup .edge-dashed { fill: none; stroke: var(--fg-4, #999999); stroke-width: 1.25; stroke-dasharray: 3 4 }
+    #fig-quickstart-setup .edge-out { fill: none; stroke: var(--plasma, #e8754a); stroke-width: 1.25 }
+    #fig-quickstart-setup .name { fill: var(--fg-1, #0a0a0a); font: 600 12px Geist, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; text-anchor: middle }
+    #fig-quickstart-setup .sub { fill: var(--fg-3, #666666); font: 400 10px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; text-anchor: middle }
+    #fig-quickstart-setup .note { fill: var(--fg-3, #666666); font: 400 10px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif }
+    #fig-quickstart-setup .eyebrow { fill: var(--fg-3, #666666); font: 500 9px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; letter-spacing: 0.14em }
+    #fig-quickstart-setup .arrow-label { fill: var(--fg-3, #666666); font: 400 9px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; letter-spacing: 0.06em; text-anchor: middle }
+    #fig-quickstart-setup .legend-text { fill: var(--fg-3, #666666); font: 400 9px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; letter-spacing: 0.06em }
+    #fig-quickstart-setup .rule { stroke: var(--line-strong, #d4d4d4); stroke-width: 0.8 }
+  </style>
+
+  <defs>
+    <marker id="quickstart-setup-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="var(--fg-4, #999999)"/>
+    </marker>
+    <marker id="quickstart-setup-arrow-out" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="var(--plasma, #e8754a)"/>
+    </marker>
+  </defs>
+
+  <!-- step headers -->
+  <text class="eyebrow" x="24" y="40">1 · 构建镜像</text>
+  <text class="note" x="24" y="56">docker build · 服务端 + 一个沙箱</text>
+  <line class="rule" x1="24" y1="68" x2="312" y2="68"/>
+
+  <text class="eyebrow" x="360" y="40">2 · 启动本地部署</text>
+  <text class="note" x="360" y="56">scripts/compose.sh up</text>
+  <line class="rule" x1="360" y1="68" x2="712" y2="68"/>
+
+  <text class="eyebrow" x="760" y="40">3 · 运行一个任务</text>
+  <text class="note" x="760" y="56">http://127.0.0.1:8088</text>
+  <line class="rule" x1="760" y1="68" x2="1056" y2="68"/>
+
+  <!-- arrows first: the boxes paint over the lines -->
+  <path class="edge" d="M 296 120 H 368" marker-end="url(#quickstart-setup-arrow)"/>
+  <path class="edge" d="M 696 120 H 768" marker-end="url(#quickstart-setup-arrow)"/>
+  <path class="edge-dashed" d="M 452 152 V 176" marker-end="url(#quickstart-setup-arrow)"/>
+  <path class="edge" d="M 908 152 V 176" marker-end="url(#quickstart-setup-arrow)"/>
+  <path class="edge" d="M 168 248 V 288 H 840 V 256" marker-end="url(#quickstart-setup-arrow)"/>
+  <path class="edge-out" d="M 776 216 H 704" marker-end="url(#quickstart-setup-arrow-out)"/>
+
+  <rect class="mask" x="488" y="268" width="96" height="12" rx="2"/>
+  <text class="arrow-label" x="536" y="277">会话沙箱由它启动</text>
+  <rect class="mask" x="704" y="196" width="64" height="12" rx="2"/>
+  <text class="arrow-label" x="736" y="205">模型调用</text>
+
+  <rect class="box" x="40" y="88" width="256" height="64" rx="8"/>
+  <text class="name" x="168" y="116">服务端镜像</text>
+  <text class="sub" x="168" y="134">astrabox/server</text>
+
+  <rect class="box" x="376" y="88" width="320" height="64" rx="8"/>
+  <text class="name" x="536" y="116">AstraBox 服务端</text>
+  <text class="sub" x="536" y="134">控制台 · API · 沙箱管理</text>
+
+  <rect class="box" x="776" y="88" width="264" height="64" rx="8"/>
+  <text class="name" x="908" y="116">可直接使用的 Agent</text>
+  <text class="sub" x="908" y="134">首次启动时自动创建</text>
+
+  <rect class="box" x="40" y="184" width="256" height="64" rx="8"/>
+  <text class="name" x="168" y="206">Agent 沙箱镜像</text>
+  <text class="sub" x="168" y="222">运行 Agent 的程序 · 文件服务</text>
+  <text class="sub" x="168" y="236">命令服务 · 工作区</text>
+
+  <rect class="store" x="376" y="184" width="152" height="64" rx="8"/>
+  <text class="name" x="452" y="206">PostgreSQL</text>
+  <text class="sub" x="452" y="222">会话记录</text>
+  <text class="sub" x="452" y="236">astrabox-postgres 卷</text>
+
+  <rect class="box" x="544" y="184" width="152" height="64" rx="8"/>
+  <text class="name" x="620" y="206">模型网关</text>
+  <text class="sub" x="620" y="222">内置 LiteLLM</text>
+  <text class="sub" x="620" y="236">ANTHROPIC_API_KEY</text>
+
+  <rect class="focal" x="776" y="184" width="264" height="64" rx="8"/>
+  <text class="name" x="908" y="206">Session</text>
+  <text class="sub" x="908" y="222">隔离沙箱 · 实时输出</text>
+  <text class="sub" x="908" y="236">按需确认工具调用</text>
+
+  <line class="rule" x1="24" y1="312" x2="1056" y2="312"/>
+  <text class="eyebrow" x="24" y="336">图例</text>
+  <rect class="focal" x="112" y="328" width="16" height="12" rx="2"/>
+  <text class="legend-text" x="136" y="336">第一个任务在这里运行</text>
+  <line class="edge-dashed" x1="432" y1="332" x2="456" y2="332"/>
+  <text class="legend-text" x="464" y="336">写入 PostgreSQL</text>
+  <line class="edge-out" x1="752" y1="332" x2="776" y2="332"/>
+  <text class="legend-text" x="784" y="336">离开沙箱</text>
+</svg>

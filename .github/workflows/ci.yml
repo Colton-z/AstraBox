@@ -1,0 +1,359 @@
+name: ci
+
+# Unit / lint / typecheck — the fast gate on every push + PR.
+# DESIGN CONSTRAINT: this workflow MUST be green with NO Docker and NO secret.
+# It never starts the daemon, never reads an LLM key, and never runs the live
+# turn (the `e2e` pytest mark + the Playwright suite are gated in e2e.yml). It
+# exercises exactly: ruff (lint), the comment-style gate, a workflow-syntax
+# parse, and mypy (typecheck) + the non-e2e pytest for the backend, plus
+# tsc --noEmit + vite build for the console web app.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+# A newer push to the same ref cancels the in-flight run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: backend · ruff + mypy + pytest (no docker, no secret)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Set up the repository Node.js toolchain
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # tests/sdk_contract_ui_schema_test.py validates the platform's stream
+      # frames against the AI SDK the console installs, so the console's
+      # locked dependencies must be present before pytest.
+      - name: Install the console's dependencies
+        run: npm --prefix frontend ci
+
+      - name: Install the package (editable) with the [dev] tools
+        # Editable install registers the entry-points create_app()'s lifespan loads;
+        # [dev] brings ruff + mypy + pytest. 100% public PyPI — no proprietary
+        # dependencies, no Docker, no secret needed to import or unit-test the package.
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e '.[dev]'
+
+      - name: Ruff (lint)
+        # Repository-wide exclusions are documented in pyproject [tool.ruff.lint].
+        run: python -m ruff check astrabox scripts tests
+
+      - name: Comment style
+        # The CONTRIBUTING.md comment rules, enforced against
+        # scripts/comment_style_baseline.json.
+        # The reviewed baseline is zero, so any violation fails the job. Stdlib
+        # only — nothing to install for this step.
+        run: python scripts/check_comment_style.py
+
+      - name: Console translation catalogues
+        # Detect duplicate JSON keys, EN/ZH drift, incomplete English plurals,
+        # and interpolation variables that would render literally at runtime.
+        run: python scripts/check_i18n.py
+
+      - name: Error registry
+        # Every raised error code has a row, against the shrinking baseline in
+        # astrabox/common/utils/error_registry_baseline.txt. A code with no row
+        # reaches the client as category="unregistered", owner="unknown", which
+        # says nothing about who has to act.
+        run: python scripts/check_error_registry.py
+
+      - name: Credential seam
+        run: python scripts/check_credential_seam.py
+
+      - name: Workflow syntax
+        # A workflow GitHub cannot parse is not reported as a failure — it is
+        # reported as no run at all, which reads as "nothing to do" on the one
+        # push that needed it. This caught `cut -d: -f2` in an unquoted `run:`,
+        # where the colon-space is a YAML mapping separator.
+        #
+        # PyYAML is installed here rather than added to the [dev] extra: that
+        # extra is the unit lane's whole dependency surface and stays lean, and
+        # nothing outside this step needs a YAML parser.
+        run: |
+          python -m pip install -q pyyaml
+          python - <<'EOF'
+          import pathlib, sys, yaml
+          bad = []
+          for p in sorted(pathlib.Path(".github/workflows").glob("*.yml")):
+              try:
+                  yaml.safe_load(p.read_text())
+              except yaml.YAMLError as exc:
+                  bad.append(f"{p}: {exc}")
+          if bad:
+              print("\n".join(bad), file=sys.stderr)
+              sys.exit(1)
+          print("workflows parse")
+          EOF
+
+      - name: Mypy (typecheck)
+        # Lenient-but-real config in pyproject [tool.mypy] — green on the current
+        # tree, still catches new egregious type errors in un-polluted categories.
+        run: python -m mypy astrabox
+
+      - name: Pytest (unit — the `-m 'not e2e'` lane; the live turn is deselected)
+        # pyproject sets addopts = -m 'not e2e', so the Docker/secret-requiring
+        # live-turn suite (tests/e2e/) is skipped here and only runs in e2e.yml.
+        run: python scripts/node-toolchain.py --no-download python -m pytest
+
+  web:
+    name: web · ${{ matrix.app }} · tsc --noEmit + vite build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        app: [frontend]
+    defaults:
+      run:
+        working-directory: ${{ matrix.app }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: ${{ matrix.app }}/package-lock.json
+
+      - name: Install (lockfile-exact)
+        run: npm ci
+
+      - name: Build (the package's `build` script == `tsc --noEmit && vite build`)
+        # Both web apps define "build": "tsc --noEmit && vite build", so this step
+        # runs the typecheck and production bundle. `make test-web` also includes
+        # the design checks in the following step, so both steps are required for
+        # parity with the local gate.
+        run: npm run build
+
+      - name: Design checks (interaction states, palette, failure voice)
+        # The rest of `make test-web`. Stdlib-only, so no install: the palette and
+        # failure-voice checks read `frontend/src`, and the interaction-state check
+        # reads the stylesheet the Build step just emitted into `frontend/dist` —
+        # which is why it runs after it and cannot be moved before it.
+        if: ${{ matrix.app == 'frontend' }}
+        working-directory: ${{ github.workspace }}
+        run: |
+          python scripts/check_interaction_states.py
+          python scripts/check_palette.py
+          python scripts/check_failure_voice.py
+
+      - name: API client (generated schema.d.ts matches the OpenAPI snapshot)
+        # `make check-api-client`. Runs in this lane because it needs Node; the
+        # generator is its own npm package (typescript@5 for its compiler API,
+        # while the console builds on typescript@7 which ships none), so it is
+        # installed here rather than coming with `npm ci` above. A committed
+        # generated file that does not match its input compiles exactly as well
+        # as one that does, which is why the check has to be a build step and
+        # not a reviewer's memory.
+        if: ${{ matrix.app == 'frontend' }}
+        working-directory: ${{ github.workspace }}
+        run: |
+          npm --prefix scripts/api-codegen ci
+          python scripts/check_api_client.py
+
+      - name: Upstream drift (vendored components byte-match their registry)
+        # `make check-upstream`. Asks the shadcn CLI itself (`add --view`) for
+        # the file it would write, so it needs node_modules and the registry
+        # network — both already present in this frontend lane. A registry
+        # outage fails loud here by design: a drift gate that passes silently
+        # when it cannot see upstream is not a gate.
+        if: ${{ matrix.app == 'frontend' }}
+        working-directory: ${{ github.workspace }}
+        run: python scripts/check_upstream.py
+
+      - name: Unit tests (vitest — pure-logic, no docker, no secret)
+        # The console app ships a vitest baseline (utils/format.ts + the i18n
+        # instance) — a pure-logic suite that fits this fast, secret-free gate.
+        # `npm test` == `vitest run`.
+        if: ${{ matrix.app == 'frontend' }}
+        run: npm test
+
+  e2e-typecheck:
+    name: e2e-typecheck · ${{ matrix.app }} · tsc --noEmit
+    # Playwright transpiles a spec without typechecking it, so a wrong-arity or
+    # wrong-typed API call survives until it reaches the assertion it broke — on
+    # a testbed that needs Docker and a live deployment. These suites never run
+    # here; this proves they compile. Mirrors `make typecheck-e2e`.
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        app: [tests/e2e-ui, e2e]
+    defaults:
+      run:
+        working-directory: ${{ matrix.app }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: ${{ matrix.app }}/package-lock.json
+
+      - name: Install (lockfile-exact)
+        run: npm ci
+
+      - name: Typecheck (the package's `typecheck` script == `tsc --noEmit -p tsconfig.json`)
+        run: npm run typecheck
+
+      - name: Set up Python for lane collection
+        if: ${{ matrix.app == 'tests/e2e-ui' }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: E2E lane collection (no deployment or model calls)
+        if: ${{ matrix.app == 'tests/e2e-ui' }}
+        working-directory: ${{ github.workspace }}
+        run: python scripts/check_e2e_collection.py
+
+  # ── dist-guard ─────────────────────────────────────────────────────────────
+  # Proves the release artifact path: `make build-dist` must produce a wheel
+  # AND sdist that actually contain the packaged console (the artifact
+  # self-check inside the target fails the job otherwise). A plain
+  # `python -m build` without the copy step legitimately produces an API-only
+  # wheel — this job guards the RELEASE path, which is build-dist.
+  dist-guard:
+    name: dist · make build-dist packages the console
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Set up Node 22
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install web deps + build tooling
+        run: |
+          npm --prefix frontend ci
+          python -m venv .venv
+          .venv/bin/python -m pip install -q build
+      - name: Build the release artifacts (self-checking)
+        run: make build-dist
+
+  # ── postgresql-conformance ─────────────────────────────────────────────────
+  # PostgreSQL is the production persistence path, so its real-driver contract
+  # is a first-class CI gate rather than a mocked unit test.
+  postgresql-conformance:
+    name: postgresql-conformance · pytest -m postgresql
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: astrabox
+          POSTGRES_PASSWORD: astrabox
+          POSTGRES_DB: astrabox
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U astrabox -d astrabox"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install package and test tools
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e '.[dev]'
+      - name: Pytest (real PostgreSQL collection contract)
+        env:
+          ASTRABOX_TEST_POSTGRES_URL: postgresql+asyncpg://astrabox:astrabox@127.0.0.1:55432/astrabox
+        run: >-
+          python -m pytest -m postgresql
+          tests/postgresql_collection_conformance_test.py
+          tests/postgresql_schema_migrations_test.py
+          tests/postgresql_transcript_sequence_test.py
+
+  # ── mongo-conformance ─────────────────────────────────────────────────────
+  # `backend` (above) keeps its own "no Docker, no secret" contract; database
+  # integration jobs remain separate, clearly-labeled siblings. This job runs
+  # the opt-in `-m mongo` conformance lane
+  # (tests/mongo_collection_conformance_test.py) against a disposable,
+  # unauthenticated `mongo:7` service container, so still NO repo secret is
+  # needed. Mirrors `make test-mongo` (see Makefile) 1:1: same pip extra, same
+  # marker selection.
+  #
+  # This is an advisory status check. Required-to-merge status is configured in
+  # branch protection rather than in the workflow.
+  mongo-conformance:
+    name: mongo-conformance · pytest -m mongo (mongo:7 service, non-required)
+    runs-on: ubuntu-latest
+    services:
+      mongo:
+        image: mongo:7
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --eval \"db.adminCommand('ping')\""
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install the package (editable) with the [mongo,dev] extras
+        # [mongo] brings pymongo so tests/mongo_collection_conformance_test.py's
+        # `pytest.importorskip("pymongo")` finds it instead of skipping, and so
+        # astrabox.persistence.repository.mongo's own imports resolve.
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e '.[mongo,dev]'
+
+      - name: Pytest (mongo conformance — the `-m mongo` lane; mirrors `make test-mongo`)
+        # pyproject's addopts deselects `-m mongo` by default; the explicit
+        # `-m mongo` here overrides that deselect for this invocation only (see
+        # pyproject.toml's [tool.pytest.ini_options] comment). ASTRABOX_DB_URL's
+        # `mongodb://` prefix alone is enough to steer active_backend_name() to
+        # "mongo" (checked ahead of ASTRABOX_DB_BACKEND) — both are set here for
+        # clarity/parity with docs/deploy.md.
+        env:
+          ASTRABOX_DB_BACKEND: mongo
+          ASTRABOX_DB_URL: mongodb://localhost:27017/astrabox_ci
+        run: python -m pytest -m mongo

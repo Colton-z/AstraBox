@@ -1,0 +1,13 @@
+# Leave the port unspecified here. onebox starts CoreDNS with
+# `-dns.port 5353`; an explicit `.:53` silently overrides that flag and leaves
+# Compose publishing a port on which no resolver is listening.
+. {
+    errors
+    hosts {
+        {$ASTRABOX_SANDBOX_GATEWAY_IP} gateway.astrabox.test
+        ttl 30
+        fallthrough
+    }
+    forward . /etc/resolv.conf
+    cache 30
+}

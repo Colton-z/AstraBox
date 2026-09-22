@@ -1,0 +1,47 @@
+# E2E overlay — arms the deterministic fault seam for the suite's
+# fault-injection specs (turn-settles-completed-when-terminal-signal-dropped-…).
+#
+# The fault seam is structurally inert in production: the server arms
+# astrabox.testing.e2e_faults at startup only when ASTRABOX_E2E_FAULTS is set,
+# and the spec hands faults over as files, so the drop-in directory must be the
+# SAME path on the host (where the spec writes) and in the container (where the
+# backend scans). Neither belongs in the base compose file.
+#
+# Start the stack under test with:
+#
+#   scripts/compose.sh -f containers/compose.e2e.yaml up -d server
+#
+# Create the drop-in directory on the host first (a missing mount source is
+# created root-owned by the docker daemon, and the spec then cannot write it):
+#
+#   install -d -m 777 /tmp/astrabox-e2e-turn-terminal-drop-faults.json.d
+#
+# The database oracle now queries the real PostgreSQL service directly. The
+# host state bind below remains only for fault-injection artifacts and local
+# workspace inspection; it is not a second persistence path.
+services:
+  # Hands the state directory to the image's uid before the server starts —
+  # the same reason casdoor-init exists, and the same reason the drop-in
+  # directory above has to be created by hand. Doing it here rather than in a
+  # setup step is what keeps a fresh E2E host from failing as
+  # `PermissionError: /data/litellm.key`, which reads like a product defect.
+  e2e-state-init:
+    image: busybox:1.37
+    command: ["sh", "-c", "mkdir -p /data && chown 999:999 /data"]
+    volumes:
+      - ${HOME}/.astrabox-state:/data
+    network_mode: none
+
+  server:
+    depends_on:
+      e2e-state-init:
+        condition: service_completed_successfully
+    environment:
+      ASTRABOX_E2E_FAULTS: "1"
+    # Replaces the base list (compose merges volumes by target, so /data would
+    # otherwise be ambiguous): the socket and the fault drop-in are restated,
+    # and /data becomes the host path the oracle reads.
+    volumes: !override
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${HOME}/.astrabox-state:/data
+      - /tmp/astrabox-e2e-turn-terminal-drop-faults.json.d:/tmp/astrabox-e2e-turn-terminal-drop-faults.json.d

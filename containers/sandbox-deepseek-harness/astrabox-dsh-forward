@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# The outward hop, opened only once the harness behind it can answer.
+#
+# The platform's readiness gate is a TCP connect to this port from inside the
+# box, and that is the right shape for the seam it lives on: the field names a
+# port, not a protocol, so the provider cannot know what "ready" means for an
+# arbitrary image. It is THIS image's job to make the port's acceptance mean
+# something. socat binds in milliseconds while the harness takes about a
+# second to compose its profile, so a forwarder started in parallel with the
+# server publishes an open port to a server that is not there — the gate
+# passes, the platform's very next call is `session.create`, and it comes back
+# 502 with the conversation already terminated. Measured on this image: the
+# port accepted at 357 ms and the first RPC succeeded at 1182 ms.
+#
+# Waiting is therefore not a retry or a grace period; it is what makes the
+# gate's claim true. It waits for an ANSWER rather than for the server's own
+# port to bind, because those are 58 ms apart here and nothing holds that
+# distance on a loaded host — a gate has to spend the time that separates the
+# two mechanisms, or it is measuring the wrong one.
+set -euo pipefail
+
+UPSTREAM_PORT="${ASTRABOX_DSH_UPSTREAM_PORT:-44781}"
+LISTEN_PORT="${ASTRABOX_DSH_LISTEN_PORT:-44780}"
+# Outlives the platform's own readiness budget so a slow-but-healthy compose is
+# never cut off here; supervisord restarts this program if it is exceeded.
+DEADLINE_SECONDS="${ASTRABOX_DSH_UPSTREAM_WAIT_SECONDS:-120}"
+
+# `session/list` is the cheapest method the gateway answers, and it needs no
+# session to exist. A refused connection, a partial boot, or an error envelope
+# all fail the same way here: not yet.
+probe() {
+  python3 /opt/dsh/web.py probe "${UPSTREAM_PORT}"
+}
+
+deadline=$(( SECONDS + DEADLINE_SECONDS ))
+until probe 2>/dev/null; do
+  if [ "$SECONDS" -ge "$deadline" ]; then
+    probe || true
+    echo "astrabox-dsh-forward: harness on 127.0.0.1:${UPSTREAM_PORT} did not" \
+         "answer within ${DEADLINE_SECONDS}s; refusing to publish ${LISTEN_PORT}" >&2
+    exit 1
+  fi
+  sleep 0.2
+done
+echo "astrabox-dsh-forward: harness answers; publishing ${LISTEN_PORT}"
+
+exec /usr/bin/socat -d "TCP-LISTEN:${LISTEN_PORT},fork,reuseaddr" \
+  "TCP:127.0.0.1:${UPSTREAM_PORT}"

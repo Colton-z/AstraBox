@@ -1,0 +1,108 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" id="fig-agent-mcp" viewBox="0 0 1080 456"
+     role="img" aria-labelledby="agent-mcp-title agent-mcp-desc">
+  <title id="agent-mcp-title">MCP 客户端的一次调用如何到达 Agent</title>
+  <desc id="agent-mcp-desc">HTTP MCP 客户端只注册一个 AstraBox 地址，并在每次调用时带上一份受支持的凭证。该地址根据凭证确定身份和 Scope，执行当前的 Agent 鉴权，再访问 Agent 工作所在的 AstraBox Session。客户端通过检查该 Session 获取状态与最近消息。</desc>
+
+  <style data-standalone="true">
+    @media (prefers-color-scheme: dark) {
+      svg {
+        --ifm-background-color: #0e0e0e;
+        --fg-1: #ededed;
+        --fg-3: #909090;
+        --fg-4: #6f6f6f;
+        --line-strong: #383838;
+        --astra: #7877ff;
+        --astra-tint: #1a1b3a;
+      }
+    }
+  </style>
+
+  <style>
+    #fig-agent-mcp .box { fill: var(--ifm-background-color, #fafafa); stroke: var(--line-strong, #d4d4d4); stroke-width: 1 }
+    #fig-agent-mcp .focal { fill: var(--astra-tint, #ecebff); stroke: var(--astra, #5c5bff); stroke-width: 1.5 }
+    #fig-agent-mcp .mask { fill: var(--ifm-background-color, #fafafa) }
+    #fig-agent-mcp .edge { fill: none; stroke: var(--fg-4, #999999); stroke-width: 1.25 }
+    #fig-agent-mcp .edge-dashed { fill: none; stroke: var(--fg-4, #999999); stroke-width: 1.25; stroke-dasharray: 3 4 }
+    #fig-agent-mcp .name { fill: var(--fg-1, #0a0a0a); font: 600 12px Geist, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; text-anchor: middle }
+    #fig-agent-mcp .sub { fill: var(--fg-3, #666666); font: 400 10px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; text-anchor: middle }
+    #fig-agent-mcp .eyebrow { fill: var(--fg-3, #666666); font: 500 9px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; letter-spacing: 0.14em }
+    #fig-agent-mcp .arrow-label { fill: var(--fg-3, #666666); font: 400 9px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; letter-spacing: 0.06em; text-anchor: middle }
+    #fig-agent-mcp .legend-text { fill: var(--fg-3, #666666); font: 400 9px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; letter-spacing: 0.06em }
+    #fig-agent-mcp .rule { stroke: var(--line-strong, #d4d4d4); stroke-width: 0.8 }
+  </style>
+
+  <defs>
+    <marker id="agent-mcp-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="var(--fg-4, #999999)"/>
+    </marker>
+  </defs>
+
+  <!-- arrows first, then masks and their labels, then the boxes: nodes paint over the lines -->
+  <path class="edge" d="M 192 128 H 284" marker-end="url(#agent-mcp-arrow)"/>
+  <path class="edge" d="M 472 128 H 564" marker-end="url(#agent-mcp-arrow)"/>
+  <path class="edge" d="M 776 128 H 868" marker-end="url(#agent-mcp-arrow)"/>
+  <path class="edge-dashed" d="M 964 88 V 56 H 108 V 84" marker-end="url(#agent-mcp-arrow)"/>
+
+  <path class="edge" d="M 188 272 V 232 H 380"/>
+  <path class="edge" d="M 540 272 V 232 H 380"/>
+  <path class="edge" d="M 892 272 V 232 H 380"/>
+  <path class="edge" d="M 380 232 V 172" marker-end="url(#agent-mcp-arrow)"/>
+
+  <rect class="mask" x="216" y="108" width="48" height="12" rx="2"/>
+  <text class="arrow-label" x="240" y="117">一份凭证</text>
+  <rect class="mask" x="488" y="108" width="64" height="12" rx="2"/>
+  <text class="arrow-label" x="520" y="117">身份与 Scope</text>
+  <rect class="mask" x="800" y="108" width="48" height="12" rx="2"/>
+  <text class="arrow-label" x="824" y="117">检查通过</text>
+  <rect class="mask" x="500" y="36" width="76" height="12" rx="2"/>
+  <text class="arrow-label" x="538" y="45">状态与最近消息</text>
+  <rect class="mask" x="390" y="195" width="132" height="12" rx="2"/>
+  <text class="arrow-label" x="456" y="204">同一个远程 MCP Server</text>
+
+  <rect class="box" x="24" y="88" width="168" height="80" rx="8"/>
+  <text class="name" x="108" y="116">MCP 客户端</text>
+  <text class="sub" x="108" y="134">任意兼容的</text>
+  <text class="sub" x="108" y="150">HTTP MCP 客户端</text>
+
+  <rect class="focal" x="288" y="88" width="184" height="80" rx="8"/>
+  <text class="name" x="380" y="116">MCP 地址</text>
+  <text class="sub" x="380" y="134">POST /api/v1/mcp</text>
+  <text class="sub" x="380" y="150">只需注册一次</text>
+
+  <rect class="box" x="568" y="88" width="208" height="80" rx="8"/>
+  <text class="name" x="672" y="116">Agent 鉴权</text>
+  <text class="sub" x="672" y="134">密钥 Scope + 当前权限</text>
+  <text class="sub" x="672" y="150">每次工具调用时执行</text>
+
+  <rect class="box" x="872" y="88" width="184" height="80" rx="8"/>
+  <text class="name" x="964" y="116">Session</text>
+  <text class="sub" x="964" y="134">AstraBox 任务记录</text>
+  <text class="sub" x="964" y="150">Agent 执行每次任务</text>
+
+  <text class="eyebrow" x="24" y="264">支持的凭证</text>
+
+  <rect class="box" x="24" y="272" width="328" height="80" rx="8"/>
+  <text class="name" x="188" y="300">控制台签发的密钥</text>
+  <text class="sub" x="188" y="318">astrabox_mcp_ 前缀 · 只显示一次</text>
+  <text class="sub" x="188" y="334">一直有效，直到吊销或你设的过期时间</text>
+
+  <rect class="box" x="376" y="272" width="328" height="80" rx="8"/>
+  <text class="name" x="540" y="300">身份服务签发的 token</text>
+  <text class="sub" x="540" y="318">OIDC · introspection 或 UserInfo</text>
+  <text class="sub" x="540" y="334">每次请求都问身份服务</text>
+
+  <rect class="box" x="728" y="272" width="328" height="80" rx="8"/>
+  <text class="name" x="892" y="300">部署自己签名的 JWT</text>
+  <text class="sub" x="892" y="318">本地验签 · 必须带 exp</text>
+  <text class="sub" x="892" y="334">到 exp 即失效，无宽限</text>
+
+  <line class="rule" x1="24" y1="392" x2="1056" y2="392"/>
+  <text class="eyebrow" x="24" y="416">图例</text>
+  <rect class="focal" x="112" y="408" width="16" height="12" rx="2"/>
+  <text class="legend-text" x="136" y="416">只需注册一次的 MCP 地址</text>
+  <line class="edge" x1="344" y1="413" x2="368" y2="413"/>
+  <text class="legend-text" x="376" y="416">工具调用的一段路径</text>
+  <line class="edge-dashed" x1="560" y1="413" x2="584" y2="413"/>
+  <text class="legend-text" x="592" y="416">get_status 返回的内容</text>
+</svg>

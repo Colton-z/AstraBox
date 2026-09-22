@@ -1,0 +1,7 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Questions & Discussions
+    url: https://github.com/Colton-z/AstraBox/discussions
+    about: >
+      For usage questions, setup help, ideas, and open-ended discussion, please
+      start a thread in GitHub Discussions rather than opening an issue.

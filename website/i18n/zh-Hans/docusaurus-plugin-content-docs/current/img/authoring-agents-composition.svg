@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" id="fig-authoring-agents-composition" viewBox="0 0 1080 336"
+     role="img" aria-labelledby="authoring-agents-composition-title authoring-agents-composition-desc">
+  <title id="authoring-agents-composition-title">AstraBox 如何在云端运行 Agent</title>
+  <desc id="authoring-agents-composition-desc">Claude Code、Codex 或其他 Agent 程序负责完成任务。AstraBox 在托管沙箱中运行它，并让用户和已经接入的系统可以随时使用这个 Agent。</desc>
+
+  <style data-standalone="true">
+    @media (prefers-color-scheme: dark) {
+      svg {
+        --ifm-background-color: #0e0e0e;
+        --fg-1: #ededed;
+        --fg-3: #909090;
+        --fg-4: #6f6f6f;
+        --line-strong: #383838;
+        --astra: #7877ff;
+        --astra-tint: #1a1b3a;
+        --plasma: #f08a59;
+      }
+    }
+  </style>
+
+  <style>
+    #fig-authoring-agents-composition .box { fill: var(--ifm-background-color, #fafafa); stroke: var(--line-strong, #d4d4d4); stroke-width: 1 }
+    #fig-authoring-agents-composition .input { fill: color-mix(in oklab, var(--fg-1, #0a0a0a) 5%, var(--ifm-background-color, #fafafa)); stroke: var(--line-strong, #d4d4d4); stroke-width: 1 }
+    #fig-authoring-agents-composition .focal { fill: var(--astra-tint, #ecebff); stroke: var(--astra, #5c5bff); stroke-width: 1.5 }
+    #fig-authoring-agents-composition .zone { fill: color-mix(in oklab, var(--fg-1, #0a0a0a) 2%, transparent); stroke: var(--line-strong, #d4d4d4); stroke-width: 1; stroke-dasharray: 4 4 }
+    #fig-authoring-agents-composition .zone-mask { fill: var(--ifm-background-color, #fafafa) }
+    #fig-authoring-agents-composition .edge { fill: none; stroke: var(--fg-4, #999999); stroke-width: 1.5 }
+    #fig-authoring-agents-composition .name { fill: var(--fg-1, #0a0a0a); font: 600 12px Geist, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", ui-sans-serif, system-ui, sans-serif; text-anchor: middle }
+    #fig-authoring-agents-composition .detail { fill: var(--fg-3, #666666); font: 400 12px Geist, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", ui-sans-serif, system-ui, sans-serif; text-anchor: middle }
+    #fig-authoring-agents-composition .eyebrow { fill: var(--fg-3, #666666); font: 500 8px "JetBrains Mono", "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", ui-monospace, monospace; letter-spacing: 0.14em; text-anchor: middle }
+    #fig-authoring-agents-composition .note { fill: var(--fg-3, #666666); font: 400 12px Geist, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", ui-sans-serif, system-ui, sans-serif; text-anchor: middle }
+  </style>
+
+  <defs>
+    <marker id="authoring-agents-composition-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="var(--fg-4, #999999)"/>
+    </marker>
+    <marker id="authoring-agents-composition-arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="var(--astra, #5c5bff)"/>
+    </marker>
+    <marker id="authoring-agents-composition-arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="var(--plasma, #e8754a)"/>
+    </marker>
+  </defs>
+
+  <!-- 先画分组和连线，再画节点，使节点填充遮住连线端点。 -->
+  <rect class="zone" x="368" y="32" width="696" height="248" rx="12"/>
+  <rect class="zone-mask" x="652" y="36" width="128" height="16" rx="4"/>
+  <text class="eyebrow" x="716" y="48">托管基础设施</text>
+
+  <path class="edge" d="M 312 168 H 396" marker-end="url(#authoring-agents-composition-arrow)"/>
+  <path class="edge" d="M 684 168 H 768" marker-end="url(#authoring-agents-composition-arrow)"/>
+
+  <rect class="input" x="24" y="72" width="288" height="192" rx="8"/>
+  <rect x="108" y="84" width="120" height="16" rx="4" fill="none" stroke="var(--line-strong, #d4d4d4)" stroke-width="0.8"/>
+  <text class="eyebrow" x="168" y="96">AGENT 程序</text>
+  <text class="name" x="168" y="124">Claude Code · Codex</text>
+  <text class="detail" x="168" y="156">任务规划 · 原生工具</text>
+  <text class="detail" x="168" y="180">文件 · 命令 · 子 Agent</text>
+  <text class="detail" x="168" y="204">Agent 程序定义工作方式</text>
+
+  <rect class="box" x="396" y="72" width="288" height="192" rx="8"/>
+  <rect x="492" y="84" width="96" height="16" rx="4" fill="none" stroke="var(--line-strong, #d4d4d4)" stroke-width="0.8"/>
+  <text class="eyebrow" x="540" y="96">ASTRABOX</text>
+  <text class="name" x="540" y="124">在云端运行 Agent</text>
+  <text class="detail" x="540" y="156">隔离沙箱</text>
+  <text class="detail" x="540" y="180">使用权限与消息传输</text>
+  <text class="detail" x="540" y="204">保存对话记录</text>
+
+  <rect class="focal" x="768" y="72" width="288" height="192" rx="8"/>
+  <rect x="852" y="84" width="120" height="16" rx="4" fill="none" stroke="var(--astra, #5c5bff)" stroke-width="0.8"/>
+  <text class="eyebrow" x="912" y="96">云端 AGENT</text>
+  <text class="name" x="912" y="124">7×24 小时可访问</text>
+  <text class="detail" x="912" y="156">用户 · 已接入的系统</text>
+  <text class="detail" x="912" y="180">发起任务 · 查看进度</text>
+  <text class="detail" x="912" y="204">回到已有对话</text>
+
+  <text class="note" x="540" y="316">Agent 负责完成任务；AstraBox 让它可以在云端随时被调用。</text>
+</svg>

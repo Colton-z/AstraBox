@@ -1,0 +1,112 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" id="fig-opensandbox-lifecycle" viewBox="0 0 1080 464"
+     role="img" aria-labelledby="opensandbox-lifecycle-title opensandbox-lifecycle-desc">
+  <title id="opensandbox-lifecycle-title">The states a sandbox moves through</title>
+  <desc id="opensandbox-lifecycle-desc">A sandbox starts running either from Agent prepared capacity, where it was created before any Session, or by being created on demand and waiting until it is ready. While it runs, activity renews its lease. An idle sandbox can be paused: its filesystem is saved to a snapshot registry, and the next task resumes the same sandbox. A running sandbox is removed when its lease expires, and a paused one when its retention period ends.</desc>
+
+  <style data-standalone="true">
+    @media (prefers-color-scheme: dark) {
+      svg {
+        --ifm-background-color: #0e0e0e;
+        --fg-1: #ededed;
+        --fg-3: #909090;
+        --fg-4: #6f6f6f;
+        --line-strong: #383838;
+        --astra: #7877ff;
+        --astra-tint: #1a1b3a;
+      }
+    }
+  </style>
+
+  <style>
+    #fig-opensandbox-lifecycle .box { fill: var(--ifm-background-color, #fafafa); stroke: var(--line-strong, #d4d4d4); stroke-width: 1 }
+    #fig-opensandbox-lifecycle .store { fill: color-mix(in oklab, var(--fg-1, #0a0a0a) 5%, var(--ifm-background-color, #fafafa)); stroke: var(--line-strong, #d4d4d4); stroke-width: 1 }
+    #fig-opensandbox-lifecycle .focal { fill: var(--astra-tint, #ecebff); stroke: var(--astra, #5c5bff); stroke-width: 1.5 }
+    #fig-opensandbox-lifecycle .mask { fill: var(--ifm-background-color, #fafafa) }
+    #fig-opensandbox-lifecycle .edge { fill: none; stroke: var(--fg-4, #999999); stroke-width: 1.25 }
+    #fig-opensandbox-lifecycle .edge-dashed { fill: none; stroke: var(--fg-4, #999999); stroke-width: 1.25; stroke-dasharray: 3 4 }
+    #fig-opensandbox-lifecycle .name { fill: var(--fg-1, #0a0a0a); font: 600 12px Geist, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; text-anchor: middle }
+    #fig-opensandbox-lifecycle .sub { fill: var(--fg-3, #666666); font: 400 9px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; text-anchor: middle }
+    #fig-opensandbox-lifecycle .eyebrow { fill: var(--fg-3, #666666); font: 500 8px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.14em }
+    #fig-opensandbox-lifecycle .arrow-label { fill: var(--fg-3, #666666); font: 400 8px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.06em; text-anchor: middle }
+    #fig-opensandbox-lifecycle .legend-text { fill: var(--fg-3, #666666); font: 400 8px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.06em }
+    #fig-opensandbox-lifecycle .rule { stroke: var(--line-strong, #d4d4d4); stroke-width: 0.8 }
+  </style>
+
+  <defs>
+    <marker id="opensandbox-lifecycle-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="var(--fg-4, #999999)"/>
+    </marker>
+  </defs>
+
+  <!-- column headers -->
+  <text class="eyebrow" x="24" y="44">HOW IT STARTS</text>
+  <line class="rule" x1="24" y1="56" x2="280" y2="56"/>
+  <text class="eyebrow" x="412" y="44">WHILE IT EXISTS</text>
+  <line class="rule" x1="412" y1="56" x2="668" y2="56"/>
+  <text class="eyebrow" x="800" y="44">HOW IT ENDS</text>
+  <line class="rule" x1="800" y1="56" x2="1056" y2="56"/>
+
+  <!-- arrows first: the boxes paint over the lines -->
+  <path class="edge" d="M 280 104 H 408" marker-end="url(#opensandbox-lifecycle-arrow)"/>
+  <path class="edge" d="M 280 240 H 344 V 136 H 408" marker-end="url(#opensandbox-lifecycle-arrow)"/>
+  <path class="edge" d="M 464 152 V 204" marker-end="url(#opensandbox-lifecycle-arrow)"/>
+  <path class="edge" d="M 616 208 V 156" marker-end="url(#opensandbox-lifecycle-arrow)"/>
+  <path class="edge-dashed" d="M 540 272 V 324" marker-end="url(#opensandbox-lifecycle-arrow)"/>
+  <path class="edge" d="M 668 120 H 796" marker-end="url(#opensandbox-lifecycle-arrow)"/>
+  <path class="edge" d="M 668 240 H 928 V 156" marker-end="url(#opensandbox-lifecycle-arrow)"/>
+
+  <rect class="mask" x="284" y="84" width="120" height="12" rx="2"/>
+  <text class="arrow-label" x="344" y="93">ASSIGNED TO A SESSION</text>
+  <rect class="mask" x="352" y="116" width="48" height="12" rx="2"/>
+  <text class="arrow-label" x="376" y="125">READY</text>
+  <rect class="mask" x="396" y="172" width="60" height="12" rx="2"/>
+  <text class="arrow-label" x="426" y="181">GOES IDLE</text>
+  <rect class="mask" x="628" y="172" width="136" height="12" rx="2"/>
+  <text class="arrow-label" x="696" y="181">RESUMES THE SAME SANDBOX</text>
+  <rect class="mask" x="552" y="292" width="88" height="12" rx="2"/>
+  <text class="arrow-label" x="596" y="301">SNAPSHOT PUSHED</text>
+  <rect class="mask" x="692" y="100" width="80" height="12" rx="2"/>
+  <text class="arrow-label" x="732" y="109">LEASE EXPIRES</text>
+  <rect class="mask" x="708" y="216" width="184" height="12" rx="2"/>
+  <text class="arrow-label" x="800" y="225">RETENTION ENDS · 7 DAYS BY DEFAULT</text>
+
+  <rect class="box" x="24" y="88" width="256" height="64" rx="8"/>
+  <text class="name" x="152" y="110">Prepared for an Agent</text>
+  <text class="sub" x="152" y="126">base box or complete conversation box</text>
+  <text class="sub" x="152" y="140">created before any Session</text>
+
+  <rect class="box" x="24" y="208" width="256" height="64" rx="8"/>
+  <text class="name" x="152" y="230">Starting</text>
+  <text class="sub" x="152" y="246">new sandbox · deployment workload</text>
+  <text class="sub" x="152" y="260">waits up to 120 s to be ready</text>
+
+  <rect class="focal" x="412" y="88" width="256" height="64" rx="8"/>
+  <text class="name" x="540" y="110">Running</text>
+  <text class="sub" x="540" y="126">the Session's tasks run here</text>
+  <text class="sub" x="540" y="140">activity renews the 4-hour lease</text>
+
+  <rect class="box" x="412" y="208" width="256" height="64" rx="8"/>
+  <text class="name" x="540" y="230">Paused</text>
+  <text class="sub" x="540" y="246">files kept · processes stopped</text>
+  <text class="sub" x="540" y="260">turned on with idle_action: pause</text>
+
+  <rect class="store" x="412" y="328" width="256" height="64" rx="8"/>
+  <text class="name" x="540" y="350">Snapshot registry</text>
+  <text class="sub" x="540" y="366">your OCI registry · pulled to resume</text>
+  <text class="sub" x="540" y="380">you configure its cleanup</text>
+
+  <rect class="box" x="800" y="88" width="256" height="64" rx="8"/>
+  <text class="name" x="928" y="110">Removed</text>
+  <text class="sub" x="928" y="126">the sandbox and its files are gone</text>
+  <text class="sub" x="928" y="140">snapshot images stay in the registry</text>
+
+  <line class="rule" x1="24" y1="416" x2="1056" y2="416"/>
+  <text class="eyebrow" x="24" y="440">LEGEND</text>
+  <rect class="focal" x="112" y="432" width="16" height="12" rx="2"/>
+  <text class="legend-text" x="136" y="440">where a Session's tasks run</text>
+  <line class="edge-dashed" x1="320" y1="436" x2="344" y2="436"/>
+  <text class="legend-text" x="352" y="440">saved to your snapshot registry</text>
+  <text class="eyebrow" x="560" y="440">NOTE</text>
+  <text class="legend-text" x="600" y="440">pause and resume need a snapshot-capable Kubernetes cluster</text>
+</svg>

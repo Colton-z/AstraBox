@@ -1,0 +1,382 @@
+#!/usr/bin/env bash
+set -euo pipefail
+trap 'rc=$?; printf "CONVERSATION_BOOTSTRAP_FAILED line=%s rc=%s cmd=[%s]\n" "$LINENO" "$rc" "$BASH_COMMAND" >&2; exit "$rc"' ERR
+
+require_env() {
+  name="$1"
+  value="${!name:-}"
+  if [ -z "$value" ]; then
+    printf 'CONVERSATION_BOOTSTRAP_MISSING_ENV name=%s\n' "$name" >&2
+    exit 42
+  fi
+  printf '%s' "$value"
+}
+
+now_ms() {
+  date +%s%3N
+}
+
+elapsed_since() {
+  start="$1"
+  end="$(now_ms)"
+  printf '%s' "$((end - start))"
+}
+
+bootstrap_start="$(now_ms)"
+stage_start="$bootstrap_start"
+identity_ms=0
+skills_ms=0
+plugins_ms=0
+default_repo_ms=0
+verify_ms=0
+
+user="$(require_env CONV_USER)"
+home="$(require_env CONV_HOME)"
+workspace="$(require_env CONV_WORKSPACE)"
+config="${CONV_CONFIG:-}"
+cache="$(require_env CONV_CACHE)"
+tmpdir="$(require_env CONV_TMP)"
+requested_uid="${CONV_UID:-}"
+requested_gid="${CONV_GID:-}"
+if { [ -n "$requested_uid" ] && [ -z "$requested_gid" ]; } || \
+   { [ -z "$requested_uid" ] && [ -n "$requested_gid" ]; }; then
+  printf 'CONVERSATION_BOOTSTRAP_INVALID_IDENTITY uid=%s gid=%s\n' "$requested_uid" "$requested_gid" >&2
+  exit 42
+fi
+for cmd in getent useradd runuser id mkdir chown chmod cut ln readlink base64 dirname cat rm sleep; do
+  command -v "$cmd" >/dev/null
+done
+
+identity_error_prefix=CONVERSATION_BOOTSTRAP
+
+ensure_workload_account() {
+  # An account that is already here is the image's: the agent image declares it
+  # to the base entrypoint, which creates it when the container starts — so a
+  # prewarmed box, created long before this session, has it too. Do not touch it.
+  #
+  # An absent account is the assistant engine's case, and only that: one box
+  # hosts several per-(user, assistant) profiles, which the image cannot name in
+  # advance. Create it here and let the kernel pick the uid — nothing outside
+  # this box reads that number, because no tree owned by it is ever mounted into
+  # a second box.
+  if getent passwd "$user" >/dev/null; then
+    actual_home="$(getent passwd "$user" | cut -d: -f6)"
+    test "$actual_home" = "$home"
+    if [ -n "$requested_uid" ]; then
+      test "$(id -u "$user")" = "$requested_uid"
+      test "$(id -g "$user")" = "$requested_gid"
+    fi
+    return
+  fi
+  # The AIO base creates its image-declared workload identity as two commands:
+  # groupadd, then useradd. The resident runner can accept a bootstrap between
+  # those commands. A group with this exact name and no passwd row is therefore
+  # not an invitation to create a second account; it is the image account's
+  # observable in-progress state. Wait for its owner to finish, then re-enter
+  # the validation above. If it never finishes, fail on the incomplete image
+  # contract instead of adopting or rewriting the group.
+  if getent group "$user" >/dev/null; then
+    account_waits=0
+    while [ "$account_waits" -lt 100 ]; do
+      if getent passwd "$user" >/dev/null; then
+        ensure_workload_account
+        return
+      fi
+      account_waits=$((account_waits + 1))
+      sleep 0.1
+    done
+    printf 'CONVERSATION_BOOTSTRAP_INCOMPLETE_IMAGE_ACCOUNT user=%s group=%s\n' \
+      "$user" "$(getent group "$user" | cut -d: -f3)" >&2
+    exit 42
+  fi
+  if [ -n "$requested_uid" ]; then
+    command -v groupadd >/dev/null
+    if ! getent group "$requested_gid" >/dev/null; then
+      groupadd --gid "$requested_gid" "$user"
+    fi
+    useradd --create-home --home-dir "$home" --shell /bin/bash \
+      --uid "$requested_uid" --gid "$requested_gid" "$user"
+  else
+    useradd --create-home --home-dir "$home" --shell /bin/bash "$user"
+  fi
+}
+
+# This bootstrap owns what it creates, and nothing else. A directory that is
+# already there was made by the image or by a mount, and a mount's ownership
+# belongs to whoever mounted it — re-owning it would be the box reaching outside
+# itself, and against a root-squashed NFS export it does not even fail at the
+# mount: it fails the whole session bootstrap. Same rule the in-box server
+# applies to the CLI's cwd (sandbox_runner._ensure_working_directory).
+create_workload_dir() {
+  # Handed to the workload because the workload must write it. Each caller below
+  # says why.
+  target="$1"
+  if [ -d "$target" ]; then
+    return
+  fi
+  mkdir -p "$target"
+  chown "$user:$user" "$target"
+  chmod 700 "$target"
+}
+
+create_platform_dir() {
+  # Stays root-owned: the workload gets read + execute, never write. What the
+  # platform puts in these directories — the plugin set and deploy key — is
+  # part of what constrains the agent, and the agent runs code
+  # the model chose. An account that could write its own constraints has none.
+  # 0755, not 0700: the workload has to traverse and read them.
+  target="$1"
+  if [ -d "$target" ]; then
+    return
+  fi
+  mkdir -p "$target"
+  chmod 755 "$target"
+}
+
+establish_conversation_identity_root() {
+  home_parent="${home%/*}"
+  test "$home_parent" != "$home"
+  mkdir -p "$home_parent"
+  ensure_workload_account
+  actual_home="$(getent passwd "$user" | cut -d: -f6)"
+  test "$actual_home" = "$home"
+
+  # The agent's files, exposed through the sandbox provider's native file face.
+  create_workload_dir "$workspace"
+  # An engine may declare no config directory. When it declares one, the engine
+  # owns mutable session state below it and the workload therefore needs write
+  # access before a turn can start.
+  if [ -n "$config" ]; then
+    create_workload_dir "$config"
+    create_workload_dir "$config/debug"
+    create_workload_dir "$config/mcp"
+    # Platform-installed plugin links are constraints, not workload state.
+    create_platform_dir "$config/plugins"
+    # The one mutable subtree inside that constraint. Claude Code resolves
+    # CLAUDE_PLUGIN_DATA to $config/plugins/data/<plugin-id>, creates it on
+    # first reference, and exports it to hook and MCP/LSP subprocesses — all of
+    # which run as the workload user, which cannot create the missing child
+    # under the 0755 root-owned parent above. The plugin code beside it stays
+    # platform-owned.
+    # https://code.claude.com/docs/en/plugins-reference#persistent-data-directory
+    create_workload_dir "$config/plugins/data"
+  fi
+  # XDG cache for the CLI and for whatever it shells out to (npm, pip, git).
+  create_workload_dir "$cache"
+  # The CLI's scratch space for tool I/O, and where the git askpass helper lands.
+  create_workload_dir "$tmpdir"
+
+  # Platform-installed, root-owned: plugin symlinks into the shared cache and
+  # the deploy key. The key file
+  # itself is written by root and handed to the workload at 0600 because ssh
+  # demands that; the directory holding it is not the workload's to refill.
+  create_platform_dir "$home/.ssh"
+  create_platform_dir "$home/.local/bin"
+}
+
+replace_skills_target_with_symlink() {
+  target="$1"
+  source="$2"
+  if [ -e "$target" ] || [ -L "$target" ]; then
+    if [ -L "$target" ]; then
+      rm -f "$target"
+    else
+      printf 'CONVERSATION_BOOTSTRAP_NON_SYMLINK_SKILLS target=%s\n' "$target" >&2
+      exit 43
+    fi
+  fi
+  ln -s "$source" "$target"
+  test -L "$target"
+  test "$(readlink "$target")" = "$source"
+}
+
+establish_conversation_identity_root
+identity_ms="$(elapsed_since "$stage_start")"
+
+stage_start="$(now_ms)"
+if [ -n "${CONV_SKILL_MANIFEST_B64:-}" ]; then
+  skill_cache="${CONV_SKILL_CACHE_DIR:-/opt/conversation-runtime/claude-skills-cache}"
+  target="$config/skills"
+  desired_manifest="$(printf '%s' "$CONV_SKILL_MANIFEST_B64" | base64 -d)"
+  test -d "$skill_cache"
+  test -f "$skill_cache/.skill-manifest"
+  actual_manifest="$(cat "$skill_cache/.skill-manifest")"
+  test "$actual_manifest" = "$desired_manifest"
+  replace_skills_target_with_symlink "$target" "$skill_cache"
+else
+  :
+fi
+skills_ms="$(elapsed_since "$stage_start")"
+
+stage_start="$(now_ms)"
+if [ -n "${CONV_PLUGIN_LINKS_B64:-}" ]; then
+  plugin_cache="$(require_env CONV_PLUGIN_CACHE_DIR)"
+  plugin_hash="$(require_env CONV_PLUGIN_CACHE_HASH)"
+  test -f "$plugin_cache/.plugin-cache-hash"
+  test "$(cat "$plugin_cache/.plugin-cache-hash")" = "$plugin_hash"
+  payload="$(printf '%s' "$CONV_PLUGIN_LINKS_B64" | base64 -d)"
+  while IFS="$(printf '\t')" read -r source dest plugin_dirs; do
+    [ -n "$source" ] || continue
+    test -d "$source/.git"
+    mkdir -p "$(dirname "$dest")"
+    if [ -e "$dest" ] || [ -L "$dest" ]; then
+      if [ -L "$dest" ]; then
+        rm -f "$dest"
+      else
+        printf 'CONVERSATION_BOOTSTRAP_NON_SYMLINK_PLUGIN target=%s\n' "$dest" >&2
+        exit 44
+      fi
+    fi
+    ln -s "$source" "$dest"
+    test -L "$dest"
+    IFS="$(printf '\037')" read -r -a dirs <<< "$plugin_dirs"
+    for plugin_dir in "${dirs[@]}"; do
+      [ -n "$plugin_dir" ] || continue
+      test -d "$plugin_dir"
+    done
+  done <<< "$payload"
+fi
+plugins_ms="$(elapsed_since "$stage_start")"
+
+stage_start="$(now_ms)"
+if [ -n "${CONV_DEFAULT_REPO_URL:-}" ]; then
+  for cmd in env find git; do
+    command -v "$cmd" >/dev/null
+  done
+  repo_url="$(require_env CONV_DEFAULT_REPO_URL)"
+  repo_target="${CONV_DEFAULT_REPO_TARGET:-$workspace}"
+  repo_branch="${CONV_DEFAULT_REPO_BRANCH:-}"
+  repo_depth="${CONV_DEFAULT_REPO_DEPTH:-}"
+  repo_https_token="${CONV_DEFAULT_REPO_HTTPS_TOKEN:-}"
+  test "$repo_target" = "$workspace"
+
+  if [ -d "$repo_target/.git" ]; then
+    :
+  else
+    if [ -n "$(find "$repo_target" -mindepth 1 -maxdepth 1 -print -quit)" ]; then
+      printf 'CONVERSATION_BOOTSTRAP_NON_EMPTY_REPO_TARGET target=%s\n' "$repo_target" >&2
+      exit 45
+    fi
+    git_args=(clone)
+    if [ -n "$repo_branch" ]; then
+      git_args+=(-b "$repo_branch")
+    fi
+    if [ -n "$repo_depth" ]; then
+      case "$repo_depth" in
+        ''|0|*[!0-9]*)
+          printf 'CONVERSATION_BOOTSTRAP_INVALID_REPO_DEPTH depth=%s\n' "$repo_depth" >&2
+          exit 46
+          ;;
+      esac
+      git_args+=(--depth "$repo_depth")
+    fi
+    if [ -n "$repo_https_token" ]; then
+      command -v python3 >/dev/null
+      # HTTPS clone (token-auth path): clone to a local staging dir, then parallel-copy
+      # the expanded tree into the workspace. Staging the checkout on local disk and
+      # bulk-copying is faster than checking out directly into the workspace mount, which
+      # can be a slow remote-backed filesystem.
+      clone_url="$(printf '%s' "$repo_url" | sed 's|^git@\([^:]*\):|https://git@\1/|')"
+      staging="/tmp/default-repo-staging-$$"
+      askpass="$tmpdir/git-askpass-$$"
+      rm -rf "$staging"
+      cat > "$askpass" <<'ASTRABOX_GIT_ASKPASS'
+#!/usr/bin/env sh
+case "$1" in
+  *Username*|*username*) printf '%s\n' git ;;
+  *) printf '%s\n' "${GIT_HTTPS_TOKEN:?}" ;;
+esac
+ASTRABOX_GIT_ASKPASS
+      chmod 700 "$askpass"
+      chown "$user:$user" "$askpass"
+      git_args+=("$clone_url" "$staging")
+      clone_raw="/tmp/default-repo-clone-$$.out"
+      set +e
+      runuser -u "$user" -- env GIT_HTTPS_TOKEN="$repo_https_token" GIT_ASKPASS="$askpass" GIT_TERMINAL_PROMPT=0 git "${git_args[@]}" > "$clone_raw" 2>&1
+      clone_rc=$?
+      set -e
+      clone_output="$(REDACT_SECRET="$repo_https_token" python3 -c 'import os,sys; secret=os.environ.get("REDACT_SECRET",""); data=sys.stdin.read(); sys.stdout.write(data.replace(secret, "***") if secret else data)' < "$clone_raw")"
+      rm -f "$askpass" "$clone_raw"
+      if [ "$clone_rc" -eq 0 ]; then
+        set +e
+        copy_output="$(runuser -u "$user" -- python3 -c '
+import os,sys,shutil
+from concurrent.futures import ThreadPoolExecutor
+s,d=sys.argv[1],sys.argv[2]
+dirs=[];files=[]
+for r,_,fs in os.walk(s):
+    rel=os.path.relpath(r,s); dd=os.path.join(d,rel) if rel!="." else d
+    dirs.append(dd)
+    files.extend((os.path.join(r,f),os.path.join(dd,f)) for f in fs)
+with ThreadPoolExecutor(128) as ex:
+    list(ex.map(lambda p: os.makedirs(p,exist_ok=True), sorted(dirs)))
+    list(ex.map(lambda p: shutil.copy(p[0],p[1]), files))
+' "$staging" "$repo_target" 2>&1)"
+        clone_rc=$?
+        set -e
+        if [ "$clone_rc" -ne 0 ] && [ -n "${copy_output:-}" ]; then
+          clone_output="${clone_output:+$clone_output }$copy_output"
+        fi
+        rm -rf "$staging"
+      fi
+    else
+      # SSH clone using the supplied deploy key.
+      repo_key_b64="$(require_env CONV_DEFAULT_REPO_KEY_B64)"
+      key_path="$home/.ssh/id_ed25519"
+      printf '%s' "$repo_key_b64" | base64 -d > "$key_path"
+      chmod 600 "$key_path"
+      chown "$user:$user" "$key_path"
+      git_args+=("$repo_url" "$repo_target")
+      ssh_cmd="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o IdentitiesOnly=yes -i $key_path"
+      clone_raw="/tmp/default-repo-clone-$$.out"
+      set +e
+      runuser -u "$user" -- env GIT_SSH_COMMAND="$ssh_cmd" git "${git_args[@]}" > "$clone_raw" 2>&1
+      clone_rc=$?
+      set -e
+      clone_output="$(cat "$clone_raw")"
+      rm -f "$clone_raw"
+    fi
+    if [ "$clone_rc" -ne 0 ]; then
+      if [ -n "$clone_output" ]; then
+        printf '%s\n' "$clone_output" >&2
+      fi
+      clone_summary="$(printf '%s' "$clone_output" | tr '\r\n' '  ' | cut -c1-1200)"
+      printf 'DEFAULT_REPO_CLONE_FAILED url=%s target=%s rc=%s stderr=%s\n' "$repo_url" "$repo_target" "$clone_rc" "$clone_summary" >&2
+      exit 47
+    fi
+  fi
+  chown "$user:$user" "$repo_target"
+  runuser -u "$user" -- git config --global --add safe.directory "$repo_target" 2>/dev/null || true
+  runuser -u "$user" -- git -C "$repo_target" status -sb >/dev/null
+fi
+default_repo_ms="$(elapsed_since "$stage_start")"
+
+stage_start="$(now_ms)"
+actual_user="$(runuser -u "$user" -- id -un)"
+test "$actual_user" = "$user"
+actual_home="$(runuser -u "$user" -- bash -lc 'printf "%s" "$HOME"')"
+test "$actual_home" = "$home"
+actual_pwd="$(runuser -u "$user" -- bash -lc 'cd "$1" && pwd -P' _ "$workspace")"
+test "$actual_pwd" = "$workspace"
+# Workspace ownership may come from the image or a deployment mount. Verify
+# writability before a turn starts so a read-only or wrongly-owned mount is named
+# here rather than surfacing later as an EACCES inside the Agent program.
+if ! runuser -u "$user" -- test -w "$workspace"; then
+  printf 'CONVERSATION_BOOTSTRAP_WORKSPACE_NOT_WRITABLE user=%s workspace=%s\n' "$user" "$workspace" >&2
+  exit 48
+fi
+# Named here rather than left to the engine: what the vendor does when it
+# cannot create CLAUDE_PLUGIN_DATA is the vendor's, and this bootstrap does not
+# depend on it being reported. The same reason the workspace is proved above —
+# a wrongly-owned directory is named by path, before a turn starts.
+if [ -n "$config" ] && ! runuser -u "$user" -- test -w "$config/plugins/data"; then
+  printf 'CONVERSATION_BOOTSTRAP_PLUGIN_DATA_NOT_WRITABLE user=%s path=%s\n' "$user" "$config/plugins/data" >&2
+  exit 49
+fi
+uid="$(id -u "$user")"
+gid="$(id -g "$user")"
+verify_ms="$(elapsed_since "$stage_start")"
+total_ms="$(elapsed_since "$bootstrap_start")"
+timings_json="$(printf '{"identity":%s,"skills":%s,"plugins":%s,"default_repo":%s,"verify":%s,"total":%s}' "$identity_ms" "$skills_ms" "$plugins_ms" "$default_repo_ms" "$verify_ms" "$total_ms")"
+timings_b64="$(printf '%s' "$timings_json" | base64 | tr -d '\n')"
+printf 'CONVERSATION_BOOTSTRAP_READY user=%s uid=%s gid=%s home=%s workspace=%s timings_b64=%s\n' "$user" "$uid" "$gid" "$home" "$workspace" "$timings_b64"

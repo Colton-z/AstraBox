@@ -1,0 +1,151 @@
+{
+  "organizations": [
+    {
+      "owner": "admin",
+      "name": "astrabox",
+      "displayName": "AstraBox",
+      "websiteUrl": "",
+      "favicon": "",
+      "passwordType": "bcrypt",
+      "passwordOptions": ["AtLeast6"],
+      "countryCodes": ["US", "CN"],
+      "defaultAvatar": "",
+      "tags": [],
+      "languages": ["en", "zh"],
+      "initScore": 0,
+      "enableSoftDeletion": false,
+      "isProfilePublic": false
+    }
+  ],
+  "users": [
+    {
+      "owner": "astrabox",
+      "name": "admin",
+      "type": "normal-user",
+      "displayName": "AstraBox Admin",
+      "avatar": "",
+      "email": "admin@astrabox.local",
+      "phone": "",
+      "countryCode": "US",
+      "password": "__ASTRABOX_CASDOOR_ADMIN_PASSWORD__",
+      "passwordType": "plain",
+      "signupApplication": "astrabox-console",
+      "isAdmin": true,
+      "isForbidden": false,
+      "isDeleted": false,
+      "groups": ["astrabox/astrabox-admin"]
+    }
+  ],
+  "groups": [
+    {
+      "owner": "astrabox",
+      "name": "astrabox-admin",
+      "displayName": "astrabox-admin",
+      "type": "Virtual"
+    }
+  ],
+  "applications": [
+    {
+      "owner": "admin",
+      "name": "astrabox-console",
+      "displayName": "AstraBox Console",
+      "logo": "/static/astrabox-mark.svg",
+      "formCss": "<style>.login-logo-box .panel-logo { width: 64px; height: 64px; }</style>",
+      "homepageUrl": "__ASTRABOX_CONSOLE_ORIGIN__",
+      "organization": "astrabox",
+      "cert": "cert-built-in",
+      "enablePassword": true,
+      "enableSignUp": false,
+      "clientId": "__ASTRABOX_OIDC_CLIENT_ID__",
+      "clientSecret": "__ASTRABOX_OIDC_CLIENT_SECRET__",
+      "redirectUris": ["__ASTRABOX_CONSOLE_ORIGIN__/api/v1/auth/callback"],
+      "tokenFormat": "JWT",
+      "tokenFields": [],
+      "expireInHours": 168,
+      "refreshExpireInHours": 168,
+      "signupItems": [],
+      "grantTypes": ["authorization_code", "password"],
+      "scopes": [
+        {
+          "name": "openid",
+          "displayName": "OpenID",
+          "description": "Return a stable subject for the signed-in user.",
+          "tools": []
+        },
+        {
+          "name": "profile",
+          "displayName": "Profile",
+          "description": "Return the signed-in user's profile.",
+          "tools": []
+        },
+        {
+          "name": "email",
+          "displayName": "Email",
+          "description": "Return the signed-in user's email address.",
+          "tools": []
+        },
+        {
+          "name": "astrabox:read",
+          "displayName": "Read AstraBox API",
+          "description": "Read non-administrative AstraBox API resources.",
+          "tools": []
+        },
+        {
+          "name": "astrabox:write",
+          "displayName": "Write AstraBox API",
+          "description": "Create or change non-administrative AstraBox API resources and open API WebSockets.",
+          "tools": []
+        },
+        {
+          "name": "astrabox:admin",
+          "displayName": "Administer AstraBox",
+          "description": "Call AstraBox administrative API routes.",
+          "tools": []
+        }
+      ],
+      "providers": []
+    },
+    {
+      "owner": "admin",
+      "name": "astrabox-api",
+      "displayName": "AstraBox API",
+      "description": "Long-lived machine credentials that issue short-lived scoped AstraBox API tokens.",
+      "logo": "/static/astrabox-mark.svg",
+      "homepageUrl": "__ASTRABOX_CONSOLE_ORIGIN__",
+      "organization": "astrabox",
+      "cert": "cert-built-in",
+      "enablePassword": false,
+      "enableSignUp": false,
+      "clientId": "__ASTRABOX_OIDC_API_CLIENT_ID__",
+      "clientSecret": "__ASTRABOX_OIDC_API_CLIENT_SECRET__",
+      "redirectUris": [],
+      "tokenFormat": "JWT",
+      "tokenFields": [],
+      "expireInHours": 1,
+      "refreshExpireInHours": 1,
+      "signupItems": [],
+      "grantTypes": ["client_credentials"],
+      "scopes": [
+        {
+          "name": "astrabox:read",
+          "displayName": "Read AstraBox API",
+          "description": "Read non-administrative AstraBox API resources.",
+          "tools": []
+        },
+        {
+          "name": "astrabox:write",
+          "displayName": "Write AstraBox API",
+          "description": "Create or change non-administrative AstraBox API resources and open API WebSockets.",
+          "tools": []
+        },
+        {
+          "name": "astrabox:admin",
+          "displayName": "Administer AstraBox",
+          "description": "Call AstraBox administrative API routes.",
+          "tools": []
+        }
+      ],
+      "providers": []
+    }
+  ]
+}

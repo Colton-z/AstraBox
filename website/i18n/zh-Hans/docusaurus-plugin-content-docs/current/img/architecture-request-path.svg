@@ -1,0 +1,112 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" id="fig-architecture-request-path" viewBox="0 0 1080 568"
+     role="img" aria-labelledby="architecture-request-path-title architecture-request-path-desc">
+  <title id="architecture-request-path-title">一次 Session 请求经过的路径</title>
+  <desc id="architecture-request-path-desc">Session 请求到达 AstraBox 服务。AstraBox 请求 OpenSandbox 创建沙箱、分配预热资源、恢复或重新连接沙箱，取得地址后发送任务。Agent 程序返回 Event 和最终结果。AstraBox 把 Session Event 和 Agent 程序原生状态保存到数据库，通过 SSE 实时发送事件，并记录 Session 状态。</desc>
+
+  <style data-standalone="true">
+    @media (prefers-color-scheme: dark) {
+      svg {
+        --ifm-background-color: #0e0e0e;
+        --fg-1: #ededed;
+        --fg-3: #909090;
+        --fg-4: #6f6f6f;
+        --line-strong: #383838;
+        --astra: #7877ff;
+        --astra-tint: #1a1b3a;
+      }
+    }
+  </style>
+
+  <style>
+    #fig-architecture-request-path .box { fill: var(--ifm-background-color, #fafafa); stroke: var(--line-strong, #d4d4d4); stroke-width: 1 }
+    #fig-architecture-request-path .store { fill: color-mix(in oklab, var(--fg-1, #0a0a0a) 5%, var(--ifm-background-color, #fafafa)); stroke: var(--line-strong, #d4d4d4); stroke-width: 1 }
+    #fig-architecture-request-path .focal { fill: var(--astra-tint, #ecebff); stroke: var(--astra, #5c5bff); stroke-width: 1.5 }
+    #fig-architecture-request-path .life { fill: none; stroke: var(--line-strong, #d4d4d4); stroke-width: 1; stroke-dasharray: 4 4 }
+    #fig-architecture-request-path .mask { fill: var(--ifm-background-color, #fafafa) }
+    #fig-architecture-request-path .edge { fill: none; stroke: var(--fg-4, #999999); stroke-width: 1.25 }
+    #fig-architecture-request-path .edge-dashed { fill: none; stroke: var(--fg-4, #999999); stroke-width: 1.25; stroke-dasharray: 3 4 }
+    #fig-architecture-request-path .edge-stream { fill: none; stroke: var(--fg-3, #666666); stroke-width: 2 }
+    #fig-architecture-request-path .name { fill: var(--fg-1, #0a0a0a); font: 600 12px Geist, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; text-anchor: middle }
+    #fig-architecture-request-path .sub { fill: var(--fg-3, #666666); font: 400 10px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; text-anchor: middle }
+    #fig-architecture-request-path .eyebrow { fill: var(--fg-3, #666666); font: 500 9px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; letter-spacing: 0.14em }
+    #fig-architecture-request-path .arrow-label { fill: var(--fg-3, #666666); font: 400 9px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; letter-spacing: 0.06em; text-anchor: middle }
+    #fig-architecture-request-path .legend-text { fill: var(--fg-3, #666666); font: 400 9px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; letter-spacing: 0.06em }
+    /* an untranslated route keeps the code size the English figure uses */
+    #fig-architecture-request-path .route { font-size: 8px }
+    #fig-architecture-request-path .rule { stroke: var(--line-strong, #d4d4d4); stroke-width: 0.8 }
+  </style>
+
+  <defs>
+    <marker id="architecture-request-path-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="var(--fg-4, #999999)"/>
+    </marker>
+    <marker id="architecture-request-path-arrow-stream" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="var(--fg-3, #666666)"/>
+    </marker>
+  </defs>
+
+  <!-- lifelines first, then messages, then masks and their labels, then the actors -->
+  <line class="life" x1="108" y1="128" x2="108" y2="472"/>
+  <line class="life" x1="324" y1="128" x2="324" y2="472"/>
+  <line class="life" x1="540" y1="128" x2="540" y2="472"/>
+  <line class="life" x1="756" y1="128" x2="756" y2="472"/>
+  <line class="life" x1="972" y1="128" x2="972" y2="472"/>
+
+  <path class="edge" d="M 112 168 H 320" marker-end="url(#architecture-request-path-arrow)"/>
+  <path class="edge" d="M 328 208 H 752" marker-end="url(#architecture-request-path-arrow)"/>
+  <path class="edge-dashed" d="M 752 248 H 328" marker-end="url(#architecture-request-path-arrow)"/>
+  <path class="edge" d="M 328 288 H 968" marker-end="url(#architecture-request-path-arrow)"/>
+  <path class="edge-dashed" d="M 968 328 H 328" marker-end="url(#architecture-request-path-arrow)"/>
+  <path class="edge" d="M 328 368 H 536" marker-end="url(#architecture-request-path-arrow)"/>
+  <path class="edge-stream" d="M 320 408 H 112" marker-end="url(#architecture-request-path-arrow-stream)"/>
+  <path class="edge" d="M 328 448 H 536" marker-end="url(#architecture-request-path-arrow)"/>
+
+  <rect class="mask" x="116" y="148" width="200" height="12" rx="2"/>
+  <text class="arrow-label route" x="216" y="156">POST /api/v1/sessions/{id}/ai-stream</text>
+  <rect class="mask" x="588" y="188" width="120" height="12" rx="2"/>
+  <text class="arrow-label" x="648" y="196">新建/预热分配/恢复/重连</text>
+  <rect class="mask" x="624" y="228" width="48" height="12" rx="2"/>
+  <text class="arrow-label" x="648" y="236">沙箱地址</text>
+  <rect class="mask" x="804" y="268" width="120" height="12" rx="2"/>
+  <text class="arrow-label" x="864" y="276">通过沙箱内的服务发送任务</text>
+  <rect class="mask" x="808" y="308" width="112" height="12" rx="2"/>
+  <text class="arrow-label" x="864" y="316">增量事件与一个最终结果</text>
+  <rect class="mask" x="396" y="348" width="72" height="12" rx="2"/>
+  <text class="arrow-label" x="432" y="356">保存每一条事件</text>
+  <rect class="mask" x="152" y="388" width="128" height="12" rx="2"/>
+  <text class="arrow-label" x="216" y="396">同样的事件以 SSE 流发送</text>
+  <rect class="mask" x="396" y="428" width="72" height="12" rx="2"/>
+  <text class="arrow-label" x="432" y="436">会话的最终状态</text>
+
+  <rect class="box" x="24" y="64" width="168" height="64" rx="8"/>
+  <text class="name" x="108" y="92">控制台</text>
+  <text class="sub" x="108" y="110">或 API 客户端</text>
+
+  <rect class="box" x="240" y="64" width="168" height="64" rx="8"/>
+  <text class="name" x="324" y="92">AstraBox 服务</text>
+  <text class="sub" x="324" y="110">会话 · 实时输出</text>
+
+  <rect class="store" x="456" y="64" width="168" height="64" rx="8"/>
+  <text class="name" x="540" y="92">数据库</text>
+  <text class="sub" x="540" y="110">会话事件 · 原生状态</text>
+
+  <rect class="box" x="672" y="64" width="168" height="64" rx="8"/>
+  <text class="name" x="756" y="92">OpenSandbox</text>
+  <text class="sub" x="756" y="110">沙箱后端</text>
+
+  <rect class="focal" x="888" y="64" width="168" height="64" rx="8"/>
+  <text class="name" x="972" y="92">沙箱运行环境</text>
+  <text class="sub" x="972" y="110">Agent 程序 · 工作区</text>
+
+  <line class="rule" x1="24" y1="504" x2="1056" y2="504"/>
+  <text class="eyebrow" x="24" y="528">图例</text>
+  <rect class="focal" x="112" y="520" width="16" height="10" rx="2"/>
+  <text class="legend-text" x="136" y="528">Agent 程序运行的位置</text>
+  <line class="edge" x1="316" y1="525" x2="340" y2="525"/>
+  <text class="legend-text" x="348" y="528">请求的一步</text>
+  <line class="edge-dashed" x1="496" y1="525" x2="520" y2="525"/>
+  <text class="legend-text" x="528" y="528">对这一步的回复</text>
+  <line class="edge-stream" x1="672" y1="525" x2="696" y2="525"/>
+  <text class="legend-text" x="704" y="528">控制台收到的实时流</text>
+</svg>

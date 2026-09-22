@@ -1,0 +1,223 @@
+{
+  "history": {
+    "loading_older": "Loading earlier messages…",
+    "load_older_failed": "Could not load earlier messages",
+    "scroll_to_bottom": "Scroll to latest messages"
+  },
+  "page": {
+    "loading_session": "Loading session…",
+    "not_found": "This session doesn't exist or you don't have access.",
+    "back_home": "Back to home",
+    "session_detail_transient": "Session details are temporarily unavailable. Retrying automatically.",
+    "load_session_failed": "Failed to load session.",
+    "retry_now": "Retry now",
+    "messages_transient": "Messages are temporarily unavailable. Retrying automatically.",
+    "syncing_messages": "Syncing messages…",
+    "messages_load_failed": "Failed to load messages.",
+    "session_title_fallback": "Session {{id}}"
+  },
+  "header": {
+    "end_conversation": "End conversation",
+    "ending": "Ending…",
+    "terminate": "Terminate",
+    "terminating": "Terminating…",
+    "recover_session": "Recover session"
+  },
+  "status": {
+    "terminated": "Terminated",
+    "awaiting_answer": "Awaiting answer",
+    "stopping": "Stopping…",
+    "processing": "Working",
+    "sending": "Sending…",
+    "sending_with_phase": "Sending · {{phase}}",
+    "ready": "Ready",
+    "pending_recovery": "Recovery needed",
+    "background_running": "Running in background",
+    "runtime_disconnected": "Runtime disconnected"
+  },
+  "banner": {
+    "backend_unavailable": "The backend is temporarily unavailable. Please try again shortly."
+  },
+  "empty": {
+    "start_conversation": "Start a conversation",
+    "start_hint": "Type a message below · Shift+Enter for a new line"
+  },
+  "composer": {
+    "send": "Send",
+    "queue": "Queue",
+    "placeholder": "Type a message…",
+    "placeholder_agent_terminated": "Agent terminated — this session is read-only",
+    "placeholder_terminated": "Start a new session to continue",
+    "placeholder_recovery": "This session needs recovery first — recover it to continue",
+    "placeholder_streaming": "Waiting for a response…",
+    "commands": "Commands",
+    "shortcut_hint": "Shift+Enter for a new line",
+    "remove_attachment": "Remove attachment"
+  },
+  "permission_mode": {
+    "choose": "Choose permission mode",
+    "switching": "Switching…"
+  },
+  "message": {
+    "generating": "Generating…",
+    "thinking": "Thinking…",
+    "thought_process": "Reasoning",
+    "pasted_image": "Pasted image"
+  },
+  "process": {
+    "title": "Process",
+    "tools_title": "Tool calls",
+    "reasoning_title": "Reasoning",
+    "working": "Working",
+    "thinking": "Thinking",
+    "stopped": "This response stopped early.",
+    "summary_generating": "Summarising…",
+    "reasoning_only": "Reasoning only",
+    "details_loading": "Loading the steps…",
+    "details_failed": "The steps could not be loaded: {{error}}",
+    "preparing": "Preparing {{tool}}",
+    "running_tool": "Running {{tool}}",
+    "completed_count_one": "{{count}} step done",
+    "completed_count_other": "{{count}} steps done",
+    "tool_calls_one": "{{count}} tool call",
+    "tool_calls_other": "{{count}} tool calls",
+    "more_in_progress_one": "{{count}} more step running",
+    "more_in_progress_other": "{{count}} more steps running",
+    "action": {
+      "read": "Reading",
+      "write": "Writing",
+      "edit": "Editing",
+      "bash": "Running a command",
+      "glob": "Finding files",
+      "grep": "Searching"
+    }
+  },
+  "tool_state": {
+    "processing": "Working",
+    "awaiting_confirmation": "Awaiting confirmation",
+    "denied": "Denied",
+    "completed": "Done",
+    "failed": "Failed"
+  },
+  "tool": {
+    "open_in_agents": "Open in Agents",
+    "new_file": "New",
+    "todo_item": "Task {{index}}",
+    "in_progress": "In progress",
+    "user_questionnaire": "Questionnaire",
+    "question_n": "Question {{index}}",
+    "multi_select": "Multi-select",
+    "single_select": "Single choice",
+    "option_n": "Option {{index}}",
+    "output": "Output",
+    "execution_plan": "Plan"
+  },
+  "result": {
+    "input_tokens": "In: {{count}}",
+    "output_tokens": "Out: {{count}}",
+    "turns_one": "{{count}} turn",
+    "turns_other": "{{count}} turns",
+    "turn_failed": "This turn failed",
+    "turn_failed_with_detail": "This turn failed: {{error}}",
+    "api_retry": "Retrying — the model endpoint refused the request",
+    "api_retry_attempt": "Retrying — attempt {{attempt}} of {{max}}",
+    "stop_reason": {
+      "max_tokens": "Reached the max token limit",
+      "rate_limit": "Hit the rate limit",
+      "billing_error": "Billing error",
+      "authentication_failed": "Authentication failed",
+      "server_error": "Server error"
+    }
+  },
+  "panel": {
+    "tab": {
+      "files": "Files",
+      "terminal": "Terminal"
+    }
+  },
+  "subagent": {
+    "empty_title": "No subagents in this Session yet.",
+    "empty_hint": "When the Agent or Task tool starts a subtask, its messages and tool activity appear here.",
+    "transcript_aria": "Subagent activity",
+    "stop": "Stop",
+    "stopping": "Stopping…",
+    "stop_failed": "Could not stop this subagent",
+    "stop_aria": "Stop subagent",
+    "close_aria": "Close subagent activity",
+    "waiting_output": "Waiting for subagent output…",
+    "no_transcript": "This subagent has no activity to show yet.",
+    "load_failed": "Could not load subagent activity",
+    "transcript_failed": "Could not load this subagent transcript",
+    "retry": "Retry"
+  },
+  "share": {
+    "button": "Share",
+    "title": "Share conversation",
+    "description": "Generate a read-only link. Anyone with the link can view the conversation; the link is not listed publicly.",
+    "link_label": "Share link",
+    "copied": "Copied",
+    "allow_download_status": "Allow file downloads: {{value}}",
+    "expires_on": "Expires {{datetime}}",
+    "revoke": "Revoke share",
+    "revoking": "Working…",
+    "validity": "Validity",
+    "allow_download": "Allow file downloads",
+    "allow_download_hint": "When enabled, viewers can download files from this session's sandbox.",
+    "generate": "Generate share link",
+    "generating": "Generating…",
+    "expiry_never": "No expiration",
+    "expiry_1d": "1 day",
+    "expiry_7d": "7 days",
+    "expiry_30d": "30 days"
+  },
+  "send": {
+    "unconfirmed_failure": "Failed to send the message — no confirmation from the backend.",
+    "unconfirmed_timeout": "Sending the message timed out — no confirmation from the backend."
+  },
+  "retry": {
+    "auto_recover_summary": "A backend-side recovery is needed. The system is recovering automatically and will finish the current session — you don't need to resend your last message.",
+    "recover_label": "Recover session",
+    "recover_summary": "This session needs to be recovered before you can continue.",
+    "recover_summary_sandbox_lost": "The original sandbox cannot be reattached automatically — you'll need to recover the session manually. The system won't rerun your last message.",
+    "budget_exhausted_summary": "Auto-resume reached its limit. The current reply is still being processed in the background.",
+    "resend_label": "Resend",
+    "delivery_failed_summary": "Your last message didn't reach the sandbox — you can resend it.",
+    "turn_failed_summary": "Your last message reached the sandbox, but this turn failed."
+  },
+  "files": {
+    "download": "Download",
+    "more_actions": "More actions",
+    "rename": "Rename",
+    "rename_description": "Rename the current file or folder.",
+    "new_name_placeholder": "New name",
+    "loading": "Loading…",
+    "loading_directory": "Loading directory…",
+    "empty_folder": "Empty folder",
+    "unavailable": "Files unavailable",
+    "unavailable_agent_terminated": "Agent terminated — files are unavailable.",
+    "unavailable_session_not_ready": "Session isn't ready — files are unavailable.",
+    "current_directory": "Current directory",
+    "drop_to_upload": "Drop here to upload to {{dir}}",
+    "upload": "Upload",
+    "upload_file": "Upload file",
+    "new_folder": "New folder",
+    "new_folder_description": "Create a new folder in the current directory.",
+    "folder_name_placeholder": "Folder name",
+    "root_directory": "Root",
+    "directory_unavailable": "Directory unavailable",
+    "please_wait": "Please wait",
+    "refresh_to_retry": "Refresh to retry",
+    "wait_for_runtime": "Wait for the runtime to be ready, then try again",
+    "current_directory_empty": "This directory is empty",
+    "empty_directory_hint": "Upload files, drag them here, or create a new folder",
+    "delete_confirm": "Delete {{name}}? This takes effect on the remote workspace immediately.",
+    "this_item": "this item",
+    "unavailable_sandbox_gone": "The workspace is being rebuilt — files will return in a moment."
+  },
+  "interaction": {
+    "response_timeout": "Submitting the answer timed out after 15 seconds. The outcome is not yet confirmed. Check the current session; submit again manually only if the question still needs an answer. Nothing will be sent again automatically.",
+    "prompt_questionnaire": "Please answer the following questions",
+    "prompt_plan_confirmation": "Please confirm whether to exit plan mode",
+    "prompt_tool_permission": "Allow {{tool}} to continue?"
+  }
+}

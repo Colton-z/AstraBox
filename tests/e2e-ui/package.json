@@ -1,0 +1,21 @@
+{
+  "name": "astrabox-e2e-ui",
+  "private": true,
+  "description": "Browser-level E2E for the AstraBox console (Playwright).",
+  "engines": {
+    "node": "26.8.1"
+  },
+  "scripts": {
+    "e2e": "playwright test",
+    "round": "node run-round.mjs",
+    "e2e:exclusive": "playwright test --workers=1 --grep exclusive",
+    "e2e:parallel": "playwright test --grep parallel",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "^4.13.0",
+    "@playwright/test": "^1.63.0",
+    "@types/node": "^26.4.1",
+    "typescript": "^7.0.2"
+  }
+}

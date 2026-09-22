@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# AstraBox — one conversation's execd and mirror, inside its isolated session.
+#
+# The official execd daemon owns Pi's JSON-lines PTY pipe. Its children inherit
+# this session's account and mount namespace, including the /workspace bind.
+# The mirror carries the resulting session files under the same conversation
+# identity. Either service exiting closes the other; a reachable pipe without
+# its transcript relay is not a usable conversation.
+set -euo pipefail
+
+OUTWARD_PORT="${1:?usage: astrabox-pi-serve-conversation <outward-port>}"
+
+LOG_DIR="${HOME}/.astrabox-logs"
+mkdir -p "${LOG_DIR}"
+
+# This conversation's engine environment (the model gateway and model the
+# provider table below renders from), written into this home by the
+# platform's placement — it cannot ride box-create env because the box may
+# predate this Session.
+ENGINE_ENV_FILE="${HOME}/.astrabox-engine-env"
+if [ ! -f "${ENGINE_ENV_FILE}" ]; then
+  echo "astrabox-pi-conversation: ${ENGINE_ENV_FILE} is missing;" \
+       "the placement did not deliver this conversation's engine environment" >&2
+  exit 1
+fi
+# shellcheck disable=SC1090
+. "${ENGINE_ENV_FILE}"
+
+SERVICE_CREDENTIAL_FILE="${HOME}/.astrabox-service-credential"
+if [ ! -r "${SERVICE_CREDENTIAL_FILE}" ]; then
+  echo "astrabox-pi-conversation: service credential is missing or unreadable" >&2
+  exit 1
+fi
+SERVICE_CREDENTIAL=$(<"${SERVICE_CREDENTIAL_FILE}")
+if [[ ! "${SERVICE_CREDENTIAL}" =~ ^[0-9a-f]{64}$ ]]; then
+  echo "astrabox-pi-conversation: service credential must be 64 lowercase hex characters" >&2
+  exit 1
+fi
+
+# pi resolves its provider through the agent dir's models.json alone, and the
+# box-level render at boot wrote only the box account's copy. Same renderer,
+# this conversation's account and home: a spawn against an unrendered dir
+# answers every turn with `Unknown provider`.
+PI_CODING_AGENT_DIR="${HOME}/.pi/agent" \
+ASTRABOX_WORKLOAD_USER="$(id -un)" \
+  sh /opt/astrabox/render-models-config.sh >>"${LOG_DIR}/models-render.log" 2>&1
+
+SERVICE_PIDS=()
+cleanup_services() {
+  if (( ${#SERVICE_PIDS[@]} > 0 )); then
+    kill "${SERVICE_PIDS[@]}" 2>/dev/null || true
+    wait "${SERVICE_PIDS[@]}" 2>/dev/null || true
+  fi
+}
+trap cleanup_services EXIT
+trap 'exit 143' TERM
+trap 'exit 130' INT
+
+ASTRABOX_TRANSCRIPT_MIRROR_ROOT="${HOME}/.pi/sessions" \
+ASTRABOX_TRANSCRIPT_MIRROR_GLOB='*.jsonl' \
+ASTRABOX_TRANSCRIPT_MIRROR_NAMESPACE='pi/' \
+ASTRABOX_TRANSCRIPT_MIRROR_TARGET_FILE="${HOME}/.astrabox-mirror-target" \
+ASTRABOX_TRANSCRIPT_MIRROR_STATE_DIR="${HOME}/.astrabox-mirror-state" \
+  python3 /opt/pi/mirror.py >>"${LOG_DIR}/mirror.log" 2>&1 &
+MIRROR_PID=$!
+SERVICE_PIDS+=("${MIRROR_PID}")
+
+# Only execd receives its API credential. The Pi spawn command removes this
+# variable before launching the workload, independently of execd hardening.
+EXECD_ACCESS_TOKEN="${SERVICE_CREDENTIAL}" \
+  /opt/astrabox/opensandbox/execd -port "${OUTWARD_PORT}" \
+  >>"${LOG_DIR}/execd.log" 2>&1 &
+EXECD_PID=$!
+SERVICE_PIDS+=("${EXECD_PID}")
+unset SERVICE_CREDENTIAL
+
+if wait -n "${SERVICE_PIDS[@]}"; then
+  SERVICE_STATUS=1
+else
+  SERVICE_STATUS=$?
+fi
+echo "astrabox-pi-conversation: execd or transcript mirror exited; closing the service stack" >&2
+exit "${SERVICE_STATUS}"

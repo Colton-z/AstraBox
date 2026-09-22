@@ -1,0 +1,223 @@
+{
+  "history": {
+    "loading_older": "正在加载更早消息…",
+    "load_older_failed": "更早消息加载失败",
+    "scroll_to_bottom": "回到最新消息"
+  },
+  "page": {
+    "loading_session": "正在加载会话...",
+    "not_found": "会话不存在或无权限访问。",
+    "back_home": "返回首页",
+    "session_detail_transient": "会话详情暂时不可用，正在自动重试。",
+    "load_session_failed": "加载会话失败。",
+    "retry_now": "立即重试",
+    "messages_transient": "消息暂时不可用，正在自动重试。",
+    "syncing_messages": "正在同步消息...",
+    "messages_load_failed": "消息加载失败。",
+    "session_title_fallback": "会话 {{id}}"
+  },
+  "header": {
+    "end_conversation": "结束对话",
+    "ending": "结束中...",
+    "terminate": "终止",
+    "terminating": "终止中...",
+    "recover_session": "恢复会话"
+  },
+  "status": {
+    "terminated": "已终止",
+    "awaiting_answer": "等待回答",
+    "stopping": "停止中...",
+    "processing": "处理中",
+    "sending": "发送中...",
+    "sending_with_phase": "发送中 · {{phase}}",
+    "ready": "就绪",
+    "pending_recovery": "待恢复",
+    "background_running": "后台任务运行中",
+    "runtime_disconnected": "运行时断开"
+  },
+  "banner": {
+    "backend_unavailable": "后端服务暂时不可用，请稍后再试"
+  },
+  "empty": {
+    "start_conversation": "开始对话",
+    "start_hint": "在下方输入消息 · Shift+Enter 换行"
+  },
+  "composer": {
+    "send": "发送",
+    "queue": "排队",
+    "placeholder": "输入消息…",
+    "placeholder_agent_terminated": "Agent 已终止，历史会话只读",
+    "placeholder_terminated": "请创建新会话继续使用",
+    "placeholder_recovery": "当前会话待恢复，请先恢复会话",
+    "placeholder_streaming": "等待响应…",
+    "commands": "命令",
+    "shortcut_hint": "Shift+Enter 换行",
+    "remove_attachment": "移除附件"
+  },
+  "permission_mode": {
+    "choose": "选择权限模式",
+    "switching": "切换中…"
+  },
+  "message": {
+    "generating": "正在生成…",
+    "thinking": "思考中…",
+    "thought_process": "思考过程",
+    "pasted_image": "粘贴的图片"
+  },
+  "process": {
+    "title": "执行过程",
+    "tools_title": "工具调用",
+    "reasoning_title": "思考",
+    "working": "执行中",
+    "thinking": "思考中",
+    "stopped": "本次回复提前结束。",
+    "summary_generating": "正在生成摘要…",
+    "reasoning_only": "仅思考",
+    "details_loading": "正在加载步骤…",
+    "details_failed": "步骤加载失败：{{error}}",
+    "preparing": "正在准备 {{tool}}",
+    "running_tool": "正在运行 {{tool}}",
+    "completed_count_one": "已完成 {{count}} 步",
+    "completed_count_other": "已完成 {{count}} 步",
+    "tool_calls_one": "{{count}} 次工具调用",
+    "tool_calls_other": "{{count}} 次工具调用",
+    "more_in_progress_one": "另有 {{count}} 步进行中",
+    "more_in_progress_other": "另有 {{count}} 步进行中",
+    "action": {
+      "read": "正在读取",
+      "write": "正在写入",
+      "edit": "正在编辑",
+      "bash": "正在执行命令",
+      "glob": "正在查找文件",
+      "grep": "正在搜索"
+    }
+  },
+  "tool_state": {
+    "processing": "处理中",
+    "awaiting_confirmation": "等待确认",
+    "denied": "已拒绝",
+    "completed": "已完成",
+    "failed": "执行失败"
+  },
+  "tool": {
+    "open_in_agents": "在 Agents 中打开",
+    "new_file": "新建",
+    "todo_item": "待办 {{index}}",
+    "in_progress": "进行中",
+    "user_questionnaire": "用户问卷",
+    "question_n": "问题 {{index}}",
+    "multi_select": "可多选",
+    "single_select": "单选",
+    "option_n": "选项 {{index}}",
+    "output": "输出",
+    "execution_plan": "执行计划"
+  },
+  "result": {
+    "input_tokens": "输入: {{count}}",
+    "output_tokens": "输出: {{count}}",
+    "turns_one": "{{count}} 轮",
+    "turns_other": "{{count}} 轮",
+    "turn_failed": "本轮执行失败",
+    "turn_failed_with_detail": "本轮执行失败：{{error}}",
+    "api_retry": "重试中 —— 模型端点拒绝了这次请求",
+    "api_retry_attempt": "重试中 —— 第 {{attempt}} 次，共 {{max}} 次",
+    "stop_reason": {
+      "max_tokens": "达到最大 token 限制",
+      "rate_limit": "触发速率限制",
+      "billing_error": "计费异常",
+      "authentication_failed": "认证失败",
+      "server_error": "服务端错误"
+    }
+  },
+  "panel": {
+    "tab": {
+      "files": "文件",
+      "terminal": "终端"
+    }
+  },
+  "subagent": {
+    "empty_title": "本次 Session 还没有子 Agent。",
+    "empty_hint": "Agent 或 Task 工具启动子任务后，其消息和工具活动会显示在这里。",
+    "transcript_aria": "子 Agent 活动",
+    "stop": "停止",
+    "stopping": "停止中…",
+    "stop_failed": "无法停止该子 Agent",
+    "stop_aria": "停止子 Agent",
+    "close_aria": "关闭子 Agent 活动",
+    "waiting_output": "等待子 Agent 输出…",
+    "no_transcript": "该子 Agent 暂无可显示的活动。",
+    "load_failed": "无法加载子 Agent 活动",
+    "transcript_failed": "无法加载该子 Agent 的会话记录",
+    "retry": "重试"
+  },
+  "share": {
+    "button": "分享",
+    "title": "分享对话",
+    "description": "生成只读链接。获得链接的人可以查看会话；该链接不会公开列出。",
+    "link_label": "分享链接",
+    "copied": "已复制",
+    "allow_download_status": "允许下载文件：{{value}}",
+    "expires_on": "有效期至 {{datetime}}",
+    "revoke": "撤销分享",
+    "revoking": "处理中…",
+    "validity": "有效期",
+    "allow_download": "允许下载文件",
+    "allow_download_hint": "开启后，查看者可下载该 Session 沙箱中的文件。",
+    "generate": "生成分享链接",
+    "generating": "生成中...",
+    "expiry_never": "长期有效",
+    "expiry_1d": "1 天",
+    "expiry_7d": "7 天",
+    "expiry_30d": "30 天"
+  },
+  "send": {
+    "unconfirmed_failure": "消息发送失败，未收到后端确认。",
+    "unconfirmed_timeout": "消息发送超时，未收到后端确认。"
+  },
+  "retry": {
+    "auto_recover_summary": "检测到需要恢复，系统正在自动恢复并继续当前会话，无需重新发送上一条消息。",
+    "recover_label": "恢复会话",
+    "recover_summary": "当前会话需要先恢复，恢复后才能继续对话。",
+    "recover_summary_sandbox_lost": "原沙箱无法自动重连，需要你手动恢复会话；系统不会自动重跑上一条消息。",
+    "budget_exhausted_summary": "自动续流已达上限，当前回复仍在后台处理中。",
+    "resend_label": "重新发送",
+    "delivery_failed_summary": "上一条消息未能送达沙箱，可以重新发送。",
+    "turn_failed_summary": "上一条消息已送达沙箱，但这一轮执行失败了。"
+  },
+  "files": {
+    "download": "下载",
+    "more_actions": "更多操作",
+    "rename": "重命名",
+    "rename_description": "修改当前文件或文件夹名称。",
+    "new_name_placeholder": "新的名称",
+    "loading": "正在加载...",
+    "loading_directory": "加载目录中...",
+    "empty_folder": "空文件夹",
+    "unavailable": "文件暂不可用",
+    "unavailable_agent_terminated": "Agent 已终止，文件不可用。",
+    "unavailable_session_not_ready": "会话未就绪，文件暂不可用。",
+    "current_directory": "当前目录",
+    "drop_to_upload": "拖到这里，上传到 {{dir}}",
+    "upload": "上传",
+    "upload_file": "上传文件",
+    "new_folder": "新建文件夹",
+    "new_folder_description": "在当前目录创建一个新的文件夹。",
+    "folder_name_placeholder": "文件夹名称",
+    "root_directory": "根目录",
+    "directory_unavailable": "目录暂不可用",
+    "please_wait": "请稍候",
+    "refresh_to_retry": "刷新后重试",
+    "wait_for_runtime": "等待运行时就绪后再试",
+    "current_directory_empty": "当前目录为空",
+    "empty_directory_hint": "可以上传文件、拖拽到这里，或新建一个文件夹",
+    "delete_confirm": "确认删除 {{name}} 吗？此操作会立即作用到远程工作区。",
+    "this_item": "当前项目",
+    "unavailable_sandbox_gone": "工作区正在重建,文件稍后恢复。"
+  },
+  "interaction": {
+    "response_timeout": "提交回答超时（15 秒），结果状态尚未确认。请查看当前会话状态；仅在问题仍待回答时手动提交，系统不会自动重复提交。",
+    "prompt_questionnaire": "请回答以下问题",
+    "prompt_plan_confirmation": "请确认是否退出计划模式",
+    "prompt_tool_permission": "允许 {{tool}} 继续执行？"
+  }
+}

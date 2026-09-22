@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+operation="${1:-}"
+local_root="${ASTRABOX_STORAGE_LOCAL_ROOT:?}"
+
+case "$operation" in
+  probe)
+    if mountpoint -q -- "$local_root"; then
+      printf 'ASSISTANT_WORKSPACE_STORAGE_MOUNTED path=%s\n' "$local_root"
+    else
+      printf 'ASSISTANT_WORKSPACE_STORAGE_NOT_MOUNTED path=%s\n' "$local_root"
+    fi
+    ;;
+  verify)
+    profile_root="${ASTRABOX_STORAGE_PROFILE_ROOT:?}"
+    engine_config_dir="${ASTRABOX_STORAGE_ENGINE_CONFIG_DIR:-}"
+    mkdir -p -- "$profile_root" "$profile_root/workspace"
+    if [ -n "$engine_config_dir" ]; then
+      mkdir -p -- "$profile_root/$engine_config_dir"
+    fi
+    chmod 755 "$local_root"
+    test -d "$local_root"
+    test -w "$local_root"
+    test -d "$profile_root"
+    stat -c '%a %n' "$local_root" >/dev/null
+    printf 'ASSISTANT_WORKSPACE_STORAGE_READY path=%s profile=%s\n' "$local_root" "$profile_root"
+    ;;
+  *)
+    printf 'ASSISTANT_WORKSPACE_STORAGE_BAD_OPERATION op=%s\n' "$operation" >&2
+    exit 64
+    ;;
+esac

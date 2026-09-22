@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" id="fig-models-request-path" viewBox="0 0 1080 400"
+     role="img" aria-labelledby="models-request-path-title models-request-path-desc">
+  <title id="models-request-path-title">Agent 如何访问模型服务</title>
+  <desc id="models-request-path-desc">Agent 程序从沙箱向 LiteLLM 发送模型请求。启用凭证保护时，沙箱会添加权限受限的网关密钥。LiteLLM 解析 Agent 的路由名称，添加上游凭证，再调用配置的模型服务。AstraBox 服务也会向 LiteLLM 查询 Agent 编辑页面中的模型名称。</desc>
+
+  <style data-standalone="true">
+    @media (prefers-color-scheme: dark) {
+      svg {
+        --ifm-background-color: #0e0e0e;
+        --fg-1: #ededed;
+        --fg-3: #909090;
+        --fg-4: #6f6f6f;
+        --line-strong: #383838;
+        --astra: #7877ff;
+        --astra-tint: #1a1b3a;
+        --plasma: #f08a59;
+      }
+    }
+  </style>
+
+  <style>
+    #fig-models-request-path .box { fill: var(--ifm-background-color, #fafafa); stroke: var(--line-strong, #d4d4d4); stroke-width: 1 }
+    #fig-models-request-path .focal { fill: var(--astra-tint, #ecebff); stroke: var(--astra, #5c5bff); stroke-width: 1.5 }
+    #fig-models-request-path .zone { fill: none; stroke: var(--line-strong, #d4d4d4); stroke-width: 1; stroke-dasharray: 4 4 }
+    #fig-models-request-path .mask { fill: var(--ifm-background-color, #fafafa) }
+    #fig-models-request-path .edge { fill: none; stroke: var(--fg-4, #999999); stroke-width: 1.25 }
+    #fig-models-request-path .edge-dashed { fill: none; stroke: var(--fg-4, #999999); stroke-width: 1.25; stroke-dasharray: 3 4 }
+    #fig-models-request-path .edge-out { fill: none; stroke: var(--plasma, #e8754a); stroke-width: 1.25 }
+    #fig-models-request-path .name { fill: var(--fg-1, #0a0a0a); font: 600 12px Geist, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; text-anchor: middle }
+    #fig-models-request-path .sub { fill: var(--fg-3, #666666); font: 400 10px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; text-anchor: middle }
+    #fig-models-request-path .eyebrow { fill: var(--fg-3, #666666); font: 500 9px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; letter-spacing: 0.14em }
+    #fig-models-request-path .arrow-label { fill: var(--fg-3, #666666); font: 400 9px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; letter-spacing: 0.06em; text-anchor: middle }
+    #fig-models-request-path .legend-text { fill: var(--fg-3, #666666); font: 400 9px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; letter-spacing: 0.06em }
+    #fig-models-request-path .rule { stroke: var(--line-strong, #d4d4d4); stroke-width: 0.8 }
+  </style>
+
+  <defs>
+    <marker id="models-request-path-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="var(--fg-4, #999999)"/>
+    </marker>
+    <marker id="models-request-path-arrow-out" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="var(--plasma, #e8754a)"/>
+    </marker>
+  </defs>
+
+  <!-- zone first, then arrows, then boxes: nodes paint over the lines -->
+  <rect class="zone" x="8" y="76" width="232" height="136" rx="12"/>
+  <text class="eyebrow" x="24" y="64">沙箱进程</text>
+
+  <path class="edge" d="M 216 144 H 308" marker-end="url(#models-request-path-arrow)"/>
+  <path class="edge" d="M 472 144 H 564" marker-end="url(#models-request-path-arrow)"/>
+  <path class="edge-out" d="M 768 144 H 860" marker-end="url(#models-request-path-arrow-out)"/>
+  <path class="edge-dashed" d="M 668 248 V 188" marker-end="url(#models-request-path-arrow)"/>
+
+  <rect class="mask" x="240" y="124" width="48" height="12" rx="2"/>
+  <text class="arrow-label" x="264" y="133">模型调用</text>
+  <rect class="mask" x="488" y="124" width="64" height="12" rx="2"/>
+  <text class="arrow-label" x="520" y="133">添加受限密钥</text>
+  <rect class="mask" x="784" y="124" width="64" height="12" rx="2"/>
+  <text class="arrow-label" x="816" y="133">匹配到的路由</text>
+  <rect class="mask" x="676" y="204" width="72" height="12" rx="2"/>
+  <text class="arrow-label" x="712" y="213">/v1/models</text>
+
+  <rect class="box" x="24" y="104" width="192" height="80" rx="8"/>
+  <text class="name" x="120" y="132">Agent 程序</text>
+  <text class="sub" x="120" y="150">由 Environment 选择</text>
+  <text class="sub" x="120" y="166">发送路由名称和请求</text>
+
+  <rect class="box" x="312" y="104" width="160" height="80" rx="8"/>
+  <text class="name" x="392" y="132">凭证保护</text>
+  <text class="sub" x="392" y="150">启用时生效</text>
+  <text class="sub" x="392" y="166">添加权限受限的网关密钥</text>
+
+  <rect class="focal" x="568" y="104" width="200" height="80" rx="8"/>
+  <text class="name" x="668" y="132">模型网关</text>
+  <text class="sub" x="668" y="150">LiteLLM · 内置或自有</text>
+  <text class="sub" x="668" y="166">保存上游凭证</text>
+
+  <rect class="box" x="864" y="104" width="192" height="80" rx="8"/>
+  <text class="name" x="960" y="132">模型服务</text>
+  <text class="sub" x="960" y="150">托管或自建</text>
+  <text class="sub" x="960" y="166">由 LiteLLM 路由选择</text>
+
+  <rect class="box" x="568" y="248" width="200" height="64" rx="8"/>
+  <text class="name" x="668" y="276">AstraBox 服务</text>
+  <text class="sub" x="668" y="294">Agent 编辑页面中的模型名称</text>
+
+  <line class="rule" x1="24" y1="336" x2="1056" y2="336"/>
+  <text class="eyebrow" x="24" y="360">图例</text>
+  <rect class="focal" x="112" y="352" width="16" height="10" rx="2"/>
+  <text class="legend-text" x="136" y="360">需要你配置的模型网关</text>
+  <line class="edge" x1="352" y1="357" x2="376" y2="357"/>
+  <text class="legend-text" x="384" y="360">模型调用经过的路径</text>
+  <line class="edge-dashed" x1="560" y1="357" x2="584" y2="357"/>
+  <text class="legend-text" x="592" y="360">控制台读取的模型列表</text>
+  <line class="edge-out" x1="776" y1="357" x2="800" y2="357"/>
+  <text class="legend-text" x="808" y="360">请求离开 AstraBox</text>
+</svg>

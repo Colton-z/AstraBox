@@ -1,0 +1,1231 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@fontsource-variable/geist";
+@import "@fontsource-variable/geist-mono";
+
+@custom-variant dark (&:is(.dark *));
+
+/* ================================================================== */
+/*  Design Tokens                                                      */
+/* ================================================================== */
+
+:root {
+  /* Geist and Geist Mono share family metrics, so machine identities and
+     timestamps align with the surrounding names and labels. Both are bundled
+     through @fontsource, so rendering requires no font network request. */
+  --font-sans: 'Geist Variable', system-ui, -apple-system, sans-serif;
+  --font-mono: 'Geist Mono Variable', ui-monospace, 'SF Mono', Menlo, monospace;
+
+  /* ---- PAPER surface (light theme) ----
+     The greys carry a slight cool cast toward --astra so the neutral surfaces
+     and coloured accents belong to one palette. Raised cards stay pure white:
+     their lift comes from contrast against the cast base, and tinting both
+     surfaces would flatten that distinction. ---- */
+  --background: #F8F8FB;            /* paper base — soft off-white, not glare */
+  --foreground: #16161D;           /* ink-on-paper, fg-1 */
+  --card: #FFFFFF;                 /* RAISED = the only pure white */
+  --card-foreground: #16161D;
+  --popover: #FFFFFF;
+  --popover-foreground: #16161D;
+  --primary: #5C5BFF;              /* astra — electric indigo */
+  --primary-foreground: #FFFFFF;
+  --secondary: #F1F1F6;            /* paper-2 neutral chip */
+  --secondary-foreground: #16161D;
+  --muted: #F1F1F6;                /* paper-2 sunken */
+  --muted-foreground: #6B6B7B;     /* fg-3 metadata */
+  --accent: #ECECF3;              /* neutral hover (UI accent, not brand) */
+  --accent-foreground: #16161D;
+  --destructive: #D54848;          /* crimson */
+  --border: #E4E4EC;              /* --line paper hairline */
+  --input: #E4E4EC;
+  /* The ring is a FUNCTION, not the brand hue (§0: the step is chosen by
+     function, the hue by whether emphasis is needed). Vendored shadcn controls
+     paint `ring-ring/50`, fixing the rendered opacity at 50%. Compositing
+     --astra at that opacity measures 2.01:1 on the page and 1.93:1 on an astra
+     tint, below §11's 3:1 floor. The ring therefore takes a deeper step of the
+     astra hue: oklch(0.349 0.216 277.1), 0.9deg from astra's own
+     oklch(0.574 0.236 276.2). At 50% it lands on #9680D2 over a card: 3.33:1
+     on card, 3.28:1 on the page, and 3.17:1 on its worst ground
+     (--astra-tint). The measurements and grounds are recorded in
+     docs/maintainers/upstream-drift-ledger.md. */
+  --ring: #2E00A6;                /* astra, deep — reads 3:1+ at ring-ring/50 */
+  --chart-1: #5C5BFF;             /* astra */
+  --chart-2: #3FB57F;             /* mint */
+  --chart-3: #E8754A;             /* plasma */
+  --chart-4: #E0C341;             /* citrine */
+  --chart-5: #6B6B7B;             /* neutral */
+  --radius: 0.5rem;              /* 8px cards; sm calc → ~4px inputs */
+  --shadow-card: 0 1px 2px rgba(20, 20, 35, 0.04);
+  --sidebar: #FFFFFF;             /* paper card, beside the cast content base */
+  --sidebar-foreground: #16161D;
+  --sidebar-primary: #5C5BFF;      /* astra */
+  --sidebar-primary-foreground: #FFFFFF;
+  --sidebar-accent: #ECECF3;
+  --sidebar-accent-foreground: #16161D;
+  --sidebar-border: #E4E4EC;
+  --sidebar-ring: #2E00A6;        /* one ring — same token, sidebar's name for it */
+
+  /* ---- Brand + state accents ----
+     Components use these shared tokens for actions, run states, and their
+     surface tints. The dark theme below overrides values that need different
+     contrast on ink. */
+  --astra: #5C5BFF;                /* signature electric indigo */
+  --astra-2: #4140E0;              /* astra pressed */
+  --astra-tint: #ECEBFF;           /* astra bg tint on paper */
+  /* The TEXT step of the astra family, for a label sitting on --astra-tint —
+     the step chosen by function, per §7. It is a separate token from
+     --astra-2 because --astra-2 is the pressed BACKGROUND step, and the two
+     want opposite directions on ink: a pressed fill under white text has to
+     stay dark (white on #4140E0 is 6.92:1; white on a pale astra is 2.16:1,
+     which is what `hover:bg-astra-2` in SessionComposerBox and SessionHeader
+     would have become), while a label on a dark tint has to go light.
+     Light and --astra-2 coincide by value here, and that is a coincidence of
+     one theme rather than one token doing two jobs. */
+  --astra-fg: #4140E0;             /* astra text — see the -fg family below */
+  --plasma: #E8754A;               /* warm — human approval / highlight */
+  --plasma-tint: #FBE6DB;
+  /* Status hues are disjoint from --astra, which belongs to the primary action
+     and to selection. Sharing one between them makes a running state resemble
+     an action (docs/frontend-design.md §7), so running uses teal. */
+  --teal: #0F9C8E;                 /* running / in progress */
+  --teal-tint: #D9F1EE;
+  --mint: #3FB57F;                 /* success / completed */
+  --mint-tint: #DBF1E5;
+  --citrine: #E0C341;              /* pending / waiting */
+  --citrine-tint: #F7EFC9;
+  --crimson: #D54848;              /* failed / destructive */
+  --crimson-tint: #F6DBDB;
+
+  /* The text step of each status family. A hue with one fill value has nothing
+     to spend on text: `text-mint` on a card measures 2.58:1, under the 4.5:1 a
+     sentence needs (docs/frontend-design.md §0). These are the values the
+     `.tone-*` pills already paint their labels with, so naming them adds the
+     missing step rather than a colour. Worst ground per family, light:
+     astra 5.89, plasma 5.83, teal 5.20, mint 5.51, citrine 5.98, crimson 6.00;
+     dark: mint 4.93 is the floor. */
+  --plasma-fg: #93401F;
+  --teal-fg: #006E64;
+  --mint-fg: #176A46;
+  --citrine-fg: #6B5700;
+  --crimson-fg: #962B2B;
+
+  /* ---- Page geometry ----
+     The inset a page keeps from the shell's edges. One value, because a page's
+     left edge is a property of the shell, not of whichever page is mounted.
+     Per-page padding would let the list pages acquire different left edges.
+     32px is more inset than a narrow window can afford: at 1024 the sessions
+     table already wants more track than the well gives it, and 8px a side is
+     real. `e2e/specs/layoutHelpers.ts::VIEWPORTS` covers both steps. */
+  --gutter: 1.5rem;
+}
+
+@media (min-width: 1280px) {
+  :root { --gutter: 2rem; }
+}
+
+.dark {
+  /* ---- INK surface (dark theme) — the polished primary. Softened off pure
+     black→white, and carrying the same cool cast as PAPER so a theme switch
+     changes the lighting and not the palette's identity. Borders over shadows.
+     ---- */
+  --background: #0D0D11;           /* ink base */
+  --foreground: #ECECF1;           /* confident off-white, not glaring */
+  --card: #17171C;                 /* ink-2 raised */
+  --card-foreground: #ECECF1;
+  --popover: #141419;             /* slightly lifted off base for menus */
+  --popover-foreground: #ECECF1;
+  --primary: #5C5BFF;              /* astra — same hue both themes */
+  --primary-foreground: #FFFFFF;
+  --secondary: #17171C;            /* ink-2 chip */
+  --secondary-foreground: #ECECF1;
+  --muted: #17171C;                /* ink-2 sunken */
+  --muted-foreground: #9E9EAC;     /* fg-on-ink-2 */
+  --accent: #22222A;              /* ink-3 hover (UI accent) */
+  --accent-foreground: #ECECF1;
+  --destructive: #D54848;          /* crimson */
+  --border: #232329;              /* --line ink hairline */
+  --input: #232329;
+  /* The same decision as PAPER, in the direction ink needs: on a near-black
+     ground a ring has to be LIGHTER than the brand hue, not darker. --astra at
+     50% measures 1.84:1 on the page and 1.76:1 on --accent. This is
+     oklch(0.819 0.091 276.6) — 0.4deg off astra's hue, so the two themes ring
+     in one family. Painted at 50% over the page it lands on #616688: 3.47:1 on
+     the page, 3.44:1 on a card, 3.30:1 on its worst ground (--accent). */
+  --ring: #B4BFFF;                /* astra, pale — reads 3:1+ at ring-ring/50 */
+  --chart-1: #5C5BFF;             /* astra */
+  --chart-2: #3FB57F;             /* mint */
+  --chart-3: #E8754A;             /* plasma */
+  --chart-4: #E0C341;             /* citrine */
+  --chart-5: #9E9EAC;             /* neutral */
+  --sidebar: #111116;             /* ink between base and raised — a quiet rail */
+  --sidebar-foreground: #ECECF1;
+  --sidebar-primary: #5C5BFF;      /* astra */
+  --sidebar-primary-foreground: #FFFFFF;
+  --sidebar-accent: #1D1D24;      /* ink-3-ish active fill */
+  --sidebar-accent-foreground: #ECECF1;
+  --sidebar-border: #232329;
+  --sidebar-ring: #B4BFFF;        /* one ring — same token, sidebar's name for it */
+
+  /* darker tints so accent fills sit right on #0E0E0E */
+  --astra-tint: #1A1B3A;
+  /* On ink the tint is nearly black, so astra's default lightness cannot be
+     read on it: --astra-2 measures 2.40:1 against --astra-tint. The text token
+     holds astra's OKLCH hue while moving lightness and chroma to the sRGB gamut
+     edge, preserving the colour family (§0) without turning blue-grey:
+
+       --astra   #5C5BFF  oklch(0.574 0.236 276.2)
+       .dark     #9EACFF  oklch(0.766 0.120 275.9)   0.4deg off astra
+
+     Against every dark ground a rail label sits on, it measures 7.77:1 on
+     --astra-tint (the active fill), 7.82:1 on --sidebar-accent (that row
+     hovered), 8.78:1 on --sidebar, 8.33:1 on --card, 9.05:1 on the page.
+     The floor is 4.5:1 because a rail label is normal-size text (WCAG 1.4.3). */
+  --astra-fg: #9EACFF;
+  --plasma-fg: #F2916C;
+  --teal-fg: #2DD4BF;
+  --mint-fg: #3FB57F;
+  --citrine-fg: #E0C341;
+  --crimson-fg: #FF8585;
+  --plasma-tint: #2E1B12;
+  --teal: #2DD4BF;
+  --teal-tint: #0A2A27;
+  --mint-tint: #0F2A1F;
+  --citrine-tint: #2A2410;
+  --crimson-tint: #2C1212;
+}
+
+/* ================================================================== */
+/*  Tailwind v4 Theme Bridge                                           */
+/* ================================================================== */
+
+@theme inline {
+  --font-heading: var(--font-sans);
+  --font-sans: 'Geist Variable', sans-serif;
+  --font-mono: 'Geist Mono Variable', ui-monospace, 'SF Mono', Menlo, monospace;
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-foreground: var(--foreground);
+  --color-background: var(--background);
+  /* Steps, not ratios. Scaling 8px by 0.6 / 0.8 / 1.4 produces fractional
+     radii that browsers antialias differently from adjacent whole-pixel
+     corners. Offsets keep every step integral and the family recognisable. */
+  --radius-sm: calc(var(--radius) - 4px);   /* 4 */
+  --radius-md: calc(var(--radius) - 2px);   /* 6 */
+  --radius-lg: var(--radius);               /* 8 */
+  --radius-xl: calc(var(--radius) + 4px);   /* 12 */
+  --radius-2xl: calc(var(--radius) + 8px);  /* 16 */
+  --radius-3xl: calc(var(--radius) + 16px); /* 24 */
+  --radius-4xl: calc(var(--radius) + 24px); /* 32 */
+
+  /* ── Console-density type scale ──────────────────────────────────────
+     The default scale steps 12 → 14 → 16px, so a dense console surface has
+     nothing to reach for between 9 and 15px. Arbitrary half-pixel values in
+     that gap create a competing scale and inconsistent text rasterization.
+
+     These four fill the gap on whole pixels. Together with the defaults the
+     whole ladder is: 10 · 11 · xs 12 · 13 · sm 14 · 15 · base 16 · lg 18 ·
+     xl 20. Reach for a step; if none fits, the answer is to argue about the
+     ladder, not to write another arbitrary value.
+
+     No line-height is paired with these: callers inherit leading for their
+     type role, and binding it to size here would reflow unrelated roles. */
+  --text-10: 0.625rem;
+  --text-11: 0.6875rem;
+  --text-13: 0.8125rem;
+  --text-15: 0.9375rem;
+
+  /* ── Brand + state palette ───────────────────────────────────────────
+     Bridged so `text-crimson` / `bg-mint-tint` exist as utilities. This keeps
+     callers on named palette steps instead of arbitrary variable utilities,
+     which also lose to unlayered rules.
+     Each `-tint` is a surface; pair it with `-tint-fg` for text on that
+     surface rather than putting the solid hue on the tint. */
+  --color-astra: var(--astra);
+  --color-astra-2: var(--astra-2);
+  --color-astra-tint: var(--astra-tint);
+  /* The first `-tint-fg` the paragraph above asks for. Only astra has one:
+     it is the only tint this console prints a hued label on. */
+  --color-astra-fg: var(--astra-fg);
+  --color-plasma: var(--plasma);
+  --color-plasma-tint: var(--plasma-tint);
+  --color-mint: var(--mint);
+  --color-mint-tint: var(--mint-tint);
+  --color-citrine: var(--citrine);
+  --color-citrine-tint: var(--citrine-tint);
+  --color-crimson: var(--crimson);
+  --color-crimson-tint: var(--crimson-tint);
+  /* Bridged like its siblings: without this line `text-teal`, `bg-teal/5`
+     and `border-teal/25` name a colour Tailwind never generates, and the
+     running state loses its hue in the composer queue and the terminal. */
+  --color-teal: var(--teal);
+  --color-teal-tint: var(--teal-tint);
+  --color-teal-fg: var(--teal-fg);
+  --color-plasma-fg: var(--plasma-fg);
+  --color-mint-fg: var(--mint-fg);
+  --color-citrine-fg: var(--citrine-fg);
+  --color-crimson-fg: var(--crimson-fg);
+
+  /* ── Ramp steps two vendored files reach for ─────────────────────────
+     `ai-elements/tool.tsx` paints six tool states with Tailwind ramp classes,
+     and `ai-elements/file-tree.tsx` uses `blue-500` for a folder. Their class
+     names follow the vendored AI SDK registry source recorded in
+     docs/maintainers/upstream-drift-ledger.md. These theme entries map those
+     classes onto the console's semantic palette: waiting is citrine, running
+     is teal, completed is mint, denied is plasma, and failed is crimson. A
+     folder is not a status and therefore uses a neutral colour.
+
+     Tailwind emits the class values from `--color-*`, so the mapping belongs
+     in the theme rather than in per-file overrides. `check_palette.py` reads
+     source class names rather than computed colours; its baseline entries for
+     the two vendored files document this mapping. */
+  --color-blue-500: var(--muted-foreground);   /* file-tree: a folder icon */
+  --color-yellow-600: var(--citrine);          /* tool: approval-requested */
+  --color-blue-600: var(--teal);               /* tool: approval-responded */
+  --color-green-600: var(--mint);              /* tool: output-available */
+  --color-orange-600: var(--plasma);           /* tool: output-denied */
+  --color-red-600: var(--crimson);             /* tool: output-error */
+
+  /* ── Page geometry, as utilities ─────────────────────────────────────
+     `px-gutter` and `max-w-measure` exist so the shell's inset and the page's
+     line length are named once and reached the same way everywhere.
+
+     These must stay in `@theme inline`: inline is what makes the utility emit
+     `padding-inline: var(--gutter)` rather than resolving the variable at build
+     time, which is the only way the 1280px redefinition above reaches a call
+     site. A plain `@theme` would silently freeze every page at 24px.
+
+     Two measures because there are two kinds of page and both have callers:
+     `wide` for dense tables, `narrow` for cards and prose. A third would be a
+     knob nothing turns. */
+  --spacing-gutter: var(--gutter);
+  --container-measure: 88rem;
+  --container-measure-narrow: 72rem;
+
+  /* The transcript's line length. Separate from --container-measure because it
+     answers a different question: measure is how wide a page may grow, reading
+     is how long a line may get before it is tiring. The shared token keeps the
+     transcript and composer on one width.
+
+     Not a pure prose measure, which is why it is wider than the 45-75ch a
+     book would take: a transcript carries code blocks, tool output, diffs and
+     tables, and those are what a narrow column punishes — they get their own
+     horizontal scrollbar while the page keeps two empty margins. */
+  --container-reading: 64rem;
+}
+
+@layer base {
+  * {
+    /* Solid, not half. This is the fallback ring for elements without a more
+       specific focus treatment, including regions focused for scrolling. A
+       half-alpha ring measures 2:1 against the page, below §11's 3:1 floor. */
+    @apply border-border outline-ring;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+  html {
+    @apply font-sans;
+  }
+  a {
+    color: inherit;
+    text-decoration: none;
+  }
+}
+
+/* ================================================================== */
+/*  AstraBox design language. The SKIN+LAYOUT vocabulary the console    */
+/*  speaks: tight display type, mono chrome, the astra live-pulse,     */
+/*  hairline rows, status pills, star-field, page-enter motion.        */
+/* ================================================================== */
+
+@layer base {
+  /* Motion tokens mirror the duration and easing scale in docs/frontend-design.md. */
+  :root {
+    --astra-ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+    --dur-1: 120ms;   /* hover / press */
+    --dur-2: 220ms;   /* popover */
+    --dur-3: 320ms;   /* page enter */
+  }
+
+  /* The signature astra "live" pulse — a halo that breathes out from a 6px dot.
+     Used on running / streaming / live state, sparingly. */
+  @keyframes astra-pulse {
+    0%   { box-shadow: 0 0 0 0 rgba(92, 91, 255, 0.55); }
+    80%  { box-shadow: 0 0 0 7px rgba(92, 91, 255, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(92, 91, 255, 0); }
+  }
+
+  /* 320ms crossfade + 4px translate-y on enter (page / message blocks). */
+  @keyframes astra-enter {
+    from { opacity: 0; transform: translateY(4px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+}
+
+/* ── The custom class layer ────────────────────────────────────────────
+   Everything from here to the end of the file lives in @layer components
+   so that Tailwind utilities can override it: v4 emits every utility into
+   @layer utilities, and layer order puts utilities last.
+
+   A rule left OUTSIDE this block is unlayered, and an unlayered
+   declaration beats every layered one regardless of specificity or source
+   order. Such a rule silently wins over any utility a caller writes —
+   including a utility written specifically to override it — and the only
+   escape is `!important` at the call site.
+
+   Write a class here only when a utility cannot express the thing:
+   color-mix borders, pseudo-elements, keyframes, or grammar that spans
+   several elements. Anything a utility can say belongs at the call site.
+   Prefer single-side properties (border-bottom, padding-inline) over
+   shorthands, which clobber the whole set and take four utilities with
+   them.
+   ─────────────────────────────────────────────────────────────────────── */
+@layer components {
+
+/* Headings are separated from the page by size and surrounding space rather
+   than heavy weight. At 500 with tighter tracking, size carries the hierarchy
+   without making every heading compete with other bold text on a dense page.
+
+   Tracking tightens as the size grows: Geist's default spacing is tuned for
+   text, and at 24px+ it reads loose. */
+.t-display {
+  font-weight: 500;
+  letter-spacing: -0.03em;
+  line-height: 1.05;
+}
+.t-h1-tight { letter-spacing: -0.022em; font-weight: 500; }
+.t-h2-tight { letter-spacing: -0.015em; font-weight: 500; }
+
+/* ── Type roles ────────────────────────────────────────────────────────────
+   Pick the ROLE first; size follows from the role and never carries meaning on
+   its own (docs/frontend-design.md §6). Three roles, each with its own leading:
+
+     heading  — introduces a page or a section (the .t-h* rules above)
+     label    — one line: control labels, column heads, row titles, metadata
+     copy     — runs to several lines: descriptions, help, empty-state prose
+
+   Copy gets the taller leading because it wraps; label does not, so a tall
+   line-height there only pushes control rows apart. */
+.t-label    { font-size: 0.8125rem; line-height: 1.4; font-weight: 500; letter-spacing: -0.003em; }
+.t-label-sm { font-size: 0.75rem;   line-height: 1.4; font-weight: 500; }
+/* On the scale, not between its steps: 0.8438rem and 0.7812rem render as
+   13.5008px and 12.4992px, each half a pixel from an existing whole-pixel
+   step and therefore a competing size. */
+.t-copy     { font-size: 0.8125rem; line-height: 1.6; font-weight: 400; }
+.t-copy-sm  { font-size: 0.75rem;   line-height: 1.55; font-weight: 400; }
+
+/* Mono means MACHINE IDENTITY and nothing else: ids, hashes, image tags,
+   paths, code, and digits that must line up in a column. Not names, not
+   labels, not prose, not counts, not section heads (§6). */
+.t-mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+/* A quiet line of chrome above or beside something — never an echo of the
+   heading it sits under (§1). Normal case and normal tracking: letter-spaced
+   small caps would compete with the content rather than recede. At this size
+   the muted colour provides enough hierarchy. */
+.t-eyebrow {
+  font-size: var(--text-11);
+  line-height: 1.3;
+  color: var(--muted-foreground);
+  font-weight: 500;
+}
+
+/* The astra live-dot: a small breathing indicator. Size via font-size context;
+   defaults to 6px. */
+.astra-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--astra);
+  flex: none;
+}
+.astra-dot--live {
+  animation: astra-pulse 1.6s var(--astra-ease) infinite;
+}
+
+/* Containment that still lets an indicator paint (§11).
+   `overflow: hidden` clips at the border box, so a container that holds a
+   decoration reaching past its own edges cuts that decoration off wherever it
+   sits on the boundary: the live dot's 7px halo against the left edge of a
+   message body, a control's focus ring against the edge of a card. `clip`
+   bounds the box the same way — same containment for a wide code block or a
+   long token, and unlike `hidden` it does not make a scroll container — while
+   `overflow-clip-margin` grants the few pixels an indicator needs.
+   The margin is the widest reach §11's vocabulary produces (the halo's 7px),
+   rounded up. Browsers without `overflow-clip-margin` clip at the border box,
+   so indicators reaching past an edge are clipped.
+
+   This lives in @layer components, so it does NOT survive next to an
+   `overflow-hidden` utility — remove that one rather than adding this beside
+   it. A vendored component with the clip baked into its own base classes
+   cannot be fixed from the call site this way at all; give the child an
+   inward ring (`.ring-inward`) instead. */
+.clip-content {
+  overflow: clip;
+  overflow-clip-margin: 8px;
+}
+
+/* Page / block enter motion. */
+.astra-enter {
+  animation: astra-enter var(--dur-3) var(--astra-ease) both;
+}
+
+/* Star-field backdrop motif (radial dot grid). Use as a faint layer behind
+   empty states / hero surfaces. The ink variant is dimmer. */
+.bg-starfield {
+  background-image: radial-gradient(circle at 1px 1px, var(--border) 1px, transparent 1.5px);
+  background-size: 18px 18px;
+}
+.dark .bg-starfield {
+  background-image: radial-gradient(circle at 1px 1px, #2a2a2a 1px, transparent 1.5px);
+}
+
+/* Hairline helpers — borders, not shadows (console law). */
+.hairline-b { border-bottom: 1px solid var(--border); }
+.hairline-t { border-top: 1px solid var(--border); }
+
+/* Status pill — the console's run-state chip. Tone classes set the trio
+   (bg-tint / fg / dot). Sparingly colored, dot optional. */
+.astra-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px 2px 7px;
+  border-radius: 999px;
+  font-size: var(--text-11);
+  line-height: 1.4;
+  font-weight: 500;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.astra-pill > .astra-pill-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  flex: none;
+}
+.tone-running { background: var(--teal-tint); color: var(--teal-fg); }
+.dark .tone-running { color: var(--teal); }
+.tone-running .astra-pill-dot { background: var(--teal); animation: astra-pulse 1.6s var(--astra-ease) infinite; }
+.tone-done    { background: var(--mint-tint);    color: var(--mint-fg); }
+.dark .tone-done { color: var(--mint); }
+.tone-done    .astra-pill-dot { background: var(--mint); }
+.tone-pending { background: var(--citrine-tint); color: var(--citrine-fg); }
+.dark .tone-pending { color: var(--citrine-fg); }
+.tone-pending .astra-pill-dot { background: var(--citrine); }
+.tone-approval{ background: var(--plasma-tint);  color: var(--plasma-fg); }
+.dark .tone-approval { color: var(--plasma-fg); }
+.tone-approval .astra-pill-dot { background: var(--plasma); }
+.tone-failed  { background: var(--crimson-tint); color: var(--crimson-fg); }
+.dark .tone-failed { color: var(--crimson-fg); }
+.tone-failed  .astra-pill-dot { background: var(--crimson); }
+.tone-idle {
+  background: transparent;
+  color: var(--muted-foreground);
+  border: 1px solid var(--border);
+  padding: 1px 8px 1px 6px;
+}
+.tone-idle .astra-pill-dot { background: var(--muted-foreground); }
+
+/* ================================================================== */
+/*  Console grammar — operator-console primitives (manage surface)     */
+/*  Dense, editorial, hairline. Drives off semantic tokens so both     */
+/*  themes flip; the INK/dark state is the polished primary.           */
+/* ================================================================== */
+
+/* Micro-label for the manage console: table column heads, drawer section
+   labels, and form field labels. A label names a thing rather than a machine
+   identity, so §6 requires sans, normal-case text with readable line height. */
+.console-label {
+  font-size: var(--text-xs);
+  line-height: 1.4;
+  color: var(--muted-foreground);
+  font-weight: 400;
+}
+
+/* The rows are the card; the header is not. Column names are a legend for the
+   data, so they sit above the framed rows. Giving the header its own filled
+   band would add visual hierarchy unrelated to the records. */
+.console-table {
+  background: transparent;
+}
+.console-thead {
+  color: var(--muted-foreground);
+}
+.console-tbody {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--card);
+}
+.console-row {
+  border-bottom: 1px solid var(--border);
+  transition: background var(--dur-1) var(--astra-ease),
+    box-shadow var(--dur-1) var(--astra-ease);
+}
+.console-row:last-child { border-bottom: 0; }
+.console-row--click { cursor: pointer; }
+.console-row--click:hover { background: var(--muted); }
+/* The affordance the row's own cursor cannot show until the pointer is on it. */
+.console-row-chevron {
+  color: color-mix(in oklab, var(--muted-foreground) 55%, transparent);
+  transition: color var(--dur-1) var(--astra-ease);
+}
+.console-row--click:hover .console-row-chevron { color: var(--muted-foreground); }
+/* Active/selected row: astra left-accent bar (inset box-shadow, no layout
+   shift) + a faint astra tint fill. */
+.console-row--active {
+  background: var(--astra-tint);
+  box-shadow: inset 2px 0 0 0 var(--astra);
+}
+.dark .console-row--active { background: color-mix(in oklab, var(--astra) 8%, transparent); }
+
+/* All data values render mono via this helper (engine ids, sandbox,
+   model names, counts, timestamps, the secondary id under a name). */
+.console-val {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Filter chips segment common states before the dropdown filters. */
+.console-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-xs);
+  line-height: 1;
+  /* Height, not padding. A chip shares its row with 32px search and select
+     controls; deriving height from its font and padding would make the row
+     uneven when either changes. */
+  min-height: 32px;
+  padding: 0 11px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted-foreground);
+  background: transparent;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color var(--dur-1) var(--astra-ease),
+    border-color var(--dur-1) var(--astra-ease),
+    background var(--dur-1) var(--astra-ease);
+}
+.console-chip:hover { color: var(--foreground); border-color: var(--input); }
+.console-chip--active {
+  color: var(--foreground);
+  border-color: color-mix(in oklab, var(--foreground) 60%, transparent);
+  background: var(--accent);
+}
+/* A count is not a machine identity, so it is not mono (§6). It keeps
+   tabular figures because the counts sit in a row and jump as filters change. */
+.console-chip > .console-chip-count {
+  font-variant-numeric: tabular-nums;
+  font-size: var(--text-10);
+  color: var(--muted-foreground);
+}
+
+/* ----------------------------------------------------------------- */
+/*  Console form inputs — the edit face of the instrument.            */
+/*  Hairline fields on the raised surface; mono data; the astra ring  */
+/*  on keyboard focus. No rounded shadcn look — borders, not pills.   */
+/* ----------------------------------------------------------------- */
+.console-input {
+  width: 100%;
+  min-height: 34px;
+  padding: 7px 10px;
+  font-size: var(--text-13);
+  line-height: 1.3;
+  color: var(--foreground);
+  background: var(--background);
+  border: 1px solid var(--input);
+  border-radius: var(--radius-sm);
+  transition: border-color var(--dur-1) var(--astra-ease),
+    box-shadow var(--dur-1) var(--astra-ease),
+    background var(--dur-1) var(--astra-ease);
+}
+.dark .console-input {
+  /* On INK, fields read as slightly sunken wells below the ink-2 drawer. */
+  background: color-mix(in oklab, var(--background) 60%, #000);
+}
+/* A value that is fixed, not one whose control failed to appear: it keeps the
+   field's shape and loses the field's affordances. */
+.console-input--fixed {
+  background: var(--muted);
+  border-style: dashed;
+  color: var(--muted-foreground);
+  cursor: default;
+}
+.console-back { transition: color var(--dur-1) var(--astra-ease); }
+.console-back:hover { color: var(--foreground); }
+.console-input::placeholder { color: var(--muted-foreground); opacity: 0.7; }
+.console-input:hover:not(:disabled):not(:focus) { border-color: color-mix(in oklab, var(--foreground) 22%, var(--input)); }
+.console-input:focus-visible,
+.console-input:focus {
+  outline: none;
+  border-color: color-mix(in oklab, var(--ring) 55%, var(--input));
+  /* Bordered fields use the same solid focus token as every other control.
+     --ring is distinct from --astra because the rendered indicator must clear
+     §11's 3:1 contrast floor at the vendored `ring-ring/50` opacity. */
+  box-shadow: 0 0 0 2px var(--ring);
+}
+.console-input:disabled { opacity: 0.55; cursor: not-allowed; }
+.console-input--area { min-height: 0; resize: vertical; padding: 8px 10px; }
+.console-input--select { cursor: pointer; }
+.console-input--select:disabled { cursor: not-allowed; }
+/* `tests/e2e-ui/specs/console-interaction.parallel.spec.ts` does not submit
+   forms, so its focus measurements do not reach invalid fields. They still use
+   the solid §11 treatment, in the hue that identifies the invalid state. */
+.console-input--invalid,
+.console-input--invalid:focus {
+  border-color: color-mix(in oklab, var(--crimson) 60%, var(--input));
+  box-shadow: 0 0 0 2px var(--crimson);
+}
+
+/* Toggle — a compact hairline switch that fills astra when on. */
+.console-switch {
+  position: relative;
+  width: 36px;
+  height: 20px;
+  flex: none;
+  border-radius: 999px;
+  background: var(--muted);
+  border: 1px solid var(--input);
+  transition: background var(--dur-1) var(--astra-ease), border-color var(--dur-1) var(--astra-ease);
+  cursor: pointer;
+}
+.console-switch:disabled { opacity: 0.55; cursor: not-allowed; }
+.console-switch--on { background: var(--astra); border-color: var(--astra); }
+.console-switch-thumb {
+  position: absolute;
+  top: 50%;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  background: #fff;
+  transform: translateY(-50%);
+  transition: transform var(--dur-1) var(--astra-ease);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+}
+.console-switch--on .console-switch-thumb { transform: translate(16px, -50%); }
+.dark .console-switch { background: var(--accent); }
+
+/* Small ghost icon button (remove a list row) + the dashed add row. */
+.console-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-sm);
+  color: var(--muted-foreground);
+  transition: background var(--dur-1) var(--astra-ease), color var(--dur-1) var(--astra-ease);
+}
+.console-icon-btn:hover:not(:disabled) { background: var(--accent); color: var(--crimson); }
+.console-icon-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.console-add-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-11);
+  padding: 5px 10px;
+  border: 1px dashed var(--input);
+  border-radius: var(--radius-sm);
+  color: var(--muted-foreground);
+  transition: color var(--dur-1) var(--astra-ease), border-color var(--dur-1) var(--astra-ease);
+}
+.console-add-btn:hover:not(:disabled) {
+  color: var(--foreground);
+  border-color: color-mix(in oklab, var(--foreground) 35%, var(--input));
+}
+.console-add-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* ConsoleDangerButton — crimson destructive button for the manage console. Sits on
+   the shadcn Button's sizing/focus/radius; only the color is overridden here, via
+   --crimson / --crimson-tint tokens so it flips correctly on PAPER ↔ INK. Two
+   intensities mirror the two-step destructive flow: soft (resting trigger) and
+   solid (armed confirm). `!important` wins over the outline variant's own colors. */
+.console-danger-btn[data-danger='soft'] {
+  border-color: color-mix(in oklab, var(--crimson) 35%, transparent) !important;
+  background: var(--crimson-tint) !important;
+  /* The label is text on the tint, so it takes the token cut for that pairing
+     — the same one `.tone-failed` uses — not the brand fill. `--crimson` on
+     `--crimson-tint` measures 3.31:1 and axe reports it on every record page
+     this button appears on; `--crimson-fg` is 6.0:1 light and 7.44:1 dark, and
+     still 4.89:1 against the hover background below, which mixes crimson INTO
+     the tint and therefore darkens the very surface the label sits on. */
+  color: var(--crimson-fg) !important;
+}
+.console-danger-btn[data-danger='soft']:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--crimson) 18%, var(--crimson-tint)) !important;
+  border-color: color-mix(in oklab, var(--crimson) 50%, transparent) !important;
+}
+.console-danger-btn[data-danger='solid'] {
+  border-color: var(--crimson) !important;
+  background: var(--crimson) !important;
+  color: #fff !important;
+}
+.console-danger-btn[data-danger='solid']:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--crimson) 88%, #000) !important;
+  border-color: color-mix(in oklab, var(--crimson) 88%, #000) !important;
+}
+/* Recolour the shared outline instead of adding a second focus ring. A second
+   glow would produce indicators with different colours, widths, and offsets;
+   reusing the outline preserves shared geometry while crimson carries the
+   destructive meaning (§7, §11). */
+.console-danger-btn:focus-visible {
+  outline-color: var(--crimson);
+  border-color: color-mix(in oklab, var(--crimson) 60%, transparent) !important;
+  box-shadow: none !important;
+}
+
+/* Loading skeleton bar — a hairline shimmer that sweeps a faint highlight. */
+@keyframes console-skel {
+  0%   { opacity: 0.55; }
+  50%  { opacity: 1; }
+  100% { opacity: 0.55; }
+}
+.console-skel {
+  background: linear-gradient(
+    90deg,
+    var(--muted) 0%,
+    color-mix(in oklab, var(--muted) 55%, var(--accent)) 50%,
+    var(--muted) 100%
+  );
+  animation: console-skel 1.4s var(--astra-ease) infinite;
+}
+.dark .console-skel {
+  background: linear-gradient(
+    90deg,
+    var(--accent) 0%,
+    color-mix(in oklab, var(--accent) 55%, #333) 50%,
+    var(--accent) 100%
+  );
+}
+
+/* Sidebar nav (sectioned, counts, astra-accented active). */
+/* Group headings name related rail items, so they use the label role rather
+   than the mono machine-identity role (§6). The 24px space above each group
+   supplies separation without making the fixed labels louder than the items. */
+
+/* ----------------------------------------------------------------- */
+/*  Console detail-column surface                                    */
+/*                                                                     */
+/*  PageShell's `detail` slot owns the column width and left border.   */
+/*  The panel paints the adjacent card surface while the list remains */
+/*  readable and operable (docs/frontend-design.md §3).               */
+/* ----------------------------------------------------------------- */
+.console-detail-panel {
+  background: var(--card);
+}
+.console-drawer-x {
+  transition: background var(--dur-1) var(--astra-ease),
+    color var(--dur-1) var(--astra-ease);
+}
+.console-drawer-x:hover {
+  background: var(--accent);
+  color: var(--foreground);
+}
+
+/* Permission-mode chip tones (composer). */
+.permmode-default { border-color: var(--border); background: var(--card); color: var(--muted-foreground); }
+.permmode-plan   { border-color: color-mix(in oklab, var(--astra) 35%, transparent); background: var(--astra-tint); color: #9B9AFF; }
+.permmode-accept { border-color: color-mix(in oklab, var(--mint) 35%, transparent); background: var(--mint-tint); color: var(--mint); }
+.dark .permmode-accept { color: #5FCB97; }
+.permmode-bypass { border-color: color-mix(in oklab, var(--plasma) 35%, transparent); background: var(--plasma-tint); color: #D2643B; }
+.dark .permmode-bypass { color: var(--plasma-fg); }
+.permmode-deny { border-color: color-mix(in oklab, var(--citrine) 45%, transparent); background: var(--citrine-tint); color: var(--citrine-fg); }
+.dark .permmode-deny { color: var(--citrine); }
+.permmode-auto { border-color: color-mix(in oklab, var(--astra) 35%, transparent); background: var(--astra-tint); color: #6967C8; }
+.dark .permmode-auto { color: #9B9AFF; }
+.permmode-engine { border-color: var(--border); background: var(--muted); color: var(--foreground); }
+
+/* The astra focus ring: 2px solid, 2px offset, keyboard focus only.
+
+   The solid token clears the 3:1 floor WCAG 1.4.11 sets for a control's own
+   boundary. Mixing it to 65% would measure 2.6:1 against the page and 2.1:1
+   against a tinted tile, making the keyboard indicator too faint.
+
+   No border-radius here. An outline already follows the element's own
+   corners, so setting one rounds the ELEMENT rather than the ring: at zero
+   specificity it reaches everything that declares no radius of its own,
+   including console table rows, and rounds them inside a straight container. */
+:where(button, a, input, textarea, [tabindex], [role="button"]):focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+/* A scrollable region takes keyboard focus but is not covered by the control
+   selector above. Give it the shared ring and draw that ring inward so it does
+   not overlap an adjacent box. */
+.console-scroll:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+}
+
+/* Inward for anything that tiles edge to edge. A ring offset OUTWARD from a
+   row whose neighbours touch it is drawn 2px into each of them, so the line
+   above the focused row reads as belonging to the row above it. Rows are the
+   case the console has; the rule is the geometry, not the class. */
+.console-row:focus-visible {
+  outline-offset: -2px;
+}
+
+/* Inward for the other way of having no room: a control that fills the box it
+   sits in, where that box clips. A full-width trigger filling a card's content
+   box has nothing outside itself but the card's own clip edge, so an outward
+   ring is not drawn narrower — it is not drawn at all. Widening the card's
+   clip is the wrong trade when the clip is load-bearing, as it is for a
+   collapsible that animates its content out. Same geometry as the tiled row
+   above, a different reason for having no room (§11). */
+
+/* ================================================================== */
+/*  Global Resets                                                      */
+/* ================================================================== */
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  color: var(--foreground);
+  font-family: 'Geist Variable', var(--font-sans), system-ui, sans-serif;
+  background: var(--background);
+}
+
+/* ================================================================== */
+/*  Markdown Prose (ReactMarkdown content)                             */
+/* ================================================================== */
+
+.markdown {
+  font-size: var(--text-sm);
+  line-height: 1.65;
+  color: var(--foreground);
+}
+
+.markdown h1,
+.markdown h2,
+.markdown h3,
+.markdown h4,
+.markdown h5,
+.markdown h6 {
+  margin: 0.6em 0 0.3em;
+  line-height: 1.4;
+  font-weight: 700;
+  color: var(--foreground);
+}
+
+.markdown h1 {
+  /* Whole-pixel steps: em factors of the 14px base land off the type scale
+     (17.5px / 16.1px) and the visual grammar refuses fractional sizes. */
+  font-size: 1.125rem;
+}
+
+.markdown h2 {
+  font-size: 1rem;
+}
+
+.markdown h3,
+.markdown h4,
+.markdown h5,
+.markdown h6 {
+  font-size: 1em;
+}
+
+.markdown p {
+  margin: 0.45em 0;
+}
+
+.markdown pre {
+  overflow-x: auto;
+  border-radius: var(--radius);
+  padding: 12px;
+  background: var(--muted);
+  border: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: var(--text-13);
+  line-height: 1.5;
+}
+
+.markdown code {
+  font-family: var(--font-mono);
+  /* A step, not a ratio: 0.9em resolves to 11.7px inside 13px prose and to a
+     different fraction in every other context. Mono runs optically smaller
+     than adjacent sans text, so one named step down preserves that relation
+     while staying on the scale. */
+  font-size: var(--text-13);
+}
+
+.markdown :not(pre) > code {
+  padding: 2px 5px;
+  border-radius: var(--radius-sm);
+  background: var(--muted);
+  border: 1px solid var(--border);
+  /* A step, not a ratio of whatever it happens to sit in: 0.85em renders as
+     11.9px inside 14px prose and something else inside every other context. */
+  font-size: var(--text-13);
+}
+
+.markdown ul,
+.markdown ol {
+  margin: 0.45em 0;
+  padding-left: 1.5em;
+}
+
+.markdown li {
+  margin: 0.15em 0;
+}
+
+.markdown blockquote {
+  margin: 0.6em 0;
+  padding: 0.4em 1em;
+  border-left: 3px solid var(--border);
+  color: var(--muted-foreground);
+  background: var(--muted);
+  border-radius: 0 var(--radius) var(--radius) 0;
+}
+
+.markdown table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.6em 0;
+  font-size: var(--text-13);
+}
+
+.markdown th {
+  text-align: left;
+  padding: 8px 12px;
+  font-weight: 600;
+  border-bottom: 2px solid var(--border);
+  color: var(--foreground);
+}
+
+.markdown td {
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.markdown hr {
+  margin: 1em 0;
+  border: none;
+  border-top: 1px solid var(--border);
+}
+
+.markdown img {
+  max-width: 100%;
+  height: auto;
+  border-radius: var(--radius);
+}
+
+.markdown a {
+  color: var(--primary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.markdown a:hover {
+  opacity: 0.8;
+}
+
+} /* end @layer components */
+
+/* ── Popup width constraint ───────────────────────────────────────────────
+   `frontend/src/components/ui/select.tsx` and
+   `frontend/src/components/ui/dropdown-menu.tsx` set popup width to
+   `--anchor-width` and hide horizontal overflow. With content wider than the
+   trigger, a fixed width clips the option because it neither wraps nor scrolls.
+   These rules retain the trigger width as a floor while allowing the popup to
+   grow for its content.
+
+   The rules are deliberately unlayered under the `@layer components` contract
+   above. Tailwind emits utilities into `@layer utilities`, and a layered
+   declaration cannot override the vendored width class. The vendored files
+   may not be edited
+   (docs/maintainers/upstream-drift-ledger.md), so the override has to sit
+   where an unlayered declaration wins.
+
+   This unlayered minimum also beats a call site's layered `min-w-*` utility.
+   `frontend/src/components/UserMenu.tsx` therefore uses the important modifier
+   for its wider panel floor. The class is named there rather than here because
+   Tailwind scans this file as source and would emit an unused, non-important
+   copy if the full class appeared in this comment.
+
+   Selector: the `data-slot` the vendored files put on the popup itself.
+   `dropdown-menu-sub-content` is deliberately absent — DropdownMenuSubContent
+   overwrites the slot with its own name and already passes `w-auto`, so the
+   anchor-width selectors do not match submenus. */
+[data-slot="select-content"],
+[data-slot="dropdown-menu-content"] {
+  width: auto;
+  min-width: var(--anchor-width);
+}
+
+/* ── Calendar month transition ─────────────────────────────────────────
+   The month-change animation for `frontend/src/components/ui/calendar.tsx`,
+   asked for by `frontend/src/manage/console/DateRangeFilter.tsx`: that call
+   site sets react-day-picker's eight animation `classNames` keys, and each
+   value is one of the single class names below.
+
+   ONE token per key, which is why the styling sits here rather than in a
+   utility string at the call site: react-day-picker drives a month change by
+   handing each value to `classList.add()`, which takes one token, so a
+   space-separated Tailwind string would throw InvalidCharacterError and
+   white-screen the page that opened the calendar.
+
+   RDP supplies no css of its own for them; its stylesheet carries no
+   keyframes and this calendar never imports it. Direction reads as the
+   calendar moving under a fixed viewport: going BACK a month brings the
+   earlier weeks in from the left. The caption travels less than the weeks so
+   the two do not move as one slab. */
+@keyframes rdp-in-from-left  { from { opacity: 0; transform: translateX(-1rem); } }
+@keyframes rdp-in-from-right { from { opacity: 0; transform: translateX(1rem); } }
+@keyframes rdp-out-to-left   { to   { opacity: 0; transform: translateX(-1rem); } }
+@keyframes rdp-out-to-right  { to   { opacity: 0; transform: translateX(1rem); } }
+
+.rdp-weeks-enter-back   { animation: rdp-in-from-left  200ms var(--astra-ease, ease); }
+.rdp-weeks-exit-back    { animation: rdp-out-to-right  200ms var(--astra-ease, ease); }
+.rdp-weeks-enter-fwd    { animation: rdp-in-from-right 200ms var(--astra-ease, ease); }
+.rdp-weeks-exit-fwd     { animation: rdp-out-to-left   200ms var(--astra-ease, ease); }
+.rdp-caption-enter-back { animation: rdp-in-from-left  200ms var(--astra-ease, ease); }
+.rdp-caption-exit-back  { animation: rdp-out-to-right  200ms var(--astra-ease, ease); }
+.rdp-caption-enter-fwd  { animation: rdp-in-from-right 200ms var(--astra-ease, ease); }
+.rdp-caption-exit-fwd   { animation: rdp-out-to-left   200ms var(--astra-ease, ease); }
+
+/* Movement is decoration here; the month still changes without it. */
+/* Unlayered. Inside `@layer components` the `--tw-ring-inset` half applied
+   — nothing else sets that variable — while `outline-offset` lost to
+   Tailwind's own focus-visible utilities in `@layer utilities`. Measured:
+   the tab trigger read `inset` and `0px` at the same time, which is what
+   half a rule looks like. */
+/* Two focus rings that would otherwise paint outward into something with no
+   room for them. They are one concern but not one declaration: each element
+   takes a different half, because each gets its ring a different way.
+
+   Both are reached by their own selector rather than by a class added to the
+   component, which is what keeps `components/ui/resizable.tsx` byte-identical
+   to the registry (docs/maintainers/upstream-drift-ledger.md). */
+.ring-inward:focus-visible {
+  /* Application collapsible triggers (MessageParts, SessionTurnFrames) take
+     the shared `:where(button, a, ...)` outline above, so the offset is the
+     half that moves anything here; they set no ring utility. */
+  outline-offset: -2px;
+}
+
+[data-slot="resizable-handle"]:focus-visible {
+  /* A 1px-wide vendored handle with nothing outside it to draw in. Its outline
+     is `outline-hidden` upstream and paints nothing, so an offset would be
+     inert; its ring is `focus-visible:ring-1`, a box-shadow, and Tailwind v4
+     still reads `--tw-ring-inset` inside the shadow it generates. That makes
+     the variable the half that lands. */
+  --tw-ring-inset: inset;
+}
+
+/* The tab TRIGGER is not here: it keeps its ring deliberately outward
+   (`border-ring` + `ring-[3px]` + `outline-1`), and `TabsList` wraps it in
+   `p-[3px]` while declaring no clipping, so there is nothing cutting it off.
+
+   The tab PANEL carries upstream `outline-none`, which beats the
+   zero-specificity `:where(..., [tabindex], ...)` outline even though Base UI
+   gives it `tabIndex=0`. This unlayered `data-slot` rule restores a visible
+   focus indicator while keeping `ui/tabs.tsx` byte-identical to the registry. */
+[data-slot="tabs-content"]:focus-visible {
+  outline: 2px solid var(--ring);
+  /* Inward: the panel fills its column and an outward ring would be drawn over
+     whatever sits beside it, the same reason `.console-scroll` draws inward. */
+  outline-offset: -2px;
+}
+
+/* The line variant's active indicator is an `::after` placed at `bottom-[-5px]`,
+   five pixels below the trigger it belongs to. `visual-grammar.parallel` reads
+   that as an indicator detached from what it marks, at every width and both
+   themes, and it is right: nothing spans that gap, so the mark reads as
+   belonging to the row rather than to the tab. Zero puts it on the tab's own
+   bottom edge. */
+[data-slot="tabs-list"][data-variant="line"] [data-slot="tabs-trigger"]::after {
+  bottom: 0;
+}
+
+/* 12.8px is not a rung of any scale and cannot align with the thing beside it
+   (docs/frontend-design.md §8). Upstream spells the size as an arbitrary value,
+   so no token answers it and no attribute distinguishes the size that carries
+   it: `Button` emits `data-slot` and no `data-size`. An unlayered rule does,
+   because Tailwind's utilities are layered and unlayered rules beat every
+   layer — and it reaches the vendored files this repo has not taken yet.
+
+   Measured, because it is not free everywhere: `button` and `toggle` spend it
+   at `sm`, whose box is a fixed `h-7`, so only the glyphs move. The calendar's
+   weekday cell is `flex-1` with a unitless line-height, so its height goes
+   18.28px to 18.56px. Both are fractional; the rule trades one for the other
+   and buys a whole-pixel font size, which is what §8 asks for. */
+.text-\[0\.8rem\] { font-size: var(--text-13); }
+
+/* Unlayered, like the rule below it. A `prefers-reduced-motion` block inside
+   `@layer components` loses to `animate-spin` and `animate-pulse`, which
+   Tailwind emits in `@layer utilities` — later in the layer order, so the
+   stop never applied and 43 infinite animations kept running for a reader
+   who had asked for none. */
+/* Forced colours (Windows high contrast) replace the palette and drop every
+   `box-shadow`, which is what the house focus ring is drawn with — so keyboard
+   focus becomes invisible exactly where it is needed most. `CanvasText` is the
+   system's own foreground, the one colour guaranteed to read on its ground. */
+@media (forced-colors: active) {
+  :focus-visible {
+    outline: 2px solid CanvasText !important;
+    outline-offset: 2px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* The kit's skeleton and the refresh spinner are the two infinite
+     animations a console page runs while it loads. Neither is the only
+     carrier of "in progress": the skeleton holds the row's shape and the
+     refresh button is `disabled` for the same span. */
+  [data-slot="skeleton"] { animation: none; opacity: 0.7; }
+  .animate-spin { animation: none; }
+  /* The live dot too, so one setting means one thing. `motion`'s own switch
+     is set to `user` in main.tsx and covers everything it drives; these
+     keyframes answer to nothing but this block, and half a setting honoured is
+     a setting not honoured. The dot keeps its hue and the row keeps its label,
+     which is what carries the state to a still screenshot. */
+  .astra-dot--live,
+  .tone-running .astra-pill-dot { animation: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rdp-weeks-enter-back, .rdp-weeks-exit-back, .rdp-weeks-enter-fwd, .rdp-weeks-exit-fwd,
+  .rdp-caption-enter-back, .rdp-caption-exit-back, .rdp-caption-enter-fwd, .rdp-caption-exit-fwd {
+    animation: none;
+  }
+}

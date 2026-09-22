@@ -1,0 +1,68 @@
+name: Feature request
+description: Propose a capability or change to AstraBox.
+title: "[feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the idea. We prioritize by the concrete problem behind a
+        request and the deployment scenario it comes from, so the more context
+        you give here the better.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: The underlying need or friction — what are you unable to do today, and why does it matter?
+      placeholder: Describe the problem, not just the solution you have in mind.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What you'd like AstraBox to do. Sketches, API shapes, and alternatives you've considered all help.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: deployment-scenario
+    attributes:
+      label: Deployment scenario
+      description: Where would this feature live in how you run AstraBox?
+      options:
+        - Docker quickstart (containers/compose.yaml)
+        - Local dev stack (make dev)
+        - Custom / self-assembled deployment
+        - Not sure yet
+    validations:
+      required: true
+
+  - type: dropdown
+    id: scale
+    attributes:
+      label: Roughly how many users, and what kind of org?
+      description: Helps us understand who the feature serves. Approximate is fine.
+      options:
+        - Just me / a personal project
+        - A small team (2-20)
+        - A larger team or department (20-200)
+        - Org-wide / multi-team (200+)
+        - Building a product on top of AstraBox
+    validations:
+      required: true
+
+  - type: input
+    id: idp-sso
+    attributes:
+      label: Identity / SSO (if relevant)
+      description: >
+        If this touches accounts, tenancy, or access control: which identity
+        provider or SSO would you integrate (e.g. Okta, Entra ID / Azure AD,
+        Google Workspace, Auth0, Keycloak, a custom JWT/header gateway)? Leave
+        blank if not identity-related.
+      placeholder: "e.g. Okta OIDC, one tenant per customer"
+    validations:
+      required: false

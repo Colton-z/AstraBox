@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" id="fig-channels-round-trip" viewBox="0 0 1080 400"
+     role="img" aria-labelledby="channels-round-trip-title channels-round-trip-desc">
+  <title id="channels-round-trip-title">消息如何在平台与 Agent 之间往返</title>
+  <desc id="channels-round-trip-desc">消息平台的消息先进入 AstraBox 服务端中的消息平台适配器。Deployment 把它交给一个 Agent，Session 运行并返回任务结果；AstraBox 保存这条回复，再由适配器把已保存的回复发回同一个对话。适配器还会加载加密保存的平台凭据，凭据不会进入沙箱。</desc>
+
+  <style data-standalone="true">
+    @media (prefers-color-scheme: dark) {
+      svg {
+        --ifm-background-color: #0e0e0e;
+        --fg-1: #ededed;
+        --fg-3: #909090;
+        --fg-4: #6f6f6f;
+        --line-strong: #383838;
+        --astra: #7877ff;
+        --astra-tint: #1a1b3a;
+        --plasma: #f08a59;
+      }
+    }
+  </style>
+
+  <style>
+    #fig-channels-round-trip .box { fill: var(--ifm-background-color, #fafafa); stroke: var(--line-strong, #d4d4d4); stroke-width: 1 }
+    #fig-channels-round-trip .store { fill: color-mix(in oklab, var(--fg-1, #0a0a0a) 5%, var(--ifm-background-color, #fafafa)); stroke: var(--line-strong, #d4d4d4); stroke-width: 1 }
+    #fig-channels-round-trip .focal { fill: var(--astra-tint, #ecebff); stroke: var(--astra, #5c5bff); stroke-width: 1.5 }
+    #fig-channels-round-trip .zone { fill: none; stroke: var(--line-strong, #d4d4d4); stroke-width: 1; stroke-dasharray: 4 4 }
+    #fig-channels-round-trip .mask { fill: var(--ifm-background-color, #fafafa) }
+    #fig-channels-round-trip .edge { fill: none; stroke: var(--fg-4, #999999); stroke-width: 1.25 }
+    #fig-channels-round-trip .edge-dashed { fill: none; stroke: var(--fg-4, #999999); stroke-width: 1.25; stroke-dasharray: 3 4 }
+    #fig-channels-round-trip .edge-out { fill: none; stroke: var(--plasma, #e8754a); stroke-width: 1.25 }
+    #fig-channels-round-trip .name { fill: var(--fg-1, #0a0a0a); font: 600 12px Geist, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; text-anchor: middle }
+    #fig-channels-round-trip .sub { fill: var(--fg-3, #666666); font: 400 10px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; text-anchor: middle }
+    #fig-channels-round-trip .eyebrow { fill: var(--fg-3, #666666); font: 500 9px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; letter-spacing: 0.14em }
+    #fig-channels-round-trip .arrow-label { fill: var(--fg-3, #666666); font: 400 9px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; letter-spacing: 0.06em; text-anchor: middle }
+    #fig-channels-round-trip .legend-text { fill: var(--fg-3, #666666); font: 400 9px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; letter-spacing: 0.06em }
+    #fig-channels-round-trip .rule { stroke: var(--line-strong, #d4d4d4); stroke-width: 0.8 }
+  </style>
+
+  <defs>
+    <marker id="channels-round-trip-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="var(--fg-4, #999999)"/>
+    </marker>
+    <marker id="channels-round-trip-arrow-out" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="var(--plasma, #e8754a)"/>
+    </marker>
+  </defs>
+
+  <!-- zone first, then arrows, then masks and labels, then boxes -->
+  <rect class="zone" x="280" y="72" width="776" height="248" rx="12"/>
+  <text class="eyebrow" x="280" y="60">ASTRABOX 服务端</text>
+
+  <path class="edge" d="M 200 128 H 296" marker-end="url(#channels-round-trip-arrow)"/>
+  <path class="edge" d="M 504 128 H 584" marker-end="url(#channels-round-trip-arrow)"/>
+  <path class="edge" d="M 784 128 H 864" marker-end="url(#channels-round-trip-arrow)"/>
+  <path class="edge" d="M 952 176 V 240" marker-end="url(#channels-round-trip-arrow)"/>
+  <path class="edge" d="M 864 272 H 544 V 160 H 504" marker-end="url(#channels-round-trip-arrow)"/>
+  <path class="edge-dashed" d="M 400 240 V 176" marker-end="url(#channels-round-trip-arrow)"/>
+  <path class="edge-out" d="M 296 160 H 200" marker-end="url(#channels-round-trip-arrow-out)"/>
+
+  <rect class="mask" x="216" y="108" width="48" height="12" rx="2"/>
+  <text class="arrow-label" x="240" y="117">消息进入</text>
+  <rect class="mask" x="524" y="108" width="40" height="12" rx="2"/>
+  <text class="arrow-label" x="544" y="117">已去重</text>
+  <rect class="mask" x="800" y="108" width="48" height="12" rx="2"/>
+  <text class="arrow-label" x="824" y="117">启动会话</text>
+  <rect class="mask" x="896" y="208" width="48" height="12" rx="2"/>
+  <text class="arrow-label" x="920" y="217">任务结果</text>
+  <rect class="mask" x="670" y="252" width="68" height="12" rx="2"/>
+  <text class="arrow-label" x="704" y="261">待发送的回复</text>
+  <rect class="mask" x="216" y="168" width="48" height="12" rx="2"/>
+  <text class="arrow-label" x="240" y="177">回复发出</text>
+
+  <rect class="box" x="24" y="112" width="176" height="64" rx="8"/>
+  <text class="name" x="112" y="140">消息平台</text>
+  <text class="sub" x="112" y="158">Telegram · Slack · 飞书</text>
+
+  <rect class="box" x="296" y="112" width="208" height="64" rx="8"/>
+  <text class="name" x="400" y="140">消息平台适配器</text>
+  <text class="sub" x="400" y="158">WebSocket · 轮询 · webhook</text>
+
+  <rect class="focal" x="584" y="112" width="200" height="64" rx="8"/>
+  <text class="name" x="684" y="140">Deployment</text>
+  <text class="sub" x="684" y="158">回复规则 · 一个 Agent</text>
+
+  <rect class="box" x="864" y="112" width="176" height="64" rx="8"/>
+  <text class="name" x="952" y="140">Session</text>
+  <text class="sub" x="952" y="158">每个外部对话一个</text>
+
+  <rect class="store" x="296" y="240" width="208" height="64" rx="8"/>
+  <text class="name" x="400" y="268">平台凭据</text>
+  <text class="sub" x="400" y="286">加密保存 · 不进入沙箱</text>
+
+  <rect class="store" x="864" y="240" width="176" height="64" rx="8"/>
+  <text class="name" x="952" y="268">已保存的回复</text>
+  <text class="sub" x="952" y="286">服务重启后重试</text>
+
+  <line class="rule" x1="24" y1="336" x2="1056" y2="336"/>
+  <text class="eyebrow" x="24" y="360">图例</text>
+  <rect class="focal" x="112" y="352" width="16" height="10" rx="2"/>
+  <text class="legend-text" x="136" y="360">本页创建的 Deployment</text>
+  <line class="edge" x1="336" y1="357" x2="360" y2="357"/>
+  <text class="legend-text" x="368" y="360">一条消息的往返</text>
+  <line class="edge-dashed" x1="548" y1="357" x2="572" y2="357"/>
+  <text class="legend-text" x="580" y="360">适配器加载的凭据</text>
+  <line class="edge-out" x1="760" y1="357" x2="784" y2="357"/>
+  <text class="legend-text" x="792" y="360">离开 AstraBox 发往消息平台</text>
+</svg>

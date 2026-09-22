@@ -1,0 +1,109 @@
+#!/usr/bin/env python3
+import base64
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import time
+
+if len(sys.argv) != 2:
+    print("HERMES_SKILL_REPO_PAYLOAD_REQUIRED", file=sys.stderr)
+    raise SystemExit(64)
+
+payload = json.loads(base64.b64decode(sys.argv[1].encode("ascii")).decode("utf-8"))
+cache_dir = Path(payload["cache_dir"])
+cache_hash = payload["cache_hash"]
+repos = payload["repos"]
+marker = cache_dir / ".hermes-skill-cache-hash"
+lock_dir = Path(str(cache_dir) + ".lock")
+
+
+def skill_dirs_ready(root: Path) -> bool:
+    if not marker.exists() or marker.read_text(encoding="utf-8").strip() != cache_hash:
+        return False
+    for repo in repos:
+        checkout = root / repo["checkout_rel"]
+        for skill_path in repo.get("skill_paths") or ["."]:
+            skill_dir = checkout if skill_path == "." else checkout / skill_path
+            if not skill_dir.is_dir():
+                return False
+    return True
+
+
+if skill_dirs_ready(cache_dir):
+    print(f"HERMES_SKILL_REPO_CACHE_READY hash={cache_hash} cached=1")
+    raise SystemExit(0)
+
+cache_dir.parent.mkdir(parents=True, exist_ok=True)
+locked = False
+for _attempt in range(180):
+    try:
+        lock_dir.mkdir()
+        locked = True
+        break
+    except FileExistsError:
+        if skill_dirs_ready(cache_dir):
+            print(f"HERMES_SKILL_REPO_CACHE_READY hash={cache_hash} cached=1")
+            raise SystemExit(0)
+        time.sleep(1)
+
+if not locked:
+    print(f"HERMES_SKILL_REPO_CACHE_LOCK_TIMEOUT hash={cache_hash}", file=sys.stderr)
+    raise SystemExit(75)
+
+tmp_dir = Path(str(cache_dir) + f".tmp.{os.getpid()}")
+try:
+    if skill_dirs_ready(cache_dir):
+        print(f"HERMES_SKILL_REPO_CACHE_READY hash={cache_hash} cached=1")
+        raise SystemExit(0)
+    shutil.rmtree(tmp_dir, ignore_errors=True)
+    shutil.rmtree(cache_dir, ignore_errors=True)
+    (tmp_dir / ".ssh").mkdir(parents=True, exist_ok=True)
+    os.chmod(tmp_dir / ".ssh", 0o700)
+
+    for repo in repos:
+        checkout = tmp_dir / repo["checkout_rel"]
+        checkout.parent.mkdir(parents=True, exist_ok=True)
+        key_path = tmp_dir / ".ssh" / f"id_ed25519_{repo['index']}"
+        key_path.write_bytes(base64.b64decode(repo["key_b64"]))
+        os.chmod(key_path, 0o600)
+        args = ["git", "clone"]
+        if repo.get("branch"):
+            args += ["-b", str(repo["branch"])]
+        depth = repo.get("depth")
+        if isinstance(depth, int) and depth > 0:
+            args += ["--depth", str(depth)]
+        args += [str(repo["url"]), str(checkout)]
+        env = dict(os.environ)
+        env["GIT_SSH_COMMAND"] = (
+            "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
+            f"-o IdentitiesOnly=yes -i {key_path}"
+        )
+        subprocess.run(args, env=env, check=True)
+        if repo.get("sha"):
+            subprocess.run(
+                ["git", "-C", str(checkout), "checkout", "--detach", str(repo["sha"])],
+                check=True,
+            )
+        for skill_path in repo.get("skill_paths") or ["."]:
+            skill_dir = checkout if skill_path == "." else checkout / skill_path
+            if not skill_dir.is_dir():
+                print(
+                    f"HERMES_SKILL_REPO_PATH_MISSING index={repo['index']} path={skill_path}",
+                    file=sys.stderr,
+                )
+                raise SystemExit(66)
+
+    marker_tmp = tmp_dir / ".hermes-skill-cache-hash"
+    marker_tmp.write_text(cache_hash + "\n", encoding="utf-8")
+    subprocess.run(["chmod", "-R", "a+rX,go-w", str(tmp_dir)], check=True)
+    tmp_dir.replace(cache_dir)
+    print(f"HERMES_SKILL_REPO_CACHE_READY hash={cache_hash} cached=0")
+finally:
+    shutil.rmtree(tmp_dir, ignore_errors=True)
+    try:
+        lock_dir.rmdir()
+    except FileNotFoundError:
+        pass

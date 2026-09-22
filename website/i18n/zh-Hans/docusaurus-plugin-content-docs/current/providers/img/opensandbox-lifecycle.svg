@@ -1,0 +1,112 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" id="fig-opensandbox-lifecycle" viewBox="0 0 1080 464"
+     role="img" aria-labelledby="opensandbox-lifecycle-title opensandbox-lifecycle-desc">
+  <title id="opensandbox-lifecycle-title">沙箱会经历哪些状态</title>
+  <desc id="opensandbox-lifecycle-desc">沙箱进入运行状态有两条路径：从 Agent 准备容量中领取在任何 Session 之前创建的沙箱，或按需新建沙箱并等待它就绪。运行期间，有活动就会续期租期。空闲的沙箱可以暂停：文件系统被推送到快照仓库，下次任务再恢复同一个沙箱。运行中的沙箱在租期到期后删除，已暂停的沙箱在保留期结束后删除。</desc>
+
+  <style data-standalone="true">
+    @media (prefers-color-scheme: dark) {
+      svg {
+        --ifm-background-color: #0e0e0e;
+        --fg-1: #ededed;
+        --fg-3: #909090;
+        --fg-4: #6f6f6f;
+        --line-strong: #383838;
+        --astra: #7877ff;
+        --astra-tint: #1a1b3a;
+      }
+    }
+  </style>
+
+  <style>
+    #fig-opensandbox-lifecycle .box { fill: var(--ifm-background-color, #fafafa); stroke: var(--line-strong, #d4d4d4); stroke-width: 1 }
+    #fig-opensandbox-lifecycle .store { fill: color-mix(in oklab, var(--fg-1, #0a0a0a) 5%, var(--ifm-background-color, #fafafa)); stroke: var(--line-strong, #d4d4d4); stroke-width: 1 }
+    #fig-opensandbox-lifecycle .focal { fill: var(--astra-tint, #ecebff); stroke: var(--astra, #5c5bff); stroke-width: 1.5 }
+    #fig-opensandbox-lifecycle .mask { fill: var(--ifm-background-color, #fafafa) }
+    #fig-opensandbox-lifecycle .edge { fill: none; stroke: var(--fg-4, #999999); stroke-width: 1.25 }
+    #fig-opensandbox-lifecycle .edge-dashed { fill: none; stroke: var(--fg-4, #999999); stroke-width: 1.25; stroke-dasharray: 3 4 }
+    #fig-opensandbox-lifecycle .name { fill: var(--fg-1, #0a0a0a); font: 600 12px Geist, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; text-anchor: middle }
+    #fig-opensandbox-lifecycle .sub { fill: var(--fg-3, #666666); font: 400 10px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; text-anchor: middle }
+    #fig-opensandbox-lifecycle .eyebrow { fill: var(--fg-3, #666666); font: 500 9px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; letter-spacing: 0.14em }
+    #fig-opensandbox-lifecycle .arrow-label { fill: var(--fg-3, #666666); font: 400 9px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; letter-spacing: 0.06em; text-anchor: middle }
+    #fig-opensandbox-lifecycle .legend-text { fill: var(--fg-3, #666666); font: 400 9px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; letter-spacing: 0.06em }
+    #fig-opensandbox-lifecycle .rule { stroke: var(--line-strong, #d4d4d4); stroke-width: 0.8 }
+  </style>
+
+  <defs>
+    <marker id="opensandbox-lifecycle-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="var(--fg-4, #999999)"/>
+    </marker>
+  </defs>
+
+  <!-- column headers -->
+  <text class="eyebrow" x="24" y="44">如何开始</text>
+  <line class="rule" x1="24" y1="56" x2="280" y2="56"/>
+  <text class="eyebrow" x="412" y="44">存在期间</text>
+  <line class="rule" x1="412" y1="56" x2="668" y2="56"/>
+  <text class="eyebrow" x="800" y="44">如何结束</text>
+  <line class="rule" x1="800" y1="56" x2="1056" y2="56"/>
+
+  <!-- arrows first: the boxes paint over the lines -->
+  <path class="edge" d="M 280 104 H 408" marker-end="url(#opensandbox-lifecycle-arrow)"/>
+  <path class="edge" d="M 280 240 H 344 V 136 H 408" marker-end="url(#opensandbox-lifecycle-arrow)"/>
+  <path class="edge" d="M 464 152 V 204" marker-end="url(#opensandbox-lifecycle-arrow)"/>
+  <path class="edge" d="M 616 208 V 156" marker-end="url(#opensandbox-lifecycle-arrow)"/>
+  <path class="edge-dashed" d="M 540 272 V 324" marker-end="url(#opensandbox-lifecycle-arrow)"/>
+  <path class="edge" d="M 668 120 H 796" marker-end="url(#opensandbox-lifecycle-arrow)"/>
+  <path class="edge" d="M 668 240 H 928 V 156" marker-end="url(#opensandbox-lifecycle-arrow)"/>
+
+  <rect class="mask" x="300" y="84" width="88" height="12" rx="2"/>
+  <text class="arrow-label" x="344" y="93">分配给 Session</text>
+  <rect class="mask" x="364" y="116" width="28" height="12" rx="2"/>
+  <text class="arrow-label" x="376" y="125">就绪</text>
+  <rect class="mask" x="404" y="172" width="52" height="12" rx="2"/>
+  <text class="arrow-label" x="430" y="181">进入空闲</text>
+  <rect class="mask" x="628" y="172" width="80" height="12" rx="2"/>
+  <text class="arrow-label" x="668" y="181">恢复同一个沙箱</text>
+  <rect class="mask" x="552" y="292" width="48" height="12" rx="2"/>
+  <text class="arrow-label" x="576" y="301">推送快照</text>
+  <rect class="mask" x="708" y="100" width="48" height="12" rx="2"/>
+  <text class="arrow-label" x="732" y="109">租期到期</text>
+  <rect class="mask" x="740" y="216" width="124" height="12" rx="2"/>
+  <text class="arrow-label" x="800" y="225">保留期结束 · 默认 7 天</text>
+
+  <rect class="box" x="24" y="88" width="256" height="64" rx="8"/>
+  <text class="name" x="152" y="110">为 Agent 准备完成</text>
+  <text class="sub" x="152" y="126">基础沙箱或完整对话沙箱</text>
+  <text class="sub" x="152" y="140">在 Session 之前就已创建</text>
+
+  <rect class="box" x="24" y="208" width="256" height="64" rx="8"/>
+  <text class="name" x="152" y="230">启动中</text>
+  <text class="sub" x="152" y="246">新建沙箱 · 部署工作负载</text>
+  <text class="sub" x="152" y="260">最多等待 120 秒就绪</text>
+
+  <rect class="focal" x="412" y="88" width="256" height="64" rx="8"/>
+  <text class="name" x="540" y="110">运行中</text>
+  <text class="sub" x="540" y="126">Session 的任务在这里执行</text>
+  <text class="sub" x="540" y="140">有活动就续期 4 小时租期</text>
+
+  <rect class="box" x="412" y="208" width="256" height="64" rx="8"/>
+  <text class="name" x="540" y="230">已暂停</text>
+  <text class="sub" x="540" y="246">文件保留 · 进程停止</text>
+  <text class="sub" x="540" y="260">由 idle_action: pause 开启</text>
+
+  <rect class="store" x="412" y="328" width="256" height="64" rx="8"/>
+  <text class="name" x="540" y="350">快照仓库</text>
+  <text class="sub" x="540" y="366">自有 OCI 仓库 · 恢复时拉取</text>
+  <text class="sub" x="540" y="380">清理策略由你配置</text>
+
+  <rect class="box" x="800" y="88" width="256" height="64" rx="8"/>
+  <text class="name" x="928" y="110">已删除</text>
+  <text class="sub" x="928" y="126">沙箱和其中的文件都会消失</text>
+  <text class="sub" x="928" y="140">快照镜像不会自动删除</text>
+
+  <line class="rule" x1="24" y1="416" x2="1056" y2="416"/>
+  <text class="eyebrow" x="24" y="440">图例</text>
+  <rect class="focal" x="112" y="432" width="16" height="12" rx="2"/>
+  <text class="legend-text" x="136" y="440">Session 任务运行的状态</text>
+  <line class="edge-dashed" x1="320" y1="436" x2="344" y2="436"/>
+  <text class="legend-text" x="352" y="440">写入你自己的快照仓库</text>
+  <text class="eyebrow" x="560" y="440">说明</text>
+  <text class="legend-text" x="600" y="440">暂停与恢复需要支持快照的 Kubernetes 集群</text>
+</svg>

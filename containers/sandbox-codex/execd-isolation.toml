@@ -1,0 +1,60 @@
+# OpenSandbox execd isolation-session policy for the codex agent image.
+#
+# Same writable roots as the shared policy (see
+# containers/sandbox-claude-code/execd-isolation.toml), plus a seccomp
+# Codex-specific seccomp denylist for its nested command sandbox.
+upper_root = "/var/lib/execd/isolation"
+upper_max_bytes = 8589934592
+allowed_writable = [
+  "/workspace",
+  "/mnt",
+  "/media",
+  "/data",
+  "/home/conversations",
+]
+
+# Codex enforces ITS sandbox with bubblewrap: every exec_command the model
+# runs is wrapped in bwrap, which must unshare a user namespace and mount
+# its private root. execd's built-in denylist blocks `unshare` and `mount`,
+# so inside an isolation session that wrapper dies at boot ("bwrap: Failed
+# to make / slave: Permission denied") and the engine escalates every write
+# to an approval — acceptEdits stops meaning anything. The vendor's one
+# knob is this section: `deny` REPLACES the built-in list (no merge), so
+# this is the built-in list minus the four namespace/mount syscalls bwrap
+# needs. Granting them hands a session nothing it lacks on the
+# per-conversation tenancy, where the engine runs with no seccomp filter
+# at all; the rest of the floor (ptrace, bpf, module loading, keyrings)
+# stays.
+[seccomp]
+deny = [
+  "chroot",
+
+  "ptrace", "process_vm_readv", "process_vm_writev", "kcmp",
+
+  "init_module", "finit_module", "delete_module",
+
+  # `seccomp` is NOT denied here: codex's linux_sandbox backend installs its
+  # own filter to confine the command it is about to run, and blocking the
+  # call makes that confinement fail — reported as
+  # "sandbox violation: backend=linux_sandbox reason=failed_to_write_file"
+  # and escalated to an approval. Installing a seccomp filter can only
+  # narrow the calling process's own rights, never widen them (and
+  # no_new_privs is already set), so allowing it costs the isolation contract
+  # nothing. `bpf` stays denied: eBPF programs and maps are a different,
+  # kernel-wide surface that nothing in these images needs.
+  "bpf",
+
+  "personality",
+
+  "add_key", "request_key", "keyctl",
+
+  "iopl", "ioperm",
+
+  "reboot", "syslog", "swapon", "swapoff",
+
+  "setns",
+
+  "name_to_handle_at", "open_by_handle_at",
+
+  "userfaultfd", "kexec_load", "kexec_file_load", "acct",
+]

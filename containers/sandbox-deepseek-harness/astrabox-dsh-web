@@ -1,0 +1,131 @@
+#!/usr/bin/env python3
+"""Capture DSH's native launch credential and probe its authenticated API."""
+
+from __future__ import annotations
+
+import http.cookiejar
+import json
+import os
+from pathlib import Path
+import re
+import signal
+import subprocess
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+
+
+LAUNCH_FILE = ".deepseek-harness/web-url"
+LAUNCH_LINE = re.compile(r"^dsh web: (http://\S+)")
+
+
+class ProbeError(RuntimeError):
+    """Credential-free stage and failure details safe for deployment logs."""
+
+
+def _open(opener: urllib.request.OpenerDirector, request: str | urllib.request.Request, stage: str):
+    try:
+        return opener.open(request, timeout=3)
+    except urllib.error.HTTPError as exc:
+        raise ProbeError(f"{stage}: HTTP {exc.code}") from None
+    except (urllib.error.URLError, TimeoutError) as exc:
+        raise ProbeError(f"{stage}: {type(exc).__name__}") from None
+
+
+def launch_path() -> Path:
+    return Path(os.environ["HOME"]) / LAUNCH_FILE
+
+
+def serve(command: list[str]) -> int:
+    """Keep the supplier token out of supervisord and per-session logs."""
+
+    path = launch_path()
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path.unlink(missing_ok=True)
+    process = subprocess.Popen(
+        command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+    )
+
+    def forward(signum: int, _frame: object) -> None:
+        process.send_signal(signum)
+
+    for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        signal.signal(signum, forward)
+    try:
+        assert process.stdout is not None
+        for line in process.stdout:
+            match = LAUNCH_LINE.match(line)
+            if match:
+                url = match.group(1)
+                parsed = urllib.parse.urlsplit(url)
+                tokens = urllib.parse.parse_qs(parsed.query).get("token", [])
+                if parsed.hostname != "127.0.0.1" or len(tokens) != 1 or not tokens[0]:
+                    raise ValueError("DSH announced an invalid loopback launch URL")
+                descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(descriptor, "w", encoding="utf-8") as target:
+                    target.write(url + "\n")
+                print("astrabox-dsh: vendor authentication is ready", flush=True)
+            else:
+                print(re.sub(r"([?&]token=)[^\s&)]+", r"\1[REDACTED]", line), end="", flush=True)
+        return process.wait()
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+
+
+def probe(port: int) -> None:
+    """Exchange the supplier token for its cookie, then require native RPC success."""
+
+    url = launch_path().read_text(encoding="utf-8").strip()
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme != "http" or parsed.hostname != "127.0.0.1" or parsed.port != port:
+        raise ValueError("DSH launch URL does not match this upstream")
+    cookies = http.cookiejar.CookieJar()
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({}), urllib.request.HTTPCookieProcessor(cookies),
+    )
+    with _open(opener, url, "token exchange") as response:
+        if response.status != 200 or not list(cookies):
+            raise ProbeError("token exchange: browser authentication cookie missing")
+    rpc_id = "astrabox-readiness"
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{port}/api/session/list",
+        headers={"Content-Type": "application/json"},
+        data=json.dumps({
+            "type": "client-request", "rpcId": rpc_id, "method": "session/list",
+            "payload": {"args": {"_request": {}}},
+        }).encode(),
+    )
+    with _open(opener, request, "session/list") as response:
+        try:
+            reply = json.load(response)
+        except ValueError:
+            raise ProbeError("session/list: invalid JSON response") from None
+    if (
+        not isinstance(reply, dict)
+        or reply.get("type") != "server-response"
+        or reply.get("rpcId") != rpc_id
+        or not isinstance(reply.get("result"), dict)
+        or reply["result"].get("ok") is not True
+    ):
+        raise ProbeError("session/list: native readiness RPC did not succeed")
+
+
+if __name__ == "__main__":
+    try:
+        if sys.argv[1] == "serve":
+            raise SystemExit(serve(sys.argv[2:]))
+        if sys.argv[1] != "probe" or len(sys.argv) != 3:
+            raise ValueError("expected serve COMMAND or probe PORT")
+        probe(int(sys.argv[2]))
+    except Exception as exc:
+        # urllib exceptions can include the tokenized URL; report only the type.
+        detail = str(exc) if isinstance(exc, ProbeError) else type(exc).__name__
+        print(f"astrabox-dsh-web: {detail}", file=sys.stderr)
+        raise SystemExit(1) from None

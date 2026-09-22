@@ -1,0 +1,156 @@
+#!/usr/bin/env python3
+"""The outward hop, opened only once the app-server behind it can answer.
+
+Two jobs, and the second one is here because of a defect this image cannot
+reach.
+
+**Publish the socket on a port, once the server is really up.** The platform's
+readiness gate is a TCP connect to this port from inside the box, and that is
+the right shape for the seam it lives on: the field names a port, not a
+protocol, so the provider cannot know what "ready" means for an arbitrary
+image. It is this image's job to make the port's acceptance mean something. A
+forwarder that bound immediately would publish an open port to a server that
+is not there — the gate passes, the platform's next call is `thread/start`,
+and it fails on a box that just reported itself ready. What counts as "can
+answer" is a completed websocket upgrade, not an open socket: the unix
+listener serves no HTTP health route (`/readyz` and `/healthz` exist only on
+the websocket listener, which this image does not use) and binds its socket
+before it can speak on it.
+
+**Drop `Sec-WebSocket-Extensions` from the upgrade.** Measured against this
+image: offered `permessage-deflate`, the app-server closes the connection
+during the handshake and sends nothing at all — not a status line, not a close
+frame. The adapter disables compression on its own connection, and that is not
+enough, because the adapter's socket ends at the sandbox proxy: the proxy
+opens its OWN connection to this port with the websockets library's defaults,
+which offer the extension. `opensandbox_server/api/proxy.py` passes no
+`compression` argument and exposes no setting for one, so nothing above this
+line can turn it off — the same class of thing its neighbouring comment
+already caught for `max_size` ("proxy should not cap payloads"). Stripping the
+offer here is a byte forwarder declining to negotiate on behalf of a server
+that has no opinion it can express. It is removed from the request only;
+everything after the header block is relayed untouched.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import sys
+import time
+
+SOCKET = os.environ.get("ASTRABOX_CODEX_SOCKET", "/run/astrabox-codex/app-server.sock")
+LISTEN_PORT = int(os.environ.get("ASTRABOX_CODEX_LISTEN_PORT", "44790"))
+# Outlives the platform's own readiness budget so a slow-but-healthy start is
+# never cut off here; supervisord restarts this program if it is exceeded.
+DEADLINE_SECONDS = float(os.environ.get("ASTRABOX_CODEX_UPSTREAM_WAIT_SECONDS", "120"))
+
+_STRIPPED_HEADERS = (b"sec-websocket-extensions",)
+_MAX_HEADER_BYTES = 64 * 1024
+
+
+async def _upstream() -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+    return await asyncio.open_unix_connection(SOCKET)
+
+
+async def _server_answers() -> bool:
+    """One real upgrade, discarded. A 101 proves the socket AND the server."""
+
+    try:
+        reader, writer = await asyncio.wait_for(_upstream(), timeout=3)
+    except (OSError, asyncio.TimeoutError):
+        return False
+    try:
+        writer.write(
+            b"GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\n"
+            b"Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+            b"Sec-WebSocket-Version: 13\r\n\r\n"
+        )
+        await writer.drain()
+        status_line = await asyncio.wait_for(reader.readline(), timeout=3)
+        return b"101" in status_line
+    except (OSError, asyncio.TimeoutError):
+        return False
+    finally:
+        writer.close()
+
+
+def _strip_extension_offer(head: bytes) -> bytes:
+    """Return the header block without the extension offer the server hates."""
+
+    lines = head.split(b"\r\n")
+    kept = [
+        line
+        for line in lines
+        if not any(line.lower().startswith(name + b":") for name in _STRIPPED_HEADERS)
+    ]
+    return b"\r\n".join(kept)
+
+
+async def _pump(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    try:
+        while True:
+            chunk = await reader.read(65536)
+            if not chunk:
+                break
+            writer.write(chunk)
+            await writer.drain()
+    except (OSError, asyncio.CancelledError):
+        pass
+    finally:
+        if not writer.is_closing():
+            writer.close()
+
+
+async def _handle(client_reader: asyncio.StreamReader, client_writer: asyncio.StreamWriter) -> None:
+    try:
+        # readuntil is bounded: a peer that never ends its header block is a
+        # peer this forwarder drops rather than buffers.
+        head = await asyncio.wait_for(
+            client_reader.readuntil(b"\r\n\r\n"), timeout=15
+        )
+    except (asyncio.IncompleteReadError, asyncio.LimitOverrunError,
+            asyncio.TimeoutError, OSError):
+        client_writer.close()
+        return
+    if len(head) > _MAX_HEADER_BYTES:
+        client_writer.close()
+        return
+    try:
+        upstream_reader, upstream_writer = await _upstream()
+    except OSError:
+        client_writer.close()
+        return
+    upstream_writer.write(_strip_extension_offer(head))
+    await upstream_writer.drain()
+    await asyncio.gather(
+        _pump(client_reader, upstream_writer),
+        _pump(upstream_reader, client_writer),
+    )
+
+
+async def main() -> int:
+    deadline = time.monotonic() + DEADLINE_SECONDS
+    while not await _server_answers():
+        if time.monotonic() >= deadline:
+            print(
+                f"astrabox-codex-forward: app-server on {SOCKET} did not accept a "
+                f"websocket within {DEADLINE_SECONDS:g}s; refusing to publish "
+                f"{LISTEN_PORT}",
+                file=sys.stderr,
+                flush=True,
+            )
+            return 1
+        await asyncio.sleep(0.2)
+    server = await asyncio.start_server(_handle, "0.0.0.0", LISTEN_PORT)
+    print(
+        f"astrabox-codex-forward: app-server answers; publishing {LISTEN_PORT}",
+        flush=True,
+    )
+    async with server:
+        await server.serve_forever()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(asyncio.run(main()))

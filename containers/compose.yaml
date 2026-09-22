@@ -1,0 +1,358 @@
+# AstraBox Community — server compose.
+#
+# Brings up the backend SERVER service (containers/server/Dockerfile) wired to the
+# host Docker daemon so the bundled OpenSandbox lifecycle server can spawn the
+# per-session agent containers (containers/sandbox-claude-code/Dockerfile).
+#
+# Use this Compose file for local deployment: the server requires PostgreSQL,
+# and the file keeps its database, network addresses, and runtime accounts in
+# sync. Running the server image alone is supported only when ASTRABOX_DB_URL
+# points at a PostgreSQL service the container can reach.
+#
+# Two maintained entry points run it, and each sets ASTRABOX_IMAGE_TAG, which
+# the server image name below requires:
+#   * scripts/install.sh installs a release bundle containing this file and
+#     runs the published images <ASTRABOX_IMAGE_PREFIX><component>:<release>,
+#     by default ghcr.io/colton-z/astrabox-server:<release> and its siblings.
+#   * scripts/compose.sh runs a checkout with the images it builds:
+#     astrabox/<component>:latest, from `make build-agent-image` and
+#     `scripts/compose.sh up --build`.
+#
+# NOTE on the agent image: the in-sandbox agent container is launched by the
+# bundled lifecycle server via the bind-mounted docker.sock; it is NOT a service
+# here. The server names it from the same prefix and tag
+# (astrabox/config/release_images.py) and pulls it when the host lacks it.
+# compose only manages the long-lived server.
+#
+# NOTE on networking: OpenSandbox 0.2.x attaches sandbox/egress pairs to
+# Docker's built-in `bridge` network. Long-lived platform services do not need
+# to live there. PostgreSQL is on a separate user-defined network shared only
+# with the services that use it; only its host-development port is published,
+# and that bind is loopback-only. The callback, model, and DNS ports are
+# published on the bridge gateway only for two dedicated edge containers;
+# sandboxes are never permitted to connect to that shared gateway directly.
+
+services:
+  redis:
+    image: redis:8.10.1-alpine
+    restart: unless-stopped
+    networks:
+      - platform
+    ports:
+      - "127.0.0.1:${ASTRABOX_REDIS_PORT:-56379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    networks:
+      - database
+    environment:
+      # The administrator login is used only by PostgreSQL initialization. All
+      # values arrive as Compose secrets; no password is present in `inspect`.
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_admin_password
+      POSTGRES_DB: postgres
+      ASTRABOX_POSTGRES_PASSWORD_FILE: /run/secrets/astrabox_database_password
+      LITELLM_POSTGRES_PASSWORD_FILE: /run/secrets/litellm_database_password
+      CASDOOR_POSTGRES_PASSWORD_FILE: /run/secrets/casdoor_database_password
+    secrets:
+      - postgres_admin_password
+      - astrabox_database_password
+      - litellm_database_password
+      - casdoor_database_password
+    ports:
+      # Host-side development only. Container services use the private database
+      # network; a default-bridge container cannot route to that address.
+      - "127.0.0.1:${ASTRABOX_POSTGRES_PORT:-55432}:5432"
+    volumes:
+      - astrabox-postgres:/var/lib/postgresql/data
+      - ./postgres/init-databases.sh:/docker-entrypoint-initdb.d/10-litellm.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  # The egress proxy needs a DNS upstream for the private model-gateway name.
+  # Giving it the Docker bridge gateway as that upstream also permits other
+  # ports on the same host in current OpenSandbox releases. This dedicated DNS
+  # forwarder has no secrets, host ports, Docker socket, or database network.
+  sandbox-dns-edge:
+    image: coredns/coredns:1.13.1
+    restart: unless-stopped
+    network_mode: bridge
+    command: ["-conf", "/etc/coredns/Corefile"]
+    environment:
+      ASTRABOX_EDGE_DNS_UPSTREAM: ${ASTRABOX_DOCKER_BRIDGE_GATEWAY:-172.17.0.1}:${ASTRABOX_GATEWAY_DNS_HOST_PORT:-1053}
+    volumes:
+      - ./coredns/sandbox-edge.Corefile:/etc/coredns/Corefile:ro
+
+  # OpenSandbox's egress policy matches hosts, not ports. Sandboxes therefore
+  # must not be told to allow the Docker bridge gateway itself: doing so would
+  # also expose every unrelated host service published there. This proxy gets
+  # its own address on the built-in bridge and forwards only the two surfaces a
+  # sandbox needs. It has no Docker socket, database network, host port, or
+  # deployment secret.
+  sandbox-edge:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    network_mode: bridge
+    environment:
+      NGINX_ENVSUBST_FILTER: ^ASTRABOX_EDGE_
+      ASTRABOX_EDGE_MODEL_UPSTREAM_PORT: ${ASTRABOX_MODEL_GATEWAY_HOST_PORT:-80}
+      ASTRABOX_EDGE_CALLBACK_UPSTREAM_PORT: ${ASTRABOX_SERVER_SANDBOX_PORT:-8000}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./sandbox-edge/default.conf.template:/etc/nginx/templates/default.conf.template:ro
+
+  server:
+    # An empty ASTRABOX_IMAGE_TAG leaves the reference without a tag and
+    # Compose rejects it. The tag is not marked required here because Compose
+    # evaluates a nested `:?` even when ASTRABOX_SERVER_IMAGE is set.
+    image: ${ASTRABOX_SERVER_IMAGE:-${ASTRABOX_IMAGE_PREFIX:-ghcr.io/colton-z/astrabox-}server:${ASTRABOX_IMAGE_TAG:-}}
+    # Build from the repo ROOT (the wheel build copies pyproject.toml + ./astrabox,
+    # the FLAT package). `scripts/compose.sh up --build`
+    # resolves this context relative to the repo root via the `..` path. An
+    # installed release bundle has no source; scripts/install.sh pulls instead.
+    build:
+      context: ..
+      dockerfile: containers/server/Dockerfile
+    # The image already bakes tini as PID 1 (it may supervise two processes), so
+    # this is belt-and-braces rather than required; tini tolerates running under
+    # another init. SIGTERM still reaches uvicorn for graceful shutdown.
+    init: true
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      sandbox-edge:
+        condition: service_started
+      sandbox-dns-edge:
+        condition: service_started
+    networks:
+      - platform
+      - database
+    ports:
+      # Host loopback 8088 → container 8000 (the app's ASTRABOX_PORT default).
+      # Bound to 127.0.0.1 so the no-auth admin surface is not reachable from the
+      # LAN (the README documents this loopback posture). Widen deliberately, and
+      # only behind real auth, to expose beyond this host.
+      - "127.0.0.1:${ASTRABOX_SERVER_HOST_PORT:-8088}:8000"
+      # Only sandbox-edge and sandbox-dns-edge use these bridge publications. A
+      # sandbox's deny-by-default policy permits those single-purpose
+      # containers, not this shared host gateway. PostgreSQL and Redis have no
+      # bridge bind.
+      - "${ASTRABOX_DOCKER_BRIDGE_GATEWAY:-172.17.0.1}:${ASTRABOX_SERVER_SANDBOX_PORT:-8000}:8000"
+      - "${ASTRABOX_DOCKER_BRIDGE_GATEWAY:-172.17.0.1}:${ASTRABOX_MODEL_GATEWAY_HOST_PORT:-80}:80"
+      - "${ASTRABOX_DOCKER_BRIDGE_GATEWAY:-172.17.0.1}:${ASTRABOX_GATEWAY_DNS_HOST_PORT:-1053}:5353/tcp"
+      - "${ASTRABOX_DOCKER_BRIDGE_GATEWAY:-172.17.0.1}:${ASTRABOX_GATEWAY_DNS_HOST_PORT:-1053}:5353/udp"
+    secrets:
+      - astrabox_database_password
+      - litellm_database_password
+    volumes:
+      # Sandbox dataplane: the lifecycle server this container starts drives the
+      # host Docker daemon to create the per-session agent containers. Mounting
+      # the daemon socket is what makes the default backend work.
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Generated keys, workspaces and OpenSandbox state persist in a NAMED
+      # volume, not a host directory. The server runs unprivileged (uid 999)
+      # and Docker creates a missing bind-mount directory owned by root, so a
+      # host path crash-loops on first run — `PermissionError: /data/litellm.key`
+      # — until someone chowns it by hand. A named volume copies /data's
+      # ownership from the image and works for any host user. Nothing reads
+      # these files from the host; inspect with `docker exec <container> ls /data`.
+      - astrabox-state:/data
+    extra_hosts:
+      # For THIS container only (the alias is not inherited by the sandboxes the
+      # lifecycle server creates): lets the server reach a service bound on the
+      # host loopback — e.g. a local Anthropic-compatible gateway addressed as
+      # http://host.docker.internal:<port>.
+      - "host.docker.internal:host-gateway"
+    # The non-root server user (USER astrabox in the server image) needs group
+    # access to the bind-mounted docker.sock (its group is the host's `docker`
+    # group) or the lifecycle server gets EACCES on it. compose can't shell
+    # out for the GID, so set DOCKER_GID to the socket's real group before `up`:
+    #   export DOCKER_GID=$(stat -c %g /var/run/docker.sock)
+    # The 999 fallback is a common default docker-group GID but is NOT universal.
+    group_add:
+      - "${DOCKER_GID:-999}"
+    environment:
+      # ── Anthropic credential/endpoint passthrough ────────────────────────────
+      # A null Compose value forwards the host variable when present and omits
+      # it from the container when absent. This preserves the CLI/SDK defaults
+      # without interpolation warnings or empty-string pseudo-configuration.
+      # Set whichever auth path you use.
+      ANTHROPIC_BASE_URL:
+      ANTHROPIC_AUTH_TOKEN:
+      ANTHROPIC_API_KEY:
+      ANTHROPIC_MODEL:
+      # Omit when unset so the application YAML remains the default authority.
+      ASTRABOX_TITLE_MODEL_ENABLED:
+      ASTRABOX_TITLE_MODEL_REQUEST_TIMEOUT_SECONDS:
+      # ── AstraBox runtime knobs (already baked as image defaults; pinned here
+      #    for visibility/override) ──────────────────────────────────────────────
+      # Sandbox backend. On the default `open_sandbox`, the image's entry point
+      # starts the bundled OpenSandbox lifecycle server on container loopback and
+      # runs AstraBox in front of it — still ONE container here, still only
+      # AstraBox's port published, no extra service to add below and nothing else
+      # to configure. Point ASTRABOX_SANDBOX_OPENAPI_BASE_URL at your own
+      # lifecycle server instead and the bundled one does not start. See
+      # astrabox/deploy/onebox.py.
+      ASTRABOX_SANDBOX_BACKEND: ${ASTRABOX_SANDBOX_BACKEND:-open_sandbox}
+      # The provider selects backing storage, not the platform's directory
+      # routing. Every configured workspace volume uses the mount helper;
+      # an empty backing volume needs no helper.
+      ASTRABOX_STORAGE_PROVIDER: ${ASTRABOX_STORAGE_PROVIDER:-mounted_volume}
+      ASTRABOX_EFS_FILE_SYSTEM_ID: ${ASTRABOX_EFS_FILE_SYSTEM_ID:-}
+      ASTRABOX_SANDBOX_WORKSPACE_VOLUME: ${ASTRABOX_SANDBOX_WORKSPACE_VOLUME:-}
+      ASTRABOX_WORKSPACE_MOUNTER_IMAGE: ${ASTRABOX_WORKSPACE_MOUNTER_IMAGE:-}
+      ASTRABOX_WORKSPACE_STORAGE_TOPOLOGY: ${ASTRABOX_WORKSPACE_STORAGE_TOPOLOGY:-local}
+      ASTRABOX_WORKSPACE_MOUNT_ROOT: ${ASTRABOX_WORKSPACE_MOUNT_ROOT:-/var/lib/astrabox/workspace-mounts}
+      # Host-header allowlist for deployments that intentionally publish the
+      # console beyond loopback. Empty preserves the server's safe localhost
+      # defaults; a reverse proxy or private test address must be named
+      # explicitly rather than silently accepted.
+      ASTRABOX_ALLOWED_HOSTS: ${ASTRABOX_ALLOWED_HOSTS:-}
+      # Credential Vault is optional but on by default. Setting false is an
+      # explicit request to hand the model/gateway credential to the Agent
+      # process instead of keeping it in the egress sidecar.
+      ASTRABOX_SANDBOX_CREDENTIAL_VAULT: ${ASTRABOX_SANDBOX_CREDENTIAL_VAULT:-true}
+      ASTRABOX_SANDBOX_EGRESS_IMAGE: ${ASTRABOX_SANDBOX_EGRESS_IMAGE:-opensandbox/egress:v1.1.7}
+      ASTRABOX_SANDBOX_EGRESS_MODE: ${ASTRABOX_SANDBOX_EGRESS_MODE:-dns+nft}
+      ASTRABOX_SANDBOX_SERVER_NETWORK_MODE: bridge
+      # OpenSandbox probes and then releases a candidate host port before
+      # Docker binds it. If multiple lifecycle servers share one daemon, give
+      # each deployment a non-overlapping range to prevent cross-server races.
+      ASTRABOX_SANDBOX_SERVER_PORT_RANGE: ${ASTRABOX_SANDBOX_SERVER_PORT_RANGE:-20000-32000}
+      # The lifecycle server stays on container loopback, while protected
+      # sandboxes expose their sidecar through Docker host-port mappings. This
+      # bridge-gateway address lets the server reach those mappings without
+      # publishing them on the host's LAN interfaces.
+      ASTRABOX_PUBLISH_HOST_IP: ${ASTRABOX_PUBLISH_HOST_IP:-${ASTRABOX_DOCKER_BRIDGE_GATEWAY:-172.17.0.1}}
+      # onebox discovers the edge's dynamic built-in-bridge IP by Compose
+      # labels, then fills the callback base and private gateway DNS target.
+      # Explicit operator values still win. The DNS upstream's DEFAULT is held
+      # separately so an external model gateway does not point sidecars at a
+      # CoreDNS process onebox did not start.
+      ASTRABOX_SANDBOX_EDGE_SERVICE: sandbox-edge
+      ASTRABOX_SANDBOX_DNS_EDGE_SERVICE: sandbox-dns-edge
+      ASTRABOX_SANDBOX_EDGE_CALLBACK_PORT: "8000"
+      ASTRABOX_MCP_PROXY_BASE_URL: ${ASTRABOX_MCP_PROXY_BASE_URL:-}
+      ASTRABOX_SANDBOX_GATEWAY_IP: ${ASTRABOX_SANDBOX_GATEWAY_IP:-}
+      ASTRABOX_SANDBOX_EGRESS_DNS_UPSTREAM: ${ASTRABOX_SANDBOX_EGRESS_DNS_UPSTREAM:-}
+      ASTRABOX_SANDBOX_EGRESS_DNS_UPSTREAM_DEFAULT: ""
+      ASTRABOX_DB_BACKEND: postgresql
+      ASTRABOX_DB_URL: ${ASTRABOX_DB_URL:-}
+      ASTRABOX_DB_PASSWORD_FILE: /run/secrets/astrabox_database_password
+      ASTRABOX_DB_HOST: postgres
+      ASTRABOX_DB_PORT: "5432"
+      # OpenSandbox owns this pool state. AstraBox's product records remain in
+      # PostgreSQL, and a Redis reset only discards idle warm capacity.
+      ASTRABOX_AGENT_PREWARM_REDIS_URL: ${ASTRABOX_AGENT_PREWARM_REDIS_URL:-redis://redis:6379/0}
+      # LiteLLM shares the PostgreSQL service, but uses its own database and
+      # login. This is the proxy's standard DATABASE_URL; AstraBox never reads it.
+      DATABASE_URL: ${LITELLM_DATABASE_URL:-}
+      LITELLM_DATABASE_PASSWORD_FILE: /run/secrets/litellm_database_password
+      LITELLM_DATABASE_HOST: postgres
+      LITELLM_DATABASE_PORT: "5432"
+      ASTRABOX_STATE_DIR: /data
+      # Compose reads .env for interpolation only; undeclared values are not
+      # injected into the container. Forward deployment-owned signing material
+      # explicitly so replicas can decrypt the same Vault records and verify the
+      # same sandbox callbacks. Empty keeps the documented single-node
+      # auto-generation path.
+      ASTRABOX_SECRET_STORE: ${ASTRABOX_SECRET_STORE:-local}
+      ASTRABOX_AWS_KMS_KEY_ARN: ${ASTRABOX_AWS_KMS_KEY_ARN:-}
+      ASTRABOX_VAULT_MASTER_KEY: ${ASTRABOX_VAULT_MASTER_KEY:-}
+      ASTRABOX_AUTH_SESSION_SECRET: ${ASTRABOX_AUTH_SESSION_SECRET:-}
+      ASTRABOX_TRANSCRIPT_SIGNING_KEY: ${ASTRABOX_TRANSCRIPT_SIGNING_KEY:-}
+      # Default images for every engine and the workspace helper are
+      # <ASTRABOX_IMAGE_PREFIX><component>:<ASTRABOX_IMAGE_TAG>
+      # (astrabox/config/release_images.py), the same names as the server image
+      # above. ASTRABOX_AGENT_IMAGE names the Claude Code image explicitly.
+      ASTRABOX_IMAGE_PREFIX: ${ASTRABOX_IMAGE_PREFIX:-}
+      ASTRABOX_IMAGE_TAG: ${ASTRABOX_IMAGE_TAG:-}
+      ASTRABOX_AGENT_IMAGE: ${ASTRABOX_AGENT_IMAGE:-}
+      # ── Model gateway: EMBEDDED LiteLLM (the default) ───────────────────────
+      # The image carries the proxy in its own venv; the entry point
+      # (astrabox/deploy/onebox.py) starts it alongside the platform and waits
+      # for its health before AstraBox serves — still ONE container, nothing to
+      # add below. Set ASTRABOX_LITELLM_BASE_URL to a gateway you run yourself
+      # and the embedded one does not start. Routing lives in
+      # containers/litellm/config.yaml, baked into the image; to edit it without
+      # a rebuild, mount over the baked copy:
+      #   - ./litellm/config.yaml:/opt/astrabox/litellm/config.yaml:ro
+      #
+      # Private service credential for the embedded proxy. It is generated once
+      # into the state dir (/data/litellm.key). Set
+      # LITELLM_MASTER_KEY only to rotate/fix it (multi-replica: same value in
+      # every replica). `${VAR:-}` keeps `compose config` valid when unset.
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-}
+      # External LiteLLM deployments use the same provider contract as the
+      # embedded process. These values must reach AstraBox itself: Compose's
+      # .env file only supplies interpolation and does not inject undeclared
+      # variables into a container. Provider administration credentials remain
+      # server-side.
+      ASTRABOX_LITELLM_BASE_URL: ${ASTRABOX_LITELLM_BASE_URL:-}
+      ASTRABOX_LITELLM_SERVER_BASE_URL: ${ASTRABOX_LITELLM_SERVER_BASE_URL:-}
+      ASTRABOX_LITELLM_API_KEY: ${ASTRABOX_LITELLM_API_KEY:-}
+      ASTRABOX_LITELLM_ADMIN_URL: ${ASTRABOX_LITELLM_ADMIN_URL:-}
+      # The team-gateway overlay sets this to true. The base local stack keeps
+      # its private HTTP gateway and leaves the requirement off.
+      ASTRABOX_MODEL_GATEWAY_REQUIRE_HTTPS: ${ASTRABOX_MODEL_GATEWAY_REQUIRE_HTTPS:-false}
+      # Provider keys the config.yaml entries reference (unset ones simply
+      # leave that model family unavailable). ANTHROPIC_API_KEY is already
+      # forwarded above.
+      OPENAI_API_KEY:
+      GEMINI_API_KEY:
+      DEEPSEEK_API_KEY:
+      OPENAI_COMPATIBLE_BASE_URL:
+      OPENAI_COMPATIBLE_API_KEY:
+      # ── LLM observability: bring-your-own Langfuse (OFF by default) ─────────
+      # config.yaml registers the langfuse success/failure callbacks; they are
+      # INERT until this trio is set (the langfuse SDK self-disables with no
+      # public key). Set all three to stream tokens/cost/latency/prompt for
+      # every model call to your Langfuse — zero AstraBox code.
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      LANGFUSE_HOST: ${LANGFUSE_HOST:-}
+
+volumes:
+  astrabox-postgres:
+    name: ${ASTRABOX_POSTGRES_VOLUME:-astrabox-postgres}
+  astrabox-state:
+    # Pinned name (Compose would otherwise prefix the project) so local keys,
+    # workspaces, and OpenSandbox lease metadata survive project-name changes.
+    # Database records live in the separate astrabox-postgres volume.
+    name: ${ASTRABOX_STATE_VOLUME:-astrabox-state}
+  astrabox-workspaces:
+    # Mergerfs helpers mount the backing data. Sandboxes receive only each
+    # assignment's fixed view through OpenSandbox's standard named volumes.
+    name: ${ASTRABOX_SANDBOX_WORKSPACE_VOLUME:-astrabox-workspaces}
+
+networks:
+  # User-defined bridges are isolated from Docker's built-in bridge. Platform
+  # services retain outbound access; PostgreSQL is reachable only by services
+  # explicitly attached to `database` plus its loopback-only host publication.
+  platform:
+    driver: bridge
+  database:
+    driver: bridge
+
+secrets:
+  postgres_admin_password:
+    file: ${ASTRABOX_LOCAL_DATABASE_SECRET_DIR:-../.astrabox/database-secrets}/postgres_admin_password
+  astrabox_database_password:
+    file: ${ASTRABOX_LOCAL_DATABASE_SECRET_DIR:-../.astrabox/database-secrets}/astrabox_password
+  litellm_database_password:
+    file: ${ASTRABOX_LOCAL_DATABASE_SECRET_DIR:-../.astrabox/database-secrets}/litellm_password
+  casdoor_database_password:
+    file: ${ASTRABOX_LOCAL_DATABASE_SECRET_DIR:-../.astrabox/database-secrets}/casdoor_password

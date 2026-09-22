@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" id="fig-api-session-lifecycle" viewBox="0 0 1080 504"
+     role="img" aria-labelledby="api-session-lifecycle-title api-session-lifecycle-desc">
+  <title id="api-session-lifecycle-title">How a client drives one Session over the API</title>
+  <desc id="api-session-lifecycle-desc">A client authenticates with a bearer token, creates a Session from an Agent, and sends a task with either the request that holds its own result open or the one that returns a receipt. Output arrives as numbered frames on the Session stream. Three further calls lead back to that stream: answering a pending approval, reconnecting with the number of the last frame the client read, and recreating the Session's runtime connection, which succeeds only when it can be recreated.</desc>
+
+  <style data-standalone="true">
+    @media (prefers-color-scheme: dark) {
+      svg {
+        --ifm-background-color: #0e0e0e;
+        --fg-1: #ededed;
+        --fg-3: #909090;
+        --fg-4: #6f6f6f;
+        --line-strong: #383838;
+        --astra: #7877ff;
+        --astra-tint: #1a1b3a;
+      }
+    }
+  </style>
+
+  <style>
+    #fig-api-session-lifecycle .box { fill: var(--ifm-background-color, #fafafa); stroke: var(--line-strong, #d4d4d4); stroke-width: 1 }
+    #fig-api-session-lifecycle .focal { fill: var(--astra-tint, #ecebff); stroke: var(--astra, #5c5bff); stroke-width: 1.5 }
+    #fig-api-session-lifecycle .mask { fill: var(--ifm-background-color, #fafafa) }
+    #fig-api-session-lifecycle .edge { fill: none; stroke: var(--fg-4, #999999); stroke-width: 1.25 }
+    #fig-api-session-lifecycle .edge-dashed { fill: none; stroke: var(--fg-4, #999999); stroke-width: 1.25; stroke-dasharray: 3 4 }
+    #fig-api-session-lifecycle .name { fill: var(--fg-1, #0a0a0a); font: 600 12px Geist, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; text-anchor: middle }
+    #fig-api-session-lifecycle .sub { fill: var(--fg-3, #666666); font: 400 9px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; text-anchor: middle }
+    #fig-api-session-lifecycle .eyebrow { fill: var(--fg-3, #666666); font: 500 8px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.14em }
+    #fig-api-session-lifecycle .arrow-label { fill: var(--fg-3, #666666); font: 400 8px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.06em; text-anchor: middle }
+    #fig-api-session-lifecycle .legend-text { fill: var(--fg-3, #666666); font: 400 8px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.06em }
+    #fig-api-session-lifecycle .rule { stroke: var(--line-strong, #d4d4d4); stroke-width: 0.8 }
+  </style>
+
+  <defs>
+    <marker id="api-session-lifecycle-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="var(--fg-4, #999999)"/>
+    </marker>
+  </defs>
+
+  <!-- arrows first, then masks and their labels, then the boxes paint over the lines -->
+  <path class="edge" d="M 292 104 H 404" marker-end="url(#api-session-lifecycle-arrow)"/>
+  <path class="edge" d="M 676 104 H 788" marker-end="url(#api-session-lifecycle-arrow)"/>
+  <path class="edge" d="M 924 140 V 196" marker-end="url(#api-session-lifecycle-arrow)"/>
+  <path class="edge" d="M 188 340 V 276" marker-end="url(#api-session-lifecycle-arrow)"/>
+  <path class="edge" d="M 540 340 V 276" marker-end="url(#api-session-lifecycle-arrow)"/>
+  <path class="edge-dashed" d="M 892 340 V 276" marker-end="url(#api-session-lifecycle-arrow)"/>
+
+  <rect class="mask" x="308" y="80" width="80" height="12" rx="2"/>
+  <text class="arrow-label" x="348" y="89">on every call</text>
+  <rect class="mask" x="684" y="80" width="96" height="12" rx="2"/>
+  <text class="arrow-label" x="732" y="89">a new Session id</text>
+  <rect class="mask" x="616" y="164" width="292" height="12" rx="2"/>
+  <text class="arrow-label" x="762" y="173">one holds the request open, one returns a receipt</text>
+  <rect class="mask" x="204" y="304" width="160" height="12" rx="2"/>
+  <text class="arrow-label" x="284" y="313">pending_interaction is set</text>
+  <rect class="mask" x="556" y="304" width="144" height="12" rx="2"/>
+  <text class="arrow-label" x="628" y="313">your connection dropped</text>
+  <rect class="mask" x="908" y="304" width="120" height="12" rx="2"/>
+  <text class="arrow-label" x="968" y="313">the runtime is gone</text>
+
+  <rect class="box" x="24" y="72" width="264" height="64" rx="8"/>
+  <text class="name" x="156" y="100">Authenticate</text>
+  <text class="sub" x="156" y="118">Bearer token, or none in local mode</text>
+
+  <rect class="box" x="408" y="72" width="264" height="64" rx="8"/>
+  <text class="name" x="540" y="100">Create the Session</text>
+  <text class="sub" x="540" y="118">POST /api/v1/agents/{id}/conversations</text>
+
+  <rect class="box" x="792" y="72" width="264" height="64" rx="8"/>
+  <text class="name" x="924" y="100">Send a task</text>
+  <text class="sub" x="924" y="118">POST .../ai-stream or .../turn-inputs</text>
+
+  <rect class="focal" x="24" y="200" width="1032" height="72" rx="8"/>
+  <text class="name" x="540" y="232">The Session stream</text>
+  <text class="sub" x="540" y="250">GET /api/v1/sessions/{id}/ai-stream?follow=session · frames are numbered</text>
+
+  <rect class="box" x="24" y="344" width="328" height="64" rx="8"/>
+  <text class="name" x="188" y="372">Answer a pending approval</text>
+  <text class="sub" x="188" y="390">POST .../interaction-respond</text>
+
+  <rect class="box" x="376" y="344" width="328" height="64" rx="8"/>
+  <text class="name" x="540" y="372">Reconnect to the stream</text>
+  <text class="sub" x="540" y="390">after_seq = the last frame you read</text>
+
+  <rect class="box" x="728" y="344" width="328" height="64" rx="8"/>
+  <text class="name" x="892" y="372">Recreate the runtime connection</text>
+  <text class="sub" x="892" y="390">POST .../recover</text>
+
+  <line class="rule" x1="24" y1="440" x2="1056" y2="440"/>
+  <text class="eyebrow" x="24" y="464">LEGEND</text>
+  <rect class="focal" x="112" y="456" width="16" height="12" rx="2"/>
+  <text class="legend-text" x="136" y="464">where a client reads the Session's events</text>
+  <line class="edge" x1="392" y1="461" x2="416" y2="461"/>
+  <text class="legend-text" x="424" y="464">the next call you make</text>
+  <line class="edge-dashed" x1="584" y1="461" x2="608" y2="461"/>
+  <text class="legend-text" x="616" y="464">only when the runtime can be recreated</text>
+</svg>

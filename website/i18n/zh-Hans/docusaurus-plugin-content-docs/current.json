@@ -1,0 +1,50 @@
+{
+  "sidebar.docs.category.Quick start": {
+    "message": "快速开始",
+    "description": "The label for category 'Quick start' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Build Agent": {
+    "message": "构建 Agent",
+    "description": "The label for category 'Build Agent' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Configure Agent environment": {
+    "message": "配置 Agent 环境",
+    "description": "The label for category 'Configure Agent environment' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Delegate tasks": {
+    "message": "委派任务",
+    "description": "The label for category 'Delegate tasks' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Integrate Agent": {
+    "message": "集成 Agent",
+    "description": "The label for category 'Integrate Agent' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Manage Agent context": {
+    "message": "管理 Agent 上下文",
+    "description": "The label for category 'Manage Agent context' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Best practices": {
+    "message": "最佳实践",
+    "description": "The label for category 'Best practices' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.CLI": {
+    "message": "CLI",
+    "description": "The label for category 'CLI' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Self-host AstraBox": {
+    "message": "自托管 AstraBox",
+    "description": "The label for category 'Self-host AstraBox' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Extend AstraBox": {
+    "message": "扩展 AstraBox",
+    "description": "The label for category 'Extend AstraBox' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.API conventions": {
+    "message": "API 约定",
+    "description": "The label for category 'API conventions' in sidebar 'docs'"
+  },
+  "version.label": {
+    "message": "Next",
+    "description": "The label for version current"
+  }
+}

@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" id="fig-models-request-path" viewBox="0 0 1080 400"
+     role="img" aria-labelledby="models-request-path-title models-request-path-desc">
+  <title id="models-request-path-title">How an Agent reaches a model service</title>
+  <desc id="models-request-path-desc">The Agent program sends a request from its sandbox to LiteLLM. When protected credential delivery is enabled, the sandbox adds a scoped gateway key. LiteLLM resolves the Agent's route name, adds the upstream credential, and calls the configured model service. The AstraBox service also asks LiteLLM for the model names shown in the Agent editor.</desc>
+
+  <style data-standalone="true">
+    @media (prefers-color-scheme: dark) {
+      svg {
+        --ifm-background-color: #0e0e0e;
+        --fg-1: #ededed;
+        --fg-3: #909090;
+        --fg-4: #6f6f6f;
+        --line-strong: #383838;
+        --astra: #7877ff;
+        --astra-tint: #1a1b3a;
+        --plasma: #f08a59;
+      }
+    }
+  </style>
+
+  <style>
+    #fig-models-request-path .box { fill: var(--ifm-background-color, #fafafa); stroke: var(--line-strong, #d4d4d4); stroke-width: 1 }
+    #fig-models-request-path .focal { fill: var(--astra-tint, #ecebff); stroke: var(--astra, #5c5bff); stroke-width: 1.5 }
+    #fig-models-request-path .zone { fill: none; stroke: var(--line-strong, #d4d4d4); stroke-width: 1; stroke-dasharray: 4 4 }
+    #fig-models-request-path .mask { fill: var(--ifm-background-color, #fafafa) }
+    #fig-models-request-path .edge { fill: none; stroke: var(--fg-4, #999999); stroke-width: 1.25 }
+    #fig-models-request-path .edge-dashed { fill: none; stroke: var(--fg-4, #999999); stroke-width: 1.25; stroke-dasharray: 3 4 }
+    #fig-models-request-path .edge-out { fill: none; stroke: var(--plasma, #e8754a); stroke-width: 1.25 }
+    #fig-models-request-path .name { fill: var(--fg-1, #0a0a0a); font: 600 12px Geist, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; text-anchor: middle }
+    #fig-models-request-path .sub { fill: var(--fg-3, #666666); font: 400 9px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; text-anchor: middle }
+    #fig-models-request-path .eyebrow { fill: var(--fg-3, #666666); font: 500 8px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.14em }
+    #fig-models-request-path .arrow-label { fill: var(--fg-3, #666666); font: 400 8px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.06em; text-anchor: middle }
+    #fig-models-request-path .legend-text { fill: var(--fg-3, #666666); font: 400 8px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.06em }
+    #fig-models-request-path .rule { stroke: var(--line-strong, #d4d4d4); stroke-width: 0.8 }
+  </style>
+
+  <defs>
+    <marker id="models-request-path-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="var(--fg-4, #999999)"/>
+    </marker>
+    <marker id="models-request-path-arrow-out" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="var(--plasma, #e8754a)"/>
+    </marker>
+  </defs>
+
+  <!-- zone first, then arrows, then boxes: nodes paint over the lines -->
+  <rect class="zone" x="8" y="76" width="232" height="136" rx="12"/>
+  <text class="eyebrow" x="24" y="64">SANDBOX PROCESSES</text>
+
+  <path class="edge" d="M 216 144 H 308" marker-end="url(#models-request-path-arrow)"/>
+  <path class="edge" d="M 472 144 H 564" marker-end="url(#models-request-path-arrow)"/>
+  <path class="edge-out" d="M 768 144 H 860" marker-end="url(#models-request-path-arrow-out)"/>
+  <path class="edge-dashed" d="M 668 248 V 188" marker-end="url(#models-request-path-arrow)"/>
+
+  <rect class="mask" x="232" y="124" width="64" height="12" rx="2"/>
+  <text class="arrow-label" x="264" y="133">MODEL CALL</text>
+  <rect class="mask" x="480" y="124" width="80" height="12" rx="2"/>
+  <text class="arrow-label" x="520" y="133">SCOPED KEY ADDED</text>
+  <rect class="mask" x="776" y="124" width="80" height="12" rx="2"/>
+  <text class="arrow-label" x="816" y="133">MATCHED ROUTE</text>
+  <rect class="mask" x="676" y="204" width="64" height="12" rx="2"/>
+  <text class="arrow-label" x="708" y="213">/v1/models</text>
+
+  <rect class="box" x="24" y="104" width="192" height="80" rx="8"/>
+  <text class="name" x="120" y="132">Agent program</text>
+  <text class="sub" x="120" y="150">selected by the Environment</text>
+  <text class="sub" x="120" y="166">sends route name + request</text>
+
+  <rect class="box" x="312" y="104" width="160" height="80" rx="8"/>
+  <text class="name" x="392" y="132">Credential protection</text>
+  <text class="sub" x="392" y="150">when enabled</text>
+  <text class="sub" x="392" y="166">adds the scoped gateway key</text>
+
+  <rect class="focal" x="568" y="104" width="200" height="80" rx="8"/>
+  <text class="name" x="668" y="132">Model gateway</text>
+  <text class="sub" x="668" y="150">LiteLLM · bundled or your own</text>
+  <text class="sub" x="668" y="166">holds the upstream credential</text>
+
+  <rect class="box" x="864" y="104" width="192" height="80" rx="8"/>
+  <text class="name" x="960" y="132">Model service</text>
+  <text class="sub" x="960" y="150">hosted or self-hosted</text>
+  <text class="sub" x="960" y="166">selected by the LiteLLM route</text>
+
+  <rect class="box" x="568" y="248" width="200" height="64" rx="8"/>
+  <text class="name" x="668" y="276">AstraBox service</text>
+  <text class="sub" x="668" y="294">model names in the Agent editor</text>
+
+  <line class="rule" x1="24" y1="336" x2="1056" y2="336"/>
+  <text class="eyebrow" x="24" y="360">LEGEND</text>
+  <rect class="focal" x="112" y="352" width="16" height="10" rx="2"/>
+  <text class="legend-text" x="136" y="360">the model gateway you configure</text>
+  <line class="edge" x1="352" y1="357" x2="376" y2="357"/>
+  <text class="legend-text" x="384" y="360">the model request path</text>
+  <line class="edge-dashed" x1="560" y1="357" x2="584" y2="357"/>
+  <text class="legend-text" x="592" y="360">the console's model list</text>
+  <line class="edge-out" x1="776" y1="357" x2="800" y2="357"/>
+  <text class="legend-text" x="808" y="360">the request leaves AstraBox</text>
+</svg>

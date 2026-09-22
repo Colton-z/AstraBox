@@ -1,0 +1,63 @@
+# AstraBox single-file application config.
+# Deployment-specific values override it through the environment variables
+# noted below or through a secret store. With no overrides, it selects the
+# built-in open_sandbox backend.
+module_name: "astrabox"
+# Empty => logs go to stderr (12-factor default). Set to a writable directory to
+# enable rotating file logs.
+module_logging_path: ""
+
+astrabox:
+  enabled: true
+  session_ttl_seconds: 86400
+  # Per-sandbox lease: every managed sandbox is created with this TTL and auto-
+  # terminates unless renewed on activity, so abandoned sandboxes are reclaimed by
+  # construction (no reaper). renew sets expires_at to now+lease (absolute).
+  sandbox_lease_seconds: 14400
+  sandbox_lease_renew_threshold_seconds: 3600
+  # Cross-instance session turn-lock lease TTL.
+  turn_lock_ttl_seconds: 180
+  model:
+    # Anthropic-compatible endpoint the agent loop calls. Override via ANTHROPIC_BASE_URL.
+    base_url: "https://api.anthropic.com"
+    # Default model id. Override via ANTHROPIC_MODEL.
+    model_name: "claude-opus-4-8"
+    # Secret-store key for the model API key. In local mode a plaintext
+    # ANTHROPIC_AUTH_TOKEN is used instead.
+    api_key_secret_name: "astrabox_model_api_key"
+  title_model:
+    # Disable both automatic titles and process summaries without affecting Agent turns.
+    enabled: true
+    # Optional separate model for titles and process summaries. Empty connection
+    # values use the main model configuration. Override via the
+    # ASTRABOX_TITLE_MODEL_* environment variables.
+    base_url: ""
+    model_name: ""
+    api_key_secret_name: ""
+    max_tokens: 256
+    # HTTPX network inactivity timeout, not a total turn deadline.
+    request_timeout_seconds: 60
+  # MongoDB collection names. The backend's connection URI and fallback database
+  # come from ASTRABOX_DB_URL / ASTRABOX_MONGODB_URI and ASTRABOX_DB_NAME.
+  mongodb:
+    template_whitelist_collection: "template_whitelist"
+    sessions_collection: "sessions"
+    messages_collection: "messages"
+    deployments_collection: "deployments"
+  remote_agent:
+    include_partial_messages: true
+    # Claude CLI stdout JSON can include large tool results; the SDK aborts
+    # once this parser buffer is exceeded.
+    max_buffer_size: 33554432
+  # Public base URL sandboxes use for platform MCP and lifecycle/transcript
+  # callbacks. Override via ASTRABOX_MCP_PROXY_BASE_URL.
+  mcp_proxy:
+    base_url: ""
+  agent:
+    enabled: true
+    idle_hibernate_seconds: 1800
+    sandbox_renew_ttl_seconds: 604200
+    expiration_watcher_enabled: true
+    expiration_watcher_interval_seconds: 300
+    expiration_watcher_threshold_seconds: 3600
+    reprovision_cooldown_seconds: 600

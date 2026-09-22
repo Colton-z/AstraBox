@@ -1,0 +1,54 @@
+# Platform replica overlay: base Compose, Kubernetes, then this file.
+# Shared suppliers are operator-managed; this project starts only AstraBox.
+# See docs/deploy-distributed.md for the required private service connections.
+services:
+  postgres:
+    profiles: [local-data-only]
+
+  redis:
+    profiles: [local-data-only]
+
+  server:
+    image: ${ASTRABOX_SERVER_IMAGE:?set the common immutable server image}
+    build: !reset null
+    depends_on: !override {}
+    secrets: !reset []
+    networks: !override [platform]
+    extra_hosts: !override {}
+    group_add: !reset []
+    env_file:
+      - ${ASTRABOX_REPLICA_ENV_FILE:?set the absolute path to this replica's protected env file}
+    # env_file carries other registered settings, including identity settings.
+    # Replace inherited defaults so they cannot shadow the external wiring.
+    environment: !override
+      ASTRABOX_HOST: 0.0.0.0
+      ASTRABOX_PORT: "8000"
+      ASTRABOX_DB_BACKEND: postgresql
+      ASTRABOX_DB_URL: ${ASTRABOX_DB_URL:?set the shared AstraBox PostgreSQL URL}
+      ASTRABOX_AGENT_PREWARM_REDIS_URL: ${ASTRABOX_AGENT_PREWARM_REDIS_URL:?set the shared pool Redis URL}
+      ASTRABOX_SANDBOX_BACKEND: open_sandbox
+      ASTRABOX_SANDBOX_OPENAPI_BASE_URL: ${ASTRABOX_SANDBOX_OPENAPI_BASE_URL:?set the shared OpenSandbox Lifecycle API URL}
+      ASTRABOX_SANDBOX_API_KEY_SECRET_NAME: ${ASTRABOX_SANDBOX_API_KEY_SECRET_NAME:?set the shared secret-provider reference for the OpenSandbox API key}
+      ASTRABOX_SANDBOX_SERVER_RUNTIME: kubernetes
+      ASTRABOX_SANDBOX_SERVER_KUBECONFIG: /etc/astrabox/kubeconfig
+      ASTRABOX_SANDBOX_SERVER_KUBE_NAMESPACE: ${ASTRABOX_SANDBOX_SERVER_KUBE_NAMESPACE:-opensandbox}
+      ASTRABOX_SANDBOX_SERVER_KUBE_API_SERVER: ${ASTRABOX_SANDBOX_SERVER_KUBE_API_SERVER:?set the shared Kubernetes API address}
+      ASTRABOX_WORKSPACE_STORAGE_TOPOLOGY: shared
+      ASTRABOX_MCP_PROXY_BASE_URL: ${ASTRABOX_MCP_PROXY_BASE_URL:?set the shared Pod-reachable callback URL}
+      ASTRABOX_ALLOWED_HOSTS: ${ASTRABOX_ALLOWED_HOSTS:?include browser, callback and replica probe hosts}
+      ASTRABOX_LITELLM_BASE_URL: ${ASTRABOX_LITELLM_BASE_URL:?set the shared sandbox-facing HTTPS LiteLLM URL}
+      ASTRABOX_MODEL_GATEWAY_REQUIRE_HTTPS: "true"
+      ASTRABOX_CHANNEL_GATEWAY_BASE_URL: ${ASTRABOX_CHANNEL_GATEWAY_BASE_URL:?set the shared HTTPS channel gateway URL}
+      ASTRABOX_CHANNEL_GATEWAY_TOKEN: ${ASTRABOX_CHANNEL_GATEWAY_TOKEN:?set the shared channel gateway credential}
+      ASTRABOX_SECRET_STORE: local
+      ASTRABOX_VAULT_MASTER_KEY: ${ASTRABOX_VAULT_MASTER_KEY:?set the existing shared Vault master key}
+      ASTRABOX_AUTH_SESSION_SECRET: ${ASTRABOX_AUTH_SESSION_SECRET:?set the existing shared browser-session signing key}
+      ASTRABOX_TRANSCRIPT_SIGNING_KEY: ${ASTRABOX_TRANSCRIPT_SIGNING_KEY:?set the deployment's explicit shared transcript signing key}
+      ASTRABOX_STATE_DIR: /data
+    volumes: !override
+      - astrabox-state:/data
+      - ${ASTRABOX_KUBECONFIG_HOST_PATH:?set a kubeconfig readable by uid 999}:/etc/astrabox/kubeconfig:ro
+
+volumes:
+  astrabox-state:
+    name: ${ASTRABOX_STATE_VOLUME:?set a separate local state volume for this replica}

@@ -1,0 +1,84 @@
+# Kubernetes runtime overlay for the bundled OpenSandbox lifecycle server.
+#
+# Usage from the repository root (all three addresses must be reachable from
+# the networks named in their comments below):
+#   ASTRABOX_KUBECONFIG_HOST_PATH=/path/to/readable-kubeconfig \
+#   ASTRABOX_SANDBOX_SERVER_KUBE_API_SERVER=https://10.0.0.10:6443 \
+#   ASTRABOX_SERVER_BIND_IP=10.0.0.10 \
+#   ASTRABOX_MCP_PROXY_BASE_URL=http://10.0.0.10:8088 \
+#   ASTRABOX_ALLOWED_HOSTS=10.0.0.10 \
+#   ASTRABOX_LITELLM_BASE_URL=https://llm.example.com \
+#   scripts/compose.sh -f containers/compose.kubernetes.yaml up -d
+#
+# The controller and CRDs are cluster-operator resources and are not installed
+# by Compose. See scripts/k8s-testbed.sh for the development testbed.
+services:
+  # These two services are dataplane adapters for Docker sandboxes. Profiles
+  # remove them from this runtime instead of starting unused containers.
+  sandbox-edge:
+    profiles: [docker-runtime-only]
+
+  sandbox-dns-edge:
+    profiles: [docker-runtime-only]
+
+  server:
+    depends_on: !override
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      ASTRABOX_SANDBOX_SERVER_RUNTIME: kubernetes
+      ASTRABOX_SANDBOX_SERVER_KUBECONFIG: /etc/astrabox/kubeconfig
+      ASTRABOX_SANDBOX_SERVER_KUBE_NAMESPACE: ${ASTRABOX_SANDBOX_SERVER_KUBE_NAMESPACE:-opensandbox}
+      ASTRABOX_SANDBOX_SERVER_KUBE_API_SERVER: ${ASTRABOX_SANDBOX_SERVER_KUBE_API_SERVER:?set the Kubernetes API address covered by its TLS certificate}
+      ASTRABOX_SANDBOX_ENDPOINT_VIA_SERVER_PROXY: ${ASTRABOX_SANDBOX_ENDPOINT_VIA_SERVER_PROXY:-false}
+      # The base Compose topology discovers these Docker-only bridge services.
+      # Kubernetes Pods use the explicit callback and model-gateway addresses
+      # below, so retaining either name makes onebox reject the mixed runtime.
+      ASTRABOX_SANDBOX_EDGE_SERVICE: !reset null
+      ASTRABOX_SANDBOX_DNS_EDGE_SERVICE: !reset null
+      ASTRABOX_SANDBOX_EDGE_CALLBACK_PORT: !reset null
+      # Workspace file persistence is opt-in; empty leaves files in the sandbox.
+      ASTRABOX_SANDBOX_WORKSPACE_VOLUME: ${ASTRABOX_SANDBOX_WORKSPACE_VOLUME:-}
+      # Sandboxes call this address for the MCP bridge and transcript mirror.
+
+      # Sandboxes call this address for platform MCP and transcript callbacks.
+      # In Kubernetes it must be reachable from the Pod network (normally the
+      # node/private address bound by ASTRABOX_SERVER_BIND_IP), not Docker's
+      # host.docker.internal alias.
+      ASTRABOX_MCP_PROXY_BASE_URL: ${ASTRABOX_MCP_PROXY_BASE_URL:?set the Pod-reachable AstraBox callback base URL}
+      # Callback requests carry the private callback host in their Host header;
+      # the default loopback-only allowlist would reject every one with 400.
+      # Include the browser-facing hostname too when it differs.
+      ASTRABOX_ALLOWED_HOSTS: ${ASTRABOX_ALLOWED_HOSTS:?include the callback host and browser-facing hostname}
+      # Credential Vault cannot protect an embedded HTTP gateway across the
+      # Docker/Kubernetes boundary. Kubernetes needs a gateway the Pods can
+      # resolve and reach directly (an HTTPS FQDN while Vault is enabled).
+      ASTRABOX_LITELLM_BASE_URL: ${ASTRABOX_LITELLM_BASE_URL:?set the Pod-reachable external LiteLLM URL}
+      ASTRABOX_MODEL_GATEWAY_REQUIRE_HTTPS: "true"
+      # This runtime always uses the external gateway above. Do not carry the
+      # embedded proxy's PostgreSQL connection or password-file contract into
+      # the server container where no process consumes them.
+      DATABASE_URL: !reset null
+      LITELLM_DATABASE_PASSWORD_FILE: !reset null
+      LITELLM_DATABASE_HOST: !reset null
+      LITELLM_DATABASE_PORT: !reset null
+      # Remove Docker-runtime knobs inherited from the base file. The lifecycle
+      # launcher treats even an empty explicit value as an inert operator knob.
+      ASTRABOX_SANDBOX_SERVER_NETWORK_MODE: !reset null
+      ASTRABOX_SANDBOX_SERVER_PORT_RANGE: !reset null
+      ASTRABOX_PUBLISH_HOST_IP: !reset null
+      ASTRABOX_SANDBOX_GATEWAY_IP: !reset null
+      ASTRABOX_SANDBOX_EGRESS_DNS_UPSTREAM: !reset null
+      ASTRABOX_SANDBOX_EGRESS_DNS_UPSTREAM_DEFAULT: !reset null
+    secrets: !override
+      - astrabox_database_password
+    volumes: !override
+      - astrabox-state:/data
+      - ${ASTRABOX_KUBECONFIG_HOST_PATH:?set a kubeconfig readable by uid 999}:/etc/astrabox/kubeconfig:ro
+    group_add: !override []
+    extra_hosts: !override []
+    ports: !override
+      # The callback URL above must resolve to this same node/private address.
+      - "${ASTRABOX_SERVER_BIND_IP:?set the node/private IP reachable from sandbox Pods}:${ASTRABOX_SERVER_HOST_PORT:-8088}:8000"

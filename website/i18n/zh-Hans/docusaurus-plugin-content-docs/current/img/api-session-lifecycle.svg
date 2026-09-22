@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" id="fig-api-session-lifecycle" viewBox="0 0 1080 504"
+     role="img" aria-labelledby="api-session-lifecycle-title api-session-lifecycle-desc">
+  <title id="api-session-lifecycle-title">客户端如何通过 API 驱动一个 Session</title>
+  <desc id="api-session-lifecycle-desc">客户端先用 bearer token 认证，再从 Agent 创建 Session，然后发送任务：一种请求在同一连接中返回结果，另一种立即返回回执。输出以带编号的帧出现在 Session 流上。另外三个调用都回到这条 Session 流：回答待处理的审批、用最后读到的帧编号重新连接，以及重建 Session 的运行环境连接，只有能够重建时才成功。</desc>
+
+  <style data-standalone="true">
+    @media (prefers-color-scheme: dark) {
+      svg {
+        --ifm-background-color: #0e0e0e;
+        --fg-1: #ededed;
+        --fg-3: #909090;
+        --fg-4: #6f6f6f;
+        --line-strong: #383838;
+        --astra: #7877ff;
+        --astra-tint: #1a1b3a;
+      }
+    }
+  </style>
+
+  <style>
+    #fig-api-session-lifecycle .box { fill: var(--ifm-background-color, #fafafa); stroke: var(--line-strong, #d4d4d4); stroke-width: 1 }
+    #fig-api-session-lifecycle .focal { fill: var(--astra-tint, #ecebff); stroke: var(--astra, #5c5bff); stroke-width: 1.5 }
+    #fig-api-session-lifecycle .mask { fill: var(--ifm-background-color, #fafafa) }
+    #fig-api-session-lifecycle .edge { fill: none; stroke: var(--fg-4, #999999); stroke-width: 1.25 }
+    #fig-api-session-lifecycle .edge-dashed { fill: none; stroke: var(--fg-4, #999999); stroke-width: 1.25; stroke-dasharray: 3 4 }
+    #fig-api-session-lifecycle .name { fill: var(--fg-1, #0a0a0a); font: 600 12px Geist, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; text-anchor: middle }
+    #fig-api-session-lifecycle .sub { fill: var(--fg-3, #666666); font: 400 10px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; text-anchor: middle }
+    #fig-api-session-lifecycle .eyebrow { fill: var(--fg-3, #666666); font: 500 9px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; letter-spacing: 0.14em }
+    #fig-api-session-lifecycle .arrow-label { fill: var(--fg-3, #666666); font: 400 9px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; letter-spacing: 0.06em; text-anchor: middle }
+    #fig-api-session-lifecycle .legend-text { fill: var(--fg-3, #666666); font: 400 9px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; letter-spacing: 0.06em }
+    #fig-api-session-lifecycle .rule { stroke: var(--line-strong, #d4d4d4); stroke-width: 0.8 }
+  </style>
+
+  <defs>
+    <marker id="api-session-lifecycle-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="var(--fg-4, #999999)"/>
+    </marker>
+  </defs>
+
+  <!-- arrows first, then masks and their labels, then the boxes paint over the lines -->
+  <path class="edge" d="M 292 104 H 404" marker-end="url(#api-session-lifecycle-arrow)"/>
+  <path class="edge" d="M 676 104 H 788" marker-end="url(#api-session-lifecycle-arrow)"/>
+  <path class="edge" d="M 924 140 V 196" marker-end="url(#api-session-lifecycle-arrow)"/>
+  <path class="edge" d="M 188 340 V 276" marker-end="url(#api-session-lifecycle-arrow)"/>
+  <path class="edge" d="M 540 340 V 276" marker-end="url(#api-session-lifecycle-arrow)"/>
+  <path class="edge-dashed" d="M 892 340 V 276" marker-end="url(#api-session-lifecycle-arrow)"/>
+
+  <rect class="mask" x="308" y="80" width="80" height="12" rx="2"/>
+  <text class="arrow-label" x="348" y="89">每次调用都带上</text>
+  <rect class="mask" x="684" y="80" width="96" height="12" rx="2"/>
+  <text class="arrow-label" x="732" y="89">返回 Session id</text>
+  <rect class="mask" x="748" y="164" width="160" height="12" rx="2"/>
+  <text class="arrow-label" x="828" y="173">一种保持请求打开，一种返回回执</text>
+  <rect class="mask" x="204" y="304" width="152" height="12" rx="2"/>
+  <text class="arrow-label" x="280" y="313">pending_interaction 有值</text>
+  <rect class="mask" x="556" y="304" width="80" height="12" rx="2"/>
+  <text class="arrow-label" x="596" y="313">客户端连接断开</text>
+  <rect class="mask" x="908" y="304" width="80" height="12" rx="2"/>
+  <text class="arrow-label" x="948" y="313">运行环境已丢失</text>
+
+  <rect class="box" x="24" y="72" width="264" height="64" rx="8"/>
+  <text class="name" x="156" y="100">认证</text>
+  <text class="sub" x="156" y="118">Bearer token · local 模式无需认证</text>
+
+  <rect class="box" x="408" y="72" width="264" height="64" rx="8"/>
+  <text class="name" x="540" y="100">创建 Session</text>
+  <text class="sub" x="540" y="118">POST /api/v1/agents/{id}/conversations</text>
+
+  <rect class="box" x="792" y="72" width="264" height="64" rx="8"/>
+  <text class="name" x="924" y="100">发送任务</text>
+  <text class="sub" x="924" y="118">POST .../ai-stream 或 .../turn-inputs</text>
+
+  <rect class="focal" x="24" y="200" width="1032" height="72" rx="8"/>
+  <text class="name" x="540" y="232">Session 流</text>
+  <text class="sub" x="540" y="250">GET /api/v1/sessions/{id}/ai-stream?follow=session · 帧带编号</text>
+
+  <rect class="box" x="24" y="344" width="328" height="64" rx="8"/>
+  <text class="name" x="188" y="372">回答待处理的审批</text>
+  <text class="sub" x="188" y="390">POST .../interaction-respond</text>
+
+  <rect class="box" x="376" y="344" width="328" height="64" rx="8"/>
+  <text class="name" x="540" y="372">重新连接 Session 流</text>
+  <text class="sub" x="540" y="390">after_seq = 最后读到的帧</text>
+
+  <rect class="box" x="728" y="344" width="328" height="64" rx="8"/>
+  <text class="name" x="892" y="372">重建运行环境连接</text>
+  <text class="sub" x="892" y="390">POST .../recover</text>
+
+  <line class="rule" x1="24" y1="440" x2="1056" y2="440"/>
+  <text class="eyebrow" x="24" y="464">图例</text>
+  <rect class="focal" x="112" y="456" width="16" height="12" rx="2"/>
+  <text class="legend-text" x="136" y="464">客户端读取 Session 事件的地方</text>
+  <line class="edge" x1="392" y1="461" x2="416" y2="461"/>
+  <text class="legend-text" x="424" y="464">下一步要调用的接口</text>
+  <line class="edge-dashed" x1="584" y1="461" x2="608" y2="461"/>
+  <text class="legend-text" x="616" y="464">只有能够重建时才成功</text>
+</svg>

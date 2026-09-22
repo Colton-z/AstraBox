@@ -1,0 +1,116 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" id="fig-deploy-topology" viewBox="0 0 1080 512"
+     role="img" aria-labelledby="deploy-topology-title deploy-topology-desc">
+  <title id="deploy-topology-title">AstraBox 内置服务的单实例部署</title>
+  <desc id="deploy-topology-desc">在内置服务的单实例部署中，用户和外部集成访问一个 AstraBox 服务，团队访问由身份服务保护。服务镜像提供控制台、API、消息平台网关和内置 OpenSandbox 管理服务。PostgreSQL 保存业务记录和 Agent 程序原生状态；自动生成的密钥与本地服务状态保存在状态卷中，两者需要一起备份。沙箱既可以是同一台 Docker 主机上的容器，也可以是 Kubernetes 集群中的 Pod；它们的模型调用发往内置 LiteLLM 网关或你运行的 HTTPS 地址。</desc>
+
+  <style data-standalone="true">
+    @media (prefers-color-scheme: dark) {
+      svg {
+        --ifm-background-color: #0e0e0e;
+        --fg-1: #ededed;
+        --fg-3: #909090;
+        --fg-4: #6f6f6f;
+        --line-strong: #383838;
+        --astra: #7877ff;
+        --astra-tint: #1a1b3a;
+        --plasma: #f08a59;
+      }
+    }
+  </style>
+
+  <style>
+    #fig-deploy-topology .box { fill: var(--ifm-background-color, #fafafa); stroke: var(--line-strong, #d4d4d4); stroke-width: 1 }
+    #fig-deploy-topology .byo { fill: var(--ifm-background-color, #fafafa); stroke: var(--line-strong, #d4d4d4); stroke-width: 1; stroke-dasharray: 5 3 }
+    #fig-deploy-topology .store { fill: color-mix(in oklab, var(--fg-1, #0a0a0a) 5%, var(--ifm-background-color, #fafafa)); stroke: var(--line-strong, #d4d4d4); stroke-width: 1 }
+    #fig-deploy-topology .focal { fill: var(--astra-tint, #ecebff); stroke: var(--astra, #5c5bff); stroke-width: 1.5 }
+    #fig-deploy-topology .zone { fill: none; stroke: var(--line-strong, #d4d4d4); stroke-width: 1; stroke-dasharray: 4 4 }
+    #fig-deploy-topology .mask { fill: var(--ifm-background-color, #fafafa) }
+    #fig-deploy-topology .edge { fill: none; stroke: var(--fg-4, #999999); stroke-width: 1.25 }
+    #fig-deploy-topology .edge-out { fill: none; stroke: var(--plasma, #e8754a); stroke-width: 1.25 }
+    #fig-deploy-topology .name { fill: var(--fg-1, #0a0a0a); font: 600 12px Geist, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; text-anchor: middle }
+    #fig-deploy-topology .sub { fill: var(--fg-3, #666666); font: 400 10px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; text-anchor: middle }
+    #fig-deploy-topology .eyebrow { fill: var(--fg-3, #666666); font: 500 9px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; letter-spacing: 0.14em }
+    #fig-deploy-topology .arrow-label { fill: var(--fg-3, #666666); font: 400 9px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; letter-spacing: 0.06em; text-anchor: middle }
+    #fig-deploy-topology .legend-text { fill: var(--fg-3, #666666); font: 400 9px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; letter-spacing: 0.06em }
+    #fig-deploy-topology .rule { stroke: var(--line-strong, #d4d4d4); stroke-width: 0.8 }
+  </style>
+
+  <defs>
+    <marker id="deploy-topology-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="var(--fg-4, #999999)"/>
+    </marker>
+    <marker id="deploy-topology-arrow-start" markerWidth="8" markerHeight="6" refX="1" refY="3" orient="auto">
+      <polygon points="8 0, 0 3, 8 6" fill="var(--fg-4, #999999)"/>
+    </marker>
+    <marker id="deploy-topology-arrow-out" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="var(--plasma, #e8754a)"/>
+    </marker>
+  </defs>
+
+  <!-- zone first, then arrows, then masks and their labels, then boxes -->
+  <rect class="zone" x="688" y="64" width="368" height="232" rx="12"/>
+  <text class="eyebrow" x="688" y="52">沙箱运行方式 · 二选一</text>
+
+  <path class="edge" d="M 240 180 H 332" marker-end="url(#deploy-topology-arrow)"/>
+  <path class="edge" d="M 132 212 V 332" marker-end="url(#deploy-topology-arrow)" marker-start="url(#deploy-topology-arrow-start)"/>
+  <path class="edge" d="M 460 228 V 332" marker-end="url(#deploy-topology-arrow)"/>
+  <path class="edge" d="M 584 180 H 684" marker-end="url(#deploy-topology-arrow)" marker-start="url(#deploy-topology-arrow-start)"/>
+  <path class="edge-out" d="M 872 296 V 332" marker-end="url(#deploy-topology-arrow-out)"/>
+
+  <rect class="mask" x="268" y="160" width="40" height="12" rx="2"/>
+  <text class="arrow-label" x="288" y="169">请求</text>
+  <rect class="mask" x="140" y="264" width="40" height="12" rx="2"/>
+  <text class="arrow-label" x="160" y="273">登录</text>
+  <rect class="mask" x="468" y="272" width="68" height="12" rx="2"/>
+  <text class="arrow-label" x="502" y="281">记录 · 密钥</text>
+  <rect class="mask" x="596" y="160" width="80" height="12" rx="2"/>
+  <text class="arrow-label" x="636" y="169">任务 · 事件</text>
+  <rect class="mask" x="880" y="308" width="64" height="12" rx="2"/>
+  <text class="arrow-label" x="912" y="317">模型调用</text>
+
+  <rect class="box" x="24" y="148" width="216" height="64" rx="8"/>
+  <text class="name" x="132" y="176">用户与外部集成</text>
+  <text class="sub" x="132" y="194">控制台 · API · 消息平台</text>
+
+  <rect class="focal" x="336" y="132" width="248" height="96" rx="8"/>
+  <text class="name" x="460" y="164">AstraBox 单实例服务</text>
+  <text class="sub" x="460" y="184">控制台 · API · 消息平台网关</text>
+  <text class="sub" x="460" y="200">内置 OpenSandbox 管理服务</text>
+
+  <rect class="box" x="720" y="96" width="304" height="72" rx="8"/>
+  <text class="name" x="872" y="120">沙箱容器</text>
+  <text class="sub" x="872" y="138">与服务同一台 Docker 主机</text>
+  <text class="sub" x="872" y="152">通过挂载的 socket 创建</text>
+
+  <rect class="byo" x="720" y="192" width="304" height="72" rx="8"/>
+  <text class="name" x="872" y="216">沙箱 Pod</text>
+  <text class="sub" x="872" y="234">在你自己的 Kubernetes 集群中</text>
+  <text class="sub" x="872" y="248">准备容量 · 暂停与恢复</text>
+
+  <rect class="byo" x="24" y="336" width="216" height="80" rx="8"/>
+  <text class="name" x="132" y="364">身份服务</text>
+  <text class="sub" x="132" y="382">OIDC · 可信请求头 · JWT</text>
+  <text class="sub" x="132" y="396">SSO 配置中自带 Casdoor</text>
+
+  <rect class="store" x="336" y="336" width="248" height="80" rx="8"/>
+  <text class="name" x="460" y="364">数据库与状态卷</text>
+  <text class="sub" x="460" y="382">PostgreSQL：事件 · 原生状态</text>
+  <text class="sub" x="460" y="396">状态卷 · 密钥 · 一起备份</text>
+
+  <rect class="box" x="688" y="336" width="368" height="80" rx="8"/>
+  <text class="name" x="872" y="364">模型网关</text>
+  <text class="sub" x="872" y="382">单机使用内置 LiteLLM</text>
+  <text class="sub" x="872" y="396">或你运行的 HTTPS 地址</text>
+
+  <line class="rule" x1="24" y1="448" x2="1056" y2="448"/>
+  <text class="eyebrow" x="24" y="472">图例</text>
+  <rect class="focal" x="112" y="464" width="16" height="10" rx="2"/>
+  <text class="legend-text" x="136" y="472">你部署的服务镜像</text>
+  <rect class="byo" x="304" y="464" width="16" height="10" rx="2"/>
+  <text class="legend-text" x="328" y="472">由你提供</text>
+  <line class="edge" x1="440" y1="469" x2="464" y2="469"/>
+  <text class="legend-text" x="472" y="472">请求、记录与登录</text>
+  <line class="edge-out" x1="656" y1="469" x2="680" y2="469"/>
+  <text class="legend-text" x="688" y="472">离开沙箱的模型调用</text>
+</svg>
