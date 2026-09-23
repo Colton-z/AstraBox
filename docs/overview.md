@@ -30,6 +30,11 @@ One deployment brings up the pieces a team usually assembles by hand:
 - **Credentials outside the sandbox.** Vault credentials are injected at the sandbox's egress boundary; the Agent only sees a placeholder. See [Protect credentials used by Agents](egress-credential-injection.md).
 - **Triggers and channels.** Schedules, signed webhooks and messaging platforms start Agents without a person present. See [Automate Agent runs](deployments.md).
 
+## Manage and Extend AstraBox
+
+- **Command line and MCP.** The [AstraBox CLI](cli/overview.md) declares Environments and Agents in `astrabox.yaml`, applies changes, and sends Agents tasks. It can print JSON with one exit code per kind of failure, so scripts and coding agents can operate a deployment; `astrabox mcp serve` offers the same operations as MCP tools.
+- **Python plugins.** Installed packages can add Agent programs, sandbox backends, model services, messaging platforms, identity providers, Secret Stores, data stores, workspace storage, and remote MCP server sources. See [Extensions](architecture.md#plugin-interfaces).
+
 ## Verify Connectivity
 
 ```bash

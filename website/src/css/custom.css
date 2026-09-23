@@ -107,7 +107,29 @@ h3 {
 /* Chrome: hairline borders over shadows. */
 .navbar {
   border-bottom: 1px solid var(--line);
-  backdrop-filter: blur(8px);
+}
+
+/* Docusaurus renders the phone menu drawer (`.navbar-sidebar`) and its
+   backdrop inside `.navbar`, as `position: fixed` boxes meant to span the
+   viewport. A `backdrop-filter` makes its element the containing block for
+   fixed descendants, so blurring the bar at phone widths would size the drawer
+   to the bar and hide every link in it. The drawer exists only at 996px and
+   below (Docusaurus's desktop breakpoint), so the glass bar is limited to wider
+   screens. Below that width the bar and the drawer, which shares its
+   background colour, use the opaque page surface. */
+@media (min-width: 997px) {
+  .navbar {
+    backdrop-filter: blur(8px);
+  }
+}
+
+@media (max-width: 996px) {
+  :root {
+    --ifm-navbar-background-color: var(--paper);
+  }
+  [data-theme='dark'] {
+    --ifm-navbar-background-color: var(--ink);
+  }
 }
 .footer {
   border-top: 1px solid var(--line);

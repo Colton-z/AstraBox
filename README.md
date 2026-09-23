@@ -77,6 +77,33 @@ One deployment brings up the pieces a team usually assembles by hand:
   platforms through official [Satori](https://github.com/satorijs/satori)
   adapters.
 
+## Manage it from a terminal, or let a coding agent do it
+
+The `astrabox` CLI configures and uses a local or remote deployment without the
+web console. Its results can be printed as JSON, so a coding agent such as
+Claude Code or Codex can run the same commands for you.
+
+- **Configuration as code** — `astrabox init --from-deployment` exports a
+  deployment's Environments and Agents to `astrabox.yaml`; `astrabox diff`
+  previews an edit and `astrabox apply` creates or updates resources, never
+  deleting any.
+- **Tasks from the command line** — `astrabox run <agent> "<task>"` starts a
+  Session, sends the task and streams the reply; `--session` continues an
+  existing Session.
+- **Output a program can read** — with `--output json` a command prints one
+  JSON object whether it succeeds or fails, and each kind of failure has its
+  own exit code.
+- **MCP tools** — `astrabox mcp serve` offers schema, get, export, diff, apply,
+  status and run as MCP tools over stdio.
+- **Local or remote** — `astrabox up`, `down` and `logs` run the local Compose
+  deployment from a source checkout; the other commands reach any deployment
+  with `--endpoint` and a bearer token or OAuth client credentials.
+
+Install the CLI from a source checkout with `make install`. Deployments
+(schedule, webhook and messaging triggers) and answers to an Agent's questions
+are managed in the web console or the HTTP API. See the
+[CLI overview](docs/cli/overview.md).
+
 ## Included Agent programs
 
 | Agent program | Sandbox image | Used for |
@@ -89,6 +116,39 @@ One deployment brings up the pieces a team usually assembles by hand:
 
 Other Agent programs can be added with a compatible sandbox image. See
 [Add an Agent program](docs/writing-an-engine-adapter.md).
+
+## Built to extend
+
+Each replaceable part of AstraBox is a Python interface with a plugin
+registration point. An installed package registers its implementation under
+the matching entry-point group, and AstraBox selects it by name; an unknown
+name fails with an error instead of falling back to a default.
+
+| Extension point | Entry-point group | Built in |
+| --- | --- | --- |
+| Agent program | `astrabox.providers.engine` | Every included Agent program |
+| Sandbox backend | `astrabox.providers.sandbox` | OpenSandbox on Docker or Kubernetes |
+| Model service | `astrabox.providers.model` | LiteLLM gateway |
+| Messaging platform | `astrabox.providers.channel` | Messaging platform gateway, generic JSON webhook |
+| Identity provider | `astrabox.web.identity` | Local mode, OIDC, verified JWT, trusted identity headers |
+| Secret Store | `astrabox.providers.secrets` | Local encryption, AWS KMS |
+| Data store | `astrabox.providers.repository` | PostgreSQL, MongoDB, SQLite |
+| Workspace storage | `astrabox.providers.storage` | Mounted volume, Amazon EFS |
+| Remote MCP server source | `astrabox.providers.extensions` | Administrator records in AstraBox, LiteLLM MCP gateway |
+
+- **Interface version** — a plugin under `astrabox.providers.*` can set
+  `seams_api_version` to the interface version it was built against; AstraBox
+  refuses to load it when that differs from its own.
+- **Conformance suites** — `astrabox.testing` ships reusable test suites for
+  sandbox backends, workspace storage, messaging platforms, Agent programs and
+  data stores; bind one in the plugin's own tests.
+- **Application extensions** — entry points for API routes, middleware,
+  lifespan hooks and service implementations extend the application itself.
+
+See [Add an Agent program](docs/writing-an-engine-adapter.md),
+[Add a messaging platform](docs/writing-a-channel-provider.md),
+[Use AstraBox from a Python application](docs/embedding.md) and
+[Extensions](docs/architecture.md#plugin-interfaces).
 
 ## Workflow
 

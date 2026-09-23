@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { devices, expect, test, type Locator } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 
 const SITE_PREFIX = "";
@@ -428,5 +428,89 @@ test.describe("public website", () => {
       }));
     }
     expect(broken, broken.join("\n")).toEqual([]);
+  });
+});
+
+/**
+ * Proves a reader can actually tap `target`: it is scrolled on screen and the
+ * element at its centre is the target itself. A box clipped by a too-small
+ * ancestor still counts as visible to Playwright, so visibility alone would
+ * pass a menu whose entries cannot be reached.
+ */
+async function expectTappable(target: Locator, what: string): Promise<void> {
+  await target.scrollIntoViewIfNeeded();
+  await expect(target, `${what} must be on screen`).toBeInViewport();
+  await expect
+    .poll(
+      () =>
+        target.evaluate((element) => {
+          const box = element.getBoundingClientRect();
+          const hit = document.elementFromPoint(
+            box.left + box.width / 2,
+            box.top + box.height / 2,
+          );
+          return hit !== null && (hit === element || element.contains(hit));
+        }),
+      { message: `${what} must receive a tap at its centre` },
+    )
+    .toBe(true);
+}
+
+test.describe("public website on a phone", () => {
+  // The phone is emulated in the suite's Chromium project: the drawer layout
+  // under test comes from the site's CSS, not from the browser engine.
+  const { defaultBrowserType: _phoneEngine, ...phone } = devices["iPhone 13"];
+  test.use({ ...phone, viewport: { width: 390, height: 844 } });
+
+  test("a phone reader can open the docs menu and the page contents and follow both", async ({
+    page,
+  }) => {
+    for (const { locale, category } of [
+      { locale: "", category: "Extend AstraBox" },
+      { locale: "/zh-Hans", category: "扩展 AstraBox" },
+    ]) {
+      await test.step(`${locale || "en"}: the docs menu reaches the last sidebar group`, async () => {
+        await page.goto(localUrl(`${locale}/docs/overview`), { waitUntil: "networkidle" });
+        await page.locator("button.navbar__toggle").tap();
+        await expect(page.locator(".navbar")).toHaveClass(/\bnavbar-sidebar--show\b/);
+
+        // The drawer is a fixed panel that must span the screen. A shorter
+        // box clips every menu entry out of reach.
+        const drawer = page.locator(".navbar-sidebar");
+        const screenHeight = page.viewportSize()!.height;
+        await expect
+          .poll(async () => (await drawer.boundingBox())?.height ?? 0, {
+            message: "the docs menu drawer must span the phone screen",
+          })
+          .toBeGreaterThanOrEqual(screenHeight - 1);
+
+        const group = drawer.getByRole("button", { name: category, exact: true });
+        await expectTappable(group, `sidebar group ${category}`);
+        if ((await group.getAttribute("aria-expanded")) === "false") await group.tap();
+        await expect(group).toHaveAttribute("aria-expanded", "true");
+
+        const route = `${SITE_PREFIX}${locale}/docs/writing-an-engine-adapter`;
+        const entry = drawer.locator(`a[href="${route}"]`);
+        await expectTappable(entry, `sidebar link ${route}`);
+        await entry.tap();
+        await expect(page).toHaveURL((url) => url.pathname === route);
+        await expect(page.locator("article").getByRole("heading", { level: 1 })).toBeInViewport();
+      });
+
+      await test.step(`${locale || "en"}: the page contents jump to a section`, async () => {
+        const toggle = page.locator(".theme-doc-toc-mobile button");
+        await expectTappable(toggle, "the page contents toggle");
+        await toggle.tap();
+        const entry = page.locator(".theme-doc-toc-mobile .table-of-contents__link").first();
+        await expectTappable(entry, "the first page contents entry");
+        const fragment = decodeURIComponent(
+          new URL((await entry.getAttribute("href"))!, page.url()).hash,
+        );
+        expect(fragment, "a contents entry must name a section").not.toBe("");
+        await entry.tap();
+        await expect(page).toHaveURL((url) => decodeURIComponent(url.hash) === fragment);
+        await expect(page.locator(`id=${fragment.slice(1)}`)).toBeInViewport();
+      });
+    }
   });
 });

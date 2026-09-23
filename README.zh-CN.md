@@ -65,6 +65,26 @@ Skill 和代码仓库，通过定时任务、Webhook、API 和消息平台触发
 - **消息通道与触发器**——定时任务、签名 Webhook，以及基于官方
   [Satori](https://github.com/satorijs/satori) 适配器接入的消息平台。
 
+## 在终端里管理，也可以交给编程助手
+
+`astrabox` 命令行工具无需打开网页控制台，就能配置和使用本地或远程部署。命令结果可以输出为
+JSON，Claude Code、Codex 等编程助手也能替你运行这些命令。
+
+- **配置即代码**——`astrabox init --from-deployment` 把部署中的 Environment 和 Agent 导出为
+  `astrabox.yaml`；`astrabox diff` 预览修改，`astrabox apply` 创建或更新资源，从不删除。
+- **在命令行派发任务**——`astrabox run <agent> "<task>"` 会启动 Session、发送任务并流式输出回复；
+  加上 `--session` 可以继续已有的 Session。
+- **便于程序读取的输出**——加上 `--output json` 后，命令无论成功还是失败都只输出一个 JSON 对象，
+  每类失败还有各自的退出码。
+- **MCP 工具**——`astrabox mcp serve` 通过 stdio 把 schema、get、export、diff、apply、status 和 run
+  提供为 MCP 工具。
+- **本地或远程**——`astrabox up`、`down` 和 `logs` 在源码目录中运行本地 Compose 部署；其他命令
+  通过 `--endpoint` 加 Bearer Token 或 OAuth 客户端凭证连接任意部署。
+
+在源码目录中运行 `make install` 即可安装 CLI。Deployment（定时任务、Webhook 和消息平台触发）
+以及对 Agent 提问的回答，需要在网页控制台或 HTTP API 中处理。详见
+[CLI 概览](https://www.astrabox.ai/zh-Hans/docs/cli/overview)。
+
 ## 内置 Agent 程序
 
 | Agent 程序 | 沙箱镜像 | 用于创建 |
@@ -77,6 +97,34 @@ Skill 和代码仓库，通过定时任务、Webhook、API 和消息平台触发
 
 还可以通过兼容的沙箱镜像接入其他 Agent 程序。详见
 [接入新的 Agent 程序](https://www.astrabox.ai/zh-Hans/docs/writing-an-engine-adapter)。
+
+## 为扩展而设计
+
+AstraBox 中每个可替换的部分都是一个 Python 接口，并有对应的插件注册点。安装的 Python 包把实现
+注册到相应的插件组，AstraBox 按名称选用；名称不存在时会直接报错，不会退回默认实现。
+
+| 扩展接口 | 插件组 | 内置实现 |
+| --- | --- | --- |
+| Agent 程序 | `astrabox.providers.engine` | 随 AstraBox 提供的全部 Agent 程序 |
+| 沙箱后端 | `astrabox.providers.sandbox` | 运行在 Docker 或 Kubernetes 上的 OpenSandbox |
+| 模型服务 | `astrabox.providers.model` | LiteLLM 网关 |
+| 消息平台 | `astrabox.providers.channel` | 消息平台网关、通用 JSON Webhook |
+| 身份提供方 | `astrabox.web.identity` | 本地模式、OIDC、已验证 JWT、可信身份请求头 |
+| Secret Store | `astrabox.providers.secrets` | 本地加密、AWS KMS |
+| 数据存储 | `astrabox.providers.repository` | PostgreSQL、MongoDB、SQLite |
+| 工作区存储 | `astrabox.providers.storage` | 挂载卷、Amazon EFS |
+| 远程 MCP 服务来源 | `astrabox.providers.extensions` | 管理员在 AstraBox 中保存的配置、LiteLLM MCP 网关 |
+
+- **接口版本**——`astrabox.providers.*` 下的插件可以用 `seams_api_version` 声明构建时依据的接口
+  版本；与当前 AstraBox 不一致时，AstraBox 会拒绝加载。
+- **一致性测试套件**——`astrabox.testing` 为沙箱后端、工作区存储、消息平台、Agent 程序和数据存储
+  提供可复用的测试套件，在插件自己的测试中引用即可。
+- **应用扩展**——通过 API 路由、中间件、生命周期钩子和服务实现的插件组扩展应用本身。
+
+详见[接入新的 Agent 程序](https://www.astrabox.ai/zh-Hans/docs/writing-an-engine-adapter)、
+[接入新的消息平台](https://www.astrabox.ai/zh-Hans/docs/writing-a-channel-provider)、
+[在 Python 应用中使用 AstraBox](https://www.astrabox.ai/zh-Hans/docs/embedding)和
+[扩展接口](https://www.astrabox.ai/zh-Hans/docs/architecture#plugin-interfaces)。
 
 ## 工作流程
 

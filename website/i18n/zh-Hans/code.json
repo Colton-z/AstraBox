@@ -143,6 +143,48 @@
   "home.use.trigger.body": {
     "message": "把 Agent 接入定时任务、Webhook、外部系统或消息平台，并为每次执行保存 Run 记录。"
   },
+  "home.cli.eyebrow": {
+    "message": "命令行"
+  },
+  "home.cli.title": {
+    "message": "在终端里管理 AstraBox，也可以交给编程助手"
+  },
+  "home.cli.body": {
+    "message": "AstraBox CLI 无需打开网页控制台，就能配置和使用本地或远程部署。命令结果可以输出为 JSON，Claude Code、Codex 等编程助手也能替你运行这些命令。"
+  },
+  "home.cli.termTitle": {
+    "message": "配置并使用部署"
+  },
+  "home.cli.example.task": {
+    "message": "总结本周的仓库变更"
+  },
+  "home.cli.link": {
+    "message": "查看 CLI 概览 →"
+  },
+  "home.cli.config.title": {
+    "message": "配置即代码"
+  },
+  "home.cli.config.body": {
+    "message": "把部署中的 Environment 和 Agent 导出为 {file}，用 {diff} 预览修改，再用 {apply} 应用。应用只会创建和更新资源，从不删除。"
+  },
+  "home.cli.run.title": {
+    "message": "在命令行派发任务"
+  },
+  "home.cli.run.body": {
+    "message": "{run} 会启动一个 Session、发送任务并流式输出回复。加上 {session} 可以继续已有的 Session。"
+  },
+  "home.cli.json.title": {
+    "message": "便于程序读取的输出"
+  },
+  "home.cli.json.body": {
+    "message": "加上 {json} 后，命令无论成功还是失败都只输出一个 JSON 对象，每类失败还有各自的退出码。"
+  },
+  "home.cli.mcp.title": {
+    "message": "同样的操作也能作为 MCP 工具"
+  },
+  "home.cli.mcp.body": {
+    "message": "{mcp} 通过 stdio 把 schema、get、export、diff、apply、status 和 run 提供为 MCP 工具，供调用工具而不是运行 Shell 命令的客户端使用。"
+  },
   "home.arch.eyebrow": {
     "message": "工作方式"
   },
@@ -151,6 +193,81 @@
   },
   "home.arch.body": {
     "message": "客户端连接 AstraBox。AstraBox 对调用方进行身份验证、保存 Session 状态、通过 OpenSandbox 创建或恢复沙箱，再把任务交给所选 Agent 程序。Event 实时返回，Session 记录保存在沙箱之外。"
+  },
+  "home.extend.eyebrow": {
+    "message": "扩展 AstraBox"
+  },
+  "home.extend.title": {
+    "message": "用 Python 插件接入你自己的基础设施"
+  },
+  "home.extend.body": {
+    "message": "Python 包可以为下面每个扩展接口提供自己的实现。实现注册在卡片所示的插件组中，AstraBox 按名称选用。名称不存在时会直接报错，不会退回默认实现。"
+  },
+  "home.extend.engine": {
+    "message": "Agent 程序"
+  },
+  "home.extend.engine.builtIn": {
+    "message": "内置：随 AstraBox 提供的全部 Agent 程序"
+  },
+  "home.extend.sandbox": {
+    "message": "沙箱后端"
+  },
+  "home.extend.sandbox.builtIn": {
+    "message": "内置：运行在 Docker 或 Kubernetes 上的 OpenSandbox"
+  },
+  "home.extend.model": {
+    "message": "模型服务"
+  },
+  "home.extend.model.builtIn": {
+    "message": "内置：LiteLLM 网关"
+  },
+  "home.extend.channel": {
+    "message": "消息平台"
+  },
+  "home.extend.channel.builtIn": {
+    "message": "内置：消息平台网关、通用 JSON Webhook"
+  },
+  "home.extend.identity": {
+    "message": "身份提供方"
+  },
+  "home.extend.identity.builtIn": {
+    "message": "内置：本地模式、OIDC、已验证 JWT、可信身份请求头"
+  },
+  "home.extend.secrets": {
+    "message": "Secret Store"
+  },
+  "home.extend.secrets.builtIn": {
+    "message": "内置：本地加密、AWS KMS"
+  },
+  "home.extend.repository": {
+    "message": "数据存储"
+  },
+  "home.extend.repository.builtIn": {
+    "message": "内置：PostgreSQL、MongoDB、SQLite"
+  },
+  "home.extend.storage": {
+    "message": "工作区存储"
+  },
+  "home.extend.storage.builtIn": {
+    "message": "内置：挂载卷、Amazon EFS"
+  },
+  "home.extend.extensions": {
+    "message": "远程 MCP 服务来源"
+  },
+  "home.extend.extensions.builtIn": {
+    "message": "内置：管理员在 AstraBox 中保存的配置、LiteLLM MCP 网关"
+  },
+  "home.extend.conformance": {
+    "message": "{testing} 提供可复用的一致性测试套件，可以在你自己的测试中检查沙箱后端、工作区存储、消息平台、Agent 程序和数据存储的实现。"
+  },
+  "home.extend.link.engine": {
+    "message": "接入新的 Agent 程序 →"
+  },
+  "home.extend.link.channel": {
+    "message": "接入新的消息平台 →"
+  },
+  "home.extend.link.embed": {
+    "message": "嵌入 AstraBox，添加路由或服务 →"
   },
   "home.next.eyebrow": {
     "message": "下一步"

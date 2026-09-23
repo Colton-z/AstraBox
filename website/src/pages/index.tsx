@@ -378,6 +378,288 @@ function GridSection({
   );
 }
 
+const CLI_POINTS: {title: ReactNode; body: ReactNode}[] = [
+  {
+    title: <Translate id="home.cli.config.title">Configuration as code</Translate>,
+    body: (
+      <Translate
+        id="home.cli.config.body"
+        values={{
+          file: <code>astrabox.yaml</code>,
+          diff: <code>diff</code>,
+          apply: <code>apply</code>,
+        }}>
+        {
+          "Export a deployment's Environments and Agents to {file}, preview an edit with {diff}, and apply it with {apply}. Applying creates and updates resources; it never deletes them."
+        }
+      </Translate>
+    ),
+  },
+  {
+    title: <Translate id="home.cli.run.title">Tasks from the command line</Translate>,
+    body: (
+      <Translate
+        id="home.cli.run.body"
+        values={{run: <code>run</code>, session: <code>--session</code>}}>
+        {
+          '{run} starts a Session, sends the task, and streams the reply. Add {session} to continue an existing Session.'
+        }
+      </Translate>
+    ),
+  },
+  {
+    title: <Translate id="home.cli.json.title">Output a program can read</Translate>,
+    body: (
+      <Translate id="home.cli.json.body" values={{json: <code>--output json</code>}}>
+        {
+          'With {json}, a command prints one JSON object whether it succeeds or fails, and each kind of failure has its own exit code.'
+        }
+      </Translate>
+    ),
+  },
+  {
+    title: <Translate id="home.cli.mcp.title">The same operations as MCP tools</Translate>,
+    body: (
+      <Translate id="home.cli.mcp.body" values={{mcp: <code>astrabox mcp serve</code>}}>
+        {
+          '{mcp} offers schema, get, export, diff, apply, status, and run as MCP tools over stdio, for clients that call tools instead of shell commands.'
+        }
+      </Translate>
+    ),
+  },
+];
+
+function CliSection() {
+  const commands = [
+    'astrabox init --from-deployment',
+    'astrabox diff -f astrabox.yaml',
+    'astrabox apply -f astrabox.yaml',
+    `astrabox run researcher "${translate({
+      id: 'home.cli.example.task',
+      message: "Summarize this week's repository changes",
+    })}"`,
+    'astrabox get sessions --output json',
+    'astrabox mcp serve',
+  ].join('\n');
+  return (
+    <section className={styles.section}>
+      <div className={styles.sectionInner}>
+        <SectionHead
+          index="04"
+          eyebrow={<Translate id="home.cli.eyebrow">Command line</Translate>}
+          title={
+            <Translate id="home.cli.title">
+              Manage AstraBox from a terminal, or let a coding agent do it
+            </Translate>
+          }
+        />
+        <div className={styles.split}>
+          <div className={styles.splitMain}>
+            <p className={styles.splitBody}>
+              <Translate id="home.cli.body">
+                The AstraBox CLI configures and uses a local or remote
+                deployment without the web console. Its results can be printed
+                as JSON, so a coding agent such as Claude Code or Codex can run
+                the same commands for you.
+              </Translate>
+            </p>
+            <div className={styles.heroTerminal}>
+              <div className={styles.termBar}>
+                <span className={styles.termDots} aria-hidden="true">
+                  <i />
+                  <i />
+                  <i />
+                </span>
+                <span className={styles.termTitle}>
+                  <Translate id="home.cli.termTitle">
+                    configure and use a deployment
+                  </Translate>
+                </span>
+              </div>
+              <CodeBlock language="bash">
+                {commands}
+              </CodeBlock>
+            </div>
+            <p className={styles.splitLink}>
+              <Link to="/docs/cli/overview">
+                <Translate id="home.cli.link">Read the CLI overview →</Translate>
+              </Link>
+            </p>
+          </div>
+          <ul className={styles.pointList}>
+            {CLI_POINTS.map((point, index) => (
+              <li key={index} className={styles.point}>
+                <Heading as="h3" className={styles.cellTitle}>
+                  {point.title}
+                </Heading>
+                <p className={styles.cellBody}>{point.body}</p>
+              </li>
+            ))}
+          </ul>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+type ExtensionPoint = {
+  group: string;
+  title: ReactNode;
+  builtIn: ReactNode;
+};
+
+// Each group is a Python entry-point group AstraBox loads plugins from (see
+// pyproject.toml). The built-in line names the implementations AstraBox itself
+// registers for that extension point.
+const EXTENSION_POINTS: ExtensionPoint[] = [
+  {
+    group: 'astrabox.providers.engine',
+    title: <Translate id="home.extend.engine">Agent program</Translate>,
+    builtIn: (
+      <Translate id="home.extend.engine.builtIn">
+        Built in: every included Agent program
+      </Translate>
+    ),
+  },
+  {
+    group: 'astrabox.providers.sandbox',
+    title: <Translate id="home.extend.sandbox">Sandbox backend</Translate>,
+    builtIn: (
+      <Translate id="home.extend.sandbox.builtIn">
+        Built in: OpenSandbox on Docker or Kubernetes
+      </Translate>
+    ),
+  },
+  {
+    group: 'astrabox.providers.model',
+    title: <Translate id="home.extend.model">Model service</Translate>,
+    builtIn: (
+      <Translate id="home.extend.model.builtIn">Built in: LiteLLM gateway</Translate>
+    ),
+  },
+  {
+    group: 'astrabox.providers.channel',
+    title: <Translate id="home.extend.channel">Messaging platform</Translate>,
+    builtIn: (
+      <Translate id="home.extend.channel.builtIn">
+        Built in: messaging platform gateway, generic JSON webhook
+      </Translate>
+    ),
+  },
+  {
+    group: 'astrabox.web.identity',
+    title: <Translate id="home.extend.identity">Identity provider</Translate>,
+    builtIn: (
+      <Translate id="home.extend.identity.builtIn">
+        Built in: local mode, OIDC, verified JWT, trusted identity headers
+      </Translate>
+    ),
+  },
+  {
+    group: 'astrabox.providers.secrets',
+    title: <Translate id="home.extend.secrets">Secret Store</Translate>,
+    builtIn: (
+      <Translate id="home.extend.secrets.builtIn">
+        Built in: local encryption, AWS KMS
+      </Translate>
+    ),
+  },
+  {
+    group: 'astrabox.providers.repository',
+    title: <Translate id="home.extend.repository">Data store</Translate>,
+    builtIn: (
+      <Translate id="home.extend.repository.builtIn">
+        Built in: PostgreSQL, MongoDB, SQLite
+      </Translate>
+    ),
+  },
+  {
+    group: 'astrabox.providers.storage',
+    title: <Translate id="home.extend.storage">Workspace storage</Translate>,
+    builtIn: (
+      <Translate id="home.extend.storage.builtIn">
+        Built in: mounted volume, Amazon EFS
+      </Translate>
+    ),
+  },
+  {
+    group: 'astrabox.providers.extensions',
+    title: <Translate id="home.extend.extensions">Remote MCP server source</Translate>,
+    builtIn: (
+      <Translate id="home.extend.extensions.builtIn">
+        Built in: administrator records in AstraBox, LiteLLM MCP gateway
+      </Translate>
+    ),
+  },
+];
+
+function ExtendSection() {
+  return (
+    <section className={styles.section}>
+      <div className={styles.sectionInner}>
+        <SectionHead
+          index="06"
+          eyebrow={<Translate id="home.extend.eyebrow">Extend AstraBox</Translate>}
+          title={
+            <Translate id="home.extend.title">
+              Connect your own infrastructure through Python plugins
+            </Translate>
+          }
+        />
+        <p className={styles.archBody}>
+          <Translate id="home.extend.body">
+            A Python package can add its own implementation at each extension
+            point below. It registers the implementation under the entry-point
+            group shown on the card, and AstraBox selects it by name. An unknown
+            name stops with an error instead of falling back to a default.
+          </Translate>
+        </p>
+        <div className={styles.seamGrid}>
+          {EXTENSION_POINTS.map((point) => (
+            <div key={point.group} className={styles.seamCard}>
+              <Heading as="h3" className={styles.seamTitle}>
+                {point.title}
+              </Heading>
+              <code className={styles.seamGroup}>{point.group}</code>
+              <p className={styles.seamBuiltIn}>{point.builtIn}</p>
+            </div>
+          ))}
+        </div>
+        <p className={styles.extendNote}>
+          <Translate
+            id="home.extend.conformance"
+            values={{testing: <code>astrabox.testing</code>}}>
+            {
+              'Reusable conformance test suites in {testing} check sandbox backends, workspace storage, messaging platforms, Agent programs, and data stores from your own test tree.'
+            }
+          </Translate>
+        </p>
+        <ul className={styles.extendLinks}>
+          <li>
+            <Link to="/docs/writing-an-engine-adapter">
+              <Translate id="home.extend.link.engine">Add an Agent program →</Translate>
+            </Link>
+          </li>
+          <li>
+            <Link to="/docs/writing-a-channel-provider">
+              <Translate id="home.extend.link.channel">
+                Add a messaging platform →
+              </Translate>
+            </Link>
+          </li>
+          <li>
+            <Link to="/docs/embedding">
+              <Translate id="home.extend.link.embed">
+                Embed AstraBox and add routes or services →
+              </Translate>
+            </Link>
+          </li>
+        </ul>
+      </div>
+    </section>
+  );
+}
+
 function Concepts() {
   return (
     <section className={styles.section}>
@@ -462,10 +744,11 @@ export default function Home(): ReactNode {
           cells={USE_CASES}
           columns={2}
         />
+        <CliSection />
         <section className={styles.section}>
           <div className={styles.sectionInner}>
             <SectionHead
-              index="04"
+              index="05"
               eyebrow={<Translate id="home.arch.eyebrow">How it works</Translate>}
               title={
                 <Translate id="home.arch.title">
@@ -487,8 +770,9 @@ export default function Home(): ReactNode {
             <ArchitectureNote />
           </div>
         </section>
+        <ExtendSection />
         <GridSection
-          index="05"
+          index="07"
           eyebrow={<Translate id="home.next.eyebrow">Next steps</Translate>}
           title={
             <Translate id="home.next.title">Choose what you want to do next</Translate>

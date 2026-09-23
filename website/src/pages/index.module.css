@@ -454,6 +454,57 @@
   overflow-x: auto;
 }
 
+/* -- command line -------------------------------------------------------- */
+
+/* The commands and the points they illustrate sit side by side; `minmax(0, …)`
+   lets a long command scroll inside its code block instead of widening the
+   page. */
+.split {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);
+  gap: 56px;
+  align-items: start;
+}
+
+.splitMain {
+  min-width: 0;
+}
+
+.splitBody {
+  font-size: 16px;
+  color: var(--fg-2);
+  line-height: 1.6;
+  max-width: 640px;
+  margin: -28px 0 28px;
+}
+
+.splitLink {
+  margin: 20px 0 0;
+  font-size: 14px;
+}
+
+.pointList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--ifm-background-surface-color);
+}
+
+.point {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 24px 26px;
+  border-bottom: 1px solid var(--line);
+}
+
+.point:last-child {
+  border-bottom: none;
+}
+
 /* -- plugin table ------------------------------------------------------- */
 
 .seamGrid {
@@ -479,6 +530,41 @@
   font-weight: 600;
   color: var(--fg-1);
   margin: 0 0 6px;
+}
+
+/* Entry-point group names are identifiers: keep their case and let a long one
+   break at its dots on a narrow card. */
+.seamGroup {
+  display: inline-block;
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: var(--fg-2);
+  overflow-wrap: anywhere;
+}
+
+.seamBuiltIn {
+  font-size: 13.5px;
+  color: var(--fg-2);
+  line-height: 1.5;
+  margin: 0;
+}
+
+.extendNote {
+  font-size: 14px;
+  color: var(--fg-2);
+  line-height: 1.6;
+  max-width: 760px;
+  margin: 28px 0 12px;
+}
+
+.extendLinks {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 28px;
+  font-size: 14px;
 }
 
 .seamList {
@@ -594,6 +680,11 @@
   .heroInner {
     grid-template-columns: 1fr;
     gap: 40px;
+  }
+
+  .split {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 32px;
   }
 
   .section {

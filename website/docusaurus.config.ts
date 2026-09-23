@@ -235,9 +235,11 @@ const config: Config = {
         ...prismThemes.github,
         styles: [
           ...prismThemes.github.styles,
-          // Small shell commands and variables need AA contrast on the light code surface.
+          // Small shell commands, variables, and quoted strings need AA contrast on the
+          // light code surface; the theme's string colour reaches only 4.2:1 on it.
           {types: ['function'], style: {color: '#b62635'}},
           {types: ['variable'], style: {color: '#167472'}},
+          {types: ['string'], style: {color: '#b8105a'}},
         ],
       },
       darkTheme: prismThemes.dracula,
