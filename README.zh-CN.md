@@ -8,6 +8,13 @@
   <strong>Claude Managed Agents 的开源、自托管替代。</strong>
 </p>
 
+<h3 align="center"><a href="https://demo.astrabox.ai/">在线体验 AstraBox →</a></h3>
+
+<p align="center">
+  无需注册，用免费模型让 Agent 编写并运行代码。<br />
+  离线沙箱 · 每次会话约 2 分钟。
+</p>
+
 <p align="center">
   开源 · 自行部署 · Apache-2.0
 </p>

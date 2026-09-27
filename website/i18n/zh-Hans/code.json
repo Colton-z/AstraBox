@@ -14,8 +14,11 @@
   "home.hero.ctaPrimary": {
     "message": "快速开始"
   },
-  "home.hero.ctaDocs": {
-    "message": "阅读概览"
+  "home.hero.ctaDemo": {
+    "message": "在线体验"
+  },
+  "home.hero.demoNote": {
+    "message": "无需注册，用免费模型让 Agent 编写并运行代码。离线沙箱 · 每次会话约 2 分钟。"
   },
   "home.hero.termTitle": {
     "message": "在一台机器上启动 AstraBox"

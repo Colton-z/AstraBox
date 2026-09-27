@@ -11,6 +11,10 @@
     "message": "文档",
     "description": "Navbar item with label Docs"
   },
+  "item.label.Live demo": {
+    "message": "在线体验",
+    "description": "Navbar item with label Live demo"
+  },
   "item.label.Capabilities": {
     "message": "平台能力",
     "description": "Navbar item with label Capabilities"

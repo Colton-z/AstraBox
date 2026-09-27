@@ -169,6 +169,11 @@ const config: Config = {
       },
       items: [
         {
+          href: 'https://demo.astrabox.ai/',
+          label: 'Live demo',
+          position: 'left',
+        },
+        {
           to: '/docs/capabilities',
           label: 'Capabilities',
           position: 'left',

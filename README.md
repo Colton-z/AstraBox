@@ -8,6 +8,13 @@
   <strong>The open-source, self-hosted alternative to Claude Managed Agents.</strong>
 </p>
 
+<h3 align="center"><a href="https://demo.astrabox.ai/">Try AstraBox online →</a></h3>
+
+<p align="center">
+  No signup. Ask an Agent to write and run code with a free model.<br />
+  Offline sandbox · Sessions last about 2 minutes.
+</p>
+
 <p align="center">
   Open source · Self-hosted · Apache-2.0
 </p>

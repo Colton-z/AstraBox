@@ -135,6 +135,13 @@
   transform: translateY(1px);
 }
 
+.demoNote {
+  margin: 16px 0 0;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--fg-2);
+}
+
 .models {
   display: flex;
   gap: 14px;

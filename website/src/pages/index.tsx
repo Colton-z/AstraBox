@@ -97,14 +97,20 @@ function Hero() {
             </Translate>
           </p>
           <div className={styles.ctaRow}>
-            <Link className={styles.btnPrimary} to="/docs/quickstart">
-              <Translate id="home.hero.ctaPrimary">Get started</Translate>
+            <Link className={styles.btnPrimary} href="https://demo.astrabox.ai/">
+              <Translate id="home.hero.ctaDemo">Try live demo</Translate>
               <span aria-hidden="true"> →</span>
             </Link>
-            <Link className={styles.btnSecondary} to="/docs/overview">
-              <Translate id="home.hero.ctaDocs">Read the overview</Translate>
+            <Link className={styles.btnSecondary} to="/docs/quickstart">
+              <Translate id="home.hero.ctaPrimary">Get started</Translate>
             </Link>
           </div>
+          <p className={styles.demoNote}>
+            <Translate id="home.hero.demoNote">
+              No signup. Ask an Agent to write and run code with a free model.
+              Offline sandbox · sessions last about 2 minutes.
+            </Translate>
+          </p>
         </div>
 
         <div className={styles.heroTerminal}>
