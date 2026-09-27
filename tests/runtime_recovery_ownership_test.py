@@ -16,9 +16,29 @@ from astrabox.core.service.orchestrator.session_public_projection import project
 from astrabox.core.service.orchestrator.session_kernel.workers.lifecycle.recover import (
     _RecoverSessionMixin,
 )
+from astrabox.persistence.repository.keyset import KeysetCursor
+from astrabox.persistence.repository.session_snapshot_repository import _normalize_extra_filter
+from astrabox.persistence.repository.sqlite.query import compile_filter
 from astrabox.core.service.orchestrator.session_kernel.workers.lifecycle.recovery_ownership import (
     RecoveryOwnership,
 )
+
+
+def _stored_snapshot(stored: dict) -> SimpleNamespace:
+    """force_update_fields over one stored snapshot, matched the way the store matches.
+
+    The store's equality to None matches only a stored null, not an absent
+    field, so a fake that reads absent fields as None would pass a filter the
+    store refuses.
+    """
+
+    async def update(_session_id, updates, *, extra_filter):
+        if not compile_filter(_normalize_extra_filter(extra_filter))(stored):
+            return False
+        stored.update(updates)
+        return True
+
+    return SimpleNamespace(force_update_fields=AsyncMock(side_effect=update))
 
 
 class Sessions:
@@ -247,16 +267,8 @@ async def test_late_recovery_reset_cannot_clear_a_successors_turn_or_interaction
         "conversation_state": "RUNNING",
     }
 
-    async def update(_session_id, updates, *, extra_filter):
-        if any(current.get(key) != value for key, value in extra_filter.items()):
-            return False
-        current.update(updates)
-        return True
-
     worker = _RecoverSessionMixin()
-    worker._session_snapshots_repo = SimpleNamespace(
-        force_update_fields=AsyncMock(side_effect=update)
-    )
+    worker._session_snapshots_repo = _stored_snapshot(current)
     worker._interaction_snapshots_repo = SimpleNamespace(deactivate_active_for_turn=AsyncMock())
     with pytest.raises(APIError) as error:
         await worker._reset_conversation_projection_for_recreate_recovery("s", observed)
@@ -265,6 +277,56 @@ async def test_late_recovery_reset_cannot_clear_a_successors_turn_or_interaction
     assert current["active_interaction_id"] == "new-interaction"
     assert current["conversation_state"] == "RUNNING"
     worker._interaction_snapshots_repo.deactivate_active_for_turn.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_recovery_reset_lands_on_a_conversation_that_never_finished_a_turn():
+    """Its snapshot has no last_turn_id at all, which is what the reset observed.
+
+    The next message after such a box is lost recovers through this reset. A
+    filter that required a stored null refused it with
+    RUNTIME_RECOVERY_SUPERSEDED on every message, so the conversation could
+    never get a new box.
+    """
+
+    stored = {
+        "session_id": "s",
+        "updated_at": "old",
+        "current_turn_id": None,
+        "active_interaction_id": None,
+        "conversation_state": "FAILED",
+    }
+    observed = dict(stored)
+    worker = _RecoverSessionMixin()
+    worker._session_snapshots_repo = _stored_snapshot(stored)
+    worker._interaction_snapshots_repo = SimpleNamespace(deactivate_active_for_turn=AsyncMock())
+
+    await worker._reset_conversation_projection_for_recreate_recovery("s", observed)
+
+    assert stored["conversation_state"] == "IDLE"
+    worker._interaction_snapshots_repo.deactivate_active_for_turn.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_recovery_reset_still_refuses_a_successor_on_a_turnless_snapshot():
+    stored = {
+        "session_id": "s",
+        "updated_at": "old",
+        "current_turn_id": None,
+        "active_interaction_id": None,
+        "conversation_state": "IDLE",
+    }
+    observed = dict(stored)
+    stored.update({"updated_at": "new", "current_turn_id": "new-turn", "conversation_state": "RUNNING"})
+    worker = _RecoverSessionMixin()
+    worker._session_snapshots_repo = _stored_snapshot(stored)
+    worker._interaction_snapshots_repo = SimpleNamespace(deactivate_active_for_turn=AsyncMock())
+
+    with pytest.raises(APIError) as error:
+        await worker._reset_conversation_projection_for_recreate_recovery("s", observed)
+
+    assert error.value.code == "RUNTIME_RECOVERY_SUPERSEDED"
+    assert stored["current_turn_id"] == "new-turn"
 
 
 @pytest.mark.asyncio
@@ -500,6 +562,7 @@ async def test_retained_shared_receipt_never_authorizes_destroying_healthy_succe
         "_retained_startup_allocations": [receipt],
     }
     manager = RemoteAgentRuntimeManager.__new__(RemoteAgentRuntimeManager)
+    manager._startup_allocation_cursor = KeysetCursor("session_id")
     manager._sessions_repo = SimpleNamespace(
         list_startup_allocation_candidates=AsyncMock(return_value=[current]),
         get_session_including_deleted=AsyncMock(return_value=current),
@@ -590,6 +653,7 @@ async def test_same_session_workspace_generation_fences_old_ready_and_failure():
             provisioning_session_id="s",
             provisioning_sandbox_generation="old",
             sandbox_id="old-box",
+            configuration_revision="rev-1",
             expires_at=None,
             runtime_identity=None,
         )
@@ -612,6 +676,7 @@ async def test_same_session_workspace_generation_fences_old_ready_and_failure():
         provisioning_session_id="s",
         provisioning_sandbox_generation="new",
         sandbox_id="new-box",
+        configuration_revision="rev-1",
         expires_at=None,
         runtime_identity=None,
     )
@@ -727,6 +792,7 @@ async def test_retained_receipt_is_removed_only_after_supplier_confirms_its_box_
     }
     row = {"session_id": "s", "_retained_startup_allocations": [receipt]}
     manager = RemoteAgentRuntimeManager.__new__(RemoteAgentRuntimeManager)
+    manager._startup_allocation_cursor = KeysetCursor("session_id")
     manager._sessions_repo = SimpleNamespace(
         list_startup_allocation_candidates=AsyncMock(return_value=[row]),
         get_session_including_deleted=AsyncMock(return_value=row),
@@ -811,7 +877,10 @@ async def test_startup_attach_branch_cannot_publish_a_client_after_generation_ch
                 action="attach_runtime",
                 session=dict(sessions.row),
                 workspace_plan=SimpleNamespace(
-                    sandbox_id="old-box", engine_kind="test", session_kind="assistant_chat"
+                    sandbox_id="old-box",
+                    engine_kind="test",
+                    session_kind="assistant_chat",
+                    resume_engine_session_key=None,
                 ),
             )
         ),
@@ -893,6 +962,7 @@ async def test_background_reconcile_retains_a_box_published_to_the_workspace_bef
         clear_startup_allocation=AsyncMock(),
     )
     manager = RemoteAgentRuntimeManager.__new__(RemoteAgentRuntimeManager)
+    manager._startup_allocation_cursor = KeysetCursor("session_id")
     manager._sessions_repo = sessions
     manager._pending_startup_allocations = {}
     manager._sandbox_backend_cache = {}

@@ -108,6 +108,11 @@ test('agent_chat default permission mode is bypassPermissions', async ({ page, r
     const assistantsBefore = await api.assistantCount(sessionId);
     const stickyPath = `e2e-agent-default-bypass-sticky-${runId}.txt`;
     const targetContent = 'agent default bypass e2e';
+    // The model authors the file, and one trailing newline is its choice: the
+    // Write tool's own input can carry it. Anything else must be exactly the
+    // requested content.
+    const writtenContent = async (path: string) =>
+      (await api.downloadFileText(sessionId, path)).replace(/\n$/, '');
     await api.streamPrompt(
       sessionId,
       `E2E bypass sticky ${runId}: 请使用 Write 工具创建相对路径 ${stickyPath}，内容必须精确为 ${targetContent}。只创建这一个文件。`,
@@ -126,7 +131,7 @@ test('agent_chat default permission mode is bypassPermissions', async ({ page, r
       'the Write turn that omits permission_mode must not require approval',
     ).toBeFalsy();
     await expect(
-      api.downloadFileText(sessionId, stickyPath),
+      writtenContent(stickyPath),
       'the same mode-omitting Write turn must create the exact requested file',
     ).resolves.toBe(targetContent);
 
@@ -202,7 +207,7 @@ test('agent_chat default permission mode is bypassPermissions', async ({ page, r
     ).toBeFalsy();
 
     await expect(
-      api.downloadFileText(sessionId, targetPath),
+      writtenContent(targetPath),
       'the browser Write under bypassPermissions must create the exact requested file',
     ).resolves.toBe(targetContent);
   } finally {

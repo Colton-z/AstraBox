@@ -167,6 +167,42 @@ def _wait_prepared(
     pytest.fail(f"Agent preparation did not reach the requested generation: {prepared}")
 
 
+def test_an_agent_created_without_a_choice_starts_from_a_prepared_box(
+    e2e_client: httpx.Client, live_test_deadline: float,
+) -> None:
+    """A new Agent keeps a sandbox ready unless its author says otherwise.
+
+    The create sends no ``prewarm_enabled``. On a deployment that can prewarm
+    the stored Agent must say ``true``, a prepared box must appear without any
+    further write, and the first conversation must take that box rather than
+    start one.
+    """
+    profile = current_profile()
+    canonical = data(e2e_client.get(f"/api/v1/agents/{profile['agent_id']}"))
+    created = data(e2e_client.post("/api/v1/agents", json={
+        "name": f"Default prewarm {uuid.uuid4().hex[:8]}",
+        "model": profile["model"],
+        "environment_name": environment_with_tenancy(e2e_client, "conversation"),
+        "engine_options": canonical.get("engine_options") or {},
+        **({"system": canonical["system"]} if canonical.get("system") else {}),
+    }))
+    agent_id = created["agent_id"]
+    release_agent(agent_id)
+    stored = data(e2e_client.get(f"/api/v1/agents/{agent_id}"))
+    assert stored.get("prewarm_enabled") is True, (
+        f"an Agent created without a prewarm choice was stored with {stored.get('prewarm_enabled')!r}"
+    )
+    prepared = _wait_prepared(e2e_client, agent_id, live_test_deadline)
+
+    sid = data(e2e_client.post(f"/api/v1/agents/{agent_id}/conversations", json={}))["session_id"]
+    release_session(sid)
+    poll_until_agent_ready(e2e_client, sid)
+    session = get_admin_session_detail(e2e_client, sid)
+    assert session["sandbox_id"] == prepared["sandbox_id"], (
+        "the first conversation started its own sandbox instead of taking the prepared one"
+    )
+
+
 @pytest.mark.parametrize("tenancy", ["conversation", "agent"])
 def test_claim_activates_the_already_prepared_engine(
     e2e_client: httpx.Client, live_test_deadline: float, tenancy: str,

@@ -13,7 +13,7 @@ import type {
   SessionRecord,
   ToolPermissionInteractionResponse,
 } from '../../types';
-import { answerPendingInteraction, appendTurnInput } from '../../api';
+import { ApiError, answerPendingInteraction, appendTurnInput } from '../../api';
 import type { ActiveTurnOverlay } from '../../api';
 import {
   attachPendingInteractionToExistingTool,
@@ -49,7 +49,6 @@ import {
   reconcileOutboxWithSession,
   retainQueuedOutbox,
 } from '../outboxAuthority';
-import { isUserInterruptedTurnFailure } from '../turnFailureIntent';
 import {
   projectNativeInputs,
   retireAdoptedNativeInputs,
@@ -359,7 +358,7 @@ export function useSessionChat(props: UseSessionChatProps): UseSessionChatReturn
     promise: Promise<{ ok: true } | { ok: false; error: unknown }>;
     closeAfterCursor: boolean;
   } | null>(null);
-  const materializePendingSendFailureRef = useRef<(id: string, reason: string) => void>(() => {});
+  const materializePendingSendFailureRef = useRef<(id: string, reason: string, resendAsNew?: boolean) => void>(() => {});
   const adoptAuthoritativeMessagesRef = useRef<(
     messages: SDKUIMessage[],
     completedPlatformTurnId?: string | null,
@@ -927,6 +926,7 @@ export function useSessionChat(props: UseSessionChatProps): UseSessionChatReturn
   const materializePendingSendFailure = useCallback((
     clientMessageId: string,
     failureReason: string,
+    resendAsNew = false,
   ) => {
     const normalizedClientMessageId = String(clientMessageId ?? '').trim();
     if (!normalizedClientMessageId) {
@@ -935,7 +935,7 @@ export function useSessionChat(props: UseSessionChatProps): UseSessionChatReturn
     clearPendingClientMessage(normalizedClientMessageId);
     resetTransientState();
     clearError();
-    setOutbox((prev) => markOutboxItemFailed(prev, normalizedClientMessageId, failureReason));
+    setOutbox((prev) => markOutboxItemFailed(prev, normalizedClientMessageId, failureReason, resendAsNew));
     setNativeInputProjectionState((current) => {
       if (current.ownerSessionId !== sessionId) return current;
       const boundaries = current.boundaries.filter((boundary) => (
@@ -1491,7 +1491,6 @@ export function useSessionChat(props: UseSessionChatProps): UseSessionChatReturn
       return { kind: 'delivery-failed', label: t('chat:retry.resend_label'), summary: t('chat:retry.delivery_failed_summary'), text: String(latestDurableUnansweredUser.content || '').trim(), clientMessageId: latestDurableUnansweredUser.client_message_id || undefined };
     }
     if (fp === 'post_dispatch' && lifecycleState === 'ready' && !activeTurnId && session.last_turn_status === 'FAILED' && session.last_turn_id) {
-      if (isUserInterruptedTurnFailure(session)) return { kind: 'none' };
       return { kind: 'turn-failed', summary: t('chat:retry.turn_failed_summary'), failureDetail: String(session.last_turn_error ?? '').trim() || undefined };
     }
     return { kind: 'none' };
@@ -1658,7 +1657,13 @@ export function useSessionChat(props: UseSessionChatProps): UseSessionChatReturn
         pendingInputsRef.current.delete(cid);
         console.error('[useSessionChat] send failed:', err);
         if (!consumedInputIdsRef.current.has(cid)) {
-          materializePendingSendFailureRef.current(cid, String((err as Error)?.message ?? err));
+          // A refusal the platform calls not retryable ended this message:
+          // the same client_message_id is answered with the same refusal.
+          materializePendingSendFailureRef.current(
+            cid,
+            String((err as Error)?.message ?? err),
+            err instanceof ApiError && err.retryable === false,
+          );
         }
       } finally {
         setDeliveryInFlight(false);
@@ -1797,7 +1802,9 @@ export function useSessionChat(props: UseSessionChatProps): UseSessionChatReturn
   const handleRetry = useCallback(() => {
     if (retryIntent.kind === 'recover') { handleRecover(); return; }
     if (retryIntent.kind === 'delivery-failed' && retryIntent.text.trim()) {
-      sendClientMessageNow(retryIntent.clientMessageId || createClientMessageId(), retryIntent.text.trim());
+      // The failed message's turn is over, and its client_message_id is
+      // answered with that outcome. Resending is a new message.
+      sendClientMessageNow(createClientMessageId(), retryIntent.text.trim());
       return;
     }
     clearError();

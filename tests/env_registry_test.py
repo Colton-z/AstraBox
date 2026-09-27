@@ -146,8 +146,8 @@ _ENV_EXAMPLE_NONDEFAULT_VALUES: dict[str, tuple[str, str]] = {
         "The Kubernetes ingress example selects the non-default gateway mode.",
     ),
     "ASTRABOX_SANDBOX_SERVER_PORT_RANGE": (
-        "62000-63000",
-        "The shared-Docker example demonstrates choosing a range distinct from the default.",
+        "20000-21000",
+        "The firewall example narrows the default range to a span a policy can name.",
     ),
     "ASTRABOX_SANDBOX_SERVER_RUNTIME": (
         "kubernetes",
@@ -402,9 +402,16 @@ class _ModuleScanner(ast.NodeVisitor):
         self.generic_visit(node)
 
 
+#: Python programs the sandbox images install and run. They read their
+#: configuration from the environment the platform writes, so they are read
+#: sites exactly like the package itself, only not imported by it.
+_IMAGE_PROGRAMS_ROOT = _REPO_ROOT / "scripts" / "runtime"
+
+
 def _scan_ast() -> _ScanResult:
     result = _ScanResult()
-    for path in sorted(_ASTRABOX_ROOT.rglob("*.py")):
+    paths = [*_ASTRABOX_ROOT.rglob("*.py"), *_IMAGE_PROGRAMS_ROOT.glob("*.py")]
+    for path in sorted(paths):
         if "__pycache__" in path.parts:
             continue
         module = _module_dotted(path)
@@ -526,8 +533,9 @@ _RE_BASH_REQUIRED = re.compile(
 _EMBEDDED_SCRIPT_CENSUS_EXCLUDED: frozenset[str] = frozenset()
 
 # Pinned third-party processes read these names. Hermes receives its custom
-# provider key in a private profile env file; LiteLLM's Langfuse callback reads
-# the three observability values; the pi image's boot script renders the
+# provider key in a private profile env file; the bundled gateway's Langfuse
+# export (containers/litellm/langfuse_tracing.py and LiteLLM's langfuse_otel
+# logger) reads the three observability values; the pi image's boot script renders the
 # vendor's models.json from its base URL and model, and pi itself resolves the
 # credential out of the environment at request time (models.json carries the
 # variable's NAME, so the value never lands on disk). No local ``os.environ``

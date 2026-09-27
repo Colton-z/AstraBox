@@ -59,6 +59,11 @@ export CLIENT_SECRET="client-secret"
 <Note>The full client secret is a long-lived credential. Store it in a secrets
 manager; never put it in source code or logs.</Note>
 
+With the bundled Casdoor, use its API client, `astrabox-api`, whose secret is
+generated into `oidc_api_client_secret` in the deployment's secrets directory.
+AstraBox accepts client tokens from that client only
+(`ASTRABOX_OIDC_API_CLIENT_ID`).
+
 ### Exchange the client credential for an Access Token
 
 Call the identity provider's token endpoint to exchange the client credential
@@ -122,6 +127,23 @@ curl --fail --silent --show-error \
   "$SERVICE_URL/api/v1/admin/environments" \
   -H "Authorization: Bearer $ACCESS_TOKEN"
 ```
+
+### What a user's token can do {#user-tokens-and-machine-tokens}
+
+AstraBox tells the two kinds of Access Token apart by the OAuth client the
+identity provider issued them to, which its token introspection names:
+
+| Issued to | Acts as | Role and permissions |
+|---|---|---|
+| The API client, `ASTRABOX_OIDC_API_CLIENT_ID` | A machine identity | Its `astrabox:*` scopes decide which routes it may call; `astrabox:admin` also makes it an administrator |
+| The console client, `ASTRABOX_OIDC_CLIENT_ID` | The user who signed in | The user's own, from their groups, as when they sign in through the browser; the scopes it asked for grant nothing |
+| Any other client | Refused, with `IDENTITY_ORGANIZATION_REJECTED` | None |
+
+A user can ask the console client for any scope, and Casdoor grants what is
+asked for, so scopes on a user's token cannot be what makes an administrator.
+AstraBox ignores them and logs that it did. A user outside the
+`astrabox-admin` group who calls an administration route is refused with
+`ADMIN_ROLE_REQUIRED`, and the model gateway gives the same token the same role.
 
 ### Compatibility with other authentication profiles
 

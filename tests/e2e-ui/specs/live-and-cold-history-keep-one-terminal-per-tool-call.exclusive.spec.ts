@@ -185,6 +185,9 @@ test('live and cold history keep one terminal per tool call', async ({ page, req
     // The settled turn folds its finished cards behind one header and a closed
     // fold keeps them out of the accessibility tree, so the count below is of
     // what a reader sees after opening it rather than of what survived folding.
+    // That fold lands a moment after the turn settles and moves the groups
+    // under a closed header, so the reveal waits for the header first.
+    await expect(page.getByTestId('assistant-turn-process').last()).toBeVisible({ timeout: RENDER_TIMEOUT_MS });
     await revealAssistantProcess(page);
     const bashCards = page.getByTestId('assistant-message').getByRole('button', { name: BASH_CARD });
     await expect

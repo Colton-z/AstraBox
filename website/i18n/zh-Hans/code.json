@@ -9,7 +9,7 @@
     "message": "开源替代。"
   },
   "home.hero.sub": {
-    "message": "在你自己的基础设施上，把 Claude Code、Codex、Hermes、DeepSeek Harness 和 Pi 作为托管 Agent 运行，模型任选。对话秒级拉起、秒级恢复；会话、沙箱、凭证和历史都留在你自己手里。"
+    "message": "在你自己的基础设施上运行 Claude Code、Codex、Hermes、DeepSeek Harness 和 Pi，模型任选。对话秒级拉起、秒级恢复；会话、沙箱、凭证和历史都留在你自己手里。"
   },
   "home.hero.ctaPrimary": {
     "message": "快速开始"
@@ -58,6 +58,12 @@
   },
   "home.concepts.event.analogy": {
     "message": "工作进度实时播报"
+  },
+  "home.concepts.products.title": {
+    "message": "一个平台，同时承载团队 Agent 和个人 Assistant。"
+  },
+  "home.concepts.products.body": {
+    "message": "{title}{agent} 是面向团队和自动化的可复用云端 Agent。{assistant} 是个人专属的长期云端工作区：它的所有对话都在同一个工作区中进行，并共享 Agent 程序的状态。"
   },
   "home.workflow.eyebrow": {
     "message": "工作流程"

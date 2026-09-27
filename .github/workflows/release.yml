@@ -8,6 +8,10 @@
 #     sandbox-hermes, sandbox-pi
 #     workspace-mounter                    the host-side helper for persistent
 #                                          workspaces
+#   ghcr.io/<owner>/astrabox               the all-in-one image
+#                                          (containers/all-in-one/Dockerfile): the
+#                                          server image plus embedded PostgreSQL
+#                                          and Valkey, for a single `docker run`
 #   astrabox-deploy-<version>.tar.gz       the Compose bundle scripts/install.sh
 #                                          installs, attached to a GitHub release
 #
@@ -17,6 +21,12 @@
 # amd64 + arm64 except workspace-mounter, which is amd64 only: its Dockerfile
 # downloads the amd64 mergerfs release archive and refuses other targets.
 #
+# The all-in-one image is built FROM the server image each architecture just
+# pushed, by digest, so its platform bits are byte-identical to that server
+# image. Its name is the one exception to `astrabox-<component>`: it is the
+# product's front door, `astrabox`. Nothing resolves it by prefix; the server
+# names sandbox images, never itself.
+#
 # Tagging: `v1.2.3` → `1.2.3` + `latest`. A manual dispatch publishes `edge`
 # from the chosen ref — useful for release rehearsal without minting a version.
 #
@@ -25,10 +35,16 @@
 # (astrabox/config/release_images.py), so images published under any other tag
 # would be ones no server asks for.
 #
+# Before anything is tagged, each architecture's server image runs
+# scripts/embedded-gateway-acceptance.py, the model-gateway check the installer
+# workflow runs: every engine's model calls go through the gateway baked into
+# that image.
+#
 # The GitHub release, which is what the installer resolves as "latest", is
 # created only after every image manifest exists. A failed build of any image
-# or architecture skips every merge, so nothing is tagged; a failed merge can
-# leave the other images tagged, but no release is created.
+# or architecture, the all-in-one included, or a failed gateway check, skips
+# every merge, so nothing is tagged; a failed merge can leave the other images
+# tagged, but no release is created.
 name: release
 
 on:
@@ -110,6 +126,16 @@ jobs:
           cache-from: type=gha,scope=astrabox-${{ matrix.component }}-${{ matrix.runner.arch }}
           cache-to: type=gha,mode=max,scope=astrabox-${{ matrix.component }}-${{ matrix.runner.arch }}
 
+      # Pulled by the digest just pushed, which no tag names yet. A failure
+      # fails this job, and the merge jobs, which tag every image, need it.
+      - name: The embedded gateway answers every client protocol
+        if: matrix.component == 'server'
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ steps.repo.outputs.owner }}/astrabox-server@${{ steps.build.outputs.digest }}
+        run: |
+          docker pull "$IMAGE"
+          scripts/embedded-gateway-acceptance.py "$IMAGE"
+
       - name: Export digest
         run: |
           mkdir -p /tmp/digests/${{ matrix.component }}
@@ -123,8 +149,70 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  merge:
+  # FROM the server digest the same architecture's build just pushed. Waits
+  # for the whole build matrix, because a job cannot depend on one matrix leg.
+  build-all-in-one:
     needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        runner:
+          - os: ubuntu-24.04
+            arch: amd64
+          - os: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: repo
+        run: echo "owner=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: digests-server-${{ matrix.runner.arch }}
+          path: /tmp/server-digest
+
+      - id: server
+        name: The server image this architecture pushed
+        run: |
+          digests=(/tmp/server-digest/*)
+          [ "${#digests[@]}" -eq 1 ] || { echo "expected one server digest, found ${#digests[@]}"; exit 1; }
+          echo "image=${{ env.REGISTRY }}/${{ steps.repo.outputs.owner }}/astrabox-server@sha256:$(basename "${digests[0]}")" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: containers/all-in-one/Dockerfile
+          platforms: linux/${{ matrix.runner.arch }}
+          build-args: SERVER_IMAGE=${{ steps.server.outputs.image }}
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ steps.repo.outputs.owner }}/astrabox,push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=astrabox-all-in-one-${{ matrix.runner.arch }}
+          cache-to: type=gha,mode=max,scope=astrabox-all-in-one-${{ matrix.runner.arch }}
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests/all-in-one
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/all-in-one/${digest#sha256:}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digests-all-in-one-${{ matrix.runner.arch }}
+          path: /tmp/digests/all-in-one/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    needs: [build, build-all-in-one]
     runs-on: ubuntu-24.04
     strategy:
       matrix:
@@ -136,9 +224,20 @@ jobs:
           - sandbox-hermes
           - sandbox-pi
           - workspace-mounter
+          - all-in-one
     steps:
       - id: repo
         run: echo "owner=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+
+      # Every image is astrabox-<component> except the all-in-one, which is
+      # the product's own name.
+      - id: image
+        env:
+          COMPONENT: ${{ matrix.component }}
+          OWNER: ${{ steps.repo.outputs.owner }}
+        run: |
+          if [ "$COMPONENT" = all-in-one ]; then name=astrabox; else name="astrabox-$COMPONENT"; fi
+          echo "name=${{ env.REGISTRY }}/$OWNER/$name" >> "$GITHUB_OUTPUT"
 
       - uses: actions/download-artifact@v4
         with:
@@ -156,7 +255,7 @@ jobs:
       - id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ steps.repo.outputs.owner }}/astrabox-${{ matrix.component }}
+          images: ${{ steps.image.outputs.name }}
           tags: |
             type=semver,pattern={{version}}
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
@@ -167,13 +266,13 @@ jobs:
         run: |
           docker buildx imagetools create \
             $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
-            $(printf '${{ env.REGISTRY }}/${{ steps.repo.outputs.owner }}/astrabox-${{ matrix.component }}@sha256:%s ' *)
+            $(printf '${{ steps.image.outputs.name }}@sha256:%s ' *)
 
       # Block scalar, not a plain one: the `: ` in `cut -d: -f2` reads as a
       # mapping separator to YAML and makes the whole workflow unloadable.
       - name: Inspect
         run: |
-          docker buildx imagetools inspect "${{ env.REGISTRY }}/${{ steps.repo.outputs.owner }}/astrabox-${{ matrix.component }}:$(jq -r '.tags[0]' <<< "$DOCKER_METADATA_OUTPUT_JSON" | cut -d: -f2)"
+          docker buildx imagetools inspect "${{ steps.image.outputs.name }}:$(jq -r '.tags[0]' <<< "$DOCKER_METADATA_OUTPUT_JSON" | cut -d: -f2)"
 
   # The installer's input. Built from the tagged commit by the same script CI's
   # installer workflow uses, then published with the release only after every

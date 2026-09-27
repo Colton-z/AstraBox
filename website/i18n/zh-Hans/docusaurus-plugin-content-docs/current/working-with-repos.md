@@ -15,8 +15,9 @@ Agent 可以像在本地工作树中一样读取、修改、提交和推送
 
 ## 核心流程
 
-1. **准备仓库凭证。**私有默认仓库使用 SSH Deploy Key，并只授予任务需要的
-   读取、写入等权限。把私钥保存在 AstraBox 服务环境中。
+1. **准备仓库凭证。**私有默认仓库使用 SSH Deploy Key，由管理员创建并只授予
+   任务需要的读取、写入等权限，把私钥保存在 AstraBox 服务环境中，并把它的
+   Secret 名称列入 `ASTRABOX_DEPLOY_KEY_SECRET_NAMES`。
 2. **在 Agent 上配置仓库。**在**项目代码仓库**中填写 SSH URL 和 Deploy Key
    的 Secret 名称。只处理一次公开仓库时，可以直接在用户消息中提供 HTTPS
    URL。
@@ -38,7 +39,7 @@ Agent 的默认 GitHub 仓库使用以下字段；在**项目代码仓库**中�
 | --- | --- | --- | --- |
 | `url` | string | 是 | SSH 仓库 URL，例如 `git@github.com:your-org/your-repo.git`。 |
 | `protocol` | string | 否 | 默认仓库使用 `ssh`，这是当前运行路径支持的协议。 |
-| `deploy_key_secret_name` | string | 是 | 保存 SSH 私钥的环境变量逻辑名称。 |
+| `deploy_key_secret_name` | string | 是 | 保存 SSH 私钥的环境变量逻辑名称，必须列在 `ASTRABOX_DEPLOY_KEY_SECRET_NAMES` 中。 |
 | `branch` | string | 否 | 要克隆的分支或 Tag，省略时使用仓库默认值。 |
 | `depth` | integer | 否 | 大于 0 时执行浅克隆，省略时克隆完整历史。 |
 
@@ -47,6 +48,26 @@ Agent 的默认 GitHub 仓库使用以下字段；在**项目代码仓库**中�
 :::note
 Agent 的 `deploy_key_secret_name` 只保存逻辑名称。AstraBox 准备工作树时在服务端读取私钥，Agent API 不会返回私钥。
 :::
+
+## 谁可以使用哪些凭证 {#who-may-use-which-credentials}
+
+任何已登录用户都可以创建 Agent，而 Agent 的字段决定沙箱克隆什么、连接到哪里。
+因此 Agent 只能使用管理员提供的东西：
+
+- **Deploy Key。**`deploy_key_secret_name` 只解析列在
+  `ASTRABOX_DEPLOY_KEY_SECRET_NAMES` 中的名称。其他名称在保存 Agent 时即被拒绝，
+  返回 `AGENT_DEPLOY_KEY_NOT_ALLOWED`（403），准备沙箱前还会再检查一次。服务端的
+  其他环境变量无法被当作 Deploy Key 读取。值必须是 PEM 或 OpenSSH 私钥。
+- **私钥在沙箱中的存留。**Deploy Key 会写入 Session 用户的
+  `~/.ssh/id_ed25519` 用于克隆，并保留供之后推送。克隆失败时私钥会被删除。
+- **私有 HTTPS 仓库。**以 HTTPS URL 声明的 Plugin 或 Skill 仓库不会收到部署级
+  Token。请使用分配给 Agent 的 `http_basic` 凭证，由沙箱出站代理在沙箱外添加。
+  参见[使用 Vault 认证](credentials.md#2-add-a-credential)。
+- **受限 Environment 中的仓库主机。**只有公网地址，或 Environment 已列出的主机，
+  才会作为 Plugin 和 Skill 的 Git 主机加入受限 Environment 的放行列表。私有、
+  回环或链路本地地址，以及解析到这类地址或无法解析的名称，会以
+  `AGENT_EGRESS_HOST_REFUSED`（403）拒绝。要使用内网 Git 服务器，请由管理员把它
+  的主机、IP 或 CIDR 加入 Environment 的放行主机。
 
 ## 在 Agent 上配置 GitHub 仓库
 
@@ -95,19 +116,22 @@ AstraBox 会完成克隆。
 ssh-keygen -t ed25519 -f astrabox-deploy -N ""
 ```
 
-把 `astrabox-deploy.pub` 添加为 GitHub 仓库的 Deploy Key，并把私钥保存在 AstraBox 服务环境中。逻辑名称会转成大写，短横线会转成下划线，因此 `your-repo-deploy-key` 对应 `YOUR_REPO_DEPLOY_KEY`：
+把 `astrabox-deploy.pub` 添加为 GitHub 仓库的 Deploy Key，把私钥保存在 AstraBox 服务环境中，并把它的逻辑名称列入 `ASTRABOX_DEPLOY_KEY_SECRET_NAMES`（逗号分隔），Agent 才能使用它。逻辑名称会转成大写，短横线会转成下划线，因此 `your-repo-deploy-key` 对应 `YOUR_REPO_DEPLOY_KEY`：
 
 ```yaml
 services:
   server:
     environment:
+      ASTRABOX_DEPLOY_KEY_SECRET_NAMES: your-repo-deploy-key
       YOUR_REPO_DEPLOY_KEY: |
         -----BEGIN OPENSSH PRIVATE KEY-----
         ...
         -----END OPENSSH PRIVATE KEY-----
 ```
 
-部分沙箱后端允许 HTTP/HTTPS 出站，但不允许 SSH。对于这些后端，AstraBox 会把克隆转换为 HTTPS，并使用 `ASTRABOX_GIT_HTTPS_TOKEN_SECRET_NAME` 指定的部署 Secret。
+部署中的每位 Agent 作者都可以使用已列出的 Deploy Key，因此只列出你愿意向他们每个人开放仓库权限的密钥。
+
+部分沙箱后端允许 HTTP/HTTPS 出站，但不允许 SSH。对于这些后端，AstraBox 会把 SSH 克隆转换为 HTTPS，并使用 `ASTRABOX_GIT_HTTPS_TOKEN_SECRET_NAME` 指定的部署 Secret，且只用于 `ASTRABOX_GIT_HTTPS_TOKEN_HOST` 指定的 Git 主机；其他主机上的仓库会被拒绝。这两个设置必须同时配置；在通过 SSH 克隆的后端上没有克隆会使用该 Token，AstraBox 会拒绝启动。
 
 ### 推荐权限对照
 

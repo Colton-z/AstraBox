@@ -16,9 +16,10 @@ local sandbox service. Agent tasks run in isolated sandboxes.
 | Kubernetes with OpenSandbox | Multiple nodes, prewarmed sandboxes, snapshots, and cluster controls | Sandbox Pods created by OpenSandbox |
 | An existing OpenSandbox service | Organizations that operate sandbox infrastructure separately | The container runtime configured for that service |
 
-The maintained local deployment has no authentication and listens on loopback
-only. Configure [team login](team-login.md), TLS, and a trusted ingress before
-making AstraBox reachable from another network.
+The maintained local deployment listens on loopback only, and has no
+authentication until you turn on [team login](team-login.md). Configure team
+login, TLS, and a trusted ingress before making AstraBox reachable from another
+network.
 
 For Kubernetes and external-service settings, see the
 [OpenSandbox deployment guide](providers/opensandbox.md).
@@ -34,9 +35,79 @@ The stack starts the following components:
 | LiteLLM | Route model requests and discover available models |
 | Messaging gateway | Connect Agents to messaging platforms |
 | OpenSandbox | Create and manage local sandbox containers |
+| Casdoor, with team login on | Sign people in to the console |
 
 Treat the server container as a privileged host service: it controls the
 mounted Docker daemon.
+
+### Docker requirements {#docker-requirements}
+
+| Requirement | Why |
+|---|---|
+| Docker Engine 26.0 or later (Engine API 1.45) | Persistent workspaces reach each sandbox through a mount of a sub-directory of a Docker volume (`VolumeOptions.Subpath`), which Engine API 1.45 added. Everything else the stack uses is older. |
+| Docker Compose plugin 2.17.0 or later | `containers/compose.yaml` restarts the server when a sandbox edge is recreated (`depends_on` with `restart: true`), which Compose 2.17.0 introduced. |
+
+The installer and the server both check the daemon and refuse an older one,
+naming the version they found; the server checks at every start, so upgrading
+the host never leaves it running on an engine it does not support.
+
+### The sandbox network boundary {#sandbox-network-boundary}
+
+Each sandbox is a container on Docker's default `bridge` network, paired with
+an OpenSandbox egress sidecar that enforces its Environment's networking. The
+stack keeps the platform off that network:
+
+- The server publishes only the console, on `127.0.0.1`. PostgreSQL and Redis
+  publish only loopback development ports.
+- Two edge containers, `sandbox-edge` and `sandbox-dns-edge`, have their own
+  addresses on the bridge. They forward only the model route, the
+  capability-scoped callback routes and DNS to the server, over the private
+  `sandbox-edges` network, which has no route off the host and which sandboxes
+  never join.
+- The lifecycle server publishes each sandbox's execd, file/terminal and
+  egress-API ports on the Docker bridge gateway (`ASTRABOX_PUBLISH_HOST_IP`,
+  which the installer sets from `docker network inspect bridge`), not on the
+  host's other interfaces. Those in-box services have no authentication: do not
+  set `ASTRABOX_PUBLISH_HOST_IP` to `0.0.0.0` unless something in front of those
+  ports authenticates every request.
+- Every sandbox's egress policy, under both `Limited` and `Unrestricted`
+  networking, denies Docker's default bridge except `sandbox-edge`: other
+  sandboxes and the bridge gateway where sandbox ports are published. The deny
+  rules come before every allow rule, so an Environment allowlist entry that
+  names a bridge address does not reopen it. The deny list is
+  `ASTRABOX_SANDBOX_EGRESS_DENY_CIDRS`, which the server derives at startup.
+  The egress sidecar enforces address rules only in its `dns+nft` mode, so the
+  server refuses to start with `ASTRABOX_SANDBOX_EGRESS_MODE=dns`.
+- `169.254.0.0/16`, which holds the cloud metadata service, is denied in every
+  networking mode.
+- Sandboxes have no IPv6. The egress sidecar turns IPv6 off in the network
+  namespace it shares with its sandbox (OpenSandbox's `egress.disable_ipv6`,
+  which AstraBox sets), including when the Docker daemon enables IPv6 on the
+  default bridge. The deny rules above are therefore IPv4 networks.
+
+`Unrestricted` still allows every other destination, including the host's
+other addresses and your LAN. Other containers on the default bridge that are
+not AstraBox sandboxes, and processes on the host, can reach the published
+sandbox ports; the host and its other containers are inside the trust boundary.
+
+Docker gives the two edges their bridge addresses when they start, and an edge
+that restarts can come back at a different one. Every sandbox keeps the
+addresses it was created with (its DNS upstream, its deny rules and its
+callback address), so the platform records them on the sandbox. When the
+server starts with different addresses, it removes the sandboxes created with
+the old ones, and a server that sees an edge move while it runs exits so that
+Docker restarts it. A conversation whose sandbox was removed takes a new
+sandbox at its next message, as after any other sandbox loss; files in the
+removed sandbox's workspace are kept only with the optional persistent
+workspace volume. Sandboxes created by AstraBox 0.1.0 carry no such
+record and are not removed this way. If their conversations stop receiving
+answers after an edge restart, remove every sandbox on the host; each
+conversation then continues on a new one:
+
+```bash
+docker ps -aq --filter label=opensandbox.io/id | xargs -r docker rm -f
+docker ps -aq --filter label=opensandbox.io/egress-sidecar-for | xargs -r docker rm -f
+```
 
 ### Install a release {#install-a-release}
 
@@ -46,24 +117,28 @@ curl -fsSL https://raw.githubusercontent.com/Colton-z/AstraBox/main/scripts/inst
 
 The installer:
 
-1. checks Docker, the Compose plugin v2 or later, and that your user can use
-   `/var/run/docker.sock`;
+1. checks Docker Engine 26.0 or later, the Compose plugin 2.17.0 or later
+   (see [Docker requirements](#docker-requirements)), and that your user can
+   use `/var/run/docker.sock`;
 2. downloads the deployment bundle of the latest release, verifies its
    SHA-256, and unpacks the Compose files into `~/astrabox`;
 3. generates the database and login secrets in
    `~/astrabox/.astrabox/database-secrets`, once, and keeps them afterwards;
 4. asks which model service your Agents use, and for its API key and model ID,
    and writes their settings;
-5. pulls the images published for that release, starts the stack, waits until
+5. asks whether to turn on team login, which runs the bundled Casdoor login
+   service with the stack;
+6. pulls the images published for that release, starts the stack, waits until
    the console page is served, and pulls the sandbox image of the seeded Claude
    Code Agent so that the first Session does not wait for it.
 
 Re-run it to upgrade: it installs the latest release's Compose files, or those
 of the release `ASTRABOX_VERSION` names, sets that release as the image version,
-and keeps the volumes, the generated secrets, the model settings, and every
-other line of the installation's settings file. To change the model service,
-answer its question again, or run it with `ASTRABOX_INSTALL_MODEL_PROVIDER`
-set; the settings it wrote for the previous service are removed.
+and keeps the volumes, the generated secrets, the model settings, the
+team-login choice, and every other line of the installation's settings file.
+To change the model service, answer its question again, or run it with
+`ASTRABOX_INSTALL_MODEL_PROVIDER` set; the settings it wrote for the previous
+service are removed.
 
 ### Model services the installer configures {#model-services-the-installer-configures}
 
@@ -93,8 +168,10 @@ endpoint when it publishes one.
 
 ### Installer settings {#installer-settings}
 
-Setting `ASTRABOX_INSTALL_MODEL_PROVIDER` runs the installer without questions,
-which is what an unattended installation needs.
+Setting `ASTRABOX_INSTALL_MODEL_PROVIDER` and `ASTRABOX_INSTALL_TEAM_LOGIN` runs
+the installer without questions, which is what an unattended installation
+needs. Without a terminal, the installer keeps the current team-login choice,
+which is off on a new installation.
 
 | Variable | Purpose |
 |---|---|
@@ -106,6 +183,9 @@ which is what an unattended installation needs.
 | `ASTRABOX_INSTALL_MODEL_API_KEY` | The model service's API key. |
 | `ASTRABOX_INSTALL_MODEL_NAME` | The model ID the seeded Agents use. Default for DeepSeek: `deepseek-flash`. |
 | `ASTRABOX_INSTALL_MODEL_BASE_URL` | Base URL of an Anthropic-compatible or OpenAI-compatible service. |
+| `ASTRABOX_INSTALL_TEAM_LOGIN` | `casdoor` runs the bundled Casdoor login service with the stack; `none` runs the stack without login. |
+| `ASTRABOX_CONSOLE_ORIGIN` | With team login: the console's public URL, such as `https://astrabox.example.com`. |
+| `ASTRABOX_OIDC_ISSUER` | With team login: Casdoor's public URL, such as `https://login.example.com`. Set both URLs for browsers on other computers, or neither to sign in on this host only. |
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Colton-z/AstraBox/main/scripts/install.sh \
@@ -123,7 +203,36 @@ printf '%s\n' "ASTRABOX_SERVER_HOST_PORT='9000'" >> ~/astrabox/containers/.env
 
 Manage the installed stack from that directory with the ordinary Compose
 commands, `docker compose ps`, `docker compose logs -f server` and
-`docker compose down`.
+`docker compose down`. With team login on, they include Casdoor.
+
+### Turn on team login {#turn-on-team-login}
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Colton-z/AstraBox/main/scripts/install.sh \
+  | ASTRABOX_INSTALL_TEAM_LOGIN=casdoor \
+    ASTRABOX_CONSOLE_ORIGIN=https://astrabox.example.com \
+    ASTRABOX_OIDC_ISSUER=https://login.example.com bash
+```
+
+The installer adds the SSO overlay, `containers/compose.sso.yaml`, to the
+`COMPOSE_FILE` setting in `~/astrabox/containers/.env`, so the stack and every
+`docker compose` command in `~/astrabox/containers` run Casdoor with AstraBox.
+Casdoor listens on `127.0.0.1:8087`. With the two public URLs, the installer
+also writes the callback URL and the Host allowlist the server needs; put both
+loopback ports behind an HTTPS proxy as described in
+[Put the login flow behind a proxy](team-login.md#put-the-login-flow-behind-a-proxy).
+Leave both URLs out to sign in on this host only.
+
+When it finishes, the installer prints where the generated passwords are kept:
+that of the `admin` account people sign in to AstraBox with, and that of
+Casdoor's own administrator, `built-in/admin`. AstraBox accepts only accounts of
+the bundled `astrabox` organization; see
+[Turn on the bundled login service](team-login.md#bundled-login-service).
+
+Running the installer again keeps team login on. To turn it off, run it with
+`ASTRABOX_INSTALL_TEAM_LOGIN=none`. An installation with public URLs refuses
+until they are removed from `containers/.env`, so that it never serves the
+console without login to other computers.
 
 ### Published images {#published-images}
 
@@ -189,6 +298,10 @@ workspace files, not the platform database's custody of native SessionStores.
 In this no-volume mode no mount helper runs, whatever
 `ASTRABOX_WORKSPACE_MOUNTER_IMAGE` names.
 
+With an existing OpenSandbox service (`ASTRABOX_SANDBOX_OPENAPI_BASE_URL`),
+persistent workspaces require that service's Kubernetes runtime; see
+[Connect an existing OpenSandbox service](providers/opensandbox.md#connect-an-existing-opensandbox-service).
+
 ### Configure the workspace helper
 
 `ASTRABOX_WORKSPACE_MOUNTER_IMAGE` names the helper image; unset, it is the
@@ -219,9 +332,23 @@ The namespace must permit these privileged infrastructure Pods. The backing
 PVC remains operator-owned. Kubernetes schedules each helper; its view PV
 pins the sandbox to that same node. Losing a helper invalidates its existing
 FUSE mount and is not repaired by silently restarting it under a live sandbox.
-Docker's view volume uses a recursive bind so its numbered FUSE submounts are
-present in the consumer. A nonrecursive bind would expose the empty underlying
-host directories instead; the sandbox mount check must reject that state.
+Docker's view volume is a recursive bind of the helper's view directory, so
+its numbered FUSE submounts are present in the consumer; a nonrecursive bind
+would expose the empty underlying host directories instead, which the sandbox
+mount check rejects. The bind is a slave copy: Docker unmounts the volume when
+its last container exits, and a shared copy would carry that unmount back to
+the helper's views on the host. Docker only mounts such a volume for a
+container that uses it by name, so the sandbox receives its workspace through
+Docker's volume sub-path mount, one reason the stack needs Docker Engine 26.0
+([Docker requirements](#docker-requirements)).
+
+Each helper records, from the moment it is created, the assignment it serves,
+the sandbox backend and the AstraBox installation. The expiration watcher
+releases a view once its sandbox is confirmed gone, and also releases a view no
+sandbox ever took: when a create fails or provisioning stops part way, the view
+is removed ten minutes after its helper was created if no sandbox of the
+installation carries its assignment. A view a container or Pod still mounts is
+never removed.
 
 ### What the medium has to support
 
@@ -373,6 +500,44 @@ At the team ingress, terminate TLS, add the public hostname to
 `ASTRABOX_ALLOWED_HOSTS`, prevent direct access to the AstraBox service port,
 and use the same login-cookie signing secret on every replica. See
 [Set up team login](team-login.md) for the supported identity configurations.
+
+## Plan capacity for prepared sandboxes {#plan-capacity-for-prepared-sandboxes}
+
+Every Agent with [prewarming](authoring-agents.md#prewarming) on keeps one idle
+prepared sandbox so that its next conversation starts in about two seconds
+instead of starting a sandbox. New Agents have prewarming on wherever
+`ASTRABOX_AGENT_PREWARM_REDIS_URL` is set, which every bundled Compose
+deployment and the [all-in-one container](all-in-one.md) do; there, the two
+Agents a fresh installation creates have it on as well. The sandbox is held for as long as prewarming stays on and the Agent and
+its Environment are enabled; after a conversation claims it, AstraBox prepares
+a replacement. AstraBox does not cap the number of prepared sandboxes, so size
+the deployment for the Agents you keep, or turn prewarming off for Agents that
+do not need a fast first conversation.
+
+What an idle prepared sandbox uses depends on the engine that the Agent's
+Environment runs:
+
+| Engine | Idle memory of one prepared sandbox |
+|---|---|
+| Claude Code | About 0.5 GiB: 490–536 MiB for the sandbox container on a Docker host |
+| pi | About 0.45 GiB: 450 MiB for the sandbox container on a Docker host |
+| DeepSeek Harness | 921–940 MiB of anonymous memory per sandbox Pod on Kubernetes |
+| Other engines, including Codex | 390–650 MiB of anonymous memory per sandbox Pod on Kubernetes |
+
+On a Docker host each sandbox's egress sidecar adds about 60 MiB, and an idle
+sandbox uses 2–5% of one CPU.
+
+| Where sandboxes run | How that capacity is accounted for |
+|---|---|
+| One Docker host | Nothing is reserved: Docker sets aside nothing for an idle container, so the cost is the memory above plus the sidecar. About 20 Claude Code Agents use roughly 11 GiB of the host's memory while idle. |
+| Kubernetes with OpenSandbox | Each sandbox requests 200m CPU and 768 MiB of memory, and the scheduler places sandboxes by these requests. A DeepSeek Harness sandbox uses more memory than it requests, so plan node memory from actual use, not from requests. For example, 19 sandboxes request 3.8 CPUs and 14.25 GiB, about all that a node with 4 vCPUs and 16 GiB leaves allocatable to Pods, yet 19 idle DeepSeek Harness sandboxes use about 17 GiB. |
+| An existing OpenSandbox service | The same request per sandbox: 200m CPU and 768 MiB. Whether it is reserved depends on that service's runtime, as in the two rows above; plan memory from actual use either way. |
+
+Each sandbox may grow to 4 CPUs (on Docker, at most the host's CPU count) and
+4 GiB of memory while it works; the figures above are what idle capacity
+takes. To turn prewarming off for an Agent, clear **Keep a sandbox ready** in
+its **Runtime and availability** settings, or set `"prewarm_enabled": false`
+through the API or in an `astrabox.yaml` document.
 
 ## Check health and sandbox recovery
 

@@ -13,7 +13,10 @@ from __future__ import annotations
 
 import fnmatch
 import importlib.util
+import json
 import os
+import shlex
+import shutil
 import stat
 import subprocess
 import textwrap
@@ -35,6 +38,7 @@ _SECRET_NAMES = (
     "oidc_client_secret",
     "oidc_api_client_secret",
     "casdoor_admin_password",
+    "casdoor_builtin_admin_password",
 )
 #: Every name the installer or the deployment entry point may set for a model
 #: service; each case starts from none of them.
@@ -348,3 +352,322 @@ def test_a_server_that_cannot_start_ends_the_wait_with_its_log(tmp_path: Path) -
     assert result.returncode != 0
     assert "server container is restarting" in result.stderr
     assert "FATAL: the port range overlaps the ephemeral range" in result.stderr
+
+
+# ── Docker versions ──────────────────────────────────────────────────────────
+
+
+def _check_versions(
+    tmp_path: Path, *, compose: str, engine: str, api: str
+) -> subprocess.CompletedProcess[str]:
+    """``check_docker_versions`` against a daemon and plugin reporting these versions."""
+    return _run(
+        f"""
+        docker() {{
+          case "$*" in
+            "compose version --short") printf '%s\\n' '{compose}' ;;
+            "version --format {{{{.Server.Version}}}}") printf '%s\\n' '{engine}' ;;
+            "version --format {{{{.Server.APIVersion}}}}") printf '%s\\n' '{api}' ;;
+            *) return 1 ;;
+          esac
+        }}
+        check_docker_versions
+        """,
+        tmp_path=tmp_path,
+    )
+
+
+@pytest.mark.parametrize(
+    ("engine", "api"), [("25.0.5", "1.44"), ("24.0.9", "1.43"), ("20.10.24", "1.41")]
+)
+def test_a_docker_engine_older_than_the_minimum_is_refused(
+    tmp_path: Path, engine: str, api: str
+) -> None:
+    result = _check_versions(tmp_path, compose="2.29.7", engine=engine, api=api)
+
+    assert result.returncode != 0
+    assert f"found Docker Engine {engine} (API {api})" in result.stderr
+    assert "Docker Engine 26.0 (API 1.45) or later is required" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("compose", "engine", "api"),
+    [
+        ("2.17.0", "26.0.0", "1.45"),
+        ("v2.40.3", "29.8.1", "1.52"),
+        ("2.29.7-desktop.1", "27.3.1", "1.47"),
+    ],
+)
+def test_the_minimum_versions_and_later_are_accepted(
+    tmp_path: Path, compose: str, engine: str, api: str
+) -> None:
+    result = _check_versions(tmp_path, compose=compose, engine=engine, api=api)
+
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("compose", ["2.16.0", "2.9.0", "1.29.2"])
+def test_a_compose_plugin_older_than_the_minimum_is_refused(tmp_path: Path, compose: str) -> None:
+    # 2.9.0 sorts after 2.17.0 as text; the parts are numbers.
+    result = _check_versions(tmp_path, compose=compose, engine="29.8.1", api="1.52")
+
+    assert result.returncode != 0
+    assert f"Docker Compose 2.17.0 or later is required; found {compose}" in result.stderr
+
+
+# ── team login ───────────────────────────────────────────────────────────────
+
+
+def _installation(tmp_path: Path) -> Path:
+    """An installed bundle's directory, holding the overlay team login runs."""
+    install_dir = tmp_path / "astrabox"
+    (install_dir / "containers").mkdir(parents=True)
+    (install_dir / "VERSION").write_text("0.1.0\n", encoding="utf-8")
+    shutil.copy(
+        _REPO_ROOT / "containers/compose.sso.yaml",
+        install_dir / "containers/compose.sso.yaml",
+    )
+    return install_dir
+
+
+def _configure_team_login(
+    install_dir: Path, tmp_path: Path, settings: str = "", answers: str | None = None
+) -> subprocess.CompletedProcess[str]:
+    """Run the installer's team-login step as ``main`` does.
+
+    ``answers`` stands for a terminal: the installer reads its questions'
+    answers on descriptor 3. Without it the run has no terminal.
+    """
+    terminal = (
+        f"have_tty=1; exec 3< <(printf '%s' {shlex.quote(answers)})"
+        if answers is not None
+        else "have_tty=0"
+    )
+    return _run(
+        f"""
+        install_dir="{install_dir}"
+        {terminal}
+        {settings}
+        create_env_file "{install_dir}/containers/.env"
+        configure_team_login "{install_dir}/containers/.env"
+        """,
+        tmp_path=tmp_path,
+    )
+
+
+_PUBLIC_URLS = """
+export ASTRABOX_INSTALL_TEAM_LOGIN=casdoor
+export ASTRABOX_CONSOLE_ORIGIN=https://astrabox.example.com
+export ASTRABOX_OIDC_ISSUER=https://login.example.com
+"""
+
+
+def test_team_login_runs_the_overlay_with_every_later_compose_command(
+    tmp_path: Path,
+) -> None:
+    """Compose reads COMPOSE_FILE from the settings file in containers/.
+
+    The installer starts the stack with it, and so does every `docker compose`
+    command an operator later runs there; a login that only the installer's
+    own start included would disappear on the operator's next `up`.
+    """
+    install_dir = _installation(tmp_path)
+    result = _configure_team_login(
+        install_dir, tmp_path, "export ASTRABOX_INSTALL_TEAM_LOGIN=casdoor"
+    )
+    assert result.returncode == 0, result.stderr
+
+    written = _settings(install_dir / "containers/.env")
+    compose_files = written["COMPOSE_FILE"].split(":")
+    assert compose_files == ["compose.yaml", "compose.sso.yaml"]
+    # On this host only, the overlay's loopback defaults are the addresses.
+    for name in (
+        "ASTRABOX_CONSOLE_ORIGIN",
+        "ASTRABOX_OIDC_ISSUER",
+        "ASTRABOX_OIDC_REDIRECT_URL",
+        "ASTRABOX_ALLOWED_HOSTS",
+    ):
+        assert name not in written
+
+
+def test_public_urls_reach_the_server_and_casdoor_as_one_login(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Behind a TLS proxy the server sees plain HTTP from the proxy.
+
+    Login then works only when the server accepts the public Host, names to
+    Casdoor the very callback Casdoor registered for the console, and marks
+    its cookies Secure. Each is checked with the reader's own rule.
+    """
+    install_dir = _installation(tmp_path)
+    result = _configure_team_login(install_dir, tmp_path, _PUBLIC_URLS)
+    assert result.returncode == 0, result.stderr
+    written = _settings(install_dir / "containers/.env")
+    assert written["ASTRABOX_CONSOLE_ORIGIN"] == "https://astrabox.example.com"
+    assert written["ASTRABOX_OIDC_ISSUER"] == "https://login.example.com"
+
+    for name, value in written.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("ASTRABOX_OIDC_CLIENT_ID", "astrabox-console")
+    monkeypatch.setenv("ASTRABOX_OIDC_CLIENT_SECRET", "0" * 64)
+
+    from starlette.requests import Request
+
+    from astrabox.api.routes.auth import _cookie_secure, _redirect_uri
+    from astrabox.identity.oidc import OidcProviderConfig
+    from astrabox.web.trusted_host_middleware import _allowed_hosts, _host_from_scope
+
+    def arriving(host: str) -> dict[str, object]:
+        return {
+            "type": "http",
+            "scheme": "http",
+            "method": "GET",
+            "path": "/api/v1/auth/login",
+            "root_path": "",
+            "query_string": b"",
+            "server": ("172.18.0.2", 8000),
+            "headers": [(b"host", host.encode())],
+        }
+
+    for host in ("astrabox.example.com", "127.0.0.1:8088"):
+        assert _host_from_scope(arriving(host)) in _allowed_hosts(), host
+
+    config = OidcProviderConfig.load()
+    request = Request(arriving("astrabox.example.com"))
+    template = (_REPO_ROOT / "containers/casdoor/init_data.json").read_text(encoding="utf-8")
+    seeded = json.loads(
+        template.replace("__ASTRABOX_CONSOLE_ORIGIN__", written["ASTRABOX_CONSOLE_ORIGIN"])
+    )
+    registered = next(
+        application["redirectUris"]
+        for application in seeded["applications"]
+        if application["name"] == "astrabox-console"
+    )
+    assert _redirect_uri(request, config) in registered
+    assert _cookie_secure(request, config)
+    assert config.issuer == "https://login.example.com"
+
+
+def test_re_running_without_settings_keeps_team_login_and_its_urls(
+    tmp_path: Path,
+) -> None:
+    install_dir = _installation(tmp_path)
+    assert _configure_team_login(install_dir, tmp_path, _PUBLIC_URLS).returncode == 0
+    first = _settings(install_dir / "containers/.env")
+    assert first["COMPOSE_FILE"] == "compose.yaml:compose.sso.yaml"
+
+    result = _configure_team_login(install_dir, tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert _settings(install_dir / "containers/.env") == first
+
+
+@pytest.mark.parametrize(
+    ("current", "expected"),
+    [("none", None), ("casdoor", "compose.yaml:compose.sso.yaml")],
+)
+def test_the_question_defaults_to_the_current_choice(
+    tmp_path: Path, current: str, expected: str | None
+) -> None:
+    """Pressing Enter never changes whether a deployment has a login."""
+    install_dir = _installation(tmp_path)
+    if current == "casdoor":
+        setup = _configure_team_login(
+            install_dir, tmp_path, "export ASTRABOX_INSTALL_TEAM_LOGIN=casdoor"
+        )
+        assert setup.returncode == 0, setup.stderr
+
+    result = _configure_team_login(install_dir, tmp_path, answers="\n")
+
+    assert result.returncode == 0, result.stderr
+    assert _settings(install_dir / "containers/.env").get("COMPOSE_FILE") == expected
+
+
+def test_turning_team_login_off_is_refused_while_other_computers_reach_it(
+    tmp_path: Path,
+) -> None:
+    install_dir = _installation(tmp_path)
+    assert _configure_team_login(install_dir, tmp_path, _PUBLIC_URLS).returncode == 0
+
+    result = _configure_team_login(
+        install_dir, tmp_path, "export ASTRABOX_INSTALL_TEAM_LOGIN=none"
+    )
+
+    assert result.returncode != 0
+    assert "without login" in result.stderr
+    assert "COMPOSE_FILE" in _settings(install_dir / "containers/.env")
+
+
+@pytest.mark.parametrize(
+    ("settings", "reason"),
+    [
+        (
+            "export ASTRABOX_INSTALL_TEAM_LOGIN=casdoor "
+            "ASTRABOX_CONSOLE_ORIGIN=https://astrabox.example.com",
+            "needs both public URLs",
+        ),
+        (
+            "export ASTRABOX_INSTALL_TEAM_LOGIN=casdoor "
+            "ASTRABOX_CONSOLE_ORIGIN=https://astrabox.example.com/ "
+            "ASTRABOX_OIDC_ISSUER=https://login.example.com",
+            "no path or trailing slash",
+        ),
+        (
+            "export ASTRABOX_INSTALL_TEAM_LOGIN=none "
+            "ASTRABOX_OIDC_ISSUER=https://login.example.com",
+            "takes effect only with team login",
+        ),
+        ("export ASTRABOX_INSTALL_TEAM_LOGIN=yes", "Use casdoor or none"),
+    ],
+)
+def test_team_login_settings_that_cannot_log_anyone_in_are_refused(
+    tmp_path: Path, settings: str, reason: str
+) -> None:
+    install_dir = _installation(tmp_path)
+
+    result = _configure_team_login(install_dir, tmp_path, settings)
+
+    assert result.returncode != 0
+    assert reason in result.stderr
+    assert "COMPOSE_FILE" not in _settings(install_dir / "containers/.env")
+
+
+def test_an_allowed_hosts_list_without_the_console_host_is_refused(
+    tmp_path: Path,
+) -> None:
+    """The operator's own list is kept, not replaced, and must admit the console."""
+    install_dir = _installation(tmp_path)
+    env_file = install_dir / "containers/.env"
+    create = _run(f'create_env_file "{env_file}"', tmp_path=tmp_path)
+    assert create.returncode == 0, create.stderr
+    with env_file.open("a", encoding="utf-8") as settings:
+        settings.write("ASTRABOX_ALLOWED_HOSTS='intranet.example.com,127.0.0.1'\n")
+
+    refused = _configure_team_login(install_dir, tmp_path, _PUBLIC_URLS)
+    assert refused.returncode != 0
+    assert "must list astrabox.example.com" in refused.stderr
+
+    with env_file.open("a", encoding="utf-8") as settings:
+        settings.write(
+            "ASTRABOX_ALLOWED_HOSTS='intranet.example.com,astrabox.example.com,127.0.0.1'\n"
+        )
+    kept = _configure_team_login(install_dir, tmp_path, _PUBLIC_URLS)
+    assert kept.returncode == 0, kept.stderr
+    assert _settings(env_file)["ASTRABOX_ALLOWED_HOSTS"] == (
+        "intranet.example.com,astrabox.example.com,127.0.0.1"
+    )
+
+
+def test_a_release_without_the_overlay_cannot_turn_team_login_on(
+    tmp_path: Path,
+) -> None:
+    """The installer is served from main; the bundle may be an older release's."""
+    install_dir = _installation(tmp_path)
+    (install_dir / "containers/compose.sso.yaml").unlink()
+
+    result = _configure_team_login(
+        install_dir, tmp_path, "export ASTRABOX_INSTALL_TEAM_LOGIN=casdoor"
+    )
+
+    assert result.returncode != 0
+    assert "AstraBox 0.1.0 bundle has no team-login overlay" in result.stderr

@@ -319,6 +319,7 @@ class SessionWorkspacePlanner:
         sandbox_id: str,
         existing_terminal_cwd: str | None,
         engine_kind: str,
+        resume_engine_session_key: str | None,
     ) -> RuntimeWorkspacePlan:
         effective_sandbox_id = _clean(sandbox_id)
         if not effective_sandbox_id:
@@ -348,7 +349,7 @@ class SessionWorkspacePlanner:
             runtime_key=runtime_key,
             conversation_session_id=None,
             cwd=cwd,
-            resume_engine_session_key=None,
+            resume_engine_session_key=_clean(resume_engine_session_key) or None,
             sandbox_id=effective_sandbox_id,
             materialize_default_repo=False,
             default_repo_target_cwd=None,
@@ -394,6 +395,7 @@ class SessionWorkspacePlanner:
         runtime_key: str,
         template: Any,
         engine_kind: str,
+        resume_engine_session_key: str | None,
     ) -> RuntimeWorkspacePlan:
         _ = template
         safe_assistant_id = _safe_path_segment(assistant_id, label="assistant_id")
@@ -411,7 +413,7 @@ class SessionWorkspacePlanner:
             runtime_key=runtime_key,
             conversation_session_id=None,
             cwd=cwd,
-            resume_engine_session_key=None,
+            resume_engine_session_key=_clean(resume_engine_session_key) or None,
             sandbox_id=None,
             materialize_default_repo=False,
             default_repo_target_cwd=None,

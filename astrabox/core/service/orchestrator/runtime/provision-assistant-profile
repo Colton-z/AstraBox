@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# These values are the platform's planned identity, shared by the account and
+# its persistent workspace. Establish its private mount roots before the
+# common bootstrap creates the account and checks workload writability.
+user="${CONV_USER:?}"
+home="${CONV_HOME:?}"
+workspace="${CONV_WORKSPACE:?}"
+config="${CONV_CONFIG:?}"
+requested_uid="${CONV_UID:?}"
+requested_gid="${CONV_GID:?}"
+
+prepare_assistant_profile_roots() {
+  # The storage router creates these two private mount roots before useradd,
+  # which therefore finds an existing root-owned home. Only this Assistant's
+  # three roots change owner; persistent files and platform subtrees keep theirs.
+  test -n "$requested_uid"
+  test "$home" = "/home/conversations/$user"
+  test "$workspace" = "$home/workspace"
+  case "$config" in "$home"/*) ;; *) exit 42 ;; esac
+  for target in "$home" "$workspace" "$config"; do
+    test ! -L "$target"
+    mkdir -p "$target"
+    held_uid="$(stat -c %u "$target")"
+    held_gid="$(stat -c %g "$target")"
+    if [ "$held_uid:$held_gid" = "$requested_uid:$requested_gid" ]; then
+      continue
+    fi
+    if [ "$held_uid:$held_gid" != 0:0 ]; then
+      printf 'ASSISTANT_PROFILE_OWNER_MISMATCH path=%s actual=%s:%s expected=%s:%s\n' \
+        "$target" "$held_uid" "$held_gid" "$requested_uid" "$requested_gid" >&2
+      exit 42
+    fi
+    chown "$requested_uid:$requested_gid" "$target"
+    chmod 700 "$target"
+  done
+}
+
+prepare_assistant_profile_roots
+exec bash /usr/local/bin/astrabox-provision-conversation

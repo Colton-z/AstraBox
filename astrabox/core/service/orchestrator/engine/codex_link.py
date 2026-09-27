@@ -16,9 +16,20 @@ rely on it for production workloads." The unix-socket listener carries the
 identical protocol — the same HTTP Upgrade handshake, the same frames — and is
 the one the vendor's own remote path uses (`codex app-server proxy` pipes that
 socket to stdio for an SSH client). So the image binds the supported listener
-and a stock TCP forwarder publishes it, which is also what keeps a caller
-check off the wire: the listener demands authentication only for non-loopback
-binds, and this one never leaves loopback.
+and the image's forwarder publishes it on a port.
+
+That port is where the caller check lives. The socket itself is guarded by file
+permissions, but the forwarder answers anyone who can route to the box: sibling
+conversations under the shared tenancy, and on Kubernetes any pod, because
+OpenSandbox gives a sandbox Pod no ingress policy. The vendor's own listener
+auth (`--ws-auth capability-token --ws-token-file`) belongs to the websocket
+transport it calls unsupported, and it is fixed on the server's command line,
+which a pooled box runs before any credential for it exists. So the forwarder checks
+the credential itself: each upgrade must carry :data:`CODEX_FORWARD_TOKEN_HEADER`
+matching the file the adapter writes into the serving account's home
+(:data:`CODEX_FORWARD_TOKEN_FILE_NAME`), and nothing is relayed to the server
+before it does. The header is not ``Authorization`` because the OpenSandbox
+server proxy strips that header on its way to the box.
 
 Two details are measured against a running server rather than read off the
 schema, because each one fails as silence:
@@ -60,6 +71,12 @@ logger = get_logger(__name__)
 #: to answer before opening this port.
 CODEX_APP_SERVER_PORT = 44790
 
+#: The upgrade header the forwarder reads the credential from, and the file in
+#: the serving account's home it compares against. The other half is
+#: `containers/sandbox-codex/astrabox-codex-forward`.
+CODEX_FORWARD_TOKEN_HEADER = "X-AstraBox-Codex-Token"
+CODEX_FORWARD_TOKEN_FILE_NAME = ".astrabox-codex-forward-token"
+
 #: What AstraBox tells the server it is. The server echoes this back inside
 #: the user agent it presents upstream, so it is a real identifier and not
 #: decoration.
@@ -92,9 +109,18 @@ class CodexAppServerLink:
         self,
         *,
         endpoint: ResolvedExecdEndpoint,
+        forward_token: str,
         connector: Any = None,
     ) -> None:
+        token = str(forward_token or "").strip()
+        if not token:
+            raise APIError(
+                code="AGENT_RUNTIME_ERROR",
+                message="the codex app-server link requires its forwarder credential",
+                status_code=500,
+            )
         self.endpoint = endpoint
+        self._forward_token = token
         #: Injection point for tests; production uses `websockets.connect`.
         self._connector = connector
         self._ws: Any = None
@@ -112,11 +138,12 @@ class CodexAppServerLink:
         cls,
         sandbox: Any,
         *,
+        forward_token: str,
         connector: Any = None,
         port: int = CODEX_APP_SERVER_PORT,
     ) -> "CodexAppServerLink":
         endpoint = await resolve_sandbox_endpoint(sandbox, port=port)
-        link = cls(endpoint=endpoint, connector=connector)
+        link = cls(endpoint=endpoint, forward_token=forward_token, connector=connector)
         await link._attach()
         return link
 
@@ -144,7 +171,12 @@ class CodexAppServerLink:
                 # Measured, not chosen: offering permessage-deflate makes the
                 # server close the connection mid-handshake with no response.
                 compression=None,
-                **websocket_header_kwargs(self.endpoint.headers),
+                **websocket_header_kwargs(
+                    {
+                        **self.endpoint.headers,
+                        CODEX_FORWARD_TOKEN_HEADER: self._forward_token,
+                    }
+                ),
             )
         except BaseException as exc:
             raise APIError(

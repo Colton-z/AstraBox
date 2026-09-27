@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import secrets
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -674,7 +673,6 @@ async def prepare_slot_for_agent(
     lease = SharedSandboxLease(agent_repo=repo, provider=provider)
 
     slot_id = f"slot-{uuid.uuid4().hex}"
-    activation_token = secrets.token_hex(32)
     identity = build_conversation_identity(
         session_id=slot_id,
         agent_id=agent_id,
@@ -806,7 +804,6 @@ async def prepare_slot_for_agent(
             EnginePreparationContext(
                 template=template,
                 slot_id=slot_id,
-                activation_token=activation_token,
                 placement="shared_slot",
                 sandbox=underlying,
                 sandbox_id=binding.sandbox_id,

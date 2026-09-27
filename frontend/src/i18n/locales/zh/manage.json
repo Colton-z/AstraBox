@@ -352,7 +352,10 @@
     "permission_help": "新会话进入时的初始权限模式，用户仍可在会话内切换。",
     "icon_label": "图标",
     "icon_placeholder": "📊 或图标 URL",
-    "icon_help": "可选。Assistant 卡片上的图标（emoji 或图片地址）。"
+    "icon_help": "可选。Assistant 卡片上的图标（emoji 或图片地址）。",
+    "system_label": "系统提示词",
+    "system_placeholder": "你是一位数据分析助手。报告每个数字时说明含义，并注明来自哪个文件。",
+    "system_help": "可选。定义 Assistant 的角色、表达方式和行为规则。留空则保留 Agent 程序自身的默认设置。修改会在下一次开始对话时生效。"
   },
   "sessions": {
     "description": "查看由 Agent 发起的会话。打开 Session 可查看消息、当前状态、沙箱和技术事件。",
@@ -616,6 +619,7 @@
     "access_control_section": "访问控制"
   },
   "console": {
+    "load_more": "加载更多",
     "error_default_title": "没能加载",
     "json_invalid": "不是合法的 JSON，先修正再保存。",
     "example_tab_hint": "空白时按 Tab 填入示例。",

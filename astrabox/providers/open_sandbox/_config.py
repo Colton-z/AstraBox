@@ -104,6 +104,12 @@ def use_server_proxy(settings: Any) -> bool:
     mode asks the OpenSandbox server to relay those requests and is useful when
     AstraBox runs in a container that cannot reach host-published ports.
 
+    The relay is not transparent. opensandbox-server's ``api/proxy.py`` drops
+    ``Cookie`` and ``Authorization`` and replaces ``Host`` with its own target
+    on every forwarded request, so an in-box service that authenticates with
+    them cannot be reached through it: the DeepSeek Harness browser session is
+    a cookie, and Hermes refuses a ``Host`` other than its loopback bind.
+
     It does not control links returned to users. Browser endpoints are resolved
     separately and always use OpenSandbox's public execd or ingress address, so
     application traffic does not pass through the AstraBox API process.

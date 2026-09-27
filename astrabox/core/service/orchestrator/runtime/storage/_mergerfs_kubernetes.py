@@ -4,12 +4,17 @@ from __future__ import annotations
 
 import hashlib
 import time
+from datetime import datetime
 from typing import Any
 
 from astrabox.core.service.orchestrator.runtime.storage.mergerfs import (
     CLI,
+    INSTALLATION,
     MANAGED,
     OWNER,
+    SANDBOX_BACKEND,
+    SANDBOX_ID,
+    STORAGE_ID,
     MountAssignment,
     verify_labels,
     verify_status,
@@ -122,11 +127,15 @@ class KubernetesMounts:
             )
         return value
 
-    def _pod(self, assignment: MountAssignment) -> dict[str, Any]:
+    def _pod(self, assignment: MountAssignment, receipt: dict[str, str]) -> dict[str, Any]:
         return {
             "apiVersion": "v1",
             "kind": "Pod",
-            "metadata": {"name": assignment.name, "labels": assignment.labels()},
+            "metadata": {
+                "name": assignment.name,
+                "labels": {**assignment.labels(), INSTALLATION: receipt[INSTALLATION]},
+                "annotations": dict(receipt),
+            },
             "spec": {
                 "restartPolicy": "Never",
                 "automountServiceAccountToken": False,
@@ -228,8 +237,13 @@ class KubernetesMounts:
         finally:
             connection.close()
 
-    def provision(self, assignment: MountAssignment) -> None:
-        """A ready helper fixes the view PV's node affinity before sandbox creation."""
+    def provision(self, assignment: MountAssignment, receipt: dict[str, str]) -> None:
+        """A ready helper fixes the view PV's node affinity before sandbox creation.
+
+        The helper Pod is created first and carries ``receipt`` as annotations
+        (the installation also as a label, to list by), so a view whose PV or
+        PVC was never made is still attributable.
+        """
         self._check_topology(assignment)
         existing_pod = self._read(self.api.read_namespaced_pod, assignment.name)
         if existing_pod is None and self._read(
@@ -239,7 +253,9 @@ class KubernetesMounts:
                 f"workspace view PV/{assignment.name} lost its helper; do not recreate live FUSE mounts"
             )
         self._ensure(
-            self.api.read_namespaced_pod, self.api.create_namespaced_pod, self._pod(assignment)
+            self.api.read_namespaced_pod,
+            self.api.create_namespaced_pod,
+            self._pod(assignment, receipt),
         )
         pod = self._ready(assignment)
         verify_status(self._exec(assignment, assignment.command("status")), assignment)
@@ -247,7 +263,10 @@ class KubernetesMounts:
         if not node:
             raise RuntimeError(f"ready helper Pod/{assignment.name} has no node assignment")
         hostname = self._hostname(node)
-        metadata = {"name": assignment.name, "labels": assignment.labels()}
+        metadata = {
+            "name": assignment.name,
+            "labels": {**assignment.labels(), INSTALLATION: receipt[INSTALLATION]},
+        }
         pv: dict[str, Any] = {
             "apiVersion": "v1",
             "kind": "PersistentVolume",
@@ -357,18 +376,22 @@ class KubernetesMounts:
                 *args, body={"preconditions": {"uid": resource.metadata.uid}}, _request_timeout=30
             )
 
-    def attach(self, assignment_id: str, sandbox_id: str, backend: str) -> None:
+    def attach(self, assignment_id: str, sandbox_id: str, backend: str, installation: str) -> None:
         """Persist receipts on the view PVC so helper loss does not lose ownership."""
         digest = hashlib.sha256(assignment_id.encode()).hexdigest()
         name = "astrabox-view-" + digest[:32]
         claim = self._read(self.api.read_namespaced_persistent_volume_claim, name)
         if claim is None:
             raise RuntimeError(f"cannot attach sandbox to missing workspace PVC/{name}")
-        verify_labels(claim.metadata.labels, {MANAGED: "mergerfs", OWNER: digest[:63]}, name)
+        verify_labels(
+            claim.metadata.labels,
+            {MANAGED: "mergerfs", OWNER: digest[:63], INSTALLATION: installation},
+            name,
+        )
         desired = {
-            "astrabox.storage-id": assignment_id,
-            "astrabox.sandbox-id": sandbox_id,
-            "astrabox.sandbox-backend": backend,
+            STORAGE_ID: assignment_id,
+            SANDBOX_ID: sandbox_id,
+            SANDBOX_BACKEND: backend,
         }
         annotations = claim.metadata.annotations or {}
         for key, value in desired.items():
@@ -386,23 +409,41 @@ class KubernetesMounts:
             _request_timeout=30,
         )
 
-    def attached(self) -> list[tuple[str, str, str]]:
+    def attached(self, installation: str) -> list[tuple[str, str, str]]:
         """Read durable receipts without assuming the helper is currently healthy."""
         claims = self.api.list_namespaced_persistent_volume_claim(
             self.namespace,
-            label_selector=MANAGED + "=mergerfs",
+            label_selector=f"{MANAGED}=mergerfs,{INSTALLATION}={installation}",
             _request_timeout=30,
         ).items
         result = []
         for claim in claims:
             annotations = claim.metadata.annotations or {}
-            if "astrabox.sandbox-id" not in annotations:
+            if SANDBOX_ID not in annotations:
                 continue
             result.append(
+                (annotations[STORAGE_ID], annotations[SANDBOX_BACKEND], annotations[SANDBOX_ID])
+            )
+        return result
+
+    def unattached(self, installation: str) -> list[tuple[str, str, datetime]]:
+        """Helper Pods of this installation whose view PVC has no attached receipt."""
+        pods = self.api.list_namespaced_pod(
+            self.namespace,
+            label_selector=f"{MANAGED}=mergerfs,{INSTALLATION}={installation}",
+            _request_timeout=30,
+        ).items
+        result = []
+        for pod in pods:
+            claim = self._read(self.api.read_namespaced_persistent_volume_claim, pod.metadata.name)
+            if claim is not None and SANDBOX_ID in (claim.metadata.annotations or {}):
+                continue
+            annotations = pod.metadata.annotations or {}
+            result.append(
                 (
-                    annotations["astrabox.storage-id"],
-                    annotations["astrabox.sandbox-backend"],
-                    annotations["astrabox.sandbox-id"],
+                    annotations[STORAGE_ID],
+                    annotations[SANDBOX_BACKEND],
+                    pod.metadata.creation_timestamp,
                 )
             )
         return result

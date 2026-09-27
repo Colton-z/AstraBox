@@ -4,7 +4,7 @@
 # The platform's readiness gate is a TCP connect to this port, and the seam
 # names a port rather than a protocol — so the provider cannot know what
 # "ready" means for an arbitrary image, and it is this image's job to make the
-# port's acceptance mean something. socat binds in milliseconds while Hermes
+# port's acceptance mean something. The relay binds in milliseconds while Hermes
 # takes seconds to compose a profile; a forwarder started in parallel with the
 # backend publishes an open port to a server that is not there, the gate
 # passes, and the platform's very next call fails against a box it was told was
@@ -46,7 +46,8 @@ until probe; do
 done
 echo "astrabox-hermes-forward: backend answers; publishing ${LISTEN_PORT}"
 
-# Bytes pass through verbatim, which is what keeps the WebSocket upgrade and
-# its `?token=` credential intact end to end.
-exec /usr/bin/socat -d "TCP-LISTEN:${LISTEN_PORT},fork,reuseaddr" \
-  "TCP:127.0.0.1:${UPSTREAM_PORT}"
+# The relay names the backend's own bind in each connection's `Host`, which
+# Hermes requires and no route into the box supplies; hermes_host_relay.py has
+# the check it satisfies and what else it passes through unchanged.
+exec "${HERMES_VENV}/bin/python" /opt/astrabox/hermes/hermes_host_relay.py \
+  "${LISTEN_PORT}" "${UPSTREAM_PORT}"

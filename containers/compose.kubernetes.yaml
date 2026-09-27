@@ -33,12 +33,22 @@ services:
       ASTRABOX_SANDBOX_SERVER_KUBE_NAMESPACE: ${ASTRABOX_SANDBOX_SERVER_KUBE_NAMESPACE:-opensandbox}
       ASTRABOX_SANDBOX_SERVER_KUBE_API_SERVER: ${ASTRABOX_SANDBOX_SERVER_KUBE_API_SERVER:?set the Kubernetes API address covered by its TLS certificate}
       ASTRABOX_SANDBOX_ENDPOINT_VIA_SERVER_PROXY: ${ASTRABOX_SANDBOX_ENDPOINT_VIA_SERVER_PROXY:-false}
+      # OpenSandbox ingress gateway routing. Left empty, sandboxes are reached
+      # at their Pod addresses; Secure Access (set in compose.yaml) needs the
+      # gateway. docs/configuration.md describes each value.
+      ASTRABOX_SANDBOX_SERVER_INGRESS_MODE: ${ASTRABOX_SANDBOX_SERVER_INGRESS_MODE:-}
+      ASTRABOX_SANDBOX_SERVER_INGRESS_GATEWAY_ADDRESS: ${ASTRABOX_SANDBOX_SERVER_INGRESS_GATEWAY_ADDRESS:-}
+      ASTRABOX_SANDBOX_SERVER_INGRESS_ROUTE_MODE: ${ASTRABOX_SANDBOX_SERVER_INGRESS_ROUTE_MODE:-}
+      ASTRABOX_SANDBOX_SERVER_INGRESS_SIGNING_KEY: ${ASTRABOX_SANDBOX_SERVER_INGRESS_SIGNING_KEY:-}
+      ASTRABOX_SANDBOX_SERVER_INGRESS_SIGNING_KEY_ID: ${ASTRABOX_SANDBOX_SERVER_INGRESS_SIGNING_KEY_ID:-}
+      ASTRABOX_SANDBOX_ENDPOINT_SCHEME: ${ASTRABOX_SANDBOX_ENDPOINT_SCHEME:-}
       # The base Compose topology discovers these Docker-only bridge services.
       # Kubernetes Pods use the explicit callback and model-gateway addresses
       # below, so retaining either name makes onebox reject the mixed runtime.
       ASTRABOX_SANDBOX_EDGE_SERVICE: !reset null
       ASTRABOX_SANDBOX_DNS_EDGE_SERVICE: !reset null
       ASTRABOX_SANDBOX_EDGE_CALLBACK_PORT: !reset null
+      ASTRABOX_SANDBOX_EDGE_NETWORK: !reset null
       # Workspace file persistence is opt-in; empty leaves files in the sandbox.
       ASTRABOX_SANDBOX_WORKSPACE_VOLUME: ${ASTRABOX_SANDBOX_WORKSPACE_VOLUME:-}
       # Sandboxes call this address for the MCP bridge and transcript mirror.

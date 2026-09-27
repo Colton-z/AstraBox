@@ -18,9 +18,11 @@ new ones, with no I/O.
 Two terminal states drive every decision below:
 
 * **normal end** — no ``turn_failure`` block, a ``result`` block is present,
-  and that result is not itself an error.
-* **interrupted** — a ``turn_failure`` block is present (a user stop is one
-  case of it), or the ``result`` block is an error.
+  and that result is neither an error nor cancelled.
+* **interrupted** — a ``turn_failure`` block is present, the ``result`` block
+  is an error, or its ``finish_reason`` is ``cancelled``. A user stop is the
+  last case: the turn completes, and the platform's result records that it
+  was cancelled (``engine_turn.py`` writes that outcome from the engine seam).
 
 A record in neither state is not collapsible and is returned unchanged; an
 unfinished turn has no durable assistant record at all, so every record that
@@ -81,12 +83,19 @@ class _Atom:
     ``block_indexes`` point back into the record's own block list, so folding
     can rebuild the surviving blocks in source order instead of reassembling
     them from the atoms.
+
+    ``is_carried`` marks a ``ui_data`` block: a data part the console carries
+    alongside the work, such as a Write call's file changes. It neither starts
+    nor ends a run of process atoms and is never folded, which is how
+    ``MessageParts.tsx::groupAssistantProcess`` treats the same part on the open
+    page and why the page's Diff panel still finds it on a folded response.
     """
 
     block_indexes: tuple[int, ...]
     is_tool: bool
     is_text: bool
     is_process: bool
+    is_carried: bool = False
 
 
 @dataclass(frozen=True)
@@ -118,7 +127,10 @@ def _terminal_state(blocks: list[dict[str, Any]]) -> tuple[bool, bool]:
         (block for block in reversed(blocks) if _block_type(block) == "result"),
         None,
     )
-    result_failed = result_block is not None and result_block.get("is_error") is True
+    result_failed = result_block is not None and (
+        result_block.get("is_error") is True
+        or str(result_block.get("finish_reason") or "").strip() == "cancelled"
+    )
     interrupted = has_failure or result_failed
     normal_end = not has_failure and result_block is not None and not result_failed
     return normal_end, interrupted
@@ -156,9 +168,9 @@ def process_atoms(blocks: list[dict[str, Any]]) -> list[_Atom]:
     A tool call and its result are one atom, and that atom is part of the
     process only while the result is ``output-available`` — a denied or errored
     result, and a call with no result at all, are things the reader has to be
-    able to see. Blank text carries nothing to show and becomes no atom;
-    everything else that is neither text, thinking nor a tool call is a trailer
-    that never joins a process group.
+    able to see. Blank text carries nothing to show and becomes no atom; a
+    ``ui_data`` block is a carried atom; everything else that is neither text,
+    thinking nor a tool call is a trailer that never joins a process group.
     """
 
     paired = _pair_tool_results(blocks)
@@ -214,6 +226,7 @@ def process_atoms(blocks: list[dict[str, Any]]) -> list[_Atom]:
                 is_tool=False,
                 is_text=False,
                 is_process=False,
+                is_carried=kind == "ui_data",
             )
         )
     return atoms
@@ -238,12 +251,13 @@ def _deferred_groups(blocks: list[dict[str, Any]]) -> list[_Group]:
     normal_end, interrupted = _terminal_state(blocks)
     last_tool = max((i for i, atom in enumerate(atoms) if atom.is_tool), default=-1)
     process_end = last_tool
-    while (
-        process_end >= 0
-        and process_end + 1 < len(atoms)
-        and atoms[process_end + 1].is_process
-    ):
-        process_end += 1
+    probe = process_end + 1
+    while process_end >= 0 and probe < len(atoms):
+        if atoms[probe].is_process:
+            process_end = probe
+        elif not atoms[probe].is_carried:
+            break
+        probe += 1
     conclusion = any(atom.is_text for atom in atoms[process_end + 1 :])
     collapse = last_tool >= 0 and (interrupted or (normal_end and conclusion))
     if collapse:
@@ -266,6 +280,8 @@ def _deferred_groups(blocks: list[dict[str, Any]]) -> list[_Group]:
     for atom in atoms:
         if atom.is_process:
             run.append(atom)
+            continue
+        if atom.is_carried:
             continue
         if run:
             groups.append(_Group(atoms=tuple(run), summarize=False))

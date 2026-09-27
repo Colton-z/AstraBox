@@ -168,6 +168,10 @@ class ResidentRelay:
         self.turn_inbox: asyncio.Queue[Any] = asyncio.Queue()
         self._platform_pending = False
         self._platform_active = False
+        #: Platform inputs written so far, and the queued run starts each
+        #: pending input was given, with that input's number.
+        self._submissions = 0
+        self._attributed_starts: list[tuple[Any, int]] = []
         self._resident: _Resident | None = None
         #: Sequences below this are wire replay from before this relay read
         #: the process. They may still belong to a platform turn being
@@ -197,7 +201,7 @@ class ResidentRelay:
         return self._failure
 
     # ── attribution ──────────────────────────────────────────────────────
-    def platform_input_submitted(self) -> None:
+    def platform_input_submitted(self) -> int:
         """A platform input is on its way to the engine; its next run is the turn's.
 
         Marked before the input is written, not after the engine answers it:
@@ -206,9 +210,60 @@ class ResidentRelay:
         the sender's continuation has taken the first. An input queued behind
         a run in progress starts its run only after that run settles, which
         the routing already honours.
+
+        Returns the input's number, which :meth:`platform_turn_begins` takes.
         """
 
         self._platform_pending = True
+        self._submissions += 1
+        return self._submissions
+
+    def platform_turn_begins(self, submission: int | None) -> None:
+        """A platform turn opens for the input with this number.
+
+        The platform opens a turn only after its previous one settled, and
+        nothing reads ``turn_inbox`` before the new turn's stream does. What
+        is queued ahead of this turn's own run therefore has no reader: a
+        turn the platform settled while it was parked on an interaction (a
+        stop) leaves the rest of its run here, and a stream that read it
+        would take that run's end for its own. It is dropped. If this turn's
+        run has not started yet, the remaining records of a run still open
+        are routed as if no platform turn were active. A wire failure is
+        kept: it is the process's, and the next reader must learn it in
+        order.
+
+        ``submission`` is the number :meth:`platform_input_submitted` gave the
+        input, or None when the input is written after this call.
+        """
+
+        first = self._submissions + 1 if submission is None else submission
+        queued: list[Any] = []
+        while not self.turn_inbox.empty():
+            queued.append(self.turn_inbox.get_nowait())
+        numbers = {id(wire): number for wire, number in self._attributed_starts}
+        keep_from = next(
+            (
+                index
+                for index, item in enumerate(queued)
+                if numbers.get(id(item), 0) >= first
+            ),
+            None,
+        )
+        kept = [
+            item
+            for index, item in enumerate(queued)
+            if isinstance(item, BaseException)
+            or (keep_from is not None and index >= keep_from)
+        ]
+        for item in kept:
+            self.turn_inbox.put_nowait(item)
+        self._attributed_starts = [
+            (wire, number)
+            for wire, number in self._attributed_starts
+            if any(wire is item for item in kept)
+        ]
+        if keep_from is None:
+            self._platform_active = False
 
     def platform_input_rejected(self) -> None:
         """The engine refused the input before acceptance; no run will follow it."""
@@ -290,11 +345,12 @@ class ResidentRelay:
         sequence = seam.sequence(wire)
 
         if self._platform_active:
-            if seam.starts_run(record):
+            if seam.starts_run(record) and self._platform_pending:
                 # A restored active snapshot can precede this input's start.
                 # Consume its pending attribution here too, not on run end:
                 # another input may be queued while this run is in progress.
                 self._platform_pending = False
+                self._attributed_starts.append((wire, self._submissions))
             await self.turn_inbox.put(wire)
             if seam.settles_run(record):
                 self._platform_active = False
@@ -303,6 +359,7 @@ class ResidentRelay:
         if seam.starts_run(record) and self._platform_pending:
             self._platform_pending = False
             self._platform_active = True
+            self._attributed_starts.append((wire, self._submissions))
             await self.turn_inbox.put(wire)
             return
 
@@ -425,13 +482,21 @@ class ResidentRelay:
         seam = self._seam
         if not seam.carries_child_facts(record):
             return
+        # What the seam observed before this record, while a platform turn
+        # folded its own children, reached the platform as that turn's facts
+        # but not the journal. The durable fold replays the journal alone, and
+        # Codex learns a child only from the thread document it read, so a
+        # child found during the turn needs that document ahead of its later
+        # notifications, whether or not this record changes anything.
+        carried = seam.native_records()
         facts = await seam.child_facts(record)
         natives = seam.native_records()
         # A status push the package repeats about once a second says nothing
         # new most of the time. Only a record that changed a child is worth a
         # journal row; the fold re-derives every state from the changes alone.
-        if facts and self._event_sink is not None:
-            for offset, native in enumerate(natives):
+        journal = [*carried, *(natives if facts else [])]
+        if journal and self._event_sink is not None:
+            for offset, native in enumerate(journal):
                 await self._event_sink.persist_event(
                     engine_kind=seam.engine_kind,
                     causation_id=f"{seam.engine_kind}:idle:{sequence}:{offset}",

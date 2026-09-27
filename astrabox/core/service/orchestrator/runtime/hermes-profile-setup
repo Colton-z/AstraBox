@@ -49,29 +49,6 @@ if [ "$workspace" != "$workspace_source" ]; then
   fi
 fi
 
-python3 - "$profile_home" <<'PY'
-import base64
-import json
-import os
-from pathlib import Path
-import sys
-
-raw = (os.environ.get("ASTRABOX_HERMES_PLUGIN_FILES_B64") or "").strip()
-if not raw:
-    raise SystemExit(0)
-files = json.loads(base64.b64decode(raw.encode("ascii")).decode("utf-8"))
-profile_home = Path(sys.argv[1]).resolve()
-for rel_path, payload in files.items():
-    target = (profile_home / rel_path).resolve()
-    if not str(target).startswith(str(profile_home) + os.sep):
-        raise SystemExit("plugin config file path escapes the profile home: %s" % rel_path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    with open(target, "w", encoding="utf-8") as handle:
-        json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
-        handle.write("\n")
-    target.chmod(0o600)
-PY
-
 # This directory is the workload account's persistent profile, never a shared
 # system path. The env file was written through the sandbox file API as root;
 # hand the entire newly-provisioned profile back to its owner before Hermes

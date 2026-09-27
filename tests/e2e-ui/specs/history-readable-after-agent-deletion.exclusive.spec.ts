@@ -49,6 +49,7 @@ test('agent_chat history remains readable after agent deletion', async ({ page, 
       name: `__e2e_del_history_${runId}`,
       model,
       environment_name: environmentName,
+      prewarm_enabled: false,
     });
     agentId = String(agent.agent_id || '');
     expect(agentId, 'created agent must have an id').not.toEqual('');

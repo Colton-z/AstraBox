@@ -23,6 +23,7 @@ from astrabox.persistence.repository.backend import (
 )
 from astrabox.persistence.repository.index_verification import ensure_unique_index
 from astrabox.common.logger.logger_factory import get_logger
+from astrabox.persistence.repository.keyset import InvalidListCursor
 from astrabox.common.utils.settings import load_astrabox_settings
 from astrabox.common.utils.time_utils import utcnow_iso
 from astrabox.core.model import SessionState
@@ -47,13 +48,13 @@ def _decode_session_list_cursor(cursor: str | None) -> dict[str, str] | None:
         raw = base64.urlsafe_b64decode((value + "=" * (-len(value) % 4)).encode("ascii"))
         payload = json.loads(raw.decode("utf-8"))
     except Exception as exc:
-        raise ValueError("invalid session list cursor") from exc
+        raise InvalidListCursor("invalid session list cursor") from exc
     if not isinstance(payload, dict):
-        raise ValueError("invalid session list cursor")
+        raise InvalidListCursor("invalid session list cursor")
     updated_at = str(payload.get("updated_at") or "").strip()
     session_id = str(payload.get("session_id") or "").strip()
     if not updated_at or not session_id:
-        raise ValueError("invalid session list cursor")
+        raise InvalidListCursor("invalid session list cursor")
     return {
         "updated_at": updated_at,
         "session_id": session_id,
@@ -458,36 +459,59 @@ class SessionRepository:
     async def list_startup_allocation_candidates(
         self,
         *,
+        after_session_id: str | None = None,
         limit: int = 50,
     ) -> list[dict[str, Any]]:
-        """Return rows with active or retained startup allocations, newest update first.
+        """One page of the rows with active or retained startup allocations.
 
-        The box-occupancy check uses this bounded page to find recent joiners.
-        Sorting by descending ``updated_at`` prioritizes them over older
-        allocation records awaiting cleanup.
+        Rows come in ``session_id`` order after ``after_session_id``, so a
+        reconciler that carries the last id forward reaches every row; a page
+        shorter than ``limit`` is the last.
         """
 
         page_limit = max(1, min(int(limit or 50), 10_000))
+        query: dict[str, Any] = {
+            "$or": [
+                {"startup_allocation": {"$type": "object"}},
+                {"_retained_startup_allocations": {"$type": "array", "$ne": []}},
+            ],
+        }
+        after = str(after_session_id or "").strip()
+        if after:
+            query["session_id"] = {"$gt": after}
 
         async def _list() -> list[dict[str, Any]]:
             collection = await get_async_collection(self._collection_name)
-            cursor = (
-                collection.find(
-                    {
-                        "$or": [
-                            {"startup_allocation": {"$type": "object"}},
-                            {"_retained_startup_allocations": {"$type": "array", "$ne": []}},
-                        ],
-                    }
-                )
-                .sort("updated_at", -1)
-                .limit(page_limit)
-            )
+            cursor = collection.find(query).sort("session_id", 1).limit(page_limit)
             return [doc async for doc in cursor]
 
         return await run_mongo_with_retry(
             "sessions.list_startup_allocation_candidates",
             _list,
+        )
+
+    async def list_startup_allocations_on_sandbox(
+        self, sandbox_id: str
+    ) -> list[dict[str, Any]]:
+        """Every row whose active startup allocation is on ``sandbox_id``.
+
+        The box-occupancy check needs the whole set for one box: a startup it
+        misses is a conversation joining a box that is then destroyed.
+        """
+
+        target = str(sandbox_id or "").strip()
+        if not target:
+            return []
+
+        async def _list() -> list[dict[str, Any]]:
+            collection = await get_async_collection(self._collection_name)
+            cursor = collection.find({"startup_allocation.sandbox_id": target})
+            return [doc async for doc in cursor]
+
+        return await run_mongo_with_retry(
+            "sessions.list_startup_allocations_on_sandbox",
+            _list,
+            fault_context={"sandbox_id": target},
         )
 
     async def list_sessions_by_sandbox_id(self, sandbox_id: str) -> list[dict[str, Any]]:
@@ -520,19 +544,22 @@ class SessionRepository:
         self,
         *,
         now_iso: str,
+        after_session_id: str | None = None,
         limit: int = 50,
     ) -> list[dict[str, Any]]:
-        """Sessions that may be holding a dead sandbox binding.
+        """One page of the Sessions that may be holding a dead sandbox binding.
 
         Feeds the expiration watcher's pull backstop of the sandbox-death
         convergence capability: a session still bound to a sandbox past its
         lease with no runtime_unavailable mark is the one whose box may have
         died without a status callback. Lease-active sessions are excluded so
         the probe volume stays bounded to the suspicious set; sessions already
-        converged (runtime_unavailable) or terminal never re-enter.
+        converged (runtime_unavailable) or terminal never re-enter. Rows come
+        in ``session_id`` order after ``after_session_id``: a probe that
+        cannot settle a binding leaves its row in the set.
         """
         page_limit = max(1, min(int(limit or 50), 500))
-        query = {
+        query: dict[str, Any] = {
             "deleted": {"$ne": True},
             "runtime_unavailable": {"$ne": True},
             "sandbox_id": {"$gt": ""},
@@ -549,10 +576,13 @@ class SessionRepository:
                 {"sandbox_liveness_suspect_at": {"$gt": ""}},
             ],
         }
+        after = str(after_session_id or "").strip()
+        if after:
+            query["session_id"] = {"$gt": after}
         collection = await get_async_collection(self._collection_name)
 
         async def _list() -> list[dict[str, Any]]:
-            cursor = collection.find(query).limit(page_limit)
+            cursor = collection.find(query).sort("session_id", 1).limit(page_limit)
             return [doc async for doc in cursor]
 
         return await run_mongo_with_retry(
@@ -564,9 +594,10 @@ class SessionRepository:
         self,
         *,
         now_iso: str,
+        after_session_id: str | None = None,
         limit: int = 50,
     ) -> list[dict[str, Any]]:
-        """Sessions holding a LIVE sandbox that may have gone quiet.
+        """One page of the Sessions holding a LIVE sandbox that may have gone quiet.
 
         The complement of :meth:`list_dead_binding_probe_candidates`: that one
         takes the bindings whose lease has LAPSED, because the box may be dead;
@@ -582,9 +613,11 @@ class SessionRepository:
         Idleness itself is not decided here. How long an agent may sit idle is
         per-agent, and whether the conversation is between turns is a snapshot
         read, so the query only narrows to the rows that could possibly qualify.
+        Rows come in ``session_id`` order after ``after_session_id``: a
+        conversation that is not idle yet stays in the set.
         """
         page_limit = max(1, min(int(limit or 50), 500))
-        query = {
+        query: dict[str, Any] = {
             "deleted": {"$ne": True},
             "runtime_unavailable": {"$ne": True},
             "sandbox_id": {"$gt": ""},
@@ -598,10 +631,13 @@ class SessionRepository:
                 {"sandbox_parked_at": ""},
             ],
         }
+        after = str(after_session_id or "").strip()
+        if after:
+            query["session_id"] = {"$gt": after}
         collection = await get_async_collection(self._collection_name)
 
         async def _list() -> list[dict[str, Any]]:
-            cursor = collection.find(query).limit(page_limit)
+            cursor = collection.find(query).sort("session_id", 1).limit(page_limit)
             return [doc async for doc in cursor]
 
         return await run_mongo_with_retry(
@@ -762,23 +798,26 @@ class SessionRepository:
     async def list_bootstrap_reconcile_candidates(
         self,
         *,
-        limit: int = 10_000,
+        after_session_id: str | None = None,
+        limit: int = 200,
     ) -> list[dict[str, Any]]:
-        """Return Session rows whose interrupted startup needs reconciliation."""
-        page_limit = max(1, min(int(limit or 10_000), 10_000))
+        """One page of the Session rows whose interrupted startup needs reconciliation.
+
+        Rows come in ``session_id`` order after ``after_session_id``; a page
+        shorter than ``limit`` is the last.
+        """
+        page_limit = max(1, min(int(limit or 200), 10_000))
+        query: dict[str, Any] = {
+            "deleted": {"$ne": True},
+            "state": SessionState.CREATING.value,
+        }
+        after = str(after_session_id or "").strip()
+        if after:
+            query["session_id"] = {"$gt": after}
 
         async def _list() -> list[dict[str, Any]]:
             collection = await get_async_collection(self._collection_name)
-            cursor = (
-                collection.find(
-                    {
-                        "deleted": {"$ne": True},
-                        "state": SessionState.CREATING.value,
-                    }
-                )
-                .sort("updated_at", 1)
-                .limit(page_limit)
-            )
+            cursor = collection.find(query).sort("session_id", 1).limit(page_limit)
             return [doc async for doc in cursor]
 
         return await run_mongo_with_retry(

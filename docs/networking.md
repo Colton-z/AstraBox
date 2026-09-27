@@ -23,7 +23,7 @@ An Environment controls which destinations the sandbox can reach:
 | Mode | Behavior |
 | --- | --- |
 | `Limited` | Allows platform-required connections, destinations authorized by linked Credential Vaults, and the additional hosts you enter. Remote MCP endpoints declared by an Agent are allowed only when **Allow remote MCP servers** is enabled. |
-| `Unrestricted` | Allows every outbound destination. |
+| `Unrestricted` | Allows every outbound destination except the deployment's own sandbox network. On a Docker host that is Docker's default bridge: other sandboxes and the bridge gateway where sandbox ports are published ([details](deploy.md#sandbox-network-boundary)). |
 
 ## Firewall Configuration
 
@@ -36,7 +36,9 @@ are replaceable.
 > The Environment network allowlist controls which destinations a sandbox may
 > reach. It does not assign a stable public source IP. Additional allowed hosts
 > can be exact hosts, leftmost wildcards such as `*.example.com`, IP addresses,
-> or CIDRs; do not include a scheme, port, or path.
+> or CIDRs; do not include a scheme, port, or path. An entry inside the
+> deployment's sandbox network (`ASTRABOX_SANDBOX_EGRESS_DENY_CIDRS`) has no
+> effect: those deny rules are applied before every allow rule.
 
 ## FAQ
 

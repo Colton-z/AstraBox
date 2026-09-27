@@ -45,7 +45,7 @@ USER root
 # per-conversation write roots from drifting between engines.
 COPY --from=execd /execd /execd
 COPY --from=execd /bootstrap.sh /bootstrap.sh
-COPY containers/sandbox-claude-code/execd-isolation.toml \
+COPY --chmod=u=rwX,go=rX containers/sandbox-claude-code/execd-isolation.toml \
      /opt/astrabox/opensandbox/isolation.toml
 RUN set -eux; \
     apt-get update; \
@@ -74,7 +74,7 @@ RUN set -eux; \
 # base-image tool the sandbox's own services resolve from PATH. Resolving this
 # graph exceeds npm's default V8 heap in a clean image, so the build grants npm
 # a bounded larger heap without carrying that setting into the runtime.
-COPY containers/sandbox-deepseek-harness/package.json \
+COPY --chmod=u=rwX,go=rX containers/sandbox-deepseek-harness/package.json \
      containers/sandbox-deepseek-harness/package-lock.json \
      ${DSH_PREFIX}/
 RUN set -eux; \
@@ -93,16 +93,16 @@ RUN set -eux; \
 # composes; it deliberately asserts nothing about WHICH plugins it composes —
 # that catalogue is the vendor's product, and a gate over it would make
 # AstraBox the curator of someone else's agent.
-COPY containers/sandbox-deepseek-harness/astrabox-dsh-profile.patch.yml ${DSH_PREFIX}/profile.patch.yml
+COPY --chmod=u=rwX,go=rX containers/sandbox-deepseek-harness/astrabox-dsh-profile.patch.yml ${DSH_PREFIX}/profile.patch.yml
 RUN set -eux; \
     DSH_HOME=/tmp/dsh-build-home \
       "${DSH_PREFIX}/node_modules/.bin/dsh" --profile web \
       --patch "${DSH_PREFIX}/profile.patch.yml" --dump-config > /dev/null; \
     rm -rf /tmp/dsh-build-home
 
-COPY containers/sandbox-deepseek-harness/astrabox-dsh-serve ${DSH_PREFIX}/serve.sh
-COPY containers/sandbox-deepseek-harness/astrabox-dsh-web ${DSH_PREFIX}/web.py
-COPY astrabox/core/service/orchestrator/runtime/astrabox-transcript-mirror \
+COPY --chmod=u=rwX,go=rX containers/sandbox-deepseek-harness/astrabox-dsh-serve ${DSH_PREFIX}/serve.sh
+COPY --chmod=u=rwX,go=rX containers/sandbox-deepseek-harness/astrabox-dsh-web ${DSH_PREFIX}/web.py
+COPY --chmod=u=rwX,go=rX astrabox/core/service/orchestrator/runtime/astrabox-transcript-mirror \
      ${DSH_PREFIX}/mirror.py
 # The harness writes one append-only log per conversation under its own home,
 # and `profile.patch.yml` selects the plaintext encoding so the mirror's batch
@@ -110,13 +110,13 @@ COPY astrabox/core/service/orchestrator/runtime/astrabox-transcript-mirror \
 ENV ASTRABOX_TRANSCRIPT_MIRROR_ROOT=/home/agent/.dsh/sessions \
     ASTRABOX_TRANSCRIPT_MIRROR_GLOB=*.jsonl \
     ASTRABOX_TRANSCRIPT_MIRROR_NAMESPACE=dsh/
-COPY containers/sandbox-deepseek-harness/astrabox-dsh-forward ${DSH_PREFIX}/forward.sh
+COPY --chmod=u=rwX,go=rX containers/sandbox-deepseek-harness/astrabox-dsh-forward ${DSH_PREFIX}/forward.sh
 # The shared-box tenancy's per-conversation stack (harness + mirror +
 # forwarder), triggered by the platform inside a conversation's isolated
 # session rather than supervised at boot — a session's processes die with it.
-COPY containers/sandbox-deepseek-harness/astrabox-dsh-serve-conversation \
+COPY --chmod=u=rwX,go=rX containers/sandbox-deepseek-harness/astrabox-dsh-serve-conversation \
      ${DSH_PREFIX}/serve-conversation.sh
-COPY containers/sandbox-deepseek-harness/supervisord.dsh.conf \
+COPY --chmod=u=rwX,go=rX containers/sandbox-deepseek-harness/supervisord.dsh.conf \
      /opt/gem/supervisord/supervisord.dsh.conf
 RUN chmod 0755 "${DSH_PREFIX}/serve.sh" "${DSH_PREFIX}/forward.sh" \
       "${DSH_PREFIX}/serve-conversation.sh"; \
@@ -183,7 +183,7 @@ RUN set -eux; \
 # The claude and hermes images always carried it; a shared placement on this
 # image died with `astrabox-provision-conversation: No such file or
 # directory` until it did too.
-COPY astrabox/core/service/orchestrator/runtime/provision-conversation \
+COPY --chmod=u=rwX,go=rX astrabox/core/service/orchestrator/runtime/provision-conversation \
      /usr/local/bin/astrabox-provision-conversation
 RUN chmod 0555 /usr/local/bin/astrabox-provision-conversation && \
     bash -n /usr/local/bin/astrabox-provision-conversation

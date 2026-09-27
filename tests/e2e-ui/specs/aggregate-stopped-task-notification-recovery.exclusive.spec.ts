@@ -82,6 +82,15 @@ test('aggregate stopped notification preserves a completed child through real re
     .toEqual({ state: 'READY', background: false, children: [{ status: 'completed', closed: true }] });
   const child = (await api.listChildRuns(sessionId)).child_runs[0];
   const childId = child.child_run_id;
+  const opened = sessionEvents(sessionId).filter((event) => event.event_type === 'turn.background_tasks_opened');
+  expect(opened).toHaveLength(1);
+  const openedSeq = Number(opened[0].event_seq);
+  // Native completion precedes the coordinator's durable custody receipt.
+  await expect.poll(async () => ({
+    state: (await api.getSession(sessionId)).state,
+    materialized: materializations(openedSeq).map((row) => object(row.payload).source),
+  }), { timeout: 45_000, message: 'the original child manifest must reach durable custody before the recovery fault' })
+    .toEqual({ state: 'READY', materialized: ['engine_detached_child'] });
   const baselineChild = await api.getChildRunMessages(sessionId, childId);
   expect(baselineChild.messages.filter((row) => row.role === 'assistant')
     .flatMap((row) => row.content).filter((block) => block.type === 'text')
@@ -91,9 +100,6 @@ test('aggregate stopped notification preserves a completed child through real re
   const parentReplies = baselineHistory.filter((row) => row.role === 'assistant' && messageText(row).includes(parentMarker));
   expect(parentReplies.length).toBeGreaterThan(0);
   const baselineEvents = sessionEvents(sessionId);
-  const opened = baselineEvents.filter((event) => event.event_type === 'turn.background_tasks_opened');
-  expect(opened).toHaveLength(1);
-  const openedSeq = Number(opened[0].event_seq);
   const originalMaterializations = materializations(openedSeq);
   expect(originalMaterializations).toHaveLength(1);
   expect(object(originalMaterializations[0].payload).source).toBe('engine_detached_child');

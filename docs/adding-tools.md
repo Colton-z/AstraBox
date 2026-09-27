@@ -43,6 +43,33 @@ Notes:
 - Saving an Agent does not reconfigure a task already running. AstraBox uses the latest extension configuration when it first prepares or rebuilds a Session runtime.
 - Network rules and credentials are separate from an MCP definition. A remote server must be reachable from the sandbox, and protected credentials must match its exact destination.
 
+## What an Agent's own extensions may reach {#what-extensions-may-reach}
+
+Any signed-in user may create an Agent, so the extensions an Agent declares
+itself reach only what an administrator made available:
+
+- In a `limited` Environment, the Git hosts of the Agent's Skills and Plugins
+  are added to the allowed hosts, and so are its remote MCP servers when the
+  Environment allows remote MCP servers. A host is added only when it is a
+  public internet address or the Environment already lists it.
+- A private, loopback or link-local address is the deployment's own network:
+  the Docker bridge where the platform and other sandboxes listen, and the
+  cloud metadata service. A host with such an address, or a name that resolves
+  to one or does not resolve, is refused with `AGENT_EGRESS_HOST_REFUSED` (403)
+  when the Agent is saved, and again before a sandbox is prepared. To make an
+  internal host available, an administrator adds the host, IP or CIDR to the
+  Environment's allowed hosts.
+- A host name is resolved when the Agent is saved. The sandbox resolves it
+  again whenever it connects, so the check describes where the name pointed at
+  that moment.
+- An `unrestricted` Environment already allows every destination, and an
+  Agent's hosts do not change it.
+- An Agent's own MCP definition cannot set `provider` or
+  `credential_target_url`; only an administrator's MCP catalog assignment sets
+  them. See [Authenticate with Vaults](credentials.md).
+- Extensions administrators publish in the MCP and Skill catalog keep the hosts
+  the administrator configured.
+
 ## Native and Browser Capabilities
 
 Browser and web capabilities belong to the selected Agent program or to an extension it supports. AstraBox does not define a second platform-level browser toolset with its own tool names.

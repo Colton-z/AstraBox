@@ -117,6 +117,7 @@ export interface AssistantDraft {
   engine_kind: string;
   environment_name: string;
   permission_mode_default: string;
+  system: string;
 }
 
 export function buildAssistantDraft(): AssistantDraft {
@@ -125,7 +126,9 @@ export function buildAssistantDraft(): AssistantDraft {
     description: '',
     engine_kind: '',
     environment_name: '',
-    permission_mode_default: 'default',
+    // Chosen with the Environment: only its program knows which modes exist.
+    permission_mode_default: '',
+    system: '',
   };
 }
 

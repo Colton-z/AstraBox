@@ -134,11 +134,11 @@ for (const { profile: declared, delegated } of commandCases) {
       'After the command succeeds, briefly confirm completion without calling more tools.',
     ].join('\n');
     await sendPrompt(page, sessionId, delegated ? [
-      `Delegate this task to exactly one child using spawn_agent. Task label: ${marker}.`,
-      'You, the parent, must not execute any command, inspect any file, or use any file-editing tool.',
-      'Pass the following instructions verbatim to the child, then wait for that child to finish using wait_agent. Do not close the child.',
-      commandPrompt,
-      'When the child finishes, briefly report its completion. Do not perform the child task yourself.',
+      `Delegate work item ${marker} to exactly one native child Agent.`,
+      `Call spawn_agent exactly once with message=${JSON.stringify(commandPrompt)}.`,
+      'Then call wait_agent for that Agent and wait for its completed result before answering.',
+      'Do not run shell commands yourself. The child owns the complete workload.',
+      'When the child finishes, briefly report its completion.',
     ].join('\n') : commandPrompt);
     const first = await api.waitForSession(sessionId, (detail) => {
       if (detail.last_turn_status === 'FAILED' || detail.last_error) {

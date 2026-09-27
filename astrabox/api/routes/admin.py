@@ -27,6 +27,7 @@ from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.api_response import success_response
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.http_headers import build_attachment_headers
+from astrabox.common.utils.settings import load_astrabox_settings
 from astrabox.common.utils.time_utils import utcnow_iso
 from astrabox.core.service.orchestrator.environment_schema import get_environment_schema
 from astrabox.core.service.orchestrator.agent_schema import get_agent_schema
@@ -345,7 +346,7 @@ class AdminLogsPage(BaseModel):
 async def get_agent_schema_endpoint(request: Request):
     """Return the authoritative editable schema for the Agent form."""
     await _resolve_user(request)
-    return success_response(get_agent_schema())
+    return success_response(get_agent_schema(load_astrabox_settings()))
 
 
 @router.get(

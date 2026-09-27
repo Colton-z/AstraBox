@@ -7,15 +7,55 @@
 // frozen after the workspace materializes (the backend rejects changes with 409),
 // so those fields are locked — present in create, absent from edit. The mutable
 // set the backend PATCH accepts is display_name / icon / description /
-// permission_mode_default; only those drive the edit sections. The create form's
+// permission_mode_default / system; only those drive the edit sections. The create form's
 // environment options are injected from the live list of assistant-capable
 // environments, with no free-text fallback for an environment nothing backs.
 import i18n from '@/i18n';
 import type { AssistantRecord } from '@/assistant/types';
 import type { EnvironmentConfig } from '@/types';
 
-import type { AssistantDraft } from './assistantConfig';
-import type { EditSectionSpec } from './console';
+import { permissionModeLabel, type AssistantDraft } from './assistantConfig';
+import type { EditFieldSpec, EditSectionSpec } from './console';
+
+// The system prompt, shared by create and edit. Mono like the Agent form's:
+// it is text the reader writes for the program, not product copy.
+const systemField = (
+  accessors: {
+    get: (d: Record<string, unknown>) => unknown;
+    set: (d: Record<string, unknown>, value: unknown) => Record<string, unknown>;
+  },
+) => ({
+  key: 'system',
+  label: i18n.t('manage:assistant_form.system_label'),
+  type: 'textarea' as const,
+  ...accessors,
+  idTag: 'system',
+  rows: 8,
+  mono: true,
+  placeholder: i18n.t('manage:assistant_form.system_placeholder'),
+  help: i18n.t('manage:assistant_form.system_help'),
+});
+
+function permissionField(
+  accessors: {
+    get: (d: Record<string, unknown>) => unknown;
+    set: (d: Record<string, unknown>, value: unknown) => Record<string, unknown>;
+  },
+  options: { value: string; label: string }[],
+): EditFieldSpec[] {
+  if (options.length === 0) return [];
+  return [
+    {
+      key: 'permission_mode_default',
+      label: i18n.t('manage:assistant_form.permission_label'),
+      type: 'select',
+      ...accessors,
+      idTag: 'permission_mode_default',
+      options,
+      help: i18n.t('manage:assistant_form.permission_help'),
+    },
+  ];
+}
 
 // Built per-call (not module-load) so labels resolve in the active language.
 const permissionOptions = () => [
@@ -36,6 +76,14 @@ function field<K extends keyof AssistantDraft>(key: K) {
   };
 }
 
+/** The permission modes the named Environment's program declares. */
+export function environmentPermissionModes(
+  environments: EnvironmentConfig[],
+  name: string,
+): string[] {
+  return environments.find((environment) => environment.name === name)?.permission_modes ?? [];
+}
+
 /**
  * Build the create-page edit sections. `environments` is the live list of
  * assistant-capable environment presets — an assistant is not an agent: it names
@@ -47,6 +95,7 @@ function field<K extends keyof AssistantDraft>(key: K) {
  */
 export function buildAssistantCreateSections(
   environments: EnvironmentConfig[],
+  environmentName: string,
 ): EditSectionSpec[] {
   const environmentField = {
     key: 'environment_name',
@@ -56,10 +105,12 @@ export function buildAssistantCreateSections(
     set: (d: Record<string, unknown>, value: unknown) => {
       const name = String(value || '');
       const environment = environments.find((candidate) => candidate.name === name);
+      const modes = environment?.permission_modes ?? [];
       return {
         ...d,
         environment_name: name,
         engine_kind: String(environment?.engine_kind || ''),
+        permission_mode_default: modes.includes('default') ? 'default' : (modes[0] ?? ''),
       };
     },
     required: true,
@@ -112,15 +163,16 @@ export function buildAssistantCreateSections(
           placeholder: i18n.t('manage:assistant_form.description_placeholder'),
           help: i18n.t('manage:assistant_form.description_help'),
         },
-        {
-          key: 'permission_mode_default',
-          label: i18n.t('manage:assistant_form.permission_label'),
-          type: 'select',
-          ...field('permission_mode_default'),
-          idTag: 'permission_mode_default',
-          options: permissionOptions(),
-          help: i18n.t('manage:assistant_form.permission_help'),
-        },
+        // Offered only when the chosen Environment's program has modes: one
+        // without them refuses any value, so a select here could only fail.
+        ...permissionField(
+          field('permission_mode_default'),
+          environmentPermissionModes(environments, environmentName).map((mode) => ({
+            value: mode,
+            label: permissionModeLabel(mode),
+          })),
+        ),
+        systemField(field('system')),
       ],
     },
   ];
@@ -135,6 +187,7 @@ export interface AssistantEditDraft {
   description: string;
   icon: string;
   permission_mode_default: string;
+  system: string;
 }
 
 /** Seed an edit draft from a record (null-safe — icon/description may be null). */
@@ -143,7 +196,8 @@ export function buildAssistantEditDraft(a: AssistantRecord): AssistantEditDraft 
     display_name: a.display_name || '',
     description: a.description || '',
     icon: a.icon || '',
-    permission_mode_default: a.permission_mode_default || 'default',
+    permission_mode_default: a.permission_mode_default || '',
+    system: a.system || '',
   };
 }
 
@@ -156,12 +210,14 @@ function editField<K extends keyof AssistantEditDraft>(key: K) {
 }
 
 /**
- * Inline-edit sections for an existing assistant — only the four mutable fields,
+ * Inline-edit sections for an existing assistant — only the mutable fields,
+ * and the permission mode only when the record has one (the server stores
+ * none for a program that declares no modes),
  * in the same two-group rhythm (Basic info / Runtime preferences) the create page
  * uses, so the assistant record reads like the environment one. Engine and
  * environment are absent: they are frozen identity, reported in the fact rail.
  */
-export function buildAssistantEditSections(): EditSectionSpec[] {
+export function buildAssistantEditSections(hasPermissionMode: boolean): EditSectionSpec[] {
   return [
     {
       label: i18n.t('manage:assistant_form.section_basic'),
@@ -200,15 +256,11 @@ export function buildAssistantEditSections(): EditSectionSpec[] {
           placeholder: i18n.t('manage:assistant_form.description_placeholder'),
           help: i18n.t('manage:assistant_form.description_help'),
         },
-        {
-          key: 'permission_mode_default',
-          label: i18n.t('manage:assistant_form.permission_label'),
-          type: 'select',
-          ...editField('permission_mode_default'),
-          idTag: 'permission_mode_default',
-          options: permissionOptions(),
-          help: i18n.t('manage:assistant_form.permission_help'),
-        },
+        ...permissionField(
+          editField('permission_mode_default'),
+          hasPermissionMode ? permissionOptions() : [],
+        ),
+        systemField(editField('system')),
       ],
     },
   ];

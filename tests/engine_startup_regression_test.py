@@ -27,6 +27,16 @@ from astrabox.core.service.orchestrator.engine.provisioning import (
 )
 
 
+class _SandboxFiles:
+    """The sandbox file API a seat's setup writes the runner credential through."""
+
+    def __init__(self) -> None:
+        self.writes: list[str] = []
+
+    async def write_file(self, path: str, _body: bytes, **_kwargs: Any) -> None:
+        self.writes.append(path)
+
+
 def _activation_context(
     *,
     engine_kind: str,
@@ -43,10 +53,14 @@ def _activation_context(
             system="",
         ),
         workspace_plan=SimpleNamespace(resume_engine_session_key=resume_session_key),
-        sandbox=SimpleNamespace(sandbox_id="box-1"),
+        sandbox=SimpleNamespace(sandbox_id="box-1", files=_SandboxFiles()),
         sandbox_id="box-1",
         cwd="/workspace",
-        runtime_identity={"workspace_dir": "/workspace"},
+        runtime_identity={
+            "workspace_dir": "/workspace",
+            "linux_user": "agent",
+            "home_dir": "/home/agent",
+        },
         model_access=SimpleNamespace(
             base_url="https://gateway.test",
             model_name="model-1",
@@ -139,9 +153,13 @@ def _startup_workspace_plan() -> Any:
 
 def _provisioned(*, prepared: bool = False) -> ProvisionedEngineSandbox:
     return ProvisionedEngineSandbox(
-        sandbox=SimpleNamespace(sandbox_id="box-1"),
+        sandbox=SimpleNamespace(sandbox_id="box-1", files=_SandboxFiles()),
         sandbox_id="box-1",
-        runtime_identity={"workspace_dir": "/workspace"},
+        runtime_identity={
+            "workspace_dir": "/workspace",
+            "linux_user": "agent",
+            "home_dir": "/home/agent",
+        },
         cwd="/workspace",
         model_credential="placeholder",
         prepared_manifest={"slot_id": "slot-1", "placement": "shared_slot"} if prepared else None,

@@ -182,3 +182,39 @@ EOF
     assert "conf_dir = '/var/lib/rancher/k3s/agent/etc/cni/net.d'" in rendered
     assert "config_path = '/etc/containerd/certs.d'" in rendered
     assert "/etc/docker/certs.d" not in rendered
+
+
+def test_a_controller_install_that_times_out_prints_the_clusters_answer(tmp_path: Path) -> None:
+    """Helm's "context deadline exceeded" names no pod, and the worker is then gone.
+
+    The failure branch must print the namespace's pods, their container states,
+    recent events and node conditions before it exits, while the cluster that
+    can answer still exists.
+    """
+    source = SCRIPT.read_text(encoding="utf-8")
+    branch = source[
+        source.index('if ! output="$(helm upgrade --install')
+        : source.index('die "helm could not install the controller"')
+    ]
+    assert "controller_state_evidence >&2" in branch
+
+    helper = source[
+        source.index("controller_state_evidence() {") : source.index("install_controller() {")
+    ]
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    kubectl = fake_bin / "kubectl"
+    kubectl.write_text('#!/bin/sh\necho "kubectl $*"\n', encoding="utf-8")
+    kubectl.chmod(0o755)
+    result = subprocess.run(
+        ["bash", "-c", f"set -euo pipefail\nOSB_NAMESPACE=opensandbox-system\n{helper}\ncontroller_state_evidence"],
+        capture_output=True,
+        text=True,
+        env={"PATH": f"{fake_bin}:/usr/bin:/bin"},
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "kubectl get pods -n opensandbox-system -o wide" in result.stdout
+    assert "kubectl get events -n opensandbox-system --sort-by=.lastTimestamp" in result.stdout
+    assert "kubectl get nodes -o jsonpath=" in result.stdout

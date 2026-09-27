@@ -73,7 +73,8 @@ rename、权限修改、符号链接和 advisory lock。
 
 AstraBox 将 Agent 程序的原生会话数据保存到平台数据库，因此恢复对话不依赖 EFS。释放
 工作区分配时，只删除 AstraBox 为它创建的辅助 Pod 和视图 PV/PVC。底层 claim、其 PV
-和 EFS 数据保持不变。
+和 EFS 数据保持不变。沙箱不存在后视图才会被释放；如果从未有沙箱为它创建，则在辅助
+Pod 创建十分钟后释放。
 
 driver 安装成功或 claim 进入 `Bound` 状态，只说明 Kubernetes 能挂载该文件系统。应在
 不同节点的沙箱上另行验证工作区持久化，并记录验证结果。

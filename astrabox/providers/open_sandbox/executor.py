@@ -19,9 +19,17 @@ from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.settings import load_astrabox_settings
 from astrabox.providers.open_sandbox import _config
+from astrabox.providers.open_sandbox.aio_auth import (
+    AIO_SANDBOX_API_KEY_ENV,
+    derive_aio_api_key,
+)
 from astrabox.providers.open_sandbox._metadata import (
     assignment_metadata_value,
     session_metadata_value,
+)
+from astrabox.providers.open_sandbox.networking import (
+    SANDBOX_NETWORK_WIRING_METADATA_KEY,
+    sandbox_network_wiring,
 )
 from astrabox.providers.open_sandbox.credential_vault import (
     carry_workload_substitutions,
@@ -37,6 +45,7 @@ from astrabox.providers.sandbox_image import (
 )
 from astrabox.seams.sandbox import (
     SANDBOX_ASSIGNMENT_ID_METADATA_KEY,
+    SANDBOX_INSTALLATION_METADATA_KEY,
     SANDBOX_MANAGED_BY_METADATA_KEY,
     SANDBOX_MANAGED_BY_METADATA_VALUE,
     SANDBOX_PERMISSION_LEVEL_ADVANCED,
@@ -45,6 +54,7 @@ from astrabox.seams.sandbox import (
     SANDBOX_PERMISSION_LEVELS,
     SANDBOX_SESSION_ID_METADATA_KEY,
     SandboxDestruction,
+    sandbox_installation_id,
 )
 
 logger = get_logger(__name__)
@@ -906,6 +916,8 @@ async def create_open_sandbox_box(
         SANDBOX_SESSION_ID_METADATA_KEY,
         SANDBOX_MANAGED_BY_METADATA_KEY,
         SANDBOX_ASSIGNMENT_ID_METADATA_KEY,
+        SANDBOX_NETWORK_WIRING_METADATA_KEY,
+        SANDBOX_INSTALLATION_METADATA_KEY,
     }
     collisions = sorted(reserved_metadata & set(caller_metadata))
     if collisions:
@@ -917,6 +929,7 @@ async def create_open_sandbox_box(
             ),
             status_code=400,
         )
+    installation = await sandbox_installation_id()
     settings = load_astrabox_settings()
     connection_config = _config.sdk_connection_config(
         settings,
@@ -966,6 +979,14 @@ async def create_open_sandbox_box(
     dns_upstream = str(getattr(settings, "sandbox_egress_dns_upstream", "") or "").strip()
     if dns_upstream and network_policy is not None:
         create_env["OPENSANDBOX_EGRESS_DNS_UPSTREAM"] = dns_upstream
+    # Gate the AIO base image's :8080 services (file/shell API, terminal,
+    # JupyterLab, VNC, code-server, MCP) behind a per-box credential. Without it
+    # they answer any caller that reaches the port, which on Kubernetes is every
+    # Pod in the cluster. Keyed to this box's assignment so it is unguessable and
+    # one box's key does not open another's. The subject is the assignment's
+    # metadata projection — the exact string stored on the box. The key stays
+    # in its create environment and is never returned in a browser URL.
+    create_env[AIO_SANDBOX_API_KEY_ENV] = derive_aio_api_key(assignment_metadata)
     provider = OpenSandboxSandboxProvider(transport=transport)
     recovered = await provider.find_sandbox_by_assignment(assignment)
     if recovered is not None and recovered.session_id != session_metadata:
@@ -1039,10 +1060,15 @@ async def create_open_sandbox_box(
                 metadata={
                     **caller_metadata,
                     # The seam owns these names. Runtime owner + deployment
-                    # establish ownership; assignment names this create attempt.
+                    # establish ownership; assignment names this create attempt;
+                    # installation names the database whose rows own the box.
                     SANDBOX_SESSION_ID_METADATA_KEY: session_metadata,
                     SANDBOX_MANAGED_BY_METADATA_KEY: SANDBOX_MANAGED_BY_METADATA_VALUE,
                     SANDBOX_ASSIGNMENT_ID_METADATA_KEY: assignment_metadata,
+                    # The addresses this create fixes into the box; connect
+                    # refuses a box whose record differs from the deployment's.
+                    SANDBOX_NETWORK_WIRING_METADATA_KEY: sandbox_network_wiring(settings),
+                    SANDBOX_INSTALLATION_METADATA_KEY: installation,
                 },
                 connection_config=connection_config,
                 # Durable storage, when the caller planned any. Passed at CREATE

@@ -44,6 +44,19 @@ from astrabox.core.service.orchestrator.sandbox_runner import (
 )
 
 
+#: The token every host link in this module presents unless a test names
+#: another, and the one the runner's credential file holds.
+HOST_ACTIVATION_TOKEN = "host-activation-token"
+
+
+def _delivered_token_file(directory: Any, token: str) -> str:
+    """The platform's delivery of the runner credential, as a file."""
+
+    path = directory / ".astrabox-runner-token"
+    path.write_text(token, encoding="utf-8")
+    return str(path)
+
+
 async def _accept_persistent_event(_frame: dict[str, Any]) -> None:
     pass
 
@@ -51,6 +64,7 @@ async def _accept_persistent_event(_frame: dict[str, Any]) -> None:
 class RunnerLink(_RunnerLink):
     def __init__(self, uri: str, **kwargs: Any) -> None:
         kwargs.setdefault("persistent_event_handler", _accept_persistent_event)
+        kwargs.setdefault("activation_token", HOST_ACTIVATION_TOKEN)
         super().__init__(uri, **kwargs)
 
 
@@ -128,7 +142,7 @@ def _result_message() -> ResultMessage:
 
 
 @pytest.fixture
-async def wire():
+async def wire(tmp_path):
     client = QueueSdkSession()
 
     def factory(opening: dict[str, Any], link: HostLink) -> RunnerSession:
@@ -143,7 +157,12 @@ async def wire():
         client.consume_prompt = session.on_user_prompt_submit
         return session
 
-    server = RunnerWsServer(host="127.0.0.1", port=0, session_factory=factory)
+    server = RunnerWsServer(
+        host="127.0.0.1",
+        port=0,
+        session_factory=factory,
+        activation_token_file=_delivered_token_file(tmp_path, HOST_ACTIVATION_TOKEN),
+    )
     await server.start()
     try:
         yield server, client, f"ws://127.0.0.1:{server.port}/"
@@ -253,9 +272,7 @@ async def test_configure_resume_gives_prepare_its_platform_transcript(wire) -> N
 async def test_prepare_has_no_session_frames_and_activation_is_single_use(wire) -> None:
     server, sdk, uri = wire
     async with RunnerLink(uri) as warmer:
-        prepared = await warmer.prepare(
-            "slot-1", activation_token="slot-1-secret", options={}
-        )
+        prepared = await warmer.prepare("slot-1", options={})
         assert prepared["slot_id"] == "slot-1"
         assert server.session is not None
         assert server.session.is_prepared is True
@@ -268,7 +285,6 @@ async def test_prepare_has_no_session_frames_and_activation_is_single_use(wire) 
         hello = await claimant.activate(
             "slot-1",
             "sess-1",
-            activation_token="slot-1-secret",
             required_option_keys=(),
             permission_mode="default",
         )
@@ -283,11 +299,67 @@ async def test_prepare_has_no_session_frames_and_activation_is_single_use(wire) 
                 await duplicate.activate(
                     "slot-1",
                     "sess-2",
-                    activation_token="slot-1-secret",
                     required_option_keys=(),
                     permission_mode="default",
                 )
         assert server.session is active, "a duplicate claim must not kill its owner"
+
+
+async def test_an_empty_runner_admits_its_first_prepare_only_with_the_delivered_credential(
+    tmp_path,
+) -> None:
+    """A peer that reaches an empty runner first cannot prepare it.
+
+    The runner starts before the platform has a credential for it, so it may
+    not trust whoever prepares it first: that peer would install its own token
+    and get an engine in a box that later serves a user. It compares every
+    prepare with the file the platform writes, refuses at once while the file
+    is absent (the host is not left waiting), and spawns nothing for a
+    refused prepare. The platform's own prepare then succeeds on the same
+    runner, so the refusals were the credential's and not the frame's.
+    """
+
+    spawned: list[dict[str, Any]] = []
+    client = QueueSdkSession()
+
+    def factory(opening: dict[str, Any], link: HostLink) -> RunnerSession:
+        spawned.append(opening)
+        return RunnerSession(
+            session_id=str(opening["slot_id"]),
+            link=link,
+            client_factory=lambda broker: client,
+            activation_callback=client.bind_store,
+            interaction_wait_s=5.0,
+        )
+
+    token_file = tmp_path / ".astrabox-runner-token"
+    server = RunnerWsServer(
+        host="127.0.0.1",
+        port=0,
+        session_factory=factory,
+        activation_token_file=str(token_file),
+    )
+    await server.start()
+    uri = f"ws://127.0.0.1:{server.port}/"
+    try:
+        async with RunnerLink(uri) as early:
+            with pytest.raises(RunnerLinkError, match="has not delivered"):
+                await asyncio.wait_for(early.prepare("slot-1", options={}), timeout=5)
+        assert server.session is None
+
+        token_file.write_text(HOST_ACTIVATION_TOKEN, encoding="utf-8")
+        async with RunnerLink(uri, activation_token="a-peers-own-token") as peer:
+            with pytest.raises(RunnerLinkError, match="prepare token mismatch"):
+                await peer.prepare("slot-1", options={})
+        assert server.session is None
+        assert spawned == [], "a refused prepare must not start an engine"
+
+        async with RunnerLink(uri) as host:
+            prepared = await host.prepare("slot-1", options={})
+        assert prepared["slot_id"] == "slot-1"
+        assert server.session is not None and server.session.is_prepared
+    finally:
+        await server.stop()
 
 
 async def test_permission_mode_returns_only_after_the_runner_applies_it(wire) -> None:
@@ -807,6 +879,75 @@ async def test_attach_without_a_session_id_cannot_take_the_live_link(
         assert event["session_id"] == "sess-1"
 
 
+@pytest.mark.parametrize(
+    ("presented", "session_named"),
+    [(None, "sess-1"), ("a-guessed-token", "sess-1"), (None, "a-guessed-session")],
+    ids=["session-id-without-token", "session-id-with-wrong-token", "nothing"],
+)
+async def test_attach_without_the_activation_token_is_refused_before_anything_is_named(
+    wire,
+    monkeypatch: pytest.MonkeyPatch,
+    presented: str | None,
+    session_named: str,
+) -> None:
+    """A peer that can dial the runner cannot take the session.
+
+    The session id is not a secret: the API surfaces it, and before the token
+    was checked a peer with nothing learned it from the mismatch refusal. So
+    each attempt is the producer's own attach frame with only the credential
+    (and, for the peer with nothing, the name) replaced, the refusal must not
+    name the held session, and the configured host keeps its link. The same
+    frame carrying the host's token is then accepted, so the refusal was the
+    token's and not the frame's.
+    """
+
+    server, sdk, uri = wire
+    async with RunnerLink(uri) as platform_link:
+        await platform_link.configure("sess-1")
+        assert server.session is not None
+
+        original_send_wire = _RunnerLink._send_wire
+
+        async def replace_credential(
+            self: Any,
+            payload: str,
+            *,
+            action: str,
+        ) -> None:
+            frame = json.loads(payload)
+            if frame.get("op") == "attach" and self is not platform_link:
+                frame.pop("activation_token", None)
+                if presented is not None:
+                    frame["activation_token"] = presented
+                frame["session_id"] = session_named
+            await original_send_wire(self, json.dumps(frame), action=action)
+
+        monkeypatch.setattr(_RunnerLink, "_send_wire", replace_credential)
+        replayed: list[dict[str, Any]] = []
+
+        async def record_replayed(frame: dict[str, Any]) -> None:
+            replayed.append(frame)
+
+        async with RunnerLink(uri, persistent_event_handler=record_replayed) as peer:
+            with pytest.raises(RunnerLinkError) as caught:
+                await peer.attach(session_named, last_seen_seq=0)
+
+        assert str(caught.value) == "attach token mismatch"
+        assert "sess-1" not in str(caught.value)
+        assert replayed == []
+        sdk.emit(_assistant_message("still the configured host"))
+        event = await asyncio.wait_for(
+            _next_message_type(platform_link.frames(), "AssistantMessage"),
+            timeout=2.0,
+        )
+        assert event["session_id"] == "sess-1"
+
+        monkeypatch.setattr(_RunnerLink, "_send_wire", original_send_wire)
+        async with RunnerLink(uri) as reconnected_host:
+            hello = await reconnected_host.attach("sess-1", last_seen_seq=0)
+        assert hello["session_id"] == "sess-1"
+
+
 async def test_prepare_options_carry_the_deployment_host_absence_budget(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -856,13 +997,14 @@ async def test_a_prepare_carrying_resume_without_a_store_is_refused(
         raise AssertionError("the refusal must precede the wire")
 
     monkeypatch.setattr(link_module.RunnerLink, "_send_wire", _unreachable)
-    link = link_module.RunnerLink("ws://runner.invalid")
+    link = link_module.RunnerLink(
+        "ws://runner.invalid", activation_token="slot-1-secret"
+    )
     link._ws = object()  # connected enough to reach the guard
 
     with pytest.raises(link_module.RunnerLinkError, match="without a claimant and store"):
         await link.prepare(
             "slot-1",
-            activation_token="slot-1-secret",
             options={"resume": "a5b84c16-c219-4bd9-a989-7e81cc6ed831"},
         )
 

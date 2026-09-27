@@ -526,6 +526,43 @@ class TerminalClassificationTests(unittest.TestCase):
         self.assertFalse(state.saw_result_frame)
         self.assertFalse(state.saw_error_event)
 
+    def test_the_result_card_carries_a_user_stop(self) -> None:
+        # A user stop completes the turn, and the open page knows it stopped
+        # only from the result card. `engine_turn.py` writes the outcome on the
+        # platform result; the card the browser receives has to carry it
+        # whether or not the engine published its own card first.
+        cancelled = {"finish_reason": "cancelled", "engine_kind": "claude_code"}
+        supplier_card = {"duration_ms": 4176, "num_turns": 3, "usage": {"output_tokens": 9}}
+
+        self.assertEqual(
+            bridge_frames.public_result_frame_data(
+                {**cancelled, "usage": {"output_tokens": 2}}, None
+            ),
+            {"usage": {"output_tokens": 2}, "finish_reason": "cancelled"},
+        )
+        self.assertEqual(
+            bridge_frames.public_result_frame_data(cancelled, supplier_card),
+            {**supplier_card, "finish_reason": "cancelled"},
+        )
+        # A normal stop is what a card without an outcome already means, so
+        # the engine's card is not published a second time.
+        self.assertIsNone(
+            bridge_frames.public_result_frame_data({"finish_reason": "stop"}, supplier_card)
+        )
+
+    def test_the_engine_result_card_is_kept_for_the_outcome(self) -> None:
+        ctx = SimpleNamespace(ordered_assistant_segments=[])
+        state = _BridgeRunState()
+        bridge_frames._record_translated_frame(
+            None,
+            state,
+            ctx,
+            {"type": "data-result", "data": {"duration_ms": 12, "num_turns": 1}},
+        )
+
+        self.assertTrue(state.saw_public_result_frame)
+        self.assertEqual(state.public_result_card, {"duration_ms": 12, "num_turns": 1})
+
     def test_streamed_turn_result_message_does_not_reemit_answer_text(self) -> None:
         # The engine translator is the only writer. Its Result fallback must
         # see text already emitted from the live stream, while the generic

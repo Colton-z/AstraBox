@@ -203,7 +203,15 @@ async def runtime_generations(
             "credential_vault_enabled": bool(
                 getattr(settings, "sandbox_credential_vault_enabled", False)
             ),
+            # The addresses a create fixes into the box. Prepared inventory
+            # built with other ones can reach neither the model nor the platform.
             "mcp_proxy_base_url": str(getattr(settings, "mcp_proxy_base_url", "") or "").strip(),
+            "sandbox_egress_dns_upstream": str(
+                getattr(settings, "sandbox_egress_dns_upstream", "") or ""
+            ).strip(),
+            "sandbox_egress_deny_cidrs": str(
+                getattr(settings, "sandbox_egress_deny_cidrs", "") or ""
+            ).strip(),
         },
     }
     # Shared base boxes cache Skills and Plugins before a separate engine slot

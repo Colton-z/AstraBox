@@ -145,6 +145,11 @@ _BLOCK_FIELDS: dict[str, frozenset[str]] = {
             "num_turns",
             "stop_reason",
             "usage",
+            # The platform's outcome for the turn: a user stop completes with
+            # ``finish_reason: cancelled``, which is what lets a reloaded page
+            # say the response stopped early.
+            "finish_reason",
+            "is_error",
         }
     ),
     "turn_failure": frozenset({"type", "error", "failure_phase"}),

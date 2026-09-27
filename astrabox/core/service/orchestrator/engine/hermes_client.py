@@ -62,6 +62,7 @@ from astrabox.core.service.orchestrator.runtime.execd_json_lines import (
     ExecdChannelDetached,
 )
 from astrabox.core.service.orchestrator.runtime.hermes_backend_channel import (
+    BackendNotListening,
     HermesBackendChannel,
 )
 from astrabox.core.service.orchestrator.runtime.pty_terminal import (
@@ -574,12 +575,10 @@ class HermesTuiProcess:
         *,
         url: str,
         headers: dict[str, str] | None = None,
-        dial: tuple[str, int] | None = None,
     ) -> None:
         self._channel = HermesBackendChannel(
             url=url,
             headers=headers,
-            dial=dial,
             label="Hermes backend",
             on_record=self._on_record,
             on_failure=self._on_failure,
@@ -602,6 +601,16 @@ class HermesTuiProcess:
         """This process's terminal failure, in the engine seam's vocabulary."""
 
         return self._fatal
+
+    @property
+    def backend_not_listening(self) -> bool:
+        """Whether this attachment failed because nothing accepted it yet.
+
+        Read from the channel, which classified the failure where it happened;
+        the seam's vocabulary above it has no word for "try again shortly".
+        """
+
+        return isinstance(self._channel.fatal, BackendNotListening)
 
     async def current_output_offset(self) -> int:
         return await self._channel.current_output_offset()
@@ -915,13 +924,12 @@ class HermesTuiEngineClient:
                 self._server_info = dict(info)
 
     def _require_anchor_gateway(self, anchor: dict[str, str]) -> None:
-        """Adopt a turn anchor, or fail loud when its gateway epoch is gone.
+        """Adopt a turn anchor, or fail loud when this client's attachment is gone.
 
-        A turn anchor names the PTY of the gateway that ran it. When the
-        resident gateway was replaced (park, crash, config restart), the
-        events of that turn died with the old process; pretending the new
-        gateway can serve them would silently cross epochs, so settling then
-        belongs to the durable recovery lane.
+        A turn anchor names the TUI session that ran the turn. Whether the
+        backend still holds that session is asked separately, on recovery
+        (:meth:`_backend_holds_session`): a backend that restarted lost it,
+        and the turn then ends as a failure instead of waiting for events.
         """
 
         if not self._gateway.is_live:
@@ -930,6 +938,37 @@ class HermesTuiEngineClient:
                 "attachment it was established on is gone"
             )
         self._tui_session_id = anchor["tui_session_id"]
+
+    async def _backend_holds_session(self, tui_session_id: str) -> bool:
+        """Whether the backend still has this TUI session in memory.
+
+        ``session.active_list`` reports every attachable session of the
+        backend process, and Hermes draws a TUI session id at random for each
+        session it creates, so an id missing from the list belongs to a
+        process that has restarted since, or to a session torn down. Either
+        way nothing will deliver the rest of that session's turn.
+        """
+
+        live = await self._gateway.request("session.active_list", {})
+        return any(
+            isinstance(row, dict) and str(row.get("id") or "") == tui_session_id
+            for row in live.get("sessions") or []
+        )
+
+    def _forget_lost_session(self) -> None:
+        """Drop a TUI session the backend does not hold.
+
+        The conversation itself is not lost: Hermes keeps it in its session
+        store under the durable key, so the next message re-enters it with
+        ``session.resume`` instead of addressing an id the backend does not
+        know.
+        """
+
+        if self._subscription is not None:
+            self._gateway.unsubscribe(self._subscription)
+        self._subscription = None
+        self._tui_session_id = None
+        self._resume_session_key = self._engine_session_key or self._resume_session_key
 
     @staticmethod
     def _input_consumed_frame(command: EngineInputCommand) -> dict[str, Any]:
@@ -1152,6 +1191,22 @@ class HermesTuiEngineClient:
     ) -> AsyncIterator[dict[str, Any]]:
         anchor = decode_turn_anchor(receipt.engine_turn_id)
         self._require_anchor_gateway(anchor)
+        if recovered and not await self._backend_holds_session(anchor["tui_session_id"]):
+            self._forget_lost_session()
+            yield {
+                "type": "result",
+                "finishReason": "error",
+                "__engine_terminal_reason": "error",
+                "error": {
+                    "code": "HERMES_SESSION_LOST",
+                    "message": (
+                        "The Assistant's Hermes backend does not hold the session "
+                        "this reply was running in, so the reply ended before it "
+                        "finished. This happens when the backend restarts."
+                    ),
+                },
+            }
+            return
         if (
             recovered
             or self._subscription is None

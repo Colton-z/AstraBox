@@ -29,12 +29,13 @@ astrabox:
     # Disable both automatic titles and process summaries without affecting Agent turns.
     enabled: true
     # Optional separate model for titles and process summaries. Empty connection
-    # values use the main model configuration. Override via the
+    # values use the model gateway's server-side address and the server's gateway
+    # credential, with the deployment's default model. A base_url other than the
+    # gateway's needs its own api_key or api_key_secret_name. Override via the
     # ASTRABOX_TITLE_MODEL_* environment variables.
     base_url: ""
     model_name: ""
     api_key_secret_name: ""
-    max_tokens: 256
     # HTTPX network inactivity timeout, not a total turn deadline.
     request_timeout_seconds: 60
   # MongoDB collection names. The backend's connection URI and fallback database

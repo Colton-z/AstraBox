@@ -15,6 +15,10 @@
 # First sign-in: user `admin`; read the initial password from the deployment's
 # `casdoor_admin_password` secret file. Browser and API OAuth client secrets
 # come from the sibling `oidc_client_secret` and `oidc_api_client_secret` files.
+# Casdoor's own administrator, built-in/admin, gets the password in
+# `casdoor_builtin_admin_password` instead of Casdoor's default, 123, at the
+# first start (casdoor/secure-builtin-admin.sh), and AstraBox accepts accounts
+# of the seeded `astrabox` organization only.
 # The values are rendered into Casdoor's one-time seed document inside its
 # container and never enter Compose environment metadata. Later restarts seed
 # missing objects only. Members of the Casdoor group `astrabox-admin` get the
@@ -42,6 +46,10 @@ services:
       ASTRABOX_OIDC_API_CLIENT_ID: ${ASTRABOX_OIDC_API_CLIENT_ID:-astrabox-api}
       ASTRABOX_OIDC_API_CLIENT_SECRET_FILE: /run/secrets/oidc_api_client_secret
       ASTRABOX_OIDC_REDIRECT_URL: ${ASTRABOX_OIDC_REDIRECT_URL:-}
+      # The organization casdoor/init_data.json seeds. Casdoor also lets its
+      # global administrators, in the `built-in` organization, sign in to
+      # every application; AstraBox refuses them and every other organization.
+      ASTRABOX_CASDOOR_ORGANIZATION: astrabox
     secrets:
       - oidc_client_secret
       - oidc_api_client_secret
@@ -56,6 +64,9 @@ services:
       postgres:
         condition: service_healthy
     restart: unless-stopped
+    # The entrypoint detaches the built-in/admin check; the init process is its
+    # parent once the entrypoint becomes the server, and collects it.
+    init: true
     networks:
       - platform
       - database
@@ -69,6 +80,7 @@ services:
       CASDOOR_OIDC_CLIENT_SECRET_FILE: /run/secrets/oidc_client_secret
       CASDOOR_OIDC_API_CLIENT_SECRET_FILE: /run/secrets/oidc_api_client_secret
       CASDOOR_ADMIN_PASSWORD_FILE: /run/secrets/casdoor_admin_password
+      CASDOOR_BUILTIN_ADMIN_PASSWORD_FILE: /run/secrets/casdoor_builtin_admin_password
       CASDOOR_OIDC_CLIENT_ID: ${ASTRABOX_OIDC_CLIENT_ID:-astrabox-console}
       CASDOOR_OIDC_API_CLIENT_ID: ${ASTRABOX_OIDC_API_CLIENT_ID:-astrabox-api}
       ASTRABOX_CONSOLE_ORIGIN: ${ASTRABOX_CONSOLE_ORIGIN:-http://127.0.0.1:${ASTRABOX_SERVER_HOST_PORT:-8088}}
@@ -82,8 +94,10 @@ services:
       - oidc_client_secret
       - oidc_api_client_secret
       - casdoor_admin_password
+      - casdoor_builtin_admin_password
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/.well-known/openid-configuration"]
+      # Healthy when built-in/admin rejects the default password.
+      test: ["CMD-SHELL", "test -f /run/astrabox-casdoor/built-in-admin-checked && curl -fsS -o /dev/null http://127.0.0.1:8000/.well-known/openid-configuration"]
       interval: 5s
       timeout: 5s
       retries: 12
@@ -100,6 +114,7 @@ services:
     volumes:
       - ./casdoor/app.conf:/conf/app.conf:ro
       - ./casdoor/entrypoint.sh:/conf/astrabox-entrypoint.sh:ro
+      - ./casdoor/secure-builtin-admin.sh:/conf/astrabox-secure-builtin-admin.sh:ro
       - ./casdoor/init_data.json:/conf/init_data.template.json:ro
       - ../website/static/img/astrabox-mark.svg:/web/build/static/astrabox-mark.svg:ro
 
@@ -110,3 +125,5 @@ secrets:
     file: ${ASTRABOX_LOCAL_DATABASE_SECRET_DIR:-../.astrabox/database-secrets}/oidc_api_client_secret
   casdoor_admin_password:
     file: ${ASTRABOX_LOCAL_DATABASE_SECRET_DIR:-../.astrabox/database-secrets}/casdoor_admin_password
+  casdoor_builtin_admin_password:
+    file: ${ASTRABOX_LOCAL_DATABASE_SECRET_DIR:-../.astrabox/database-secrets}/casdoor_builtin_admin_password

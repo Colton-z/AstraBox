@@ -94,5 +94,6 @@ class AssistantWorkspace:
             await provision_conversation_identity_with_bootstrap_script(
                 sandbox,
                 identity,
+                assistant_profile=True,
             )
         )

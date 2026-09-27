@@ -572,7 +572,9 @@ test('completed multi-step response survives a cold history bootstrap', async ({
     // A settled multi-step response arrives on a rebuilt page as one header:
     // the prose between its tool calls and the cards themselves are fetched only
     // when the reader opens it. Everything below reads that work, so it is
-    // opened first.
+    // opened first. The route shell can precede the history; do not enumerate
+    // its process containers until the expected history header is on the page.
+    await expect(page.getByTestId('assistant-turn-process')).toHaveCount(1);
     await revealAssistantProcess(page);
     await expect(replyText, 'every prose block, including the terminal answer, must occur once')
       .toHaveText(renderedReply);

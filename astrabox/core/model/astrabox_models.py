@@ -106,6 +106,12 @@ class AgentView:
     engine_options: dict[str, Any] | None = None
     default_repo: dict[str, Any] | None = None
     plugin_repos: list[dict[str, Any]] = field(default_factory=list)
+    #: The entries of ``skills`` an administrator's catalog assignment
+    #: supplied. The rest, every Plugin repository and every MCP server
+    #: without a ``provider`` are the author's own, and the runtime admits
+    #: their hosts only within what an administrator made available. Empty
+    #: means every Skill is the author's.
+    catalog_skills: tuple[str, ...] = ()
     #: Administrator-managed credential policy. This is carried only on the
     #: internal runtime view and is never exposed through Agent/Assistant APIs.
     credential_vault_ids: list[str] = field(default_factory=list)
@@ -177,6 +183,10 @@ class AgentView:
     #: Internal revision inputs for prepared-runtime replacement. They are
     #: resolved from stored configuration and never form an editable API field.
     environment_updated_at: str | None = None
+    #: An Assistant's stored definition and its Environment's revision, as one
+    #: digest. A workspace records the digest its Agent-program profile was
+    #: prepared from; a conversation reuses that profile only while it matches.
+    assistant_revision: str | None = None
     runtime_generation: str | None = None
     sandbox_generation: str | None = None
     #: A supplier pool lifetime is distinct from reusable box compatibility.

@@ -276,6 +276,70 @@ async def test_confirmed_dead_sandbox_replacement_mints_a_new_id_and_resumes_thr
 
 
 @pytest.mark.asyncio
+async def test_a_replacement_adopts_its_startup_allocation_so_the_next_one_can_start() -> None:
+    """The replacement box's startup name is cleared once the row binds it.
+
+    A create names its box on the Session until an owner publishes it. Left in
+    place, the name outlived the box: the NEXT loss's replacement create was
+    refused ("session already names a different startup allocation"), so a
+    conversation survived one box loss and failed the message after the second.
+    """
+    from astrabox.seams.sandbox import SandboxAllocation
+
+    session_id = "session-1"
+    engine_session_key = "claude-thread-1"
+    old_runtime, _old_client = _runtime(session_id, "sandbox-lost", engine_session_key)
+    new_runtime, _new_client = _runtime(
+        session_id, "sandbox-replacement", engine_session_key
+    )
+    manager = RemoteAgentRuntimeManager()
+    manager._runtimes[session_id] = old_runtime
+    allocation = SandboxAllocation(
+        sandbox_id="sandbox-replacement", sandbox_backend="open_sandbox", scope="sandbox"
+    )
+
+    async def _create(*_args: Any, **_kwargs: Any) -> SessionRuntime:
+        # What the create path does: name the box before it can await again.
+        manager._remember_pending_allocation(session_id, allocation)
+        return new_runtime
+
+    manager._start_runtime = _create  # type: ignore[method-assign]
+    manager.get_sandbox_expires_at = AsyncMock(  # type: ignore[method-assign]
+        return_value=datetime(2099, 1, 1, tzinfo=timezone.utc)
+    )
+    manager.plan_agent_chat_runtime_start = Mock(  # type: ignore[method-assign]
+        return_value=_start_plan(session_id, engine_session_key)
+    )
+    manager._sessions_repo = SimpleNamespace(  # type: ignore[assignment]
+        clear_startup_allocation=AsyncMock(return_value=True)
+    )
+    ensure = _ensure(manager, _SessionsRepo(), SimpleNamespace(name="agent-template"))
+    session = {
+        "session_id": session_id,
+        "session_kind": "agent_chat",
+        "engine_kind": "claude_code",
+        "sandbox_id": old_runtime.sandbox_id,
+        "engine_session_key": engine_session_key,
+    }
+
+    result = await ensure._reborrow_agent_chat_runtime_for_turn(
+        session=session,
+        agent_id="agent-1",
+        engine_session_key=engine_session_key,
+        runtime_identity=old_runtime.runtime_identity,
+        turn_id="turn-1",
+        command_id="command-1",
+        requested_permission_mode=None,
+    )
+
+    assert result.status == RUNTIME_ENSURE_ATTACHED
+    manager._sessions_repo.clear_startup_allocation.assert_awaited_once_with(
+        session_id, allocation=allocation.as_record()
+    )
+    assert manager._pending_startup_sandbox_ids(session_id) == []
+
+
+@pytest.mark.asyncio
 async def test_replacement_refuses_to_publish_a_reused_sandbox_id() -> None:
     session_id = "session-1"
     engine_session_key = "claude-thread-1"
@@ -419,3 +483,56 @@ async def test_a_rebuild_invents_no_owner_the_conversation_never_had() -> None:
     assert carried is not None
     assert "uid" not in carried
     assert "gid" not in carried
+
+
+# ── an Assistant conversation's box, checked before its turn is admitted ─────
+
+
+def _assistant_session(sandbox_id: str) -> dict[str, Any]:
+    return {
+        "session_id": "assistant-session",
+        "session_kind": "assistant_chat",
+        "engine_kind": "assistant",
+        "sandbox_id": sandbox_id,
+        "sandbox_backend": "open_sandbox",
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_gone_box_is_converged_before_admission() -> None:
+    manager = RemoteAgentRuntimeManager()
+    ensure = _ensure(manager, _SessionsRepo(), SimpleNamespace(name="assistant"))
+    ensure._sandbox_data_plane_dead = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+    assert await ensure.bound_sandbox_confirmed_gone(_assistant_session("removed-box")) is True
+    ensure._sandbox_lifecycle_service.converge_dead_sandbox_owners.assert_awaited_once()
+    assert (
+        ensure._sandbox_lifecycle_service.converge_dead_sandbox_owners.await_args.args[0]
+        == "removed-box"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_live_resident_runtime_is_not_probed() -> None:
+    manager = RemoteAgentRuntimeManager()
+    runtime, _client = _runtime("assistant-session", "live-box", "hermes-key")
+    manager._runtimes["assistant-session"] = runtime
+    ensure = _ensure(manager, _SessionsRepo(), SimpleNamespace(name="assistant"))
+    ensure._sandbox_data_plane_dead = AsyncMock(  # type: ignore[method-assign]
+        side_effect=AssertionError("a live runtime is its own evidence")
+    )
+
+    assert await ensure.bound_sandbox_confirmed_gone(_assistant_session("live-box")) is False
+    ensure._sandbox_lifecycle_service.converge_dead_sandbox_owners.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_an_assessment_that_cannot_be_made_converges_nothing() -> None:
+    manager = RemoteAgentRuntimeManager()
+    ensure = _ensure(manager, _SessionsRepo(), SimpleNamespace(name="assistant"))
+    ensure._sandbox_data_plane_dead = AsyncMock(  # type: ignore[method-assign]
+        side_effect=RuntimeError("control plane unreachable")
+    )
+
+    assert await ensure.bound_sandbox_confirmed_gone(_assistant_session("box")) is False
+    ensure._sandbox_lifecycle_service.converge_dead_sandbox_owners.assert_not_awaited()

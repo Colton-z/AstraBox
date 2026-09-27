@@ -103,6 +103,27 @@ def _version(node: Path) -> str | None:
     return value if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", value) else None
 
 
+def _version_probe_report(node: Path) -> str:
+    """What running ``node --version`` actually did, for a failure message.
+
+    A binary that cannot start on this host — a shared library the host lacks —
+    exits before printing a version, and only its stderr names the cause.
+    """
+
+    try:
+        completed = subprocess.run(
+            [str(node), "--version"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return f"{node} could not run: {exc}"
+    detail = (completed.stderr or completed.stdout).strip()[:400]
+    return f"{node} --version exited {completed.returncode}: {detail or 'no output'}"
+
+
 def inspect_node(node: Path, expected_version: str) -> NodeToolchain | None:
     node = node.expanduser().resolve()
     npm = node.parent / "npm"
@@ -225,7 +246,11 @@ def install_node(
                 shutil.rmtree(invalid_root)
             os.replace(candidate_root, final_root)
         toolchain = inspect_node(final_root / "bin/node", version)
-        require(toolchain is not None, "installed Node.js toolchain failed its version check")
+        require(
+            toolchain is not None,
+            "installed Node.js toolchain failed its version check: "
+            + _version_probe_report(final_root / "bin/node"),
+        )
         return toolchain
 
 

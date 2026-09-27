@@ -21,6 +21,12 @@ from astrabox.core.service.orchestrator.assistant.assistant_workspace_service im
 from astrabox.core.service.orchestrator.runtime_binding import (
     resolve_assistant_workspace_binding,
 )
+from astrabox.providers import register_builtin_providers
+
+# These tests describe a deployment with the assistant engine installed, which
+# the platform's startup does by installing its built-in adapters. Without it
+# `assistant` is an unknown engine, whatever tests ran earlier in the process.
+register_builtin_providers()
 
 
 class _FakeWorkspaceRepo:
@@ -120,6 +126,7 @@ async def test_mark_ready_is_fenced_on_the_bootstrap_that_claimed_materializatio
         provisioning_session_id="bootstrap-1",
         provisioning_sandbox_generation="generation-1",
         sandbox_id="sb-1",
+        configuration_revision="rev-1",
         expires_at="2026-01-01T00:00:00Z",
         runtime_identity={"workspace_dir": "/home/conversations/u-1/a-1/workspace"},
     )
@@ -142,7 +149,38 @@ async def test_mark_ready_is_fenced_on_the_bootstrap_that_claimed_materializatio
         user_id="u-1",
         assistant_id="a-1",
         sandbox_id="sb-1",
+        configuration_revision="rev-1",
     ) == repo.mark_ready_calls[0]["profile_marker"]
+
+
+async def test_a_profile_prepared_from_another_revision_is_not_reused() -> None:
+    """The Assistant changed since its profile was prepared; the box's program
+    still runs the old one, so a new conversation must prepare it again."""
+
+    repo = _FakeWorkspaceRepo(
+        {
+            "state": "MATERIALIZING",
+            "provisioning_session_id": "bootstrap-1",
+        }
+    )
+    service = AssistantWorkspaceService(workspace_repo=repo)
+    await service.mark_ready(
+        user_id="u-1",
+        assistant_id="a-1",
+        provisioning_session_id="bootstrap-1",
+        provisioning_sandbox_generation="generation-1",
+        sandbox_id="sb-1",
+        configuration_revision="rev-1",
+    )
+
+    for revision in ("rev-2", None, ""):
+        assert get_assistant_profile_ready_marker(
+            repo.row,
+            user_id="u-1",
+            assistant_id="a-1",
+            sandbox_id="sb-1",
+            configuration_revision=revision,
+        ) is None
 
 
 async def test_mark_ready_still_refuses_an_empty_sandbox_id() -> None:
@@ -154,6 +192,7 @@ async def test_mark_ready_still_refuses_an_empty_sandbox_id() -> None:
             provisioning_session_id="bootstrap-1",
             provisioning_sandbox_generation="generation-1",
             sandbox_id="   ",
+            configuration_revision="rev-1",
             expires_at=None,
             runtime_identity=None,
         )
@@ -171,6 +210,7 @@ async def test_mark_ready_surfaces_a_lost_compare_and_set() -> None:
             provisioning_session_id="bootstrap-1",
             provisioning_sandbox_generation="generation-1",
             sandbox_id="sb-1",
+            configuration_revision="rev-1",
             expires_at=None,
             runtime_identity=None,
         )
@@ -190,6 +230,7 @@ async def test_profile_readiness_is_fenced_on_the_current_ready_sandbox() -> Non
         user_id="u-1",
         assistant_id="a-1",
         sandbox_id="sb-1",
+        configuration_revision="rev-1",
     )
     assert repo.compare_and_update_calls == [
         {

@@ -52,6 +52,7 @@ from astrabox.core.service.orchestrator.runtime.terminal_execution import (
     is_isolated_terminal_execution_id,
 )
 from astrabox.seams.sandbox import (
+    SANDBOX_INSTALLATION_METADATA_KEY,
     SANDBOX_MANAGED_BY_METADATA_KEY,
     SANDBOX_MANAGED_BY_METADATA_VALUE,
     SandboxAllocation,
@@ -60,6 +61,7 @@ from astrabox.seams.sandbox import (
     sandbox_for_name,
     sandbox_for_sandbox,
     sandbox_for_template,
+    sandbox_installation_id,
 )
 from astrabox.seams.sandbox_disposal import (
     SANDBOX_DESTRUCTION_NOTHING_NAMED,
@@ -79,7 +81,13 @@ from astrabox.persistence.repository.agent_repository import AgentRepository
 from astrabox.persistence.repository.assistant_workspace_repository import (
     AssistantWorkspaceRepository,
 )
+from astrabox.persistence.repository.keyset import (
+    SWEEP_PAGE_SIZE,
+    KeysetCursor,
+    iter_keyset_pages,
+)
 from astrabox.persistence.repository.session_repository import SessionRepository
+from astrabox.persistence.repository.session_snapshot_repository import SessionSnapshotRepository
 from astrabox.core.service.orchestrator.runtime.storage import (
     clone_default_repo,
     mount_assistant_workspace_storage,
@@ -226,6 +234,26 @@ def _sandbox_control_deadline_s() -> float:
     return value if value > 0 else 30.0
 
 
+async def _this_installations_boxes() -> dict[str, str]:
+    """The create metadata every box this installation made carries.
+
+    A path that finds boxes by listing the backend, rather than through a row
+    in this installation's database, lists by these pairs and checks them again
+    on each box before acting (:func:`_is_this_installations_box`): another
+    installation sharing the Docker daemon or Kubernetes namespace keeps its
+    boxes' owners, leases and addresses in its own database.
+    """
+    return {
+        SANDBOX_MANAGED_BY_METADATA_KEY: SANDBOX_MANAGED_BY_METADATA_VALUE,
+        SANDBOX_INSTALLATION_METADATA_KEY: await sandbox_installation_id(),
+    }
+
+
+def _is_this_installations_box(descriptor: Any, ownership: dict[str, str]) -> bool:
+    metadata = getattr(descriptor, "metadata", None) or {}
+    return all(metadata.get(key) == value for key, value in ownership.items())
+
+
 class RemoteAgentRuntimeManager:
     _TERMINATE_OP_TIMEOUT_SECONDS = 10.0
 
@@ -242,6 +270,9 @@ class RemoteAgentRuntimeManager:
         #: agent_id → monotonic time the sweep last scheduled a rebuild for an
         #: Agent with no slot, so a failing build is retried on a cadence.
         self._prewarm_rebuild_scheduled_at: dict[str, float] = {}
+        # Where the budgeted sweeps resume (see KeysetCursor).
+        self._agent_box_reap_cursor = KeysetCursor("agent_id")
+        self._startup_allocation_cursor = KeysetCursor("session_id")
         #: The process-wide Session event broker, handed to the platform sinks
         #: an engine publishes resident output through. Absent only in
         #: harnesses that build the manager alone; those sinks warn loudly.
@@ -619,6 +650,7 @@ class RemoteAgentRuntimeManager:
         runtime_key: str,
         template: AgentView,
         engine_kind: str,
+        resume_engine_session_key: str | None,
     ) -> RuntimeWorkspacePlan:
         """Build a plan for an assistant-bound runtime.
 
@@ -635,6 +667,7 @@ class RemoteAgentRuntimeManager:
             runtime_key=runtime_key,
             template=template,
             engine_kind=engine_kind,
+            resume_engine_session_key=resume_engine_session_key,
         )
 
     def plan_assistant_runtime_attach(
@@ -646,6 +679,7 @@ class RemoteAgentRuntimeManager:
         sandbox_id: str,
         existing_terminal_cwd: str | None,
         engine_kind: str,
+        resume_engine_session_key: str | None,
     ) -> RuntimeWorkspacePlan:
         return self._workspace_planner().plan_assistant_runtime_attach(
             user_id=user_id,
@@ -654,6 +688,7 @@ class RemoteAgentRuntimeManager:
             sandbox_id=sandbox_id,
             existing_terminal_cwd=existing_terminal_cwd,
             engine_kind=engine_kind,
+            resume_engine_session_key=resume_engine_session_key,
         )
 
     def plan_agent_conversation_root(
@@ -2831,12 +2866,100 @@ class RemoteAgentRuntimeManager:
             clear_durable_record=True,
         )
 
+    async def retire_sandboxes_with_stale_network_wiring(
+        self,
+        *,
+        backend: str = "open_sandbox",
+        page_size: int = 100,
+    ) -> dict[str, int]:
+        """Destroy every managed box whose recorded addresses differ from the deployment's.
+
+        A box fixes the deployment's sandbox-facing addresses when it is created
+        (``SandboxProvider.created_with_current_network_wiring``). After they
+        change — on the Docker stack, a sandbox edge that came back from a
+        restart with a new bridge address — the box can reach neither the model
+        nor the platform, and its egress policy still exempts the edge's old
+        address, which Docker may since have given to another sandbox. Its
+        owners keep their history: a turn that reaches the destroyed box finds
+        it gone and resumes the conversation from its store on a new one, as
+        after any out-of-band loss. The whole inventory is read, every page,
+        because every stale box is both. Inventory the provider's own
+        preparation still owns is left to it; the provider refuses a stale
+        member when it is acquired.
+
+        Only this installation's boxes are read. Another installation sharing
+        the control plane has its own sandbox edges, so every box it made
+        records wiring that differs from this installation's, and is working.
+        """
+
+        summary = {
+            "stale_wiring_scanned": 0,
+            "stale_wiring_retired": 0,
+            "stale_wiring_failures": 0,
+        }
+        stale: list[str] = []
+        page_number = 1
+        try:
+            ownership = await _this_installations_boxes()
+            provider = sandbox_for_name(backend)
+        except Exception:
+            logger.exception("stale-wiring retirement could not read the installation id")
+            summary["stale_wiring_failures"] += 1
+            return summary
+        while True:
+            try:
+                page = await provider.list_sandboxes(
+                    page=page_number, page_size=page_size, metadata=ownership
+                )
+            except Exception:
+                logger.exception("stale-wiring retirement could not list the inventory")
+                summary["stale_wiring_failures"] += 1
+                return summary
+            for descriptor in getattr(page, "items", ()):
+                sandbox_id = str(getattr(descriptor, "sandbox_id", "") or "").strip()
+                if not sandbox_id:
+                    continue
+                summary["stale_wiring_scanned"] += 1
+                if (
+                    not _is_this_installations_box(descriptor, ownership)
+                    or provider.owns_unclaimed_sandbox(descriptor)
+                    or provider.created_with_current_network_wiring(descriptor)
+                ):
+                    continue
+                stale.append(sandbox_id)
+            if not getattr(page, "has_next_page", False):
+                break
+            page_number += 1
+        for sandbox_id in stale:
+            try:
+                destruction = await provider.confirm_destroyed(sandbox_id)
+            except Exception:
+                logger.exception("stale-wiring retirement failed box=%s", sandbox_id)
+                summary["stale_wiring_failures"] += 1
+                continue
+            if destruction.confirmed:
+                summary["stale_wiring_retired"] += 1
+                logger.warning(
+                    "retired box=%s: its recorded network wiring differs from "
+                    "this deployment's; its conversations continue on a new box",
+                    sandbox_id,
+                )
+            else:
+                summary["stale_wiring_failures"] += 1
+                logger.error(
+                    "stale-wiring retirement could not confirm destruction "
+                    "box=%s: %s",
+                    sandbox_id,
+                    destruction.detail,
+                )
+        return summary
+
     async def reap_ownerless_sandboxes(
         self,
         *,
         backend: str = "open_sandbox",
         grace_seconds: float = 600.0,
-        limit: int = 100,
+        page_size: int = 100,
     ) -> dict[str, int]:
         """Give back every managed box that no row names any more.
 
@@ -2847,6 +2970,18 @@ class RemoteAgentRuntimeManager:
         fourteen live boxes were exactly this, each holding ~2 GiB on a
         four-hour lease. The grace keeps a box that was created moments ago
         for a session still writing its rows.
+
+        "No row names it" is a judgement only this installation's database can
+        make about this installation's boxes. Another installation sharing the
+        control plane has its own database, so its boxes are never candidates:
+        the inventory is listed by this installation's id and every box is
+        checked for it again before anything is destroyed.
+
+        The whole inventory is read, every page, before any box is given back.
+        The control plane lists newest first, so one page would hold the same
+        young and owned boxes on every tick and never reach an older ownerless
+        one, and giving boxes back while paging would move the rest between
+        pages.
         """
 
         from datetime import datetime, timezone
@@ -2861,24 +2996,33 @@ class RemoteAgentRuntimeManager:
             "ownerless_kept": 0,
             "ownerless_reap_failures": 0,
         }
+        inventory: list[Any] = []
         try:
+            ownership = await _this_installations_boxes()
             provider = sandbox_for_name(backend)
-            page = await provider.list_sandboxes(page=1, page_size=limit)
+            page_number = 1
+            while True:
+                page = await provider.list_sandboxes(
+                    page=page_number, page_size=page_size, metadata=ownership
+                )
+                inventory.extend(getattr(page, "items", ()))
+                if not getattr(page, "has_next_page", False):
+                    break
+                page_number += 1
         except Exception:
             logger.exception("ownerless reap could not list the inventory")
             summary["ownerless_reap_failures"] += 1
             return summary
         agent_repo = AgentRepository()
         now = datetime.now(timezone.utc)
-        for descriptor in getattr(page, "items", ()):
+        for descriptor in inventory:
             sandbox_id = str(getattr(descriptor, "sandbox_id", "") or "").strip()
             if not sandbox_id:
                 continue
             summary["ownerless_scanned"] += 1
             try:
                 if (
-                    descriptor.metadata.get(SANDBOX_MANAGED_BY_METADATA_KEY)
-                    != SANDBOX_MANAGED_BY_METADATA_VALUE
+                    not _is_this_installations_box(descriptor, ownership)
                     or provider.owns_unclaimed_sandbox(descriptor)
                 ):
                     summary["ownerless_kept"] += 1
@@ -2923,15 +3067,18 @@ class RemoteAgentRuntimeManager:
                 summary["ownerless_reap_failures"] += 1
         return summary
 
-    async def keep_prewarmed_agents_ready(
-        self, *, limit: int = 100
-    ) -> dict[str, int]:
+    async def keep_prewarmed_agents_ready(self) -> dict[str, int]:
         """Maintain prewarmed capacity without waiting for Session activity.
 
         Renew shared sandbox leases, schedule replacement of expiring prepared
         slots, and schedule rebuilds for Agents without a slot. Missing-slot
         rebuilds use a retry window so a persistent failure does not trigger a
         build on every sweep. Return counts of attempted work and failures.
+
+        Every prewarm-enabled Agent is visited on every tick, read in pages.
+        Slot and lease renewal are due at a time, so an Agent visited on a
+        later tick can already have lost its slot. The per-Agent work is
+        in-memory unless something is due.
         """
         from astrabox.core.service.orchestrator.agent.prepared_slots import (
             PREPARED_SLOT_FIELD,
@@ -2950,8 +3097,15 @@ class RemoteAgentRuntimeManager:
             "prewarm_sweep_failures": 0,
         }
         repo = AgentRepository()
+        rows: list[dict[str, Any]] = []
         try:
-            rows = await repo.list_prewarm_enabled_agents(limit=limit)
+            async for row in iter_keyset_pages(
+                lambda after: repo.list_prewarm_enabled_agents(
+                    after_agent_id=after, limit=SWEEP_PAGE_SIZE
+                ),
+                key="agent_id",
+            ):
+                rows.append(row)
         except Exception:
             logger.exception("prewarm sweep could not list prewarm-enabled Agents")
             summary["prewarm_sweep_failures"] += 1
@@ -3031,6 +3185,11 @@ class RemoteAgentRuntimeManager:
         Session cleanup may end without invoking termination. Check sessions,
         startup allocations, young admissions, and prepared slots before
         destroying a sandbox, using the same occupancy checks as termination.
+
+        Each visit probes the control plane, so a tick visits at most
+        ``limit`` Agents: the ones after where the previous tick stopped,
+        wrapping at the end. An occupied box stays in the set, and restarting
+        from the same first page would never reach the Agents behind it.
         """
 
         from astrabox.persistence.repository.agent_repository import (
@@ -3045,7 +3204,12 @@ class RemoteAgentRuntimeManager:
         }
         repo = AgentRepository()
         try:
-            rows = await repo.list_agents_with_resident_boxes(limit=limit)
+            rows = await self._agent_box_reap_cursor.page(
+                lambda after, page_limit: repo.list_agents_with_resident_boxes(
+                    after_agent_id=after, limit=page_limit
+                ),
+                limit=limit,
+            )
         except Exception:
             logger.exception("agent-box reap could not list resident boxes")
             summary["agent_box_reap_failures"] += 1
@@ -3152,13 +3316,22 @@ class RemoteAgentRuntimeManager:
 
         Candidate rows are hints. Each row is re-read before acting so a worker
         that publishes READY after the scan cannot have its live sandbox reaped
-        by this reconciler. Recent CREATING rows remain owned by their worker;
-        every other unadopted allocation is released through the same scope-aware
-        cleanup used by an ordinary start failure.
+        by this reconciler. Recent CREATING rows remain owned by their worker.
+        A READY Session can also allocate a replacement during an accepted turn;
+        its durable turn slot protects that allocation across backend processes.
+        Other unadopted allocations use the ordinary scope-aware failure cleanup.
+
+        A call reads at most ``limit`` candidates, the ones after where the
+        previous call stopped, and wraps at the end. Deferred and retained rows
+        stay candidates, so restarting from the same first page would never
+        reach the rows behind them.
         """
 
-        candidates = await self._sessions_repo.list_startup_allocation_candidates(
-            limit=limit
+        candidates = await self._startup_allocation_cursor.page(
+            lambda after, page_limit: self._sessions_repo.list_startup_allocation_candidates(
+                after_session_id=after, limit=page_limit
+            ),
+            limit=limit,
         )
         summary = {
             "startup_allocation_candidates": len(candidates),
@@ -3235,6 +3408,24 @@ class RemoteAgentRuntimeManager:
                     summary["startup_allocations_adopted"] += 1
                 continue
 
+            if not bool(current.get("deleted")) and state == SessionState.READY.value:
+                # Reborrowing keeps READY and the in-flight turn checkpoint until
+                # the new binding is published. The Session row's turn id is only
+                # a terminal-time mirror; the snapshot owns the live turn slot.
+                try:
+                    snapshot = await SessionSnapshotRepository().get_snapshot(session_id)
+                except Exception:
+                    summary["startup_allocation_failures"] += 1
+                    logger.exception(
+                        "startup allocation turn ownership read failed session=%s sandbox=%s",
+                        session_id,
+                        allocation.sandbox_id,
+                    )
+                    continue
+                if str((snapshot or {}).get("current_turn_id") or "").strip():
+                    summary["startup_allocations_deferred"] += 1
+                    continue
+
             if (
                 not bool(current.get("deleted"))
                 and state == SessionState.CREATING.value
@@ -3286,10 +3477,6 @@ class RemoteAgentRuntimeManager:
                 )
         return summary
 
-    #: Maximum startup-allocation records read by the occupancy check, ordered
-    #: by newest update. This bounded page can include retained cleanup records.
-    _STARTUP_ALLOCATIONS_IN_FLIGHT_CEILING = 500
-
     async def agent_box_has_other_occupants(
         self,
         sandbox_id: str,
@@ -3317,11 +3504,11 @@ class RemoteAgentRuntimeManager:
             for row in bound:
                 if str((row or {}).get("session_id") or "").strip() != excluding:
                     return True
-            # Read a larger page than the repository default to include more
-            # concurrent startups. The repository orders recently updated
-            # allocation records first so recent joiners are considered first.
-            starting = await self._sessions_repo.list_startup_allocation_candidates(
-                limit=self._STARTUP_ALLOCATIONS_IN_FLIGHT_CEILING
+            # Every startup allocated onto this box, not a bounded page of all
+            # of them: a startup missed here is a conversation joining a box
+            # that is then destroyed.
+            starting = await self._sessions_repo.list_startup_allocations_on_sandbox(
+                target
             )
             for row in starting:
                 if str((row or {}).get("session_id") or "").strip() == excluding:
@@ -3816,6 +4003,28 @@ class RemoteAgentRuntimeManager:
         """Drop the process-local name after the READY write adopted it."""
 
         self._forget_pending_sandbox(session_id, sandbox_id)
+
+    async def adopt_bound_startup_allocation(
+        self,
+        session_id: str,
+        *,
+        sandbox_id: str,
+    ) -> None:
+        """Clear the startup name of a box this Session's row now binds.
+
+        A create names its box on the Session (``startup_allocation``) until an
+        owner publishes it; the startup worker clears the name in the same write
+        that settles READY. A turn that replaces a lost box publishes the binding
+        itself, so it adopts the name here. Left in place, the name outlived the
+        box it named, and the next replacement's create was refused: "session
+        already names a different startup allocation". Only this process's own
+        record of the create is adopted; one it does not hold is the startup
+        reconciler's to judge.
+        """
+
+        for allocation in list(self._pending_startup_allocations.get(session_id, ())):
+            if allocation.sandbox_id == sandbox_id:
+                await self._complete_startup_allocation(session_id, allocation)
 
     def register_terminal_execution(
         self,

@@ -82,6 +82,17 @@ jobs:
       - name: Credential seam
         run: python scripts/check_credential_seam.py
 
+      - name: All-in-one topology
+        # Every setting Compose gives the server is refused or passed through
+        # by the all-in-one image, whose sandbox edges match Compose's.
+        run: python scripts/check_all_in_one.py
+
+      - name: Dockerfile copy modes
+        # Every COPY/ADD from the build context sets its files' mode, so an
+        # image built from a checkout under a restrictive umask still gives
+        # its unprivileged runtime user readable files.
+        run: python scripts/check_dockerfile_modes.py
+
       - name: Workflow syntax
         # A workflow GitHub cannot parse is not reported as a failure — it is
         # reported as no run at all, which reads as "nothing to do" on the one

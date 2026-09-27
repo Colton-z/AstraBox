@@ -206,10 +206,15 @@ async function ensureExpanded(trigger: Locator): Promise<void> {
  * Both levels are the same Base UI collapsible, which marks its trigger
  * `aria-expanded` — the state is read off that rather than off what is on
  * screen, because a closed panel keeps its cards mounted and invisible.
+ *
+ * Groups are found inside the header, never anywhere in the turn. A reloaded
+ * header shows a loading line until its detail read lands, and a group the
+ * response kept beside its answer would otherwise stand in for the work behind
+ * the header and be counted before that work arrived.
  */
 async function openProcess(turn: Locator): Promise<void> {
   await ensureExpanded(turn.getByTestId('assistant-turn-process-trigger'));
-  const groups = turn.getByTestId('assistant-process');
+  const groups = turn.getByTestId('assistant-turn-process').getByTestId('assistant-process');
   await expect(
     groups.first(),
     'an opened header must show at least one group of the work it stands for',
@@ -438,6 +443,15 @@ test('a settled tool turn folds, names itself, and reopens once per page load', 
     live,
     'an opened card must carry the real tool output, not a placeholder',
   ).toContainText(toolOutputMarker, { timeout: RENDER_MS });
+  // Where the open page put the response's reasoning: behind the header with
+  // the work, or beside the answer. The reloaded page folds from the server's
+  // projection instead and has to put it in the same place.
+  const liveFoldedReasoning = await live
+    .getByTestId('assistant-turn-process')
+    .getByTestId('reasoning-part')
+    .count();
+  const liveBesideReasoning =
+    (await live.getByTestId('reasoning-part').count()) - liveFoldedReasoning;
 
   // ── 2. The label is asked for once, by the browser, for this response. ────
   const observed = await summaryRequest;
@@ -549,17 +563,32 @@ test('a settled tool turn folds, names itself, and reopens once per page load', 
       cold,
       'the detail read carries the real tool output, not a summary of it',
     ).toContainText(toolOutputMarker, { timeout: RENDER_MS });
-    // A reasoning card is the engine's choice; assert its shape only when the
-    // engine produced one, and record which way it went.
-    const reasoning = cold.getByTestId('reasoning-part');
-    const reasoningCount = await reasoning.count();
+    // A reasoning card is the engine's choice; its place is the page's. The
+    // open page is the reference: reasoning it folded with the work comes back
+    // behind this header, and the reload moves none of it beside the answer.
+    const foldedReasoning = cold
+      .getByTestId('assistant-turn-process')
+      .getByTestId('reasoning-part');
+    const coldFoldedReasoning = await foldedReasoning.count();
+    const coldBesideReasoning =
+      (await cold.getByTestId('reasoning-part').count()) - coldFoldedReasoning;
     test.info().annotations.push({
       type: 'e2e_process_reasoning_cards',
-      description: String(reasoningCount),
+      description:
+        `live folded=${liveFoldedReasoning} beside=${liveBesideReasoning}; ` +
+        `reloaded folded=${coldFoldedReasoning} beside=${coldBesideReasoning}`,
     });
-    if (reasoningCount > 0) {
+    expect(
+      coldBesideReasoning,
+      'the reload must leave beside the answer exactly the reasoning the open page left there',
+    ).toBe(liveBesideReasoning);
+    if (liveFoldedReasoning > 0) {
+      expect(
+        coldFoldedReasoning,
+        'reasoning the open page folded into the header must be folded into it after a reload',
+      ).toBeGreaterThan(0);
       await expect(
-        reasoning.first(),
+        foldedReasoning.first(),
         'reasoning folded into the header must come back with it',
       ).toBeVisible();
     }
@@ -768,7 +797,7 @@ test('an interrupted tool turn folds with its stop reason and keeps the failed c
   // given, and a reloaded record already carries its fold as a
   // `data-process-block` part. Wrapping a second header around one the server
   // already folded shows the reader two nested "Process" rows for one turn.
-  const expectStoppedShape = async (turn: Locator, stage: string) => {
+  const expectStoppedShape = async (turn: Locator, stage: string, lazy: boolean) => {
     await expect(
       turn.getByTestId('assistant-turn-process'),
       `${stage}: a stopped tool response folds into exactly one header — two means the ` +
@@ -800,6 +829,18 @@ test('an interrupted tool turn folds with its stop reason and keeps the failed c
         turn.locator(`[data-tool-call-id="${toolCallId}"]`),
         `${stage}: call ${toolCallId} ran to completion, so it belongs behind the header`,
       ).toBeHidden();
+    }
+    // A reloaded header holds its work lazily: nothing behind it is in the
+    // page until the reader opens it and the detail read lands. Opening it is
+    // how a reader finds the finished calls, so that is how they are found here.
+    if (lazy) {
+      await ensureExpanded(turn.getByTestId('assistant-turn-process-trigger'));
+      await expect(
+        fold.getByTestId('assistant-process').first(),
+        `${stage}: opening the header must deliver the work it stands for`,
+      ).toBeVisible({ timeout: RENDER_MS });
+    }
+    for (const toolCallId of settledCalls) {
       await expect(
         fold.locator(`[data-tool-call-id="${toolCallId}"]`),
         `${stage}: call ${toolCallId} is behind the header, not dropped from the page`,
@@ -810,11 +851,11 @@ test('an interrupted tool turn folds with its stop reason and keeps the failed c
   // The open page is read through the newest bubble rather than through
   // `messageId`: what a live row is keyed by is the stream's business, and the
   // durable id is only guaranteed to address a row on the reloaded page.
-  await expectStoppedShape(page.getByTestId('assistant-message').last(), 'live');
+  await expectStoppedShape(page.getByTestId('assistant-message').last(), 'live', false);
   await page.reload({ waitUntil: 'domcontentloaded' });
   await expect(page.getByTestId('run-view')).toBeVisible({ timeout: RENDER_MS });
   const cold = page.locator(`[data-message-id="${messageId}"]`);
-  await expectStoppedShape(cold, 'reloaded');
+  await expectStoppedShape(cold, 'reloaded', true);
   await expect(
     cold.getByTestId('assistant-turn-process'),
     'reloaded: the fold is the lazy header, opened from the checkpoint it carries',

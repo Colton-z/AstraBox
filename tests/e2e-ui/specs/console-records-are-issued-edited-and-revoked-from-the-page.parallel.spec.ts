@@ -110,6 +110,7 @@ test('a console record is created, edited and destroyed from the page that owns 
     name: `__e2e_card_${runId}`,
     model,
     environment_name: environmentName,
+    prewarm_enabled: false,
   });
   throwawayAgentId = String(agent.agent_id || '').trim();
   expect(throwawayAgentId, 'the throwaway Agent must have an id').not.toEqual('');

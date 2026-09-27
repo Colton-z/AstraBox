@@ -17,6 +17,7 @@ from typing import Any
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.time_utils import parse_iso, utcnow
 from astrabox.core.model import SessionState
+from astrabox.persistence.repository.keyset import SWEEP_PAGE_SIZE, iter_keyset_pages
 
 logger = get_logger(__name__)
 
@@ -88,9 +89,17 @@ class BootstrapReconciler:
             - timedelta(seconds=STARTUP_ALLOCATION_GRACE_SECONDS),
             limit=10_000,
         )
-        sessions = await sessions_repo.list_bootstrap_reconcile_candidates(
-            limit=10_000
-        )
+        # Every interrupted startup, read in pages: this runs once per start,
+        # and a row it does not reach waits for the next process restart.
+        sessions = [
+            row
+            async for row in iter_keyset_pages(
+                lambda after: sessions_repo.list_bootstrap_reconcile_candidates(
+                    after_session_id=after, limit=SWEEP_PAGE_SIZE
+                ),
+                key="session_id",
+            )
+        ]
 
         for session in sessions:
             state = str(session.get("state") or "")

@@ -211,6 +211,8 @@ export function blocksToSDKParts(
             num_turns: block.num_turns,
             usage: block.usage,
             stop_reason: block.stop_reason,
+            finish_reason: block.finish_reason,
+            is_error: block.is_error,
           },
         } as unknown as AnyPart);
         break;

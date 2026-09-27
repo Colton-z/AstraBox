@@ -428,6 +428,144 @@ async def test_a_restored_open_response_republishes_nothing_it_already_holds() -
         await h.relay.stop()
 
 
+async def _park_first_turn(h: _Harness) -> None:
+    """A platform turn whose stream reads its run up to a park and stops there."""
+
+    h.relay.platform_turn_begins(None)
+    h.relay.platform_input_submitted()
+    await h.feed((10, {"type": "start"}), (11, {"type": "text", "text": "asks"}))
+    assert [r["type"] for r in await h.turn_records()] == ["start", "text"]
+
+
+@pytest.mark.asyncio
+async def test_the_next_turn_begins_at_its_own_run_not_at_a_stopped_parks_leftovers() -> None:
+    """A parked turn's run keeps coming into the inbox for its answer. A stop
+    settles the parked turn instead, and nothing reads that run again. The
+    platform writes the next message before its turn begins, so by then the
+    queue holds the left run's end and the next run's start: the turn must
+    read from its own start."""
+
+    h = _Harness()
+    h.relay.start()
+    try:
+        await _park_first_turn(h)
+        await h.feed((12, {"type": "text", "text": "denied"}), (13, {"type": "settled"}))
+        number = h.relay.platform_input_submitted()
+        await h.feed((20, {"type": "start"}), (21, {"type": "text", "text": "answer"}))
+
+        h.relay.platform_turn_begins(number)
+        await h.feed((22, {"type": "settled"}))
+
+        assert [r.get("text", r["type"]) for r in await h.turn_records()] == [
+            "start",
+            "answer",
+            "settled",
+        ]
+    finally:
+        await h.relay.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_left_run_that_ends_after_the_next_message_is_written_is_dropped_too() -> None:
+    h = _Harness()
+    h.relay.start()
+    try:
+        await _park_first_turn(h)
+        number = h.relay.platform_input_submitted()
+        await h.feed(
+            (12, {"type": "text", "text": "late"}),
+            (13, {"type": "settled"}),
+            (20, {"type": "start"}),
+            (21, {"type": "text", "text": "answer"}),
+            (22, {"type": "settled"}),
+        )
+
+        h.relay.platform_turn_begins(number)
+
+        assert [r.get("text", r["type"]) for r in await h.turn_records()] == [
+            "start",
+            "answer",
+            "settled",
+        ]
+    finally:
+        await h.relay.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_turn_that_begins_before_its_message_leaves_the_left_run_behind() -> None:
+    """The message is written after the turn begins, while the left run is
+    still open: that run's remaining records are not this turn's."""
+
+    h = _Harness()
+    h.relay.start()
+    try:
+        await _park_first_turn(h)
+        h.relay.platform_turn_begins(None)
+        h.relay.platform_input_submitted()
+        await h.feed(
+            (12, {"type": "text", "text": "late"}),
+            (13, {"type": "settled"}),
+            (20, {"type": "start"}),
+            (21, {"type": "text", "text": "answer"}),
+            (22, {"type": "settled"}),
+        )
+
+        assert [r.get("text", r["type"]) for r in await h.turn_records()] == [
+            "start",
+            "answer",
+            "settled",
+        ]
+        assert h.sink.opened == []
+    finally:
+        await h.relay.stop()
+
+
+@pytest.mark.asyncio
+async def test_an_input_joining_the_run_in_progress_drops_nothing() -> None:
+    h = _Harness()
+    h.relay.start()
+    try:
+        h.relay.platform_turn_begins(None)
+        h.relay.platform_input_submitted()
+        await h.feed((10, {"type": "start"}), (11, {"type": "text", "text": "one"}))
+        h.relay.platform_input_submitted()
+        await h.feed(
+            (12, {"type": "settled"}),
+            (20, {"type": "start"}),
+            (21, {"type": "text", "text": "two"}),
+            (22, {"type": "settled"}),
+        )
+
+        assert [r.get("text", r["type"]) for r in await h.turn_records()] == [
+            "start",
+            "one",
+            "settled",
+            "start",
+            "two",
+            "settled",
+        ]
+    finally:
+        await h.relay.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_new_turn_still_learns_the_wires_failure() -> None:
+    h = _Harness()
+    h.relay.start()
+    try:
+        await _park_first_turn(h)
+        await h.feed((12, {"type": "text", "text": "left"}))
+        await h.wire.put(ConnectionResetError("wire closed"))
+        await h.feed()
+
+        h.relay.platform_turn_begins(None)
+
+        queued = await h.turn_records()
+        assert len(queued) == 1 and isinstance(queued[0], ConnectionResetError)
+    finally:
+        await h.relay.stop()
+
+
 @pytest.mark.asyncio
 async def test_a_child_fact_outside_any_run_is_persisted_for_the_durable_view() -> None:
     """Nothing is running, so there is no response to hang it on: the native

@@ -43,6 +43,7 @@ from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.settings import load_astrabox_settings
 from astrabox.providers.open_sandbox import _config
+from astrabox.providers.open_sandbox.aio_auth import AIO_HTTP_PORT
 from astrabox.providers.open_sandbox._metadata import (
     assignment_metadata_value,
     is_client_pool_identity,
@@ -53,7 +54,11 @@ from astrabox.providers.open_sandbox.credential_vault import (
     require_vault_preconditions,
 )
 from astrabox.providers.open_sandbox.networking import (
+    SANDBOX_NETWORK_WIRING_METADATA_KEY,
+    configured_denied_networks,
     open_sandbox_network_policy,
+    recorded_network_wiring_is_current,
+    sandbox_network_wiring,
     with_vault_binding_allows,
 )
 from astrabox.providers.sandbox_image import (
@@ -65,6 +70,7 @@ from astrabox.seams.egress_credentials import SandboxEgressCredentialPlan
 from astrabox.seams.sandbox import (
     SANDBOX_ASSIGNMENT_ID_METADATA_KEY,
     SANDBOX_DIAGNOSTIC_SCOPES,
+    SANDBOX_INSTALLATION_METADATA_KEY,
     SANDBOX_LIFECYCLE_PROBE_FAILED,
     SANDBOX_LIFECYCLE_PROBE_NOT_FOUND,
     SANDBOX_LIFECYCLE_PROBE_OK,
@@ -85,6 +91,7 @@ from astrabox.seams.sandbox import (
     SandboxDiagnostics,
     SandboxHttpResponse,
     SandboxLifecycleProbeResult,
+    SandboxNetworkPolicy,
     SandboxPage,
     SandboxIsolatedSession,
     SandboxIsolationCapability,
@@ -93,6 +100,7 @@ from astrabox.seams.sandbox import (
     SandboxRuntimeDefaults,
     claim_from_metadata,
     register_sandbox,
+    sandbox_installation_id,
 )
 
 logger = get_logger(__name__)
@@ -260,10 +268,15 @@ _ENV_ASSIGNMENT_RE = re.compile(r"^(?P<lead>\s*)(?P<key>[^\s=]+)=(?P<value>.*)$"
 _DIAGNOSTIC_ENV_ALLOWLIST = frozenset(
     {
         # Deployment-wide facts about running inside an AstraBox sandbox at all,
-        # with no session in them. The platform includes both on every standard
+        # with no session in them. The platform includes these on every standard
         # create, including those issued by the SDK client-pool creator.
         "IS_SANDBOX",
         "DISABLE_BROWSER",
+        "DISABLE_MCP_BROWSER",
+        "DISABLE_JUPYTER",
+        "DISABLE_CODE_SERVER",
+        "DISABLE_VNC",
+        "DISABLE_NODEJS_REPL",
         # The model endpoint and model name. Not credentials, and between them
         # they answer the most common question a diagnostics reader has ("what
         # was this box actually talking to?"). The endpoint is a deployment-level
@@ -308,6 +321,7 @@ _DIAGNOSTIC_LABEL_ALLOWLIST = frozenset(
         # executor.py / pool.py stamp this on create.
         "astrabox.managed-by",
         SANDBOX_ASSIGNMENT_ID_METADATA_KEY,
+        SANDBOX_INSTALLATION_METADATA_KEY,
         SANDBOX_SESSION_ID_METADATA_KEY,
     }
 )
@@ -511,10 +525,11 @@ class OpenSandboxHandle:
         The handle exists to keep the SDK's surface out of the rest of the
         codebase, and everything a session needs is wrapped. The egress policy
         and credential vault are used only by the provider's containment face
-        (the read-only posture plus gated E2E rule mutation); wrapping those SDK
-        methods on the value handle would add a second adapter for one provider
-        caller, while reaching into the private slot would hide the dependency.
-        This property names it.
+        (the read-only posture, admitting a runtime's destinations on attach,
+        and gated E2E rule mutation); wrapping those SDK methods on the value
+        handle would add a second adapter for one provider caller, while
+        reaching into the private slot would hide the dependency. This
+        property names it.
         """
         return self._sdk
 
@@ -1051,6 +1066,9 @@ class OpenSandboxSandboxProvider(SandboxProvider):
     async def retire_client_pool(self, pool_name: str) -> None:
         await self._client_pool_registry().retire(pool_name)
 
+    def created_with_current_network_wiring(self, descriptor: SandboxDescriptor) -> bool:
+        return recorded_network_wiring_is_current(descriptor.metadata, self._settings())
+
     def owns_unclaimed_sandbox(self, descriptor: SandboxDescriptor) -> bool:
         metadata = descriptor.metadata
         return (
@@ -1146,6 +1164,45 @@ class OpenSandboxSandboxProvider(SandboxProvider):
             ) from exc
         finally:
             await manager.close()
+
+    @staticmethod
+    def _require_current_network_wiring(
+        info: Any, *, sandbox_id: str, settings: Any
+    ) -> None:
+        """Refuse a box whose recorded network wiring differs from the deployment's.
+
+        The egress sidecar reads its DNS upstream once, when it starts, and the
+        deny rules and callback base are fixed at create too
+        (:func:`~astrabox.providers.open_sandbox.networking.sandbox_network_wiring`).
+        When they change — on the Docker stack, a sandbox edge that restarted
+        with a new bridge address — a box created before resolves names through
+        a container that is not the DNS edge any more, denies the edge's new
+        address and calls back to its old one. Its engine then retries the model
+        until it times out, minutes later, with nothing wrong in the box itself.
+        No request to the box can repair that, so the box is gone to every
+        caller, as a stopped one is: the platform converges its owners and the
+        next turn resumes the conversation from its store on a new box.
+        Destroying such boxes is the expiration watcher's
+        (``RuntimeManager.retire_sandboxes_with_stale_network_wiring``); this
+        check covers a turn that reaches a box before that sweep has.
+        """
+        metadata = dict(getattr(info, "metadata", None) or {})
+        if recorded_network_wiring_is_current(metadata, settings):
+            return
+        recorded = str(metadata.get(SANDBOX_NETWORK_WIRING_METADATA_KEY) or "").strip()
+        current = sandbox_network_wiring(settings)
+        raise APIError(
+            code="SANDBOX_GONE",
+            message=(
+                f"open_sandbox connect: sandbox {sandbox_id!r} was created with "
+                f"network wiring {recorded!r}, and this deployment "
+                f"now gives sandboxes {current!r} (a sandbox edge or its DNS "
+                "upstream moved, or the deny list or callback base changed); its "
+                "DNS, egress rules and callbacks name addresses the platform does "
+                "not serve, so it is never used again"
+            ),
+            status_code=404,
+        )
 
     @staticmethod
     def _require_running(info: Any, *, sandbox_id: str, operation: str) -> None:
@@ -1262,7 +1319,11 @@ class OpenSandboxSandboxProvider(SandboxProvider):
 
         translated_vault = _open_sandbox_vault_write(spec.vault_write)
         translated_network = with_vault_binding_allows(
-            open_sandbox_network_policy(spec.network_policy), translated_vault
+            open_sandbox_network_policy(
+                spec.network_policy,
+                denied_networks=configured_denied_networks(load_astrabox_settings()),
+            ),
+            translated_vault,
         )
         handle = await create_open_sandbox_box(
             session_id=spec.session_id,
@@ -1375,6 +1436,59 @@ class OpenSandboxSandboxProvider(SandboxProvider):
             managed_basic_scopes=tuple(item.scope_id for item in vault_write.http_basic),
             create_if_missing=create_if_missing,
         )
+
+    async def admit_runtime_egress(
+        self,
+        sandbox: Any,
+        *,
+        network_policy: SandboxNetworkPolicy,
+        vault_write: SandboxEgressCredentialPlan | None,
+    ) -> None:
+        """Merge the allows the runtime needs into the box's live egress policy.
+
+        The allows are computed exactly as creation computes them (the
+        Environment-derived policy plus each Vault binding's hosts) and
+        compared with the policy the sidecar enforces now; the missing ones go
+        in through the sidecar's runtime ``PATCH /policy``, which merges by
+        target and keeps ``defaultAction``. This runs before the vault refresh
+        because the sidecar refuses a binding whose host its policy does not
+        allow. A box whose policy allows everything by default needs nothing.
+        """
+        if not isinstance(sandbox, OpenSandboxHandle):
+            raise APIError(
+                code="SANDBOX_CONFIG_INVALID",
+                message=(
+                    "open_sandbox egress admission needs an OpenSandboxHandle "
+                    "for an existing sandbox"
+                ),
+                status_code=500,
+            )
+        desired = with_vault_binding_allows(
+            open_sandbox_network_policy(
+                network_policy,
+                denied_networks=configured_denied_networks(load_astrabox_settings()),
+            ),
+            _open_sandbox_vault_write(vault_write),
+        )
+        wanted = [
+            rule for rule in (getattr(desired, "egress", None) or []) if rule.action == "allow"
+        ]
+        if not wanted:
+            return
+        live = await sandbox.sidecar_faces.get_egress_policy()
+        if live.default_action == "allow":
+            return
+        allowed = {
+            rule.target.strip() for rule in (live.egress or []) if rule.action == "allow"
+        }
+        missing = [rule for rule in wanted if rule.target.strip() not in allowed]
+        if missing:
+            await sandbox.sidecar_faces.patch_egress_rules(missing)
+            logger.info(
+                "open_sandbox admitted egress for an existing sandbox=%s: %s",
+                sandbox.sandbox_id,
+                ", ".join(rule.target for rule in missing),
+            )
 
     async def adopt_sandbox_identity(
         self,
@@ -1531,6 +1645,7 @@ class OpenSandboxSandboxProvider(SandboxProvider):
             sandbox_id, settings=settings, operation="connect", secret=secret
         )
         self._require_running(info, sandbox_id=sandbox_id, operation="connect")
+        self._require_current_network_wiring(info, sandbox_id=sandbox_id, settings=settings)
         try:
             sdk_sandbox = await Sandbox.connect(
                 str(sandbox_id),
@@ -1794,7 +1909,8 @@ class OpenSandboxSandboxProvider(SandboxProvider):
     ) -> SandboxClaim:
         """Whose sandbox is this, read off the ownership metadata the create wrote.
 
-        The create writes two keys (:data:`SANDBOX_MANAGED_BY_METADATA_KEY` and
+        The create writes three keys (:data:`SANDBOX_MANAGED_BY_METADATA_KEY`,
+        :data:`SANDBOX_INSTALLATION_METADATA_KEY` and
         :data:`SANDBOX_SESSION_ID_METADATA_KEY`) and the control plane hands
         them back on ``GET /v1/sandboxes/{id}``; the judgement over them lives
         in the seam, not here, so every backend that can answer answers the
@@ -1849,6 +1965,8 @@ class OpenSandboxSandboxProvider(SandboxProvider):
             session_id_key=SANDBOX_SESSION_ID_METADATA_KEY,
             managed_by_key=SANDBOX_MANAGED_BY_METADATA_KEY,
             managed_by_value=SANDBOX_MANAGED_BY_METADATA_VALUE,
+            installation_key=SANDBOX_INSTALLATION_METADATA_KEY,
+            installation_value=await sandbox_installation_id(),
         )
         if claim.may_destroy and expected:
             return dataclasses.replace(claim, session_id=expected)
@@ -2002,7 +2120,23 @@ class OpenSandboxSandboxProvider(SandboxProvider):
         Docker returns execd's ``/proxy/{port}`` URL. Kubernetes Secure Access
         uses the SDK's signed-endpoint operation, which produces an OSEP-0011
         URI or wildcard route suitable for direct browser navigation.
+
+        The AIO gateway port is refused. It serves the box's own file and
+        command API behind the per-box ``SANDBOX_API_KEY``; a browser link to it
+        either fails authentication or, carrying the key, grants that API to
+        anyone holding the link. An exposed port is an application the agent
+        started on a port of its own.
         """
+        if int(port) == AIO_HTTP_PORT:
+            raise APIError(
+                code="EXPOSE_PORT_RESERVED",
+                message=(
+                    f"port {AIO_HTTP_PORT} is the sandbox's own service gateway, "
+                    "not an application; start the web server on another port "
+                    "and expose that port"
+                ),
+                status_code=400,
+            )
         # The service process may use the lifecycle relay for commands and
         # files, but that address can be private to the AstraBox container. Ask
         # OpenSandbox for its public execd/ingress route for browser navigation.
@@ -2061,16 +2195,22 @@ class OpenSandboxSandboxProvider(SandboxProvider):
         )
 
     async def list_sandboxes(
-        self, *, page: int = 1, page_size: int = _DEFAULT_LIST_PAGE_SIZE
+        self,
+        *,
+        page: int = 1,
+        page_size: int = _DEFAULT_LIST_PAGE_SIZE,
+        metadata: Mapping[str, str] | None = None,
     ) -> SandboxPage:
         """One page of the control plane's sandbox inventory.
 
         Paged at the source (``GET /v1/sandboxes`` answers ``items`` +
         ``pagination``); the server's own counters ride back on the page, so a
         caller advances by asking for the next ``page`` instead of guessing
-        whether it has seen everything. Unfiltered on purpose: this is "what is
+        whether it has seen everything. Without ``metadata`` this is "what is
         this backend running", which includes boxes this deployment never
-        created — the ones with no ``astrabox.session-id`` metadata.
+        created — the ones with no ``astrabox.session-id`` metadata. With it,
+        the lifecycle server keeps only sandboxes whose metadata carries every
+        pair before paging.
         """
         settings = self._settings()
         secret = _config.resolve_api_key(settings)
@@ -2079,7 +2219,11 @@ class OpenSandboxSandboxProvider(SandboxProvider):
         )
         try:
             paged = await manager.list_sandbox_infos(
-                SandboxFilter(page=int(page), page_size=int(page_size))
+                SandboxFilter(
+                    metadata=dict(metadata) if metadata else None,
+                    page=int(page),
+                    page_size=int(page_size),
+                )
             )
         except Exception as exc:
             # Not routed through _api_error: that mapping is per-sandbox (its
@@ -2112,15 +2256,21 @@ class OpenSandboxSandboxProvider(SandboxProvider):
 
         Two results are corruption, not a choice: an assignment identifies one
         physical create attempt, so selecting either duplicate would make a
-        later cleanup nondeterministic. The deployment marker is included in
-        the server-side filter and the returned metadata is checked again;
-        provider filtering narrows candidates but is never ownership proof.
+        later cleanup nondeterministic. The deployment and installation markers
+        are included in the server-side filter and the returned metadata is
+        checked again; provider filtering narrows candidates but is never
+        ownership proof.
         """
 
         assignment = str(assignment_id or "").strip()
         if not assignment:
             raise ValueError("sandbox assignment_id must be non-empty")
         target = assignment_metadata_value(assignment)
+        ownership = {
+            SANDBOX_ASSIGNMENT_ID_METADATA_KEY: target,
+            SANDBOX_MANAGED_BY_METADATA_KEY: SANDBOX_MANAGED_BY_METADATA_VALUE,
+            SANDBOX_INSTALLATION_METADATA_KEY: await sandbox_installation_id(),
+        }
         settings = self._settings()
         secret = _config.resolve_api_key(settings)
         manager = await SandboxManager.create(
@@ -2128,14 +2278,7 @@ class OpenSandboxSandboxProvider(SandboxProvider):
         )
         try:
             paged = await manager.list_sandbox_infos(
-                SandboxFilter(
-                    metadata={
-                        SANDBOX_ASSIGNMENT_ID_METADATA_KEY: target,
-                        SANDBOX_MANAGED_BY_METADATA_KEY: SANDBOX_MANAGED_BY_METADATA_VALUE,
-                    },
-                    page=1,
-                    page_size=2,
-                )
+                SandboxFilter(metadata=dict(ownership), page=1, page_size=2)
             )
         except Exception as exc:
             raise APIError(
@@ -2153,20 +2296,11 @@ class OpenSandboxSandboxProvider(SandboxProvider):
         matches = [
             self._descriptor(info)
             for info in paged.sandbox_infos
-            if str(
-                (getattr(info, "metadata", None) or {}).get(
-                    SANDBOX_ASSIGNMENT_ID_METADATA_KEY
-                )
-                or ""
-            ).strip()
-            == target
-            and str(
-                (getattr(info, "metadata", None) or {}).get(
-                    SANDBOX_MANAGED_BY_METADATA_KEY
-                )
-                or ""
-            ).strip()
-            == SANDBOX_MANAGED_BY_METADATA_VALUE
+            if all(
+                str((getattr(info, "metadata", None) or {}).get(key) or "").strip()
+                == value
+                for key, value in ownership.items()
+            )
         ]
         if not matches:
             return None

@@ -11,13 +11,26 @@ name: installer
 # for a registry mirror. The installer then pulls exactly as it would from
 # ghcr.io.
 #
+# Before installing, scripts/embedded-gateway-acceptance.py starts the built
+# server image's model gateway on its own, against a stub OpenAI-compatible
+# upstream, and sends its first model request and one request per client
+# protocol: Chat Completions, Anthropic Messages and Responses, streamed and not.
+#
 # Checks (scripts/installer-acceptance.sh):
 #   * the console page is served and /healthz reports the bundle's version;
 #   * the API lists the seeded Claude Code Agent;
 #   * a Session for it reaches READY, and the sandbox runs the Agent image the
 #     installation resolved from ASTRABOX_IMAGE_PREFIX and the bundle's version;
 #   * re-running the installer keeps every generated secret, the database and
-#     the Session created before it.
+#     the Session created before it;
+#   * every engine a fresh installation offers (Claude Code, Codex, Pi, the
+#     DeepSeek Harness and a Hermes Assistant) starts a Session, streams one
+#     reply from a stub model service and returns to READY
+#     (scripts/installer-engine-acceptance.py);
+#   * a conversation still answers after `docker compose stop` and `start`,
+#     including a restart that gives the sandbox edges new bridge addresses;
+#   * turning team login on runs Casdoor from the bundle, and the console then
+#     refuses anonymous API calls and sends a browser to Casdoor to sign in.
 #
 # One real model turn runs only when the repository secret DEEPSEEK_API_KEY is
 # set (Settings ▸ Secrets and variables ▸ Actions ▸ Secrets). Without it that
@@ -29,13 +42,24 @@ on:
       - scripts/install.sh
       - scripts/build-release-bundle.sh
       - scripts/installer-acceptance.sh
+      - scripts/embedded-gateway-acceptance.py
       - containers/compose.yaml
+      - containers/compose.sso.yaml
+      - containers/casdoor/**
       - containers/postgres/**
       - containers/coredns/**
       - containers/sandbox-edge/**
       - containers/litellm/**
       - containers/server/**
       - containers/sandbox-claude-code/**
+      - containers/sandbox-codex/**
+      - containers/sandbox-pi/**
+      - containers/sandbox-deepseek-harness/**
+      - containers/sandbox-hermes/**
+      - scripts/installer-engine-acceptance.py
+      - tests/e2e-contract/codex-model-catalog.json
+      - astrabox/core/service/orchestrator/engine/**
+      - astrabox/providers/open_sandbox/**
       - astrabox/config/release_images.py
       - astrabox/providers/sandbox_image.py
       - astrabox/deploy/**
@@ -47,6 +71,9 @@ on:
       - scripts/install.sh
       - scripts/build-release-bundle.sh
       - scripts/installer-acceptance.sh
+      - scripts/embedded-gateway-acceptance.py
+      - scripts/installer-engine-acceptance.py
+      - tests/e2e-contract/codex-model-catalog.json
       - containers/**
       - astrabox/**
       - frontend/**
@@ -65,7 +92,7 @@ jobs:
   install:
     name: install.sh on a clean runner
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 150
     env:
       HAS_MODEL_KEY: ${{ secrets.DEEPSEEK_API_KEY != '' }}
       REGISTRY_PREFIX: localhost:5000/astrabox-
@@ -110,6 +137,17 @@ jobs:
           tags: ${{ env.REGISTRY_PREFIX }}server:${{ steps.version.outputs.version }}
           cache-from: type=gha,scope=installer-server
           cache-to: type=gha,mode=max,scope=installer-server
+
+      # Every engine's model calls go through this gateway. It runs alone here
+      # so that its first model request is one of the checked ones: a gateway
+      # callback that cannot be constructed fails exactly that request, and on
+      # the installed stack other traffic could reach the gateway first.
+      - name: The embedded gateway answers every client protocol
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          docker pull "${REGISTRY_PREFIX}server:$VERSION"
+          scripts/embedded-gateway-acceptance.py "${REGISTRY_PREFIX}server:$VERSION"
 
       - name: Build the Claude Code sandbox image
         uses: docker/build-push-action@v6
@@ -175,6 +213,82 @@ jobs:
           curl -fsS "http://127.0.0.1:8088/api/v1/sessions/$session_id" >/dev/null
           echo "secrets, database volume and Session $session_id survived the re-run"
 
+      # ── Every engine's first turn ──────────────────────────────────────
+      # Each engine reaches its in-box service its own way, so a stack that
+      # starts one engine can still ship another that never reaches READY. The
+      # other four engines' images are built like the Claude Code image above;
+      # the stub OpenAI-compatible upstream from
+      # scripts/embedded-gateway-acceptance.py answers every model request, so
+      # no secret is needed, and each reply must be the stub's text.
+      - name: Build the Codex sandbox image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: containers/sandbox-codex/Dockerfile
+          push: true
+          tags: ${{ env.REGISTRY_PREFIX }}sandbox-codex:${{ steps.version.outputs.version }}
+          cache-from: type=gha,scope=installer-sandbox-codex
+          cache-to: type=gha,mode=max,scope=installer-sandbox-codex
+
+      - name: Build the Pi sandbox image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: containers/sandbox-pi/Dockerfile
+          push: true
+          tags: ${{ env.REGISTRY_PREFIX }}sandbox-pi:${{ steps.version.outputs.version }}
+          cache-from: type=gha,scope=installer-sandbox-pi
+          cache-to: type=gha,mode=max,scope=installer-sandbox-pi
+
+      - name: Build the DeepSeek Harness sandbox image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: containers/sandbox-deepseek-harness/Dockerfile
+          push: true
+          tags: ${{ env.REGISTRY_PREFIX }}sandbox-deepseek-harness:${{ steps.version.outputs.version }}
+          cache-from: type=gha,scope=installer-sandbox-deepseek-harness
+          cache-to: type=gha,mode=max,scope=installer-sandbox-deepseek-harness
+
+      - name: Build the Hermes sandbox image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: containers/sandbox-hermes/Dockerfile
+          push: true
+          tags: ${{ env.REGISTRY_PREFIX }}sandbox-hermes:${{ steps.version.outputs.version }}
+          cache-from: type=gha,scope=installer-sandbox-hermes
+          cache-to: type=gha,mode=max,scope=installer-sandbox-hermes
+
+      - name: Every engine answers a first turn
+        env:
+          ASTRABOX_INSTALL_BUNDLE: ${{ runner.temp }}/bundle/astrabox-deploy-${{ steps.version.outputs.version }}.tar.gz
+          ASTRABOX_INSTALL_DIR: ${{ runner.temp }}/astrabox
+          ASTRABOX_IMAGE_PREFIX: ${{ env.REGISTRY_PREFIX }}
+          ASTRABOX_INSTALL_MODEL_PROVIDER: openai-compatible
+          ASTRABOX_INSTALL_MODEL_NAME: stub-model
+          ASTRABOX_INSTALL_MODEL_API_KEY: stub-key
+          VERSION: ${{ steps.version.outputs.version }}
+        # The stub listens on the Docker bridge gateway, the host address the
+        # installed server container reaches.
+        run: |
+          df -h /
+          gateway="$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}')"
+          stub_url="$(scripts/installer-engine-acceptance.py stub "${REGISTRY_PREFIX}server:$VERSION" "$gateway" 18099)"
+          ASTRABOX_INSTALL_MODEL_BASE_URL="$stub_url" bash < scripts/install.sh
+          scripts/installer-engine-acceptance.py turns http://127.0.0.1:8088 \
+            openai-compatible/stub-model --expect-text STUB-OK
+
+      # A restart that gives the sandbox edges new bridge addresses leaves every
+      # sandbox created before it unable to reach the model; the conversation
+      # must still answer, on a new sandbox, instead of timing out.
+      - name: A conversation answers after restarts that move the sandbox edges
+        run: |
+          scripts/installer-engine-acceptance.py restart http://127.0.0.1:8088 \
+            openai-compatible/stub-model "${{ runner.temp }}/astrabox/containers" \
+            --engine claude_code --cycles 2 --expect-text STUB-OK
+      # ── end of every engine's first turn ───────────────────────────────
+
       - name: One real turn through DeepSeek
         if: env.HAS_MODEL_KEY == 'true'
         env:
@@ -190,6 +304,27 @@ jobs:
       - name: Real turn skipped
         if: env.HAS_MODEL_KEY != 'true'
         run: echo "::notice::The DEEPSEEK_API_KEY secret is not set, so no model turn ran."
+
+      # The overlay and every file it mounts come from the installed bundle, so
+      # a file the bundle lacks stops Casdoor here rather than on a user's host.
+      - name: Team login from the installed bundle
+        env:
+          ASTRABOX_INSTALL_BUNDLE: ${{ runner.temp }}/bundle/astrabox-deploy-${{ steps.version.outputs.version }}.tar.gz
+          ASTRABOX_INSTALL_DIR: ${{ runner.temp }}/astrabox
+          ASTRABOX_INSTALL_TEAM_LOGIN: casdoor
+        run: |
+          bash < scripts/install.sh
+          issuer=http://127.0.0.1:8087
+          discovered="$(curl -fsS "$issuer/.well-known/openid-configuration" \
+            | python3 -c 'import json, sys; print(json.load(sys.stdin)["issuer"])')"
+          test "$discovered" = "$issuer"
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8088/api/v1/agents)" = 401
+          location="$(curl -s -o /dev/null -w '%{redirect_url}' 'http://127.0.0.1:8088/api/v1/auth/login?next=/')"
+          case "$location" in
+            "$issuer/login/oauth/authorize?"*) ;;
+            *) echo "the console's login goes to '$location', not to Casdoor" >&2; exit 1 ;;
+          esac
+          echo "team login is on: Casdoor answers at $issuer and the console sends browsers there"
 
       - name: Stack state on failure (credentials filtered)
         if: failure()

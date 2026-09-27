@@ -700,6 +700,7 @@ test('webhook-delivered native Skill command keeps one user input through a cold
     name: `__e2e_webhook_skill_${runId}`,
     model,
     environment_name: environmentName,
+    prewarm_enabled: false,
     skills: [SKILL_DESCRIPTOR],
   });
   agentId = agent.agent_id;

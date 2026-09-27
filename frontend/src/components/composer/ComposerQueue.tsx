@@ -61,16 +61,23 @@ export function ComposerQueue({
             </div>
             <QueueItemActions className="shrink-0 items-center">
               {item.status === 'failed' && (
+                // A refusal that ended the message is answered the same way
+                // under its own id, so the action sends it again as a new
+                // message; any other failure retries the same one.
                 <Button
                   variant="ghost"
                   size="sm"
                   disabled={!canRetryQueuedMessages}
                   onClick={() => onRetryQueuedMessage(item.id)}
-                  aria-label={t('misc:composer.retry_queued')}
-                  title={canRetryQueuedMessages ? t('misc:composer.retry_queued') : t('misc:composer.retry_disabled')}
+                  aria-label={t(item.resendAsNew ? 'misc:composer.send_again_queued' : 'misc:composer.retry_queued')}
+                  title={
+                    canRetryQueuedMessages
+                      ? t(item.resendAsNew ? 'misc:composer.send_again_queued' : 'misc:composer.retry_queued')
+                      : t('misc:composer.retry_disabled')
+                  }
                 >
                   <RefreshCw />
-                  <span>{t('misc:composer.retry')}</span>
+                  <span>{t(item.resendAsNew ? 'misc:composer.send_again' : 'misc:composer.retry')}</span>
                 </Button>
               )}
               {(

@@ -90,7 +90,9 @@ test('backend restart recovers a delivered answer without asking or executing it
   const file = `e2e-delivered-answer-${runId}.txt`;
   const content = `delivered approval ${runId}`;
   const marker = `ANSWER_COMMITTED_${runId}`;
-  const prompt = `Call Write exactly once to create relative file ${file} with exactly this content: ${content}\n`
+  const prompt = `Call Write exactly once to create relative file ${file}.\n`
+    + `Set its content argument to the exact string encoded here as JSON: ${JSON.stringify(content)}.\n`
+    + 'Do not add a trailing newline, whitespace, quotes or any other text to that string.\n'
     + `Wait for its approval and tool result, then reply with ${marker}. Do not use any other tool.`;
   await sendPrompt(page, sessionId, prompt);
   const pending = await api.waitForPendingInteraction(sessionId, 60_000);
@@ -163,14 +165,18 @@ test('backend restart recovers a delivered answer without asking or executing it
   expect(terminals.length).toBeGreaterThan(0);
   expect(terminals.every((row) => row.event_type === 'turn.completed')).toBe(true);
   const initialFrames = framesForTurn(turnId);
-  const suffix = initialFrames.filter((row) => Number(row.event_seq) > cutoff);
-  expect(suffix.some((row) => object(row.payload).type === 'finish')).toBe(true);
-  const sequences = [...new Set([...answerEvents, ...terminals, ...suffix].map((row) => Number(row.event_seq)))];
+  let sequences: number[] = [];
   evidence.baseline = { openSnapshot, openInteraction, initialEvents, initialFrames, baselineHistory, baselineNative, cutoff, commandId };
 
   try {
     serverCommand(server, ['stop', '--time', '10']);
     expect(serverCommand(server, ['inspect', '--format', '{{.State.Running}}'])).toBe('false');
+    // Title completion may append after READY; enumerate the gap with the writer stopped.
+    const stoppedFrames = framesForTurn(turnId);
+    evidence.stoppedFrames = stoppedFrames;
+    const suffix = stoppedFrames.filter((row) => Number(row.event_seq) > cutoff);
+    expect(suffix.some((row) => object(row.payload).type === 'finish')).toBe(true);
+    sequences = [...new Set([...answerEvents, ...terminals, ...suffix].map((row) => Number(row.event_seq)))];
     evidence.removed = deleteSessionEvents(sessionId, sequences);
     expect(replaceDocs('interaction_snapshots', { '$.session_id': sessionId, '$.interaction_id': interactionId },
       openInteraction)).toHaveLength(1);

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { RefreshCw, Plus } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -6,8 +6,8 @@ import { useSWRConfig } from 'swr';
 
 import { Button } from '@/components/ui/button';
 import { PageShell } from '@/components/shell';
-import { listAgents } from '@/api';
-import type { AgentConfig } from '@/types';
+import { listAgentsPage } from '@/api';
+import type { AgentConfig, AgentListPage } from '@/types';
 
 import {
   ConsolePageHeader,
@@ -18,7 +18,10 @@ import {
   ConsoleTableNote,
   ConsoleTableSkeleton,
   ConsoleErrorState,
+  ConsoleLoadMore,
   FilterChips,
+  usePagedList,
+  useSettled,
   StatusPill,
   NameCell,
   type ConsoleColumn,
@@ -30,61 +33,52 @@ import {
   formatDateTime,
 } from './agentConfig';
 import { MANAGE_NAV_COUNT_KEYS } from './navCounts';
-import { keepsLastRead, useKeepCurrent, type ReloadContext } from '@/hooks/useKeepCurrent';
+import { useKeepCurrent } from '@/hooks/useKeepCurrent';
 
 type StatusFilter = 'all' | 'enabled' | 'disabled';
+type AgentCounts = { total: number; enabled: number };
 
+const rowsOf = (page: AgentListPage) => page.agents;
+const countsOf = (page: AgentListPage): AgentCounts | null =>
+  page.total == null ? null : { total: page.total, enabled: page.enabled ?? 0 };
+
+/**
+ * Agents — a page at a time, by name regardless of case.
+ *
+ * The server pages the list, and search and the status chips narrow it there,
+ * so they reach every Agent the reader may see rather than the rows loaded so
+ * far. The header, the chips and the rail count the whole list: the first
+ * page of every read carries those totals.
+ */
 export default function AgentsListPage() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const { mutate } = useSWRConfig();
-  const [docs, setDocs] = useState<AgentConfig[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState<StatusFilter>('all');
-  // True after any successful read, an empty list included (see keepsLastRead).
-  const loaded = useRef(false);
+  const query = useSettled(search);
 
-  const load = useCallback(async (context?: ReloadContext) => {
-    const background = context?.background === true;
-    if (!background) setLoading(true);
-    try {
-      const list = await listAgents();
-      setDocs([...list].sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''))));
-      await mutate(MANAGE_NAV_COUNT_KEYS.agents, list.length, { revalidate: false });
-      setError('');
-      loaded.current = true;
-    } catch (e) {
-      if (keepsLastRead(e, context, loaded.current)) return;
-      await mutate(MANAGE_NAV_COUNT_KEYS.agents, null, { revalidate: false });
-      setError((e as Error).message);
-    } finally {
-      if (!background) setLoading(false);
-    }
-  }, [mutate]);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
+  const fetchPage = useCallback(
+    (cursor: string | null) => listAgentsPage({ cursor, q: query, status }),
+    [query, status],
+  );
+  const publishCount = useCallback(
+    (counts: AgentCounts | null) => {
+      void mutate(MANAGE_NAV_COUNT_KEYS.agents, counts?.total ?? null, { revalidate: false });
+    },
+    [mutate],
+  );
+  const list = usePagedList<AgentListPage, AgentConfig, AgentCounts>({
+    fetchPage,
+    rowsOf,
+    countsOf,
+    onCounts: publishCount,
+  });
+  const { rows, loading, error, reload: load } = list;
   useKeepCurrent(load);
 
-  const enabledCount = useMemo(() => docs.filter((t) => t.enabled !== false).length, [docs]);
-
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return docs.filter((t) => {
-      const enabled = t.enabled !== false;
-      if (status === 'enabled' && !enabled) return false;
-      if (status === 'disabled' && enabled) return false;
-      if (!q) return true;
-      return (
-        String(t.name || '').toLowerCase().includes(q) ||
-        agentDisplayName(t).toLowerCase().includes(q) ||
-        agentModel(t).toLowerCase().includes(q)
-      );
-    });
-  }, [docs, search, status]);
+  const total = list.counts?.total ?? 0;
+  const enabledCount = list.counts?.enabled ?? 0;
 
   // A row opens the Agent's own page (docs/frontend-design.md §3). The Agent
   // editor is a form, and a form needs the full width.
@@ -163,7 +157,7 @@ export default function AgentsListPage() {
     <PageShell>
       <ConsolePageHeader
         title={t('manage:agents.title')}
-        meta={t('manage:agents.meta', { count: docs.length, enabled: enabledCount })}
+        meta={t('manage:agents.meta', { count: total, enabled: enabledCount })}
         description={t('manage:agents.description')}
         actions={
           <>
@@ -190,7 +184,7 @@ export default function AgentsListPage() {
             <ConsoleSearch
               value={search}
               onChange={setSearch}
-              total={docs.length}
+              total={total}
               placeholder={t('manage:agents.search_placeholder')}
             />
             <FilterChips
@@ -198,9 +192,9 @@ export default function AgentsListPage() {
               value={status}
               onChange={setStatus}
               options={[
-                { value: 'all', label: t('common:all'), count: docs.length },
+                { value: 'all', label: t('common:all'), count: total },
                 { value: 'enabled', label: t('common:enabled'), count: enabledCount },
-                { value: 'disabled', label: t('common:disabled'), count: docs.length - enabledCount },
+                { value: 'disabled', label: t('common:disabled'), count: total - enabledCount },
               ]}
             />
           </ConsoleToolbar>
@@ -208,7 +202,7 @@ export default function AgentsListPage() {
 
         <ConsoleTable
           columns={columns}
-          rows={loading || error ? [] : filtered}
+          rows={loading || error ? [] : rows}
           rowKey={(a) => a.agent_id}
           onRowClick={(a) => openRecord(a.agent_id)}
           empty={
@@ -220,7 +214,7 @@ export default function AgentsListPage() {
                 detail={error}
                 onRetry={() => void load()}
               />
-            ) : docs.length === 0 ? (
+            ) : total === 0 ? (
               <ConsoleEmptyState
                 title={t('manage:agents.empty_title')}
                 hint={t('manage:agents.empty_hint')}
@@ -236,6 +230,14 @@ export default function AgentsListPage() {
             )
           }
         />
+        {!loading && !error && (
+          <ConsoleLoadMore
+            hasMore={list.hasMore}
+            loading={list.loadingMore}
+            error={list.moreError}
+            onLoadMore={() => void list.loadMore()}
+          />
+        )}
       </div>
     </PageShell>
   );

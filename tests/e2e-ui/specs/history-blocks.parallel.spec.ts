@@ -132,9 +132,15 @@ async function ensureExpanded(trigger: Locator): Promise<void> {
  * hidden (`MessageParts.tsx:453`, `:553`); the card unmounts its body
  * (ai-elements/tool.tsx `ToolContent`), so the output is not in the page at all
  * until it is pressed.
+ *
+ * Groups and cards are found inside the header, never anywhere in the turn.
+ * The header shows a loading line until its detail read lands, and a group or
+ * card the response kept beside its answer would otherwise stand in for the
+ * work behind the header and be counted before that work arrived.
  */
 async function openEverythingInside(turn: Locator): Promise<void> {
-  const groups = turn.getByTestId('assistant-process');
+  const header = turn.getByTestId('assistant-turn-process');
+  const groups = header.getByTestId('assistant-process');
   await expect(
     groups.first(),
     'an opened header must show at least one group of the work it stands for',
@@ -143,7 +149,7 @@ async function openEverythingInside(turn: Locator): Promise<void> {
   for (let index = 0; index < groupCount; index += 1) {
     await ensureExpanded(groups.nth(index).getByTestId('assistant-process-trigger'));
   }
-  const cards = turn.locator('[data-tool-call-id]:visible');
+  const cards = header.locator('[data-tool-call-id]:visible');
   await expect(
     cards.first(),
     'the work behind the header has to include the tool cards it folded',
@@ -276,12 +282,33 @@ test('the folded history pages by record and carries its tool work only on deman
     messageText(toolRecord as MessageRecord),
     'and it is the response\'s own words, not a rewrite of them',
   ).toContain(conclusion);
+  // A response that ran no tool folds only its thinking, and only if the model
+  // thought: `history_blocks.py::_deferred_groups` hides a settled run of
+  // thinking behind a reasoning-only header (no label, no tool count). Whether
+  // the model thinks before a one-line answer is its business, so the raw
+  // record decides which way each response goes.
   for (const record of folded.messages) {
-    if (String(record.message_id) === toolMessageId) continue;
+    if (String(record.message_id) === toolMessageId || record.role !== 'assistant') continue;
+    const rawRecord = raw.find((item) => String(item.message_id) === String(record.message_id));
+    const thought = blocksOfType(rawRecord, 'thinking').length > 0;
+    const headers = processDetails(record);
+    if (!thought) {
+      expect(headers, `record ${record.message_id} neither thought nor ran a tool, so it has nothing to fold`)
+        .toHaveLength(0);
+    }
+    for (const item of headers) {
+      expect(
+        item.tool_count,
+        `record ${record.message_id} ran no tool, so its header can stand only for its thinking`,
+      ).toBe(0);
+      expect(item.summarize, 'a reasoning-only fold is not the labelled whole-response one').toBe(false);
+    }
+    expect(blocksOfType(record, 'thinking'), 'thinking the page shows is thinking it failed to fold')
+      .toHaveLength(0);
     expect(
-      processDetails(record),
-      `record ${record.message_id} ran no tool, so it has nothing to fold`,
-    ).toHaveLength(0);
+      messageText(record).trim(),
+      `record ${record.message_id} keeps its answer on the page, word for word`,
+    ).toBe(messageText(rawRecord as MessageRecord).trim());
   }
 
   // ── 2. Two records at a time: same order, no gaps, no repeats. ───────────
@@ -452,8 +479,25 @@ test('the folded history pages by record and carries its tool work only on deman
     (record) => String(record.message_id) === toolMessageId,
   );
   expect(toolUseIds(delivered), 'the page the browser receives carries no calls').toEqual([]);
+  // The model may quote what it read in its own answer, and its answer belongs
+  // on the page. What the fold hides is the tools' output, so the answer is
+  // held to the raw record word for word and the output is looked for in
+  // everything else the body carries.
   expect(
-    JSON.stringify(delivered ?? {}),
+    String(delivered?.content ?? ''),
+    'the answer the browser receives is the response\'s own words',
+  ).toBe(String(toolRecord?.content ?? ''));
+  const rawAnswer = new Set(blocksOfType(toolRecord, 'text').map((block) => String(block.text ?? '')));
+  for (const block of blocksOfType(delivered, 'text')) {
+    expect(rawAnswer.has(String(block.text ?? '')), 'every text block on the page is one the response wrote')
+      .toBe(true);
+  }
+  expect(
+    JSON.stringify({
+      ...(delivered ?? {}),
+      content: undefined,
+      blocks: blocksOf(delivered).filter((block) => String(block.type ?? '') !== 'text'),
+    }),
     'and none of the output they produced — a body that still carried it would render identically',
   ).not.toContain(toolOutputMarker);
 
@@ -479,8 +523,8 @@ test('the folded history pages by record and carries its tool work only on deman
     .toBe(1);
   await openEverythingInside(row);
   await expect(
-    row,
-    'the tool output reaches the reader only through that read',
+    turnHeader,
+    'the tool output reaches the reader only through that read, behind the header',
   ).toContainText(toolOutputMarker, { timeout: RENDER_MS });
   expect(detailReads, 'and one opened header is one read').toHaveLength(1);
 

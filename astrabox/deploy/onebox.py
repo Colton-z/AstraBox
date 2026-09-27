@@ -30,15 +30,21 @@ Supervision contract
   that restarted the server would hide a crash loop behind a healthy-looking
   container, and one that outlived AstraBox would hold the port open with nothing
   serving. Both are cases the container runtime's own restart policy handles
-  better, and it can only do so if the container actually exits.
-* **Signals go to all children**, and the orchestrator then waits for them, so
-  AstraBox gets the graceful shutdown its lifespan hook is written for. The image
-  pairs this with ``tini`` as PID 1, which reaps and forwards; this module never
-  needs to be PID 1 itself, only to pass on what it receives.
+  better, and it can only do so if the container actually exits. The sandbox
+  edges are sibling containers, not children, restarted by Docker; a periodic
+  read of their addresses ends the container when one moved.
+* **Shutdown runs in dependency order.** A signal goes to AstraBox alone, so it
+  gets the graceful shutdown its lifespan hook is written for while every
+  service it calls is still up. When AstraBox has exited, the other children
+  are stopped together, and then the foundation services (the all-in-one
+  image's database and pool store) one at a time, each with its own signal.
+  The image pairs this with ``tini`` as PID 1, which reaps and forwards; this
+  module never needs to be PID 1 itself, only to pass on what it receives.
 """
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import os
 import pathlib
@@ -52,8 +58,9 @@ import time
 import urllib.error
 import urllib.request
 from collections import deque
+from dataclasses import dataclass
 from types import FrameType
-from typing import Callable, Sequence
+from typing import Any, Callable, Sequence
 from urllib.parse import quote, urlsplit
 
 from astrabox.common.logger.logger_factory import get_logger
@@ -65,10 +72,6 @@ logger = get_logger(__name__)
 OPEN_SANDBOX_BACKEND = "open_sandbox"
 BACKEND_ENV = "ASTRABOX_SANDBOX_BACKEND"
 BASE_URL_ENV = "ASTRABOX_SANDBOX_OPENAPI_BASE_URL"
-#: Set for the supervised shape: AstraBox is containerised, so it reaches
-#: sandboxes through the lifecycle server's relay rather than a published host
-#: port. An operator's own value wins (see :func:`_export_backend_wiring`).
-SERVER_PROXY_ENV = "ASTRABOX_SANDBOX_ENDPOINT_VIA_SERVER_PROXY"
 
 START_TIMEOUT_ENV = "ASTRABOX_SANDBOX_SERVER_START_TIMEOUT_SECONDS"
 #: Sized for the slowest child: the bundled LiteLLM runs its database
@@ -83,6 +86,8 @@ _HEALTH_POLL_INTERVAL_SECONDS = 0.25
 _HEALTH_REQUEST_TIMEOUT_SECONDS = 2.0
 #: How long a child gets to exit on its own after SIGTERM before SIGKILL.
 _CHILD_SHUTDOWN_GRACE_SECONDS = 10.0
+#: Gap between reads of the sandbox edges' bridge addresses while serving.
+_EDGE_WATCH_INTERVAL_SECONDS = 5.0
 #: Lines of a child's output kept for the fail-loud message.
 _OUTPUT_TAIL_LINES = 40
 
@@ -100,6 +105,12 @@ _SENSITIVE_ASSIGNMENT = re.compile(
     r"\b[\"']?\s*(?:=|:)\s*)([\"']?)([^\s,\"'}]+)"
 )
 _BEARER_TOKEN = re.compile(r"(?i)(\bbearer\s+)[A-Za-z0-9._~+/=-]{8,}")
+# A credential in a URL's `token` query parameter. With sandbox endpoints relayed
+# through the lifecycle server (ASTRABOX_SANDBOX_ENDPOINT_VIA_SERVER_PROXY), the
+# DeepSeek Harness launch-token exchange, `GET <relay>/?token=...`, is a request
+# line in that server's access log. The token is 43 base64url characters, which
+# no other pattern here matches.
+_URL_TOKEN_QUERY = re.compile(r"(?i)([?&]token=)[^\s&#\"']+")
 _PROVIDER_KEY = re.compile(r"\bsk-[A-Za-z0-9._~+/=-]{8,}\b")
 _LONG_HEX_TOKEN = re.compile(r"\b[0-9a-fA-F]{48,}\b")
 _DATABASE_PASSWORD = re.compile(
@@ -139,6 +150,7 @@ def _redact_child_output(text: str, *, secret_values: Sequence[str] = ()) -> str
         redacted,
     )
     redacted = _BEARER_TOKEN.sub(rf"\1{_REDACTED}", redacted)
+    redacted = _URL_TOKEN_QUERY.sub(rf"\1{_REDACTED}", redacted)
     redacted = _PROVIDER_KEY.sub(_REDACTED, redacted)
     return _LONG_HEX_TOKEN.sub(_REDACTED, redacted)
 
@@ -180,6 +192,11 @@ ANTHROPIC_AUTH_TOKEN_ENV = "ANTHROPIC_AUTH_TOKEN"
 ANTHROPIC_BASE_URL_ENV = "ANTHROPIC_BASE_URL"
 ANTHROPIC_MODEL_ENV = "ANTHROPIC_MODEL"
 DEEPSEEK_API_KEY_ENV = "DEEPSEEK_API_KEY"
+#: Literal mirrors of the title-model settings (astrabox.common.utils.settings).
+TITLE_MODEL_NAME_ENV = "ASTRABOX_TITLE_MODEL_NAME"
+TITLE_MODEL_BASE_URL_ENV = "ASTRABOX_TITLE_MODEL_BASE_URL"
+#: The bundled gateway's native DeepSeek route prefix (containers/litellm/config.yaml).
+DEEPSEEK_NATIVE_ROUTE_PREFIX = "deepseek/"
 #: Where the image bakes the proxy venv + config (containers/server/Dockerfile).
 LITELLM_BIN = "/opt/litellm/bin/litellm"
 LITELLM_CONFIG_PATH = "/opt/astrabox/litellm/config.yaml"
@@ -207,6 +224,8 @@ GATEWAY_DNS_ADDRESS_ENV = "ASTRABOX_SANDBOX_GATEWAY_IP"
 SANDBOX_EDGE_SERVICE_ENV = "ASTRABOX_SANDBOX_EDGE_SERVICE"
 SANDBOX_DNS_EDGE_SERVICE_ENV = "ASTRABOX_SANDBOX_DNS_EDGE_SERVICE"
 SANDBOX_EDGE_CALLBACK_PORT_ENV = "ASTRABOX_SANDBOX_EDGE_CALLBACK_PORT"
+SANDBOX_EDGE_NETWORK_ENV = "ASTRABOX_SANDBOX_EDGE_NETWORK"
+EGRESS_DENY_CIDRS_ENV = "ASTRABOX_SANDBOX_EGRESS_DENY_CIDRS"
 MCP_PROXY_BASE_URL_ENV = "ASTRABOX_MCP_PROXY_BASE_URL"
 SANDBOX_SERVER_RUNTIME_ENV = "ASTRABOX_SANDBOX_SERVER_RUNTIME"
 GATEWAY_DNS_PORT = 5353
@@ -402,20 +421,75 @@ def needs_gateway_dns() -> bool:
     return needs_litellm_gateway() and _credential_vault_enabled()
 
 
-def _detect_own_container_ip() -> str:
-    from astrabox.common.utils.settings import _detect_own_container_ip as detect
+@dataclass(frozen=True)
+class EdgeOwner:
+    """The Docker labels that find one deployment's sandbox edges and their network.
 
-    return detect()
+    Compose labels every container and network of a project with the project
+    and the service or network key it declares (:func:`_compose_edge_owner`).
+    The all-in-one image creates its edges and their network itself and labels
+    them with its installation and a role (:mod:`astrabox.deploy.all_in_one`).
+    Finding them is the only step the two shapes do differently: the
+    connection to the private network, the addresses sandboxes are given and
+    the bridge deny list are one path. ``ASTRABOX_SANDBOX_EDGE_SERVICE``,
+    ``ASTRABOX_SANDBOX_DNS_EDGE_SERVICE`` and ``ASTRABOX_SANDBOX_EDGE_NETWORK``
+    are the values of ``service_key`` and ``network_key`` under these labels.
+    """
+
+    #: ``key=value`` labels every edge and the network carry.
+    labels: tuple[str, ...]
+    #: The label whose value is an edge's service or role name.
+    service_key: str
+    #: The label whose value is the private network's key.
+    network_key: str
+    #: Who owns them, for error messages.
+    description: str
 
 
-def _detect_compose_service_ip(service_name: str) -> str:
-    """Resolve one sibling Compose service on Docker's built-in bridge.
+def _compose_edge_owner(client: Any) -> EdgeOwner:
+    """The Compose project this server container belongs to, from its labels."""
 
-    The sandbox edge deliberately uses ``network_mode: bridge`` because
-    OpenSandbox's Docker egress sidecar enforces networkPolicy only there. That
-    network has no Compose DNS and assigns its address dynamically, so the
-    server discovers the sibling by the project/service labels Compose already
-    puts on both containers. No fixed container name or bridge IP is needed.
+    current = client.containers.get(socket.gethostname())
+    labels = dict(current.attrs.get("Config", {}).get("Labels") or {})
+    project = str(labels.get("com.docker.compose.project") or "").strip()
+    if not project:
+        raise OneBoxError(
+            "cannot discover the sandbox edges: the server container has no "
+            "com.docker.compose.project label"
+        )
+    return EdgeOwner(
+        labels=(f"com.docker.compose.project={project}",),
+        service_key="com.docker.compose.service",
+        network_key="com.docker.compose.network",
+        description=f"Compose project {project!r}",
+    )
+
+
+def _edge_container(client: Any, owner: EdgeOwner, service_name: str) -> Any:
+    """The one running container of a sandbox edge."""
+
+    matches = client.containers.list(
+        filters={
+            "status": "running",
+            "label": [*owner.labels, f"{owner.service_key}={service_name}"],
+        }
+    )
+    if len(matches) != 1:
+        raise OneBoxError(
+            f"cannot discover sandbox edge {service_name!r} of {owner.description}: "
+            f"expected one running container, found {len(matches)}"
+        )
+    return matches[0]
+
+
+def _detect_edge_ip(service_name: str, owner: EdgeOwner | None) -> str:
+    """Resolve one sandbox edge's address on Docker's built-in bridge.
+
+    The edges deliberately live on the built-in bridge because OpenSandbox's
+    Docker egress sidecar enforces networkPolicy only there. That network has
+    no DNS of its own and assigns addresses dynamically, so the server finds an
+    edge by the labels its owner put on it (``None``: this container's Compose
+    project). No fixed container name or bridge IP is needed.
     """
 
     try:
@@ -423,33 +497,14 @@ def _detect_compose_service_ip(service_name: str) -> str:
 
         client = docker.from_env()
         try:
-            current = client.containers.get(socket.gethostname())
-            labels = dict(current.attrs.get("Config", {}).get("Labels") or {})
-            project = str(labels.get("com.docker.compose.project") or "").strip()
-            if not project:
-                raise OneBoxError(
-                    f"cannot discover Compose service {service_name!r}: the server "
-                    "container has no com.docker.compose.project label"
-                )
-            matches = client.containers.list(
-                filters={
-                    "status": "running",
-                    "label": [
-                        f"com.docker.compose.project={project}",
-                        f"com.docker.compose.service={service_name}",
-                    ],
-                }
+            container = _edge_container(
+                client, owner or _compose_edge_owner(client), service_name
             )
-            if len(matches) != 1:
-                raise OneBoxError(
-                    f"cannot discover Compose service {service_name!r} in project "
-                    f"{project!r}: expected one running container, found {len(matches)}"
-                )
-            networks = dict(matches[0].attrs.get("NetworkSettings", {}).get("Networks") or {})
+            networks = dict(container.attrs.get("NetworkSettings", {}).get("Networks") or {})
             address = str((networks.get("bridge") or {}).get("IPAddress") or "").strip()
             if not address:
                 raise OneBoxError(
-                    f"Compose service {service_name!r} is not attached to Docker's "
+                    f"sandbox edge {service_name!r} is not attached to Docker's "
                     "built-in bridge"
                 )
             return address
@@ -459,18 +514,197 @@ def _detect_compose_service_ip(service_name: str) -> str:
         raise
     except Exception as exc:
         raise OneBoxError(
-            f"cannot discover Compose service {service_name!r} through the Docker socket: {exc}"
+            f"cannot discover sandbox edge {service_name!r} through the Docker socket: {exc}"
         ) from exc
 
 
-def ensure_sandbox_edge_wiring() -> str:
+def ensure_sandbox_edge_network(owner: EdgeOwner | None = None) -> str:
+    """Connect the sandbox edges to the private network they reach the server on.
+
+    Sandboxes live on Docker's built-in bridge, where the only platform address
+    they may reach is the edge. The edges forward to this server by the name
+    ``server`` over an ``internal`` network no sandbox joins, so no server port
+    is published anywhere a sandbox's egress can reach. Compose cannot put one
+    service on the built-in bridge and a second network: it gives every
+    endpoint network-scoped aliases, which Docker refuses on the built-in
+    bridge. The edges are therefore created on the bridge, and this step
+    connects them to the private network through the Docker API; the
+    connection survives an edge restart. Under Compose a recreated edge is
+    connected again when the server restarts with it (the server's
+    ``depends_on`` on the edges sets ``restart: true``); the all-in-one image
+    recreates its edges only while it starts.
+
+    ``owner`` finds the edges and the network; ``None`` is this container's
+    Compose project.
+    """
+
+    services = [
+        name
+        for name in (
+            _env(SANDBOX_EDGE_SERVICE_ENV, ""),
+            _env(SANDBOX_DNS_EDGE_SERVICE_ENV, ""),
+        )
+        if name
+    ]
+    if not services:
+        return ""
+    network_key = _env(SANDBOX_EDGE_NETWORK_ENV, "")
+    if not network_key:
+        raise OneBoxError(
+            f"{SANDBOX_EDGE_SERVICE_ENV} is set but {SANDBOX_EDGE_NETWORK_ENV} is "
+            "not: the sandbox edges reach this server only over that private "
+            "network"
+        )
+    try:
+        import docker
+
+        client = docker.from_env()
+        try:
+            owner = owner or _compose_edge_owner(client)
+            networks = client.networks.list(
+                filters={"label": [*owner.labels, f"{owner.network_key}={network_key}"]}
+            )
+            if len(networks) != 1:
+                raise OneBoxError(
+                    f"cannot find network {network_key!r} of {owner.description}: "
+                    f"expected one, found {len(networks)}"
+                )
+            network = networks[0]
+            own = client.containers.get(socket.gethostname())
+            own_networks = dict(own.attrs.get("NetworkSettings", {}).get("Networks") or {})
+            if network.name not in own_networks:
+                raise OneBoxError(
+                    f"the server container is not attached to {network.name!r}, so "
+                    "the sandbox edges could not reach it there"
+                )
+            for service_name in services:
+                container = _edge_container(client, owner, service_name)
+                attached = dict(
+                    container.attrs.get("NetworkSettings", {}).get("Networks") or {}
+                )
+                if network.name not in attached:
+                    network.connect(container)
+                    logger.info(
+                        "connected sandbox edge %r to private network %s",
+                        service_name,
+                        network.name,
+                    )
+            return str(network.name)
+        finally:
+            client.close()
+    except OneBoxError:
+        raise
+    except Exception as exc:
+        raise OneBoxError(
+            "cannot connect the sandbox edges to their private network through "
+            f"the Docker socket: {exc}"
+        ) from exc
+
+
+def _detect_bridge_subnets() -> list[ipaddress.IPv4Network]:
+    """The IPv4 subnets of Docker's built-in bridge, from its IPAM config."""
+
+    try:
+        import docker
+
+        client = docker.from_env()
+        try:
+            configs = list(
+                (client.networks.get("bridge").attrs.get("IPAM") or {}).get("Config") or []
+            )
+        finally:
+            client.close()
+    except Exception as exc:
+        raise OneBoxError(
+            f"cannot read Docker's built-in bridge subnet through the Docker socket: {exc}"
+        ) from exc
+    subnets = []
+    for config in configs:
+        network = ipaddress.ip_network(str((config or {}).get("Subnet") or ""), strict=False)
+        if isinstance(network, ipaddress.IPv4Network):
+            subnets.append(network)
+    if not subnets:
+        raise OneBoxError("Docker's built-in bridge reports no IPv4 subnet")
+    return subnets
+
+
+def ensure_sandbox_bridge_isolation(edge_address: str) -> str:
+    """Deny every sandbox the rest of Docker's built-in bridge.
+
+    All sandboxes share the built-in bridge, and its gateway is where each
+    sandbox's execd and file server are published (``ASTRABOX_PUBLISH_HOST_IP``).
+    OpenSandbox's egress sidecar in ``dns+nft`` mode drops IP/CIDR deny
+    targets before it consults any allow set, so denying the bridge subnets
+    minus the HTTP edge keeps a sandbox off other sandboxes and off the gateway
+    in every networking mode: an Unrestricted Environment, and any allow-list
+    entry that names a bridge address, included. The edge stays reachable. The
+    DNS edge needs no exception: the sidecar's DNS proxy marks its upstream
+    traffic, and the sidecar accepts marked packets before the deny set.
+
+    An explicit ``ASTRABOX_SANDBOX_EGRESS_DENY_CIDRS`` is the operator's list and
+    is kept as given. Either way, a callback base whose address the list denies
+    is refused here: sandboxes could never reach it, and every platform MCP call
+    and transcript flush would time out instead.
+    """
+
+    value = _env(EGRESS_DENY_CIDRS_ENV, "") or _derived_bridge_deny_cidrs(edge_address)
+    os.environ[EGRESS_DENY_CIDRS_ENV] = value
+    try:
+        denied = [
+            ipaddress.ip_network(item.strip(), strict=True)
+            for item in value.split(",")
+            if item.strip()
+        ]
+    except ValueError as exc:
+        raise OneBoxError(
+            f"{EGRESS_DENY_CIDRS_ENV}={value!r} is not a list of networks: {exc}"
+        ) from exc
+    callback_host = urlsplit(_env(MCP_PROXY_BASE_URL_ENV, "")).hostname or ""
+    try:
+        callback_address = ipaddress.ip_address(callback_host)
+    except ValueError:
+        return value
+    if any(callback_address in network for network in denied):
+        raise OneBoxError(
+            f"{MCP_PROXY_BASE_URL_ENV} names {callback_address}, which "
+            f"{EGRESS_DENY_CIDRS_ENV} denies to every sandbox. Leave "
+            f"{MCP_PROXY_BASE_URL_ENV} unset so sandboxes call back through the "
+            "sandbox edge."
+        )
+    return value
+
+
+def _derived_bridge_deny_cidrs(edge_address: str) -> str:
+    """Docker's built-in bridge subnets minus the sandbox edge, comma-joined."""
+
+    try:
+        edge = ipaddress.IPv4Address(edge_address)
+    except ValueError as exc:
+        raise OneBoxError(
+            f"the sandbox edge address {edge_address!r} is not an IPv4 address"
+        ) from exc
+    denied: list[ipaddress.IPv4Network] = []
+    for subnet in _detect_bridge_subnets():
+        if edge in subnet:
+            denied.extend(subnet.address_exclude(ipaddress.IPv4Network(f"{edge}/32")))
+        else:
+            denied.append(subnet)
+    logger.info(
+        "sandbox egress denies Docker's built-in bridge except the sandbox edge %s",
+        edge,
+    )
+    return ",".join(str(network) for network in sorted(denied))
+
+
+def ensure_sandbox_edge_wiring(owner: EdgeOwner | None = None) -> str:
     """Route sandbox callbacks through a single-purpose bridge container.
 
     A networkPolicy rule names a host, not a port. Allowing the Docker bridge
     gateway for callbacks would therefore also allow every unrelated service a
     host operator published there (for example ``0.0.0.0:5432``). The maintained
-    Compose stack instead permits a tiny proxy container that exposes only the
-    model and capability-scoped callback surfaces.
+    Compose stack and the all-in-one image instead permit a tiny proxy
+    container that exposes only the model and capability-scoped callback
+    surfaces. ``owner`` finds it (:func:`ensure_sandbox_edge_network`).
 
     Deployments that do not set ``ASTRABOX_SANDBOX_EDGE_SERVICE`` keep their
     explicit callback/model topology unchanged.
@@ -485,9 +719,7 @@ def ensure_sandbox_edge_wiring() -> str:
             "be used with a non-Docker OpenSandbox runtime"
         )
 
-    address = _env(GATEWAY_DNS_ADDRESS_ENV, "") or _detect_compose_service_ip(
-        service_name
-    )
+    address = _env(GATEWAY_DNS_ADDRESS_ENV, "") or _detect_edge_ip(service_name, owner)
     os.environ[GATEWAY_DNS_ADDRESS_ENV] = address
     if not _env(MCP_PROXY_BASE_URL_ENV, ""):
         port = _configured_tcp_port(
@@ -501,14 +733,15 @@ def ensure_sandbox_edge_wiring() -> str:
     return address
 
 
-def ensure_sandbox_dns_edge_wiring() -> str:
+def ensure_sandbox_dns_edge_wiring(owner: EdgeOwner | None = None) -> str:
     """Use a single-purpose bridge container as the sandbox DNS upstream.
 
     OpenSandbox's Docker egress policy treats an allowed DNS-upstream host as a
     reachable host. Pointing it at the Docker bridge gateway therefore exposes
-    unrelated services on that gateway. The maintained Compose stack inserts a
-    CoreDNS-only forwarder and lets that container, not the Agent, reach the
-    host-published resolver.
+    unrelated services on that gateway. The maintained Compose stack and the
+    all-in-one image insert a DNS-only forwarder and let that container, not
+    the Agent, reach the server's resolver over the private network. ``owner``
+    finds it (:func:`ensure_sandbox_edge_network`).
     """
 
     service_name = _env(SANDBOX_DNS_EDGE_SERVICE_ENV, "")
@@ -519,7 +752,7 @@ def ensure_sandbox_dns_edge_wiring() -> str:
             f"{SANDBOX_DNS_EDGE_SERVICE_ENV} is a Docker Compose boundary and "
             "cannot be used with a non-Docker OpenSandbox runtime"
         )
-    address = _detect_compose_service_ip(service_name)
+    address = _detect_edge_ip(service_name, owner)
     if not _env(EGRESS_DNS_UPSTREAM_ENV, ""):
         os.environ[EGRESS_DNS_UPSTREAM_ENV] = f"{address}:53"
     return address
@@ -536,17 +769,20 @@ def ensure_gateway_dns_wiring() -> str:
             "external model gateway with a cluster-resolvable FQDN (set "
             f"{LITELLM_BASE_URL_ENV_NAME})."
         )
-    # Compose deliberately places the server on user-defined platform/database
-    # networks while sandboxes stay on Docker's built-in bridge. In that shape
-    # it supplies the bridge-gateway publication explicitly; otherwise the
-    # server's own private-network IP would be unroutable from the sidecar.
-    address = _env(GATEWAY_DNS_ADDRESS_ENV, "") or _detect_own_container_ip()
+    # The address the private gateway name resolves to, and so a host every
+    # sandbox may reach. The Compose stack sets it to the sandbox edge
+    # (ensure_sandbox_edge_wiring). It is never this container's own address:
+    # a sandbox allowed that host could reach every port the server listens
+    # on, the unauthenticated API included.
+    address = _env(GATEWAY_DNS_ADDRESS_ENV, "")
     if not address:
         raise OneBoxError(
-            "cannot determine this container's private IP for the protected "
-            "embedded model gateway. Set an external model gateway with a "
-            f"resolvable FQDN ({LITELLM_BASE_URL_ENV_NAME}), or turn "
-            f"{CREDENTIAL_VAULT_ENV} off explicitly."
+            f"{GATEWAY_DNS_ADDRESS_ENV} is unset, so the protected embedded model "
+            "gateway has no address sandboxes may reach. Run the maintained "
+            f"Compose stack, whose sandbox edge supplies it ({SANDBOX_EDGE_SERVICE_ENV}), "
+            f"set {GATEWAY_DNS_ADDRESS_ENV} to a single-purpose proxy's address, use "
+            f"an external model gateway with a resolvable FQDN ({LITELLM_BASE_URL_ENV_NAME}), "
+            f"or turn {CREDENTIAL_VAULT_ENV} off explicitly."
         )
     os.environ[GATEWAY_DNS_ADDRESS_ENV] = address
     if not _env(EGRESS_DNS_UPSTREAM_ENV, ""):
@@ -568,6 +804,14 @@ def ensure_litellm_provider_wiring() -> None:
     ``anthropic/*`` route; an explicit Agent or Assistant model remains the
     routing authority. DeepSeek publishes both Anthropic Messages and OpenAI
     routes, so different engines can select different routes in the same proxy.
+
+    Titles and process summaries send ``reasoning_effort: "none"``. On the
+    Anthropic route LiteLLM drops that option, and DeepSeek then thinks by
+    default until the small label budget runs out. For DeepSeek the default
+    title route is therefore ``deepseek/<model>``: LiteLLM's native DeepSeek
+    adapter maps ``none`` to ``thinking: {"type": "disabled"}``. An explicit
+    ``ASTRABOX_TITLE_MODEL_NAME``, or a title endpoint of the operator's own
+    (``ASTRABOX_TITLE_MODEL_BASE_URL``), is kept.
     """
 
     api_key = _env(ANTHROPIC_API_KEY_ENV, "")
@@ -578,7 +822,8 @@ def ensure_litellm_provider_wiring() -> None:
     base_url = _env(ANTHROPIC_BASE_URL_ENV, "")
     if not base_url:
         return
-    if (urlsplit(base_url).hostname or "").lower() == "api.deepseek.com":
+    deepseek = (urlsplit(base_url).hostname or "").lower() == "api.deepseek.com"
+    if deepseek:
         deepseek_key = _env(DEEPSEEK_API_KEY_ENV, "") or api_key or auth_token
         if deepseek_key:
             os.environ[DEEPSEEK_API_KEY_ENV] = deepseek_key
@@ -588,6 +833,8 @@ def ensure_litellm_provider_wiring() -> None:
         return
     route_model = upstream_model.removeprefix("anthropic/")
     os.environ[ANTHROPIC_MODEL_ENV] = f"anthropic/{route_model}"
+    if deepseek and not _env(TITLE_MODEL_BASE_URL_ENV, ""):
+        export_default(TITLE_MODEL_NAME_ENV, f"{DEEPSEEK_NATIVE_ROUTE_PREFIX}{route_model}")
 
 
 def ensure_litellm_master_key() -> str:
@@ -824,13 +1071,26 @@ class _Child:
 
     process: subprocess.Popen[str]
 
-    def __init__(self, name: str, argv: Sequence[str], *, prefix_output: bool) -> None:
+    def __init__(
+        self,
+        name: str,
+        argv: Sequence[str],
+        *,
+        prefix_output: bool,
+        stop_signal: int = signal.SIGTERM,
+        own_session: bool = False,
+    ) -> None:
         self.name = name
         self.argv = list(argv)
+        self.stop_signal = stop_signal
         self._secret_values = _sensitive_environment_values()
         self._tail: deque[str] = deque(maxlen=_OUTPUT_TAIL_LINES)
         self._lock = threading.Lock()
         self._pump: threading.Thread | None = None
+        # A foundation service runs in its own session so that a terminal's
+        # Ctrl-C, which reaches the whole foreground process group, cannot stop
+        # the database before the processes that write to it. Its stop signal
+        # then comes only from the supervisor, in order.
         if prefix_output:
             # PYTHONUNBUFFERED is not optional here. A pipe makes the child's
             # stdout block-buffered, so its log lines sit in a buffer that a
@@ -846,6 +1106,7 @@ class _Child:
                 text=True,
                 bufsize=1,
                 env={**os.environ, "PYTHONUNBUFFERED": "1"},
+                start_new_session=own_session,
             )
             self._pump = threading.Thread(
                 target=self._pump_output, name=f"{name}-logs", daemon=True
@@ -855,7 +1116,9 @@ class _Child:
             # No pipes: the child inherits this process's stdout and stderr, so
             # `text` describes streams that do not exist here. Passed anyway to
             # keep one declared type for `process` across both branches.
-            self.process = subprocess.Popen(self.argv, text=True)  # noqa: S603 - fixed argv
+            self.process = subprocess.Popen(  # noqa: S603 - fixed argv
+                self.argv, text=True, start_new_session=own_session
+            )
 
     def _pump_output(self) -> None:
         """Copy the child's merged output to this process's own log, one prefixed line at a time."""
@@ -886,13 +1149,29 @@ class _Child:
             return f"({self.name} produced no output)"
         return "\n".join(f"    {line}" for line in lines)
 
-    def stop(self, *, signal_number: int = signal.SIGTERM) -> None:
-        """Signal the child, then escalate to SIGKILL if it overstays the grace."""
+    def request_stop(self) -> None:
+        """Send the child its stop signal once, without waiting for it."""
         if self.process.poll() is not None:
             return
         try:
-            self.process.send_signal(signal_number)
+            self.process.send_signal(self.stop_signal)
         except ProcessLookupError:  # pragma: no cover - exited between the two calls
+            return
+
+    def stop(self) -> None:
+        """Signal the child, then escalate to SIGKILL if it overstays the grace."""
+        if self.process.poll() is not None:
+            return
+        self.request_stop()
+        self.await_exit()
+
+    def await_exit(self) -> None:
+        """Wait out the grace for a child already signalled, then kill it.
+
+        The stop signal is not repeated: uvicorn reads a second SIGINT as an
+        instruction to abandon its graceful shutdown.
+        """
+        if self.process.poll() is not None:
             return
         try:
             self.process.wait(timeout=_CHILD_SHUTDOWN_GRACE_SECONDS)
@@ -1039,6 +1318,19 @@ def wait_until_healthy(child: _Child, url: str, *, timeout: float) -> None:
     metadata directory, a moved upstream constant and a missing Docker socket all
     exit within a second or two with the reason on stderr.
     """
+    wait_until_ready(
+        child, lambda: _health_probe(url), pending=f"did not answer {url}", timeout=timeout
+    )
+
+
+def wait_until_ready(
+    child: _Child, probe: Callable[[], bool], *, pending: str, timeout: float
+) -> None:
+    """Poll ``probe`` until it passes, the child dies, or the bound expires.
+
+    ``pending`` completes the timeout message after the child's name, for
+    example ``did not answer http://127.0.0.1:8990/health``.
+    """
     deadline = time.monotonic() + timeout
     while True:
         exit_code = child.process.poll()
@@ -1047,92 +1339,218 @@ def wait_until_healthy(child: _Child, url: str, *, timeout: float) -> None:
                 f"{child.name} exited with code {exit_code} before it "
                 f"became healthy. Its output:\n{child.output_tail()}"
             )
-        if _health_probe(url):
+        if probe():
             return
         if time.monotonic() >= deadline:
             child.stop()
             raise OneBoxError(
-                f"{child.name} did not answer {url} within {timeout:.0f}s "
+                f"{child.name} {pending} within {timeout:.0f}s "
                 f"({START_TIMEOUT_ENV}). Its output:\n{child.output_tail()}"
             )
         time.sleep(_HEALTH_POLL_INTERVAL_SECONDS)
+
+
+@dataclass(frozen=True)
+class FoundationService:
+    """A service every other child depends on: started first, stopped last.
+
+    The all-in-one image runs its PostgreSQL and Valkey this way
+    (:mod:`astrabox.deploy.all_in_one`). They start, and must pass ``ready``,
+    before anything that connects to them. At shutdown they stop only after
+    AstraBox and the other children have exited, one at a time in the order
+    given, each with its own ``stop_signal``: PostgreSQL needs SIGINT, its fast
+    shutdown, because SIGTERM is its smart shutdown and waits for clients. A
+    foundation service that exits on its own ends the container, like any
+    other child.
+    """
+
+    name: str
+    argv: tuple[str, ...]
+    ready: Callable[[], bool]
+    stop_signal: int = signal.SIGTERM
+
+
+def _start_foundation(service: FoundationService) -> _Child:
+    return _Child(
+        service.name,
+        service.argv,
+        prefix_output=True,
+        stop_signal=service.stop_signal,
+        own_session=True,
+    )
+
+
+def _stop_together(children: Sequence[_Child]) -> None:
+    """Signal every child at once, then wait for each within the grace."""
+    for child in children:
+        child.request_stop()
+    for child in children:
+        child.await_exit()
+
+
+def _stop_in_order(children: Sequence[_Child]) -> None:
+    """Stop each child, waiting for it to exit before signalling the next."""
+    for child in children:
+        child.stop()
 
 
 def _export_backend_wiring() -> str:
     """Point AstraBox's backend at the server this process is about to run.
 
     The base URL is composed by the launcher module, not spelled again here, so
-    the address the server binds and the address AstraBox dials cannot drift
-    The reach mode is a default rather than an assignment: the supervised shape
-    needs the relay, but an operator who has said otherwise on purpose — running
-    this on a host rather than in a container, where the direct route also works
-    — keeps their answer. An empty value is not such an answer, which is what
-    :func:`export_default` settles.
+    the address the server binds and the address AstraBox dials cannot drift.
+
+    The sandbox reach mode is left at its direct default. The bundled server is
+    a child of this process and shares its network namespace, so its relay
+    would dial the same published sandbox address that AstraBox reaches itself
+    (``sandbox_server.publish_host_ip``). The relay also drops ``Cookie`` and
+    ``Authorization`` and rewrites ``Host`` on every request it forwards
+    (``opensandbox_server/api/proxy.py``), which the DeepSeek Harness browser
+    session and Hermes' loopback ``Host`` check cannot pass through.
     """
     base_url = sandbox_server.lifecycle_base_url()
     os.environ[BASE_URL_ENV] = base_url
-    export_default(SERVER_PROXY_ENV, "true")
     return base_url
 
 
-def _forward_signals(children: Sequence[_Child]) -> None:
-    """Pass SIGTERM/SIGINT to every child so shutdown is graceful.
+def _forward_signals(app: _Child) -> None:
+    """Pass SIGTERM/SIGINT to AstraBox alone, which starts an ordered shutdown.
 
-    The handler only signals; it does not wait or exit. The supervisor loop
-    notices the children leaving and reports why, which keeps one exit path
-    instead of one per signal.
+    The handler only signals; it does not wait or exit. AstraBox's lifespan
+    shutdown still reaches the lifecycle server, the model gateway and the
+    database, so none of them is signalled here. The supervisor loop notices
+    AstraBox leaving and stops the rest in dependency order, which keeps one
+    exit path instead of one per signal.
     """
 
     def _handler(signal_number: int, _frame: FrameType | None) -> None:
         logger.info(
-            "received %s; stopping all processes",
+            "received %s; stopping astrabox first",
             signal.Signals(signal_number).name,
         )
-        for child in children:
-            if child.process.poll() is None:
-                try:
-                    child.process.send_signal(signal_number)
-                except ProcessLookupError:  # pragma: no cover - already gone
-                    pass
+        if app.process.poll() is None:
+            try:
+                app.process.send_signal(signal_number)
+            except ProcessLookupError:  # pragma: no cover - already gone
+                pass
 
     for number in (signal.SIGTERM, signal.SIGINT):
         signal.signal(number, _handler)
 
 
-def _supervise(app: _Child, sidecars: Sequence[_Child]) -> int:
-    """Wait for any child to exit, stop the rest, and report the reason.
+def _supervise(
+    app: _Child,
+    sidecars: Sequence[_Child],
+    foundation: Sequence[_Child] = (),
+    *,
+    watch: Callable[[], str | None] | None = None,
+) -> int:
+    """Wait for any child to exit, stop the rest in order, and report the reason.
 
     AstraBox's exit code is the container's whenever AstraBox is the one that
     went, because that is the process whose status an operator is reading. A
-    sidecar (the sandbox server, the embedded gateway) that dies under a
-    healthy app is a failure of this container even if it exited cleanly, so it
-    never reports success.
+    sidecar (the sandbox server, the embedded gateway) or a foundation service
+    (the all-in-one image's database) that dies under a healthy app is a failure
+    of this container even if it exited cleanly, so it never reports success.
+    ``watch`` is read every few seconds; a reason it returns ends the container
+    the same way, with status 1, so the runtime's restart policy starts it
+    again. Whatever ended it, the survivors stop in dependency order: AstraBox,
+    then the sidecars together, then the foundation services one by one.
     """
+    next_watch = time.monotonic() + _EDGE_WATCH_INTERVAL_SECONDS
     while True:
         if (code := app.process.poll()) is not None:
             logger.info("astrabox exited with code %s; stopping the sidecars", code)
-            for sidecar in sidecars:
-                sidecar.stop()
-            return int(code)
-        for sidecar in sidecars:
-            if (code := sidecar.process.poll()) is not None:
+            _stop_together(sidecars)
+            _stop_in_order(foundation)
+            return _exit_status(code)
+        for child in (*sidecars, *foundation):
+            if (code := child.process.poll()) is not None:
                 logger.error(
                     "%s exited with code %s while astrabox was still running; "
                     "stopping everything. Its output:\n%s",
-                    sidecar.name,
+                    child.name,
                     code,
-                    sidecar.output_tail(),
+                    child.output_tail(),
                 )
                 app.stop()
-                for other in sidecars:
-                    if other is not sidecar:
-                        other.stop()
-                return int(code) or 1
+                _stop_together([other for other in sidecars if other is not child])
+                _stop_in_order([other for other in foundation if other is not child])
+                return _exit_status(code) or 1
+        if watch is not None and time.monotonic() >= next_watch:
+            next_watch = time.monotonic() + _EDGE_WATCH_INTERVAL_SECONDS
+            if (reason := watch()) is not None:
+                logger.error("%s; stopping everything so the container restarts", reason)
+                app.stop()
+                _stop_together(sidecars)
+                _stop_in_order(foundation)
+                return 1
         time.sleep(_HEALTH_POLL_INTERVAL_SECONDS)
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    """Run AstraBox alone or supervise every bundled service its config selects."""
+def _edge_address_watch(
+    addresses: dict[str, str], owner: EdgeOwner | None = None
+) -> Callable[[], str | None]:
+    """Report a sandbox edge that is running at another bridge address.
+
+    Every sandbox created from now on is given the addresses read at startup
+    (its DNS upstream, its deny rules, its callback base), and the private
+    gateway name resolves to the HTTP edge's. An edge that Docker restarts on
+    its own — a crash under ``restart: unless-stopped`` — can come back with a
+    different address on the built-in bridge, which assigns them dynamically,
+    and every sandbox, new ones included, would then time out against the old
+    one. Nothing in this process can re-point them, so the container restarts
+    and reads the addresses again; boxes created with the old ones are then
+    retired by the platform. An edge that is not running at the moment of a read
+    tells nothing yet and is read again. ``owner`` finds the edges as
+    :func:`ensure_sandbox_edge_network` does (``None``: this container's
+    Compose project).
+    """
+
+    def _watch() -> str | None:
+        for service, started_with in addresses.items():
+            try:
+                current = _detect_edge_ip(service, owner)
+            except OneBoxError as exc:
+                logger.warning("cannot read sandbox edge %r's address: %s", service, exc)
+                continue
+            if current != started_with:
+                return (
+                    f"sandbox edge {service!r} is now at {current} on Docker's "
+                    f"built-in bridge; this server started with {started_with}"
+                )
+        return None
+
+    return _watch
+
+
+def _exit_status(returncode: int) -> int:
+    """A child's status as this process's exit status.
+
+    ``Popen`` reports a child killed by signal N as ``-N``; passed to
+    ``sys.exit`` that becomes ``256 - N`` (241 for SIGTERM), a number no shell
+    convention reads. A signal death is reported as ``128 + N``, as a shell and
+    ``tini`` report it, so 137 still reads as SIGKILL.
+    """
+
+    return 128 - returncode if returncode < 0 else returncode
+
+
+def main(
+    argv: Sequence[str] | None = None,
+    *,
+    foundation: Sequence[FoundationService] = (),
+    edge_owner: EdgeOwner | None = None,
+) -> int:
+    """Run AstraBox alone or supervise every bundled service its config selects.
+
+    The all-in-one image adds two things. ``foundation``: services started,
+    and ready, before every other child, and stopped after all of them.
+    ``edge_owner``: the labels of the sandbox edges it created, in place of
+    this container's Compose project; they are found, connected, turned into
+    the addresses sandboxes are given and watched by the same code as
+    Compose's.
+    """
     logging.basicConfig(
         level=_env("ASTRABOX_LOG_LEVEL", "info").upper(),
         format="[onebox] %(levelname)s: %(message)s",
@@ -1160,12 +1578,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         # can serve a conversation.
         ensure_shared_identity_key()
         ensure_sandbox_inference_key()
+    # The edges whose bridge addresses this start derived, and so must stay put.
+    watched_edges: dict[str, str] = {}
     if run_sandbox_server and _env(SANDBOX_EDGE_SERVICE_ENV, ""):
-        ensure_sandbox_edge_wiring()
+        ensure_sandbox_edge_network(edge_owner)
+        derived = not _env(GATEWAY_DNS_ADDRESS_ENV, "")
+        edge_address = ensure_sandbox_edge_wiring(edge_owner)
+        if derived:
+            watched_edges[_env(SANDBOX_EDGE_SERVICE_ENV, "")] = edge_address
+        ensure_sandbox_bridge_isolation(edge_address)
     if run_gateway_dns and _env(SANDBOX_DNS_EDGE_SERVICE_ENV, ""):
-        ensure_sandbox_dns_edge_wiring()
+        derived = not _env(EGRESS_DNS_UPSTREAM_ENV, "")
+        dns_edge_address = ensure_sandbox_dns_edge_wiring(edge_owner)
+        if derived:
+            watched_edges[_env(SANDBOX_DNS_EDGE_SERVICE_ENV, "")] = dns_edge_address
     if (
-        not run_sandbox_server
+        not foundation
+        and not run_sandbox_server
         and not run_litellm
         and not run_gateway_dns
         and not run_channel_gateway
@@ -1178,6 +1607,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
 
     timeout = start_timeout_seconds()
+    base: list[_Child] = []
     sidecars: list[_Child] = []
     # Everything after the first spawn runs under this guard. A sidecar is a
     # child process, not a resource Python cleans up: any escape from here
@@ -1186,6 +1616,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     # with the container's main process gone, holding its port (and, for the
     # sandbox server, its Docker client).
     try:
+        for service in foundation:
+            logger.info("starting %s", service.name)
+            child = _start_foundation(service)
+            base.append(child)
+            wait_until_ready(
+                child, service.ready, pending="did not become ready", timeout=timeout
+            )
+            logger.info("%s is ready", service.name)
         if run_channel_gateway:
             logger.info(
                 "no external channel gateway configured: starting the bundled adapter runtime"
@@ -1238,11 +1676,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             ensure_sandbox_inference_key()
         app = _spawn_astrabox(command)
     except BaseException:
-        for sidecar in sidecars:
-            sidecar.stop()
+        _stop_together(sidecars)
+        _stop_in_order(base)
         raise
-    _forward_signals((app, *sidecars))
-    return _supervise(app, sidecars)
+    _forward_signals(app)
+    return _supervise(
+        app,
+        sidecars,
+        base,
+        watch=_edge_address_watch(watched_edges, edge_owner) if watched_edges else None,
+    )
 
 
 __all__ = [
@@ -1266,8 +1709,11 @@ __all__ = [
     "COREDNS_BIN",
     "COREDNS_CONFIG_PATH",
     "CREDENTIAL_VAULT_ENV",
+    "EGRESS_DENY_CIDRS_ENV",
     "EGRESS_DNS_UPSTREAM_ENV",
     "EGRESS_DNS_UPSTREAM_DEFAULT_ENV",
+    "EdgeOwner",
+    "FoundationService",
     "GATEWAY_DNS_ADDRESS_ENV",
     "GATEWAY_DNS_PORT",
     "ANTHROPIC_API_KEY_ENV",
@@ -1277,9 +1723,9 @@ __all__ = [
     "DEEPSEEK_API_KEY_ENV",
     "MODEL_PROVIDER_ENV",
     "OneBoxError",
-    "SERVER_PROXY_ENV",
     "SANDBOX_DNS_EDGE_SERVICE_ENV",
     "SANDBOX_EDGE_CALLBACK_PORT_ENV",
+    "SANDBOX_EDGE_NETWORK_ENV",
     "SANDBOX_EDGE_SERVICE_ENV",
     "ensure_litellm_provider_wiring",
     "ensure_channel_gateway_wiring",
@@ -1288,7 +1734,9 @@ __all__ = [
     "ensure_litellm_master_key",
     "ensure_sandbox_inference_key",
     "ensure_gateway_dns_wiring",
+    "ensure_sandbox_bridge_isolation",
     "ensure_sandbox_dns_edge_wiring",
+    "ensure_sandbox_edge_network",
     "ensure_database_wiring",
     "needs_gateway_dns",
     "needs_channel_gateway",
@@ -1298,6 +1746,7 @@ __all__ = [
     "needs_sandbox_server",
     "start_timeout_seconds",
     "wait_until_healthy",
+    "wait_until_ready",
 ]
 
 

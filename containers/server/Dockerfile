@@ -5,8 +5,11 @@
 # The one-line-`docker run` target.
 # Packages the `astrabox` wheel and runs the `astrabox serve` CLI (uvicorn over
 # the FastAPI app from astrabox.api.app:create_app) on :8000. Community builds on
-# the public `python:3.12-slim` base only (matches pyproject
-# `requires-python = ">=3.12"`).
+# the public `python:3.12-slim-trixie` base only (matches pyproject
+# `requires-python = ">=3.12"`). The Debian codename is pinned rather than
+# following `python:3.12-slim`, so a base bump that moves glibc, and with it
+# the Debian packages the all-in-one image adds (PostgreSQL among them), is a
+# reviewed change for both images instead of an unannounced one.
 #
 # IMPORTANT layout note: this repo is a FLAT layout. The import package lives at
 # `./astrabox` (there is NO `src/` directory), and pyproject declares
@@ -60,9 +63,9 @@ WORKDIR /web
 
 # Install deps first (cache on the lockfile), then build. `npm run build` runs
 # `tsc --noEmit && vite build` (the real typecheck gate) → ./dist.
-COPY frontend/package.json frontend/package-lock.json ./
+COPY --chmod=u=rwX,go=rX frontend/package.json frontend/package-lock.json ./
 RUN npm ci
-COPY frontend/ ./
+COPY --chmod=u=rwX,go=rX frontend/ ./
 RUN npm run build
 
 # ---------------------------------------------------------------------------
@@ -76,15 +79,15 @@ WORKDIR /gateway
 # graph, so it must be present before npm ci resolves file:vendor/.... Adapter
 # install scripts are unnecessary; disabling them keeps the third-party build
 # boundary deterministic.
-COPY channel-gateway/package.json channel-gateway/package-lock.json ./
-COPY channel-gateway/vendor/ ./vendor/
+COPY --chmod=u=rwX,go=rX channel-gateway/package.json channel-gateway/package-lock.json ./
+COPY --chmod=u=rwX,go=rX channel-gateway/vendor/ ./vendor/
 RUN npm ci --ignore-scripts
-COPY channel-gateway/src/ ./src/
+COPY --chmod=u=rwX,go=rX channel-gateway/src/ ./src/
 
 # ---------------------------------------------------------------------------
 # Stage 2: build the wheel
 # ---------------------------------------------------------------------------
-FROM python:3.12-slim AS build
+FROM python:3.12-slim-trixie AS build
 
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1 \
@@ -100,8 +103,8 @@ RUN pip install "build==1.6.0"
 # Copy packaging inputs first for layer caching, then the FLAT package tree.
 # hatchling reads [tool.hatch.build.targets.wheel] packages = ["astrabox"] — the
 # package is the top-level ./astrabox directory (no src/ layout).
-COPY pyproject.toml README.md LICENSE ./
-COPY astrabox/ ./astrabox/
+COPY --chmod=u=rwX,go=rX pyproject.toml README.md LICENSE ./
+COPY --chmod=u=rwX,go=rX astrabox/ ./astrabox/
 
 # Produce a wheel (not an sdist) into /dist.
 RUN python -m build --wheel --outdir /dist .
@@ -114,7 +117,7 @@ FROM coredns/coredns:1.13.1 AS dns
 # ---------------------------------------------------------------------------
 # Stage 4: runtime
 # ---------------------------------------------------------------------------
-FROM python:3.12-slim AS runtime
+FROM python:3.12-slim-trixie AS runtime
 
 # - PYTHONUNBUFFERED: stream logs immediately so `docker logs` is live.
 # - ASTRABOX_* bake the Community design defaults:
@@ -152,17 +155,22 @@ RUN apt-get update \
 # resolver with the platform's pins would make every LiteLLM bump a platform
 # dependency event. The entry point (astrabox/deploy/onebox.py) starts it as a
 # second supervised process unless ASTRABOX_LITELLM_BASE_URL points at a
-# gateway the operator runs. Pin + bump deliberately; scripts/dev.sh mirrors
-# this version for source-dev (bump both together).
+# gateway the operator runs. Pin + bump deliberately. Source development has no
+# pin of its own: scripts/dev.sh runs this image with the checkout mounted over
+# the installed package, so it runs the gateway installed here.
 # `proxy` installs the HTTP gateway; `extra-proxy` installs the Prisma client
 # and the other database-backed control-plane dependencies. The latter is
 # required as soon as DATABASE_URL is set (the Compose default). Installing
 # only `proxy` boots without persistence and then crashes with
 # ModuleNotFoundError: prisma when PostgreSQL is enabled.
-# The bundled config registers Langfuse callbacks even when credentials are
-# absent (the client then self-disables), so its pinned SDK must exist. Install
-# that one integration explicitly instead of LiteLLM's much larger
-# `proxy-runtime` extra, which also pulls cloud SDKs AstraBox does not use.
+# The bundled config's Langfuse export (containers/litellm/langfuse_tracing.py)
+# is LiteLLM's `langfuse_otel` logger, which needs the OpenTelemetry SDK and its
+# OTLP/HTTP exporter, not the Langfuse SDK. Install those three at the version
+# LiteLLM's `proxy-runtime` extra declares, instead of that much larger extra,
+# which also pulls cloud SDKs AstraBox does not use. The Langfuse SDK itself is
+# not installed: only LiteLLM's other Langfuse callback, `langfuse`, imports it,
+# the bundled config does not use that callback, and it cannot be constructed
+# with the SDK versions (3 and later) whose traces Langfuse v4 accepts.
 #
 # The Python package ships its schema but not a generated Prisma client. Generate
 # that client while the image still has network access. The dummy URL is parsed
@@ -175,13 +183,15 @@ RUN apt-get update \
 # without putting the LiteLLM venv first in the main process's PATH (which would
 # also replace AstraBox's Python interpreter).
 ARG LITELLM_VERSION=1.99.0
-ARG LANGFUSE_VERSION=4.15.1
+ARG LITELLM_OPENTELEMETRY_VERSION=1.28.0
 ENV PRISMA_BINARY_CACHE_DIR=/opt/litellm/prisma-binaries \
     PRISMA_NODEENV_CACHE_DIR=/opt/litellm/prisma-nodeenv
 RUN python -m venv /opt/litellm \
     && /opt/litellm/bin/pip install --no-cache-dir \
        "litellm[proxy,extra-proxy]==${LITELLM_VERSION}" \
-       "langfuse==${LANGFUSE_VERSION}" \
+       "opentelemetry-api==${LITELLM_OPENTELEMETRY_VERSION}" \
+       "opentelemetry-sdk==${LITELLM_OPENTELEMETRY_VERSION}" \
+       "opentelemetry-exporter-otlp-proto-http==${LITELLM_OPENTELEMETRY_VERSION}" \
     && PATH="/opt/litellm/bin:${PATH}" \
        DATABASE_URL=postgresql://unused:unused@127.0.0.1:5432/unused \
        /opt/litellm/bin/prisma generate \
@@ -216,28 +226,29 @@ COPY --from=web /web/dist /app/frontend/dist
 # lockfile, then the lockfile-exact runtime tree and shared provider manifest.
 COPY --from=channel /usr/local/bin/node /opt/astrabox/channel-gateway/bin/node
 COPY --from=channel /gateway /opt/astrabox/channel-gateway
-COPY astrabox/providers/channel_gateway_manifest.json /opt/astrabox/channel-gateway/channel_gateway_manifest.json
+COPY --chmod=u=rwX,go=rX astrabox/providers/channel_gateway_manifest.json /opt/astrabox/channel-gateway/channel_gateway_manifest.json
 ENV ASTRABOX_CHANNEL_GATEWAY_MANIFEST=/opt/astrabox/channel-gateway/channel_gateway_manifest.json
 
 # The routing table (model_name → upstream provider). Baked so a bare
 # `docker run` has multi-provider routing; mount over this path to edit it
 # without a rebuild.
-COPY containers/litellm/config.yaml /opt/astrabox/litellm/config.yaml
+COPY --chmod=u=rwX,go=rX containers/litellm/config.yaml /opt/astrabox/litellm/config.yaml
 # LiteLLM stays in its own venv. Copy only the provider-neutral OIDC primitive
 # and the thin gateway adapter beside its config; the platform package and its
 # dependency graph are not installed into that venv.
-COPY astrabox/identity/oidc.py /opt/astrabox/litellm/astrabox_oidc.py
-COPY astrabox/identity/session_signing.py /opt/astrabox/litellm/astrabox_identity_session.py
-COPY astrabox/providers/litellm_shared_auth.py /opt/astrabox/litellm/astrabox_litellm_auth.py
-COPY containers/litellm/custom_auth.py /opt/astrabox/litellm/custom_auth.py
-COPY containers/litellm/langfuse_session_hook.py /opt/astrabox/litellm/langfuse_session_hook.py
-COPY containers/litellm/stream_normalization_hook.py /opt/astrabox/litellm/stream_normalization_hook.py
+COPY --chmod=u=rwX,go=rX astrabox/identity/oidc.py /opt/astrabox/litellm/astrabox_oidc.py
+COPY --chmod=u=rwX,go=rX astrabox/identity/session_signing.py /opt/astrabox/litellm/astrabox_identity_session.py
+COPY --chmod=u=rwX,go=rX astrabox/providers/litellm_shared_auth.py /opt/astrabox/litellm/astrabox_litellm_auth.py
+COPY --chmod=u=rwX,go=rX containers/litellm/custom_auth.py /opt/astrabox/litellm/custom_auth.py
+COPY --chmod=u=rwX,go=rX containers/litellm/langfuse_session_hook.py /opt/astrabox/litellm/langfuse_session_hook.py
+COPY --chmod=u=rwX,go=rX containers/litellm/langfuse_tracing.py /opt/astrabox/litellm/langfuse_tracing.py
+COPY --chmod=u=rwX,go=rX containers/litellm/stream_normalization_hook.py /opt/astrabox/litellm/stream_normalization_hook.py
 
 # Credential Vault bindings require an FQDN. The private RFC 2606 `.test` name
 # is resolved inside the deployment, never through public DNS; onebox starts
 # this binary only for the protected embedded-gateway shape.
 COPY --from=dns /coredns /opt/coredns/coredns
-COPY containers/coredns/Corefile /opt/astrabox/coredns/Corefile
+COPY --chmod=u=rwX,go=rX containers/coredns/Corefile /opt/astrabox/coredns/Corefile
 
 # Non-root runtime user. The bundled lifecycle server reaches Docker via the
 # bind-mounted socket; socket access is granted at run time (e.g.

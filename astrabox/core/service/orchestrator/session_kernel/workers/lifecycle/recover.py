@@ -419,10 +419,22 @@ class _RecoverSessionMixin:
             return
         # The original row version and exact turn bind this reset. A new
         # owner/turn cannot be cleared even if it wins while the write awaits.
-        expected = {key: observed.get(key) for key in (
+        # A field observed as None may be stored null or not stored at all (a
+        # conversation that never finished a turn has no last_turn_id), and
+        # the store's equality to None matches only a stored null.
+        expected: dict[str, Any] = {}
+        unset: list[dict[str, Any]] = []
+        for key in (
             "updated_at", "current_turn_id", "active_interaction_id",
             "conversation_state", "last_turn_id",
-        )}
+        ):
+            value = observed.get(key)
+            if value is None:
+                unset.append({"$or": [{key: None}, {key: {"$exists": False}}]})
+            else:
+                expected[key] = value
+        if unset:
+            expected["$and"] = unset
         applied = await self._session_snapshots_repo.force_update_fields(
             session_id,
             {"conversation_state": "IDLE", "current_turn_id": None,
@@ -469,8 +481,8 @@ class _RecoverSessionMixin:
         # and the snapshot still reads RUNNING because the runtime that would
         # have closed the turn went with the box. Reporting PROCESSING then
         # refuses the one operation that can move the conversation on — and it
-        # refuses it to a caller the platform itself told to retry, since the
-        # gone-sandbox answer says a replacement is being prepared. Recovery is
+        # refuses it to a caller the platform itself told to go on, since the
+        # gone-sandbox answer tells it to send a new message. Recovery is
         # how the conversation reaches a runtime that can judge its own turn;
         # the judgement belongs there, and this gate only decides whether the
         # conversation gets that far.

@@ -67,8 +67,8 @@ class _FakeCatalogRepo:
         row = self.rows.get(assistant_id)
         return dict(row) if row else None
 
-    async def list_assistants(self) -> list[dict[str, Any]]:
-        return [dict(row) for row in self.rows.values()]
+    async def list_owner_assistants(self, owner_id: str) -> list[dict[str, Any]]:
+        return [dict(row) for row in self.rows.values() if row.get("owner_id") == owner_id]
 
     async def update_assistant(
         self,
@@ -85,8 +85,15 @@ class _FakeCatalogRepo:
 class _FakeTemplateService:
     async def get_environment(self, name: str) -> Any:
         # The Assistant selects an Environment, including its Agent program and
-        # model access; it does not reference a separate template.
-        return {"name": name, "enabled": True, "engine_kind": "assistant"}
+        # model access; it does not reference a separate template. It is
+        # unrestricted so the example MCP host reaches no resolver; what a
+        # limited Environment admits is author_boundary_test's subject.
+        return {
+            "name": name,
+            "enabled": True,
+            "engine_kind": "assistant",
+            "networking": {"type": "unrestricted"},
+        }
 
 
 class _FakeWorkspaceService:
@@ -165,10 +172,12 @@ class _FakeWorkspaceService:
         return self.workspace
 
     async def list_user_workspaces(
-        self, *, user_id: str
+        self, *, user_id: str, assistant_ids: list[str]
     ) -> list[dict[str, Any]]:
         _ = user_id
-        return [dict(self.workspace)] if self.workspace is not None else []
+        if self.workspace is None or self.workspace.get("assistant_id") not in assistant_ids:
+            return []
+        return [dict(self.workspace)]
 
     async def mark_post_commit_failure(self, **kwargs: Any) -> bool:
         self.post_commit_failures.append(dict(kwargs))
@@ -256,7 +265,7 @@ def _service(
 
 
 def _user(user_id: str = "owner-1") -> Any:
-    return SimpleNamespace(user_id=user_id)
+    return SimpleNamespace(user_id=user_id, roles=[])
 
 
 async def test_create_defaults_to_the_assistant_engine() -> None:
@@ -317,6 +326,47 @@ async def test_assistant_accepts_the_mcp_configuration_hermes_consumes() -> None
 
     assert catalog.rows[created["assistant_id"]]["mcp_config_override"] == {
         "search": {"type": "http", "url": "https://mcp.invalid"}
+    }
+
+
+async def test_a_model_override_key_nothing_reads_is_refused() -> None:
+    """Only ``model_name`` reaches the runtime; any other key was stored and lost.
+
+    ``{"hermes": {"soul": ...}}`` here is the shape an owner would try in order
+    to give a Hermes Assistant its identity. A refusal names the key rather than
+    storing it where nothing reads it.
+    """
+
+    service, catalog, _workspace = _service()
+    override = {"model_name": "m-1", "hermes": {"soul": "You are Quill."}}
+
+    with pytest.raises(APIError) as on_create:
+        await service.create_assistant(
+            _user(),
+            {
+                "display_name": "Jarvis",
+                "environment_name": "env-1",
+                "model_config_override": override,
+            },
+        )
+    created = await service.create_assistant(
+        _user(),
+        {
+            "display_name": "Jarvis",
+            "environment_name": "env-1",
+            "model_config_override": {"model_name": "m-1"},
+        },
+    )
+    with pytest.raises(APIError) as on_update:
+        await service.update_assistant(
+            _user(), created["assistant_id"], {"model_config_override": override}
+        )
+
+    for raised in (on_create, on_update):
+        assert raised.value.status_code == 400
+        assert "hermes" in raised.value.message
+    assert catalog.rows[created["assistant_id"]]["model_config_override"] == {
+        "model_name": "m-1"
     }
 
 

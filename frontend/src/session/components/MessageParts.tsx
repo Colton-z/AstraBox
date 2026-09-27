@@ -279,13 +279,19 @@ export function MessageBubble({
     [isUser, visibleParts, pendingToolCallId, settled],
   );
 
-  // How the turn ended, from the platform's own settled facts. A `result` that
-  // reports an error and a `turn_failure` block are the two ways a turn stops
-  // short; an idle turn carrying neither of them ended normally.
+  // How the turn ended, from the platform's own settled facts. A turn stops
+  // short three ways: a `turn_failure` block, a `result` that reports an
+  // error, or a `result` whose `finish_reason` is `cancelled`, which is how a
+  // user stop completes. An idle turn carrying none of them ended normally.
   const result = visibleParts.filter((part) => part.type === 'data-result').at(-1) as
-    { data: { is_error?: boolean } } | undefined;
+    { data: { is_error?: boolean; finish_reason?: string } } | undefined;
   const interruptedEnd = visibleParts.some((part) => part.type === 'data-turn-failure')
-    || result?.data.is_error === true;
+    || result?.data.is_error === true
+    || result?.data.finish_reason === 'cancelled';
+  // A reloaded record arrives already folded: the server put a
+  // `data-process-block` where the work was, and that part renders its own
+  // header. Folding the record again would put one header inside another.
+  const serverFolded = visibleParts.some((part) => part.type === 'data-process-block');
   const normalEnd = !interruptedEnd && !isStreaming && !isActiveTurn;
 
   const lastToolGroup = groups.findLastIndex(
@@ -326,11 +332,13 @@ export function MessageBubble({
     (group, index) => index > lastToolGroup || group.parts.some(isAlertPart),
   );
   const canCollapseTurn = message.role === 'assistant'
+    && !serverFolded
     && !isStreaming
     && !hasPendingPart
     && lastToolGroup >= 0
     && processGroups.length > 0
     && ((normalEnd && hasConclusion) || interruptedEnd);
+  const stoppedByUser = result?.data.finish_reason === 'cancelled';
   const hasTools = visibleParts.some((part) => part.type === 'dynamic-tool');
 
   // A turn settles one part at a time, so the shape that decides the fold is
@@ -446,13 +454,23 @@ export function MessageBubble({
               {processGroups.map(renderGroup)}
             </AssistantTurnProcess>
             {outsideGroups.map(renderGroup)}
-            {interruptedEnd && (
-              <div role="status" className="text-sm text-muted-foreground">
-                {t('chat:process.stopped')}
-              </div>
-            )}
           </>
         ) : groups.map(renderGroup)}
+        {/*
+          A folded turn that stopped short says so beneath its work, whichever
+          side folded it: this page, or the server for a reloaded record. A
+          user stop says so even with nothing to fold: a turn stopped before
+          its first token, or one that only wrote text, has no header to carry
+          the line, and without it the reader cannot tell the stop took. A
+          failure is not included: its own card says so.
+        */}
+        {interruptedEnd
+          && (canCollapseTurn ? collapseReady : (serverFolded || (stoppedByUser && settled)))
+          && (
+          <div role="status" className="text-sm text-muted-foreground">
+            {t('chat:process.stopped')}
+          </div>
+        )}
         {/*
           The fallback pulse, for a surface that says nothing itself: no parts
           yet, or a group of plain text. A process group runs its own spinner

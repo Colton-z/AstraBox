@@ -58,7 +58,7 @@ export default function AgentCreatePage() {
       const [sch, envs] = await Promise.all([getAgentSchema(), listAgentEnvironments()]);
       setSchema(sch);
       setEnvironments(envs);
-      setDraft(buildAgentDraft());
+      setDraft(buildAgentDraft(sch));
     } catch (e) {
       setLoadError((e as Error).message);
     } finally {

@@ -66,7 +66,7 @@ COPY --from=execd /bootstrap.sh /bootstrap.sh
 # The isolation half of shared tenancy: the platform places every
 # conversation in an execd isolation session, which needs bubblewrap and the
 # shared policy (its allowlist names /home/conversations).
-COPY containers/sandbox-claude-code/execd-isolation.toml \
+COPY --chmod=u=rwX,go=rX containers/sandbox-claude-code/execd-isolation.toml \
      /opt/astrabox/opensandbox/isolation.toml
 RUN set -eux; \
     apt-get update; \
@@ -210,8 +210,8 @@ RUN set -eux; \
 
 # The renderer writes pi's provider configuration once the base image has
 # created the account. It is backgrounded by boot.sh below.
-COPY containers/sandbox-pi/render-models-config.sh /opt/astrabox/render-models-config.sh
-COPY containers/sandbox-pi/boot.sh /opt/astrabox/boot.sh
+COPY --chmod=u=rwX,go=rX containers/sandbox-pi/render-models-config.sh /opt/astrabox/render-models-config.sh
+COPY --chmod=u=rwX,go=rX containers/sandbox-pi/boot.sh /opt/astrabox/boot.sh
 
 # The transcript mirror. Pi writes each conversation to one append-only JSONL
 # file under its session directory and hands none of it over the RPC surface, so
@@ -226,7 +226,7 @@ COPY containers/sandbox-pi/boot.sh /opt/astrabox/boot.sh
 # one prefix written in two files, and a rename on either side would mirror the
 # wrong tree — or none — while every box still came up healthy and every turn
 # still streamed. `tests/transcript_mirror_seam_test.py` holds them together.
-COPY astrabox/core/service/orchestrator/runtime/astrabox-transcript-mirror \
+COPY --chmod=u=rwX,go=rX astrabox/core/service/orchestrator/runtime/astrabox-transcript-mirror \
      ${PI_PREFIX}/mirror.py
 ENV ASTRABOX_TRANSCRIPT_MIRROR_ROOT=/home/agent/.pi/sessions \
     ASTRABOX_TRANSCRIPT_MIRROR_GLOB=*.jsonl \
@@ -234,9 +234,9 @@ ENV ASTRABOX_TRANSCRIPT_MIRROR_ROOT=/home/agent/.pi/sessions \
 # The platform starts this authenticated execd and mirror stack inside the
 # existing conversation isolation session. Pi's PTY child inherits that
 # session's /workspace bind and account; all its processes die with it.
-COPY containers/sandbox-pi/astrabox-pi-serve-conversation \
+COPY --chmod=u=rwX,go=rX containers/sandbox-pi/astrabox-pi-serve-conversation \
      ${PI_PREFIX}/serve-conversation.sh
-COPY containers/sandbox-pi/supervisord.pi.conf \
+COPY --chmod=u=rwX,go=rX containers/sandbox-pi/supervisord.pi.conf \
      /opt/gem/supervisord/supervisord.pi.conf
 
 # The interpreter the relay runs under, and that the file it will run parses.
@@ -264,7 +264,7 @@ RUN set -eux; \
 # The claude and hermes images always carried it; a shared placement on this
 # image died with `astrabox-provision-conversation: No such file or
 # directory` until it did too.
-COPY astrabox/core/service/orchestrator/runtime/provision-conversation \
+COPY --chmod=u=rwX,go=rX astrabox/core/service/orchestrator/runtime/provision-conversation \
      /usr/local/bin/astrabox-provision-conversation
 RUN chmod 0555 /usr/local/bin/astrabox-provision-conversation && \
     bash -n /usr/local/bin/astrabox-provision-conversation

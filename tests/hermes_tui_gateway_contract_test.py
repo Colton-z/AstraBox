@@ -18,7 +18,7 @@ from astrabox.core.service.orchestrator.engine.base import (
     EngineOutputCheckpoint,
     EngineStreamDetached,
 )
-from astrabox.core.service.orchestrator.engine.emissions import EngineEmission
+from astrabox.core.service.orchestrator.engine.emissions import EngineEmission, TurnTerminal
 from astrabox.core.service.orchestrator.engine.hermes_client import (
     HermesTuiEngineClient,
     HermesTuiProcess,
@@ -417,6 +417,104 @@ async def test_a_second_message_is_accepted_after_a_consumer_stops_at_the_result
     await client.deliver(second)
     # The assertion is that this does not raise "already has an active turn".
     assert await client.begin_delivery(second) is not None
+
+
+def _recovering_client(live_sessions: list[dict[str, str]]) -> tuple[HermesTuiEngineClient, list[str]]:
+    """A client reattached to a backend whose ``session.active_list`` is given."""
+
+    subscribed: list[str] = []
+
+    async def request(method: str, params: dict[str, str]) -> dict[str, object]:
+        if method == "session.resume":
+            return {"session_id": "fresh001", "resumed": params["session_id"]}
+        assert method == "session.active_list"
+        return {"sessions": live_sessions}
+
+    gateway = _fake_gateway(AsyncMock(side_effect=request))
+
+    def subscribe(tui_session_id: str, after_offset: int = 0) -> SimpleNamespace:
+        subscribed.append(tui_session_id)
+        return SimpleNamespace(
+            tui_session_id=tui_session_id,
+            next_event=AsyncMock(
+                return_value=HermesTuiWireEvent(
+                    event={
+                        "type": "message.complete",
+                        "session_id": tui_session_id,
+                        "payload": {"status": "complete"},
+                    },
+                    output_offset=after_offset + 1,
+                )
+            ),
+        )
+
+    gateway.subscribe = subscribe
+    client = HermesTuiEngineClient(
+        gateway=gateway,
+        platform_session_id="session-1",
+        resume_session_key="engine-session-1",
+    )
+    return client, subscribed
+
+
+@pytest.mark.asyncio
+async def test_a_recovered_turn_whose_session_the_backend_lost_ends_as_a_failure() -> None:
+    """A restarted backend never finishes a turn whose session it lost.
+
+    Recovery re-reads a turn by subscribing to its session on the backend the
+    host reattached to. When that backend has restarted, the session is gone
+    and no event will ever arrive; the conversation stayed PROCESSING for
+    good. The backend's own list of live sessions says the session is gone,
+    so the turn ends here as a failure that says why.
+    """
+
+    client, subscribed = _recovering_client(
+        [{"id": "other123", "status": "idle"}]
+    )
+
+    emissions = [
+        emission
+        async for emission in client.iter_reconnected_turn_events(
+            engine_turn_id=encode_turn_anchor(tui_session_id="lost0001", turn_id="turn-1"),
+            output_checkpoint=EngineOutputCheckpoint(after_sequence=40),
+        )
+    ]
+
+    assert subscribed == [], "nothing will arrive on a session the backend lost"
+    assert len(emissions) == 1 and isinstance(emissions[0], TurnTerminal)
+    terminal = emissions[0]
+    assert terminal.finish_reason == "error"
+    assert terminal.error is not None
+    assert terminal.error["code"] == "HERMES_SESSION_LOST"
+    assert "restart" in terminal.error["message"]
+
+    # The conversation outlives the lost session: the next message re-enters
+    # it by its durable key instead of addressing the id the backend forgot.
+    await client._ensure_session()
+    request = client._gateway.request
+    request.assert_any_await(
+        "session.resume", {"session_id": "engine-session-1", "cols": 120}
+    )
+    assert subscribed == ["fresh001"]
+
+
+@pytest.mark.asyncio
+async def test_a_recovered_turn_on_a_session_the_backend_holds_keeps_reading() -> None:
+    client, subscribed = _recovering_client(
+        [{"id": "live0001", "status": "working"}]
+    )
+
+    emissions = [
+        emission
+        async for emission in client.iter_reconnected_turn_events(
+            engine_turn_id=encode_turn_anchor(tui_session_id="live0001", turn_id="turn-1"),
+            output_checkpoint=EngineOutputCheckpoint(after_sequence=40),
+        )
+    ]
+
+    assert subscribed == ["live0001"]
+    assert isinstance(emissions[-1], TurnTerminal)
+    assert emissions[-1].finish_reason == "stop"
 
 
 @pytest.mark.asyncio

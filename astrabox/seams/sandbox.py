@@ -599,6 +599,15 @@ SANDBOX_MANAGED_BY_METADATA_VALUE = "astrabox"
 #: resulting resource by it after the creating worker dies before publication.
 SANDBOX_ASSIGNMENT_ID_METADATA_KEY = "astrabox.assignment-id"
 
+#: The AstraBox installation that created a box: its value is the id the
+#: installation keeps in its own database (:func:`sandbox_installation_id`).
+#: Installations that share one control plane — a Docker daemon, or a
+#: Kubernetes namespace — each see the other's boxes in the backend inventory,
+#: and the pair above carries the same value for both. A path that acts on a box
+#: it found by listing the backend, rather than by a row in its own database,
+#: acts only on boxes carrying this installation's value.
+SANDBOX_INSTALLATION_METADATA_KEY = "astrabox.installation"
+
 #: The diagnostic scopes the inventory face accepts. Each names one report a
 #: backend may be able to produce about one sandbox; nothing here promises a
 #: backend can produce any of them (see :meth:`SandboxProvider.read_diagnostics`).
@@ -1098,6 +1107,30 @@ class SandboxProvider(ABC):
             f"sandbox provider {self.name!r} cannot refresh an existing credential vault"
         )
 
+    async def admit_runtime_egress(
+        self,
+        sandbox: SandboxHandle,
+        *,
+        network_policy: SandboxNetworkPolicy,
+        vault_write: SandboxEgressCredentialPlan | None,
+    ) -> None:
+        """Admit what an existing sandbox's runtime now needs to reach.
+
+        A box's outbound policy is set from what its runtime needed when the
+        box was created, and a long-lived box outlives changes to that: an
+        Assistant gains an MCP server, a Vault binding is assigned. Before an
+        attach refreshes such a box, the destinations ``network_policy`` and
+        the bindings of ``vault_write`` name must be reachable from it. Only
+        reachability is added; nothing is removed, because other runtimes on
+        the same box may still be using a destination this one dropped. A
+        backend that advertises :attr:`supports_create_network_policy` must
+        provide this; the default is a loud refusal.
+        """
+        _ = (sandbox, network_policy, vault_write)
+        raise NotImplementedError(
+            f"sandbox provider {self.name!r} cannot widen an existing sandbox's egress"
+        )
+
     async def adopt_sandbox_identity(
         self,
         sandbox: SandboxHandle,
@@ -1179,6 +1212,19 @@ class SandboxProvider(ABC):
             message=f"sandbox backend {self.name!r} has no client-side pool",
             status_code=501,
         )
+
+    def created_with_current_network_wiring(self, descriptor: SandboxDescriptor) -> bool:
+        """Whether this resource still carries the deployment's sandbox-facing addresses.
+
+        A provider that fixes deployment addresses into a resource when it is
+        created (a DNS upstream, egress rules, a callback base) answers False
+        when the running deployment's addresses differ: that resource cannot
+        reach the model or the platform, and the platform retires it.
+        Providers that fix no such address into a resource answer True.
+        """
+
+        _ = descriptor
+        return True
 
     def owns_unclaimed_sandbox(self, descriptor: SandboxDescriptor) -> bool:
         """Whether provider-managed preparation still owns this resource.
@@ -1558,15 +1604,24 @@ class SandboxProvider(ABC):
     # below refuses loud with a 501 that NAMES the backend: a backend whose
     # control plane cannot enumerate or explain its sandboxes must say so, never
     # return an empty page that reads as "there are no sandboxes".
-    async def list_sandboxes(self, *, page: int = 1, page_size: int = 50) -> SandboxPage:
+    async def list_sandboxes(
+        self,
+        *,
+        page: int = 1,
+        page_size: int = 50,
+        metadata: Mapping[str, str] | None = None,
+    ) -> SandboxPage:
         """One page of the sandboxes this backend's control plane knows about.
 
         Paged because a backend's inventory is unbounded; the caller advances
-        while :attr:`SandboxPage.has_next_page` holds. Includes sandboxes this
-        deployment did not create — the question is "what is this backend
-        running", not "what was asked for".
+        while :attr:`SandboxPage.has_next_page` holds. Without ``metadata`` it
+        includes sandboxes this deployment did not create — the question is
+        "what is this backend running", not "what was asked for". ``metadata``
+        narrows the page to sandboxes whose create metadata carries every given
+        pair; paging then counts only those. The narrowing is the control
+        plane's, so a caller that acts on the result checks the pairs again.
         """
-        _ = (page, page_size)
+        _ = (page, page_size, metadata)
         raise APIError(
             code="SANDBOX_LISTING_UNSUPPORTED",
             message=(
@@ -1890,6 +1945,12 @@ _BACKENDS: dict[str, SandboxProvider] = {}
 #: settings; never hardcoded to a concrete provider here.
 _DEFAULT_BACKEND: str = ""
 
+#: Reads this installation's id from wherever the composition root keeps it,
+#: and the id once read. The id never changes for a database, so one read per
+#: process is enough.
+_INSTALLATION_LOADER: Callable[[], Awaitable[str]] | None = None
+_INSTALLATION_ID: str = ""
+
 
 def register_sandbox(provider: SandboxProvider) -> None:
     """Register a provider under its ``name``. Last registration wins."""
@@ -2049,6 +2110,40 @@ def set_default_sandbox_backend(name: str | None) -> None:
     _DEFAULT_BACKEND = str(name or "").strip().lower()
 
 
+def set_sandbox_installation_loader(loader: Callable[[], Awaitable[str]]) -> None:
+    """Configure how :func:`sandbox_installation_id` reads the installation id.
+
+    Called by the composition root, which knows where the id is kept. Setting
+    a loader forgets an id read through a previous one.
+    """
+    global _INSTALLATION_LOADER, _INSTALLATION_ID
+    _INSTALLATION_LOADER = loader
+    _INSTALLATION_ID = ""
+
+
+async def sandbox_installation_id() -> str:
+    """The id :data:`SANDBOX_INSTALLATION_METADATA_KEY` carries for this installation.
+
+    Read once through the configured loader, then remembered. Raises rather
+    than returning a default: a box created or reaped under a guessed id would
+    be claimed by, or taken from, another installation. The id must be a
+    label-safe value, which the database-generated one is.
+    """
+    global _INSTALLATION_ID
+    if _INSTALLATION_ID:
+        return _INSTALLATION_ID
+    if _INSTALLATION_LOADER is None:
+        raise RuntimeError(
+            "no sandbox installation id loader is configured; astrabox.bootstrap "
+            "configures it before any sandbox is created or reaped"
+        )
+    value = str(await _INSTALLATION_LOADER() or "").strip()
+    if not value:
+        raise RuntimeError("the sandbox installation id loader returned an empty id")
+    _INSTALLATION_ID = value
+    return value
+
+
 def default_sandbox_backend() -> str:
     """The effective default backend name, or ``""`` when there is none.
 
@@ -2173,6 +2268,7 @@ __all__ = [
     "SANDBOX_MANAGED_BY_METADATA_KEY",
     "SANDBOX_MANAGED_BY_METADATA_VALUE",
     "SANDBOX_ASSIGNMENT_ID_METADATA_KEY",
+    "SANDBOX_INSTALLATION_METADATA_KEY",
     "SANDBOX_SESSION_ID_METADATA_KEY",
     "SandboxClaim",
     "SandboxDestruction",
@@ -2205,6 +2301,8 @@ __all__ = [
     "register_sandbox",
     "set_default_sandbox_backend",
     "default_sandbox_backend",
+    "set_sandbox_installation_loader",
+    "sandbox_installation_id",
     "registered_sandbox_names",
     "registered_sandbox_permission_levels",
     "shutdown_sandbox_providers_for_current_loop",

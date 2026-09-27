@@ -15,6 +15,7 @@ child's own thread.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
@@ -23,6 +24,7 @@ from astrabox.core.service.orchestrator.engine.codex_child_runs import (
     CodexChildResources,
     CodexProtocolError,
     child_label,
+    enrich_stored_child_tool_results,
     spawned_thread_ids,
 )
 from astrabox.core.service.orchestrator.engine.codex import CodexEngineAdapter
@@ -35,6 +37,56 @@ from astrabox.core.service.orchestrator.session_child_run_view import project_se
 
 ROOT = "01a086fe-cd7e-77c1-b3fa-153cd0f7261d"
 CHILD = "01a0872e-8943-7182-b698-ad8a7468dc40"
+
+
+def test_empty_codex_child_command_result_uses_its_own_recorded_call_output() -> None:
+    item = {"id": "call-1", "type": "commandExecution", "status": "completed",
+            "aggregatedOutput": None, "exitCode": 0}
+    messages = [{"content": [
+        {"type": "tool_result", "tool_use_id": "call-1", "content": json.dumps(item)},
+        {"type": "tool_result", "tool_use_id": "call-2", "content": json.dumps({
+            **item, "id": "call-2", "aggregatedOutput": "native output",
+        })},
+    ]}]
+    scopes = [
+        {"subpath": "codex/other.jsonl", "entries": [
+            {"type": "session_meta", "payload": {"id": "other"}},
+            {"type": "response_item", "payload": {
+                "type": "function_call_output", "call_id": "call-1", "output": "wrong child",
+            }},
+        ]},
+        {"subpath": "codex/child.jsonl", "entries": [
+            {"type": "session_meta", "payload": {"id": CHILD}},
+            {"type": "response_item", "payload": {
+                "type": "function_call_output", "call_id": "call-1", "output": "receipt\n",
+            }},
+            {"type": "response_item", "payload": {
+                "type": "function_call_output", "call_id": "unrelated", "output": "not this tool",
+            }},
+        ]},
+    ]
+
+    enriched = enrich_stored_child_tool_results(
+        engine_ref=CHILD, raw_scopes=scopes, messages=messages,
+    )
+
+    assert json.loads(enriched[0]["content"][0]["content"])["aggregatedOutput"] == "receipt\n"
+    assert json.loads(enriched[0]["content"][1]["content"])["aggregatedOutput"] == "native output"
+    assert json.loads(messages[0]["content"][0]["content"])["aggregatedOutput"] is None
+
+
+def test_codex_child_result_does_not_claim_output_missing_from_the_rollout() -> None:
+    messages = [{"content": [{"type": "tool_result", "tool_use_id": "call-1", "content": json.dumps({
+        "id": "call-1", "type": "commandExecution", "aggregatedOutput": None,
+    })}]}]
+    scopes = [{"subpath": "codex/child.jsonl", "entries": [
+        {"type": "session_meta", "payload": {"id": CHILD}},
+    ]}]
+
+    assert enrich_stored_child_tool_results(
+        engine_ref=CHILD, raw_scopes=scopes, messages=messages,
+    ) == messages
+
 
 #: The settled spawn item, verbatim from the app-server.
 SPAWNED_ITEM: dict[str, Any] = {

@@ -12,7 +12,7 @@ AstraBox 是自托管软件。你可以在一台 Docker 主机上运行完整服
 | Kubernetes 与 OpenSandbox | 多节点、预热沙箱、快照和集群管理 | OpenSandbox 创建的 Sandbox Pod |
 | 已有 OpenSandbox 服务 | 组织单独运行沙箱基础设施 | 该服务配置的容器运行时 |
 
-仓库维护的本地部署不启用认证，并且只监听本机回环地址。需要从其他网络访问 AstraBox 时，请先配置[团队登录](team-login.md)、TLS 和可信入口。
+仓库维护的本地部署只监听本机回环地址，启用[团队登录](team-login.md)之前不进行认证。需要从其他网络访问 AstraBox 时，请先配置团队登录、TLS 和可信入口。
 
 Kubernetes 和已有 OpenSandbox 服务的配置方法见 [OpenSandbox 部署指南](providers/opensandbox.md)。
 
@@ -27,8 +27,58 @@ Kubernetes 和已有 OpenSandbox 服务的配置方法见 [OpenSandbox 部署指
 | LiteLLM | 转发模型请求并发现可用模型 |
 | 消息网关 | 把 Agent 接入消息平台 |
 | OpenSandbox | 创建和管理本地沙箱容器 |
+| Casdoor（启用团队登录时） | 让用户登录控制台 |
 
 AstraBox 容器能够控制挂载的 Docker 守护进程。请把它作为主机上的高权限服务管理，不要将本地部署直接暴露到不可信网络。
+
+### Docker 版本要求 {#docker-requirements}
+
+| 要求 | 原因 |
+|---|---|
+| Docker Engine 26.0 或更高版本（Engine API 1.45） | 持久工作区通过挂载 Docker 数据卷的子目录（`VolumeOptions.Subpath`）进入每个沙箱，这是 Engine API 1.45 新增的能力。部署用到的其他功能都更早。 |
+| Docker Compose 插件 2.17.0 或更高版本 | 沙箱边缘容器重建时，`containers/compose.yaml` 会重启服务端（`depends_on` 中的 `restart: true`），这是 Compose 2.17.0 引入的。 |
+
+安装脚本和服务端都会检查 Docker 守护进程，版本过旧时拒绝继续并给出实际版本；服务端每次启动
+都会检查，因此主机升级或降级后不会在不支持的版本上运行。
+
+### 沙箱网络边界 {#sandbox-network-boundary}
+
+每个沙箱都是 Docker 默认 `bridge` 网络上的一个容器，并配有一个执行其 Environment
+网络设置的 OpenSandbox 出站边车。这套部署让平台不出现在该网络上：
+
+- 服务端只在 `127.0.0.1` 上发布控制台。PostgreSQL 和 Redis 只发布本机回环的开发端口。
+- `sandbox-edge` 和 `sandbox-dns-edge` 两个边缘容器在 bridge 上有自己的地址，只把模型路由、
+  按能力授权的回调路由和 DNS 转发给服务端；转发经过私有网络 `sandbox-edges`，该网络没有
+  通往主机之外的路由，沙箱也从不加入。
+- 生命周期服务把每个沙箱的 execd、文件/终端和出站 API 端口发布在 Docker bridge 网关上
+  （`ASTRABOX_PUBLISH_HOST_IP`，安装脚本从 `docker network inspect bridge` 读取），不发布到
+  主机的其他网卡。这些箱内服务没有认证：除非前面有对每个请求做认证的服务，否则不要把
+  `ASTRABOX_PUBLISH_HOST_IP` 设为 `0.0.0.0`。
+- 无论 `受限` 还是 `不受限`，每个沙箱的出站策略都拒绝 Docker 默认 bridge 上除
+  `sandbox-edge` 以外的地址，即其他沙箱，以及发布沙箱端口的 bridge 网关。这些拒绝规则先于所有
+  允许规则生效，所以 Environment 白名单里写上 bridge 地址也不会重新放开。拒绝列表是
+  `ASTRABOX_SANDBOX_EGRESS_DENY_CIDRS`，由服务端启动时推导。出站边车只在 `dns+nft`
+  模式下执行地址规则，因此设置 `ASTRABOX_SANDBOX_EGRESS_MODE=dns` 时服务端拒绝启动。
+- 无论哪种网络模式，都拒绝存放云厂商元数据服务的 `169.254.0.0/16`。
+- 沙箱没有 IPv6。出站边车会在它与沙箱共享的网络命名空间里关闭 IPv6（OpenSandbox 的
+  `egress.disable_ipv6`，由 AstraBox 设置），Docker 守护进程在默认 bridge 上启用 IPv6
+  时也是如此。因此上面的拒绝规则都是 IPv4 网段。
+
+`不受限` 仍然允许其他所有目标，包括主机的其他地址和你的局域网。不是 AstraBox 沙箱的其他
+bridge 容器以及主机上的进程可以访问发布出来的沙箱端口；主机及其其他容器都在信任边界之内。
+
+两个边缘容器的 bridge 地址由 Docker 在它们启动时分配，重启后的边缘容器可能拿到不同的地址。
+每个沙箱都保留创建时的地址（DNS 上游、拒绝规则和回调地址），所以平台会把这些地址记录在沙箱上。
+服务端以不同的地址启动时，会移除用旧地址创建的沙箱；服务端运行期间发现边缘容器换了地址时会退出，
+由 Docker 重新启动它。沙箱被移除的会话在下一条消息时换用新沙箱，与其他沙箱丢失的情况一样；
+被移除沙箱工作区里的文件只有在启用可选的持久化工作区卷时才会保留。AstraBox 0.1.0
+创建的沙箱没有这项记录，不会以这种方式移除。如果边缘容器重启后这些会话收不到回答，
+请移除主机上的所有沙箱，每个会话随后会换到新沙箱继续：
+
+```bash
+docker ps -aq --filter label=opensandbox.io/id | xargs -r docker rm -f
+docker ps -aq --filter label=opensandbox.io/egress-sidecar-for | xargs -r docker rm -f
+```
 
 ### 安装发布版本 {#install-a-release}
 
@@ -38,18 +88,20 @@ curl -fsSL https://raw.githubusercontent.com/Colton-z/AstraBox/main/scripts/inst
 
 安装脚本会：
 
-1. 检查 Docker、Compose 插件 v2 或更高版本，以及当前用户能否使用
+1. 检查 Docker Engine 26.0 或更高版本、Compose 插件 2.17.0 或更高版本（见
+   [Docker 版本要求](#docker-requirements)），以及当前用户能否使用
    `/var/run/docker.sock`；
 2. 下载最新发布版本的部署包，校验其 SHA-256，并把 Compose 文件解压到
    `~/astrabox`；
 3. 在 `~/astrabox/.astrabox/database-secrets` 中一次性生成数据库与登录密钥，
    之后一直沿用；
 4. 询问 Agent 使用哪个模型服务，以及它的 API Key 和模型 ID，并写入相应设置；
-5. 拉取该版本发布的镜像、启动服务并等待控制台页面可以打开，再拉取内置 Claude Code
+5. 询问是否启用团队登录，即随服务一起运行内置的 Casdoor 登录服务；
+6. 拉取该版本发布的镜像、启动服务并等待控制台页面可以打开，再拉取内置 Claude Code
    Agent 使用的沙箱镜像，避免第一个 Session 等待下载。
 
 升级时再次运行：它会安装最新发布版本的 Compose 文件（设置了 `ASTRABOX_VERSION` 时
-安装该版本），把镜像版本设为该版本，并保留数据卷、已生成的密钥、模型设置，以及设置
+安装该版本），把镜像版本设为该版本，并保留数据卷、已生成的密钥、模型设置、团队登录选择，以及设置
 文件中的其他所有行。需要更换模型服务时，在它再次询问时重新选择，或设置
 `ASTRABOX_INSTALL_MODEL_PROVIDER` 后运行；它为原有服务写入的设置会被删除。
 
@@ -78,7 +130,7 @@ Anthropic 兼容端点，优先使用它。
 
 ### 安装脚本的设置 {#installer-settings}
 
-设置 `ASTRABOX_INSTALL_MODEL_PROVIDER` 后，安装脚本不再提问，可用于无人值守安装。
+设置 `ASTRABOX_INSTALL_MODEL_PROVIDER` 和 `ASTRABOX_INSTALL_TEAM_LOGIN` 后，安装脚本不再提问，可用于无人值守安装。没有终端时，安装脚本保持当前的团队登录选择；新安装默认不启用。
 
 | 变量 | 用途 |
 |---|---|
@@ -90,6 +142,9 @@ Anthropic 兼容端点，优先使用它。
 | `ASTRABOX_INSTALL_MODEL_API_KEY` | 模型服务的 API Key。 |
 | `ASTRABOX_INSTALL_MODEL_NAME` | 内置 Agent 使用的模型 ID。DeepSeek 默认为 `deepseek-flash`。 |
 | `ASTRABOX_INSTALL_MODEL_BASE_URL` | Anthropic 兼容或 OpenAI 兼容服务的 Base URL。 |
+| `ASTRABOX_INSTALL_TEAM_LOGIN` | `casdoor` 表示随服务运行内置的 Casdoor 登录服务；`none` 表示不启用登录。 |
+| `ASTRABOX_CONSOLE_ORIGIN` | 启用团队登录时：控制台的公网 URL，例如 `https://astrabox.example.com`。 |
+| `ASTRABOX_OIDC_ISSUER` | 启用团队登录时：Casdoor 的公网 URL，例如 `https://login.example.com`。供其他计算机上的浏览器使用时两个 URL 都要设置；只在本机登录时都不设置。 |
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Colton-z/AstraBox/main/scripts/install.sh \
@@ -105,7 +160,31 @@ printf '%s\n' "ASTRABOX_SERVER_HOST_PORT='9000'" >> ~/astrabox/containers/.env
 ```
 
 在该目录下可以使用常规 Compose 命令管理已安装的服务：`docker compose ps`、
-`docker compose logs -f server` 和 `docker compose down`。
+`docker compose logs -f server` 和 `docker compose down`。启用团队登录时，这些命令也包含 Casdoor。
+
+### 启用团队登录 {#turn-on-team-login}
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Colton-z/AstraBox/main/scripts/install.sh \
+  | ASTRABOX_INSTALL_TEAM_LOGIN=casdoor \
+    ASTRABOX_CONSOLE_ORIGIN=https://astrabox.example.com \
+    ASTRABOX_OIDC_ISSUER=https://login.example.com bash
+```
+
+安装脚本会把 SSO 叠加配置 `containers/compose.sso.yaml` 加入 `~/astrabox/containers/.env`
+中的 `COMPOSE_FILE` 设置，因此服务本身以及在 `~/astrabox/containers` 中运行的每条
+`docker compose` 命令都会和 AstraBox 一起运行 Casdoor。Casdoor 监听 `127.0.0.1:8087`。
+提供两个公网 URL 时，安装脚本还会写入服务端需要的回调地址和 Host 允许列表；请按
+[通过代理提供登录](team-login.md#put-the-login-flow-behind-a-proxy)把两个回环端口放到
+HTTPS 代理之后。只在本机登录时，两个 URL 都不要设置。
+
+安装完成时，安装脚本会显示已生成的密码保存在哪里：登录 AstraBox 使用的 `admin` 账号的密码，
+以及 Casdoor 自己的管理员 `built-in/admin` 的密码。AstraBox 只接受内置 `astrabox` 组织的账号，
+见[启用内置登录服务](team-login.md#bundled-login-service)。
+
+再次运行安装脚本会保持团队登录开启。要关闭它，请设置 `ASTRABOX_INSTALL_TEAM_LOGIN=none`
+后运行。已配置公网 URL 的安装会拒绝关闭，直到从 `containers/.env` 中删除这些 URL，
+以免向其他计算机提供没有登录的控制台。
 
 ### 发布的镜像 {#published-images}
 
@@ -162,6 +241,10 @@ mergerfs 创建固定的工作区视图，OpenSandbox 使用标准 PVC 或 named
 这项配置只影响工作区文件，原生 SessionStore 仍由平台数据库保存。无卷部署不会启动挂载
 辅助程序，与 `ASTRABOX_WORKSPACE_MOUNTER_IMAGE` 的取值无关。
 
+连接已有 OpenSandbox 服务（`ASTRABOX_SANDBOX_OPENAPI_BASE_URL`）时，持久工作区要求该
+服务使用 Kubernetes 运行时，见
+[连接已有 OpenSandbox 服务](providers/opensandbox.md#connect-an-existing-opensandbox-service)。
+
 ### 配置工作区挂载辅助程序
 
 `ASTRABOX_WORKSPACE_MOUNTER_IMAGE` 指定辅助程序镜像；未设置时使用本版本发布的
@@ -184,8 +267,17 @@ mergerfs 创建固定的工作区视图，OpenSandbox 使用标准 PVC 或 named
 Kubernetes 中的平台身份需要管理辅助 Pod 及其 exec 接口、分配视图 PVC/PV，并能列出
 Node；命名空间必须允许这些特权基础设施 Pod。底层 PVC 仍由部署方管理。Kubernetes
 调度辅助 Pod，视图 PV 则把沙箱限定在同一节点。辅助程序消失后，已有 FUSE 挂载失效，
-不能靠在运行中的沙箱下重启辅助程序恢复。Docker 视图数据卷使用递归绑定，让沙箱能够
-看到其中的 FUSE 子挂载；非递归绑定只会暴露空的主机目录，挂载检查会拒绝这种状态。
+不能靠在运行中的沙箱下重启辅助程序恢复。Docker 视图数据卷是辅助程序视图目录的递归绑定，
+让沙箱能够看到其中编号的 FUSE 子挂载；非递归绑定只会暴露空的主机目录，挂载检查会拒绝
+这种状态。该绑定是从属（slave）副本：最后一个容器退出时 Docker 会卸载数据卷，共享副本
+会把这次卸载传回主机，卸掉辅助程序的视图。Docker 只在容器按名称使用这类数据卷时才挂载
+它，因此沙箱通过 Docker 的数据卷子路径挂载获得工作区，这也是部署要求 Docker Engine 26.0
+的原因之一（见 [Docker 版本要求](#docker-requirements)）。
+
+每个辅助程序从创建起就记录它服务的分配、沙箱后端和所属的 AstraBox 安装。过期监视器在
+确认沙箱已不存在后释放视图；对于从未被沙箱使用的视图（创建失败或准备中途停止），如果
+该安装没有任何沙箱携带这个分配，会在辅助程序创建十分钟后将其删除。仍被容器或 Pod 挂载
+的视图不会被删除。
 
 ### 存储介质必须支持的操作
 
@@ -299,6 +391,39 @@ scripts/compose.sh -f containers/compose.sso.yaml up -d
 同步控制台应用的 Logo。
 
 团队入口需要终止 TLS，把公网主机名加入 `ASTRABOX_ALLOWED_HOSTS`，禁止直接访问 AstraBox 服务端口，并让所有副本使用相同的登录 Cookie 签名密钥。受支持的身份配置见[设置团队登录](team-login.md)。
+
+## 为已准备沙箱规划容量 {#plan-capacity-for-prepared-sandboxes}
+
+每个开启[预热](authoring-agents.md#prewarming)的 Agent 都会保留一个空闲的已准备沙箱，
+这样它的下一个对话大约两秒就能开始，而不必先启动沙箱。只要设置了
+`ASTRABOX_AGENT_PREWARM_REDIS_URL`，新建 Agent 就默认开启预热；所有随附的 Compose
+部署和[单容器部署](all-in-one.md)都会设置它，在这些部署上，全新安装时创建的两个 Agent
+也会开启预热。只要预热保持
+开启、Agent 及其运行环境处于启用状态，这个沙箱就一直保留；对话领取之后，AstraBox 会
+再准备一个补上。AstraBox 不限制已准备沙箱的数量，请按要保留的 Agent 数量规划部署容量，
+或为不需要快速开始首个对话的 Agent 关闭预热。
+
+空闲的已准备沙箱占用多少资源，取决于 Agent 的运行环境使用的 Agent 程序：
+
+| Agent 程序 | 一个空闲已准备沙箱的内存占用 |
+|---|---|
+| Claude Code | 约 0.5 GiB：在 Docker 主机上沙箱容器占用 490–536 MiB |
+| pi | 约 0.45 GiB：在 Docker 主机上沙箱容器占用 450 MiB |
+| DeepSeek Harness | 在 Kubernetes 上每个沙箱 Pod 占用 921–940 MiB 匿名内存 |
+| 其他 Agent 程序（包括 Codex） | 在 Kubernetes 上每个沙箱 Pod 占用 390–650 MiB 匿名内存 |
+
+在 Docker 主机上，每个沙箱的出网 sidecar 另外占用约 60 MiB，空闲沙箱的 CPU 占用为单核的
+2–5%。
+
+| 沙箱运行位置 | 这些资源如何计算 |
+|---|---|
+| 单台 Docker 主机 | 不预留资源：Docker 不会为空闲容器预留任何资源，占用就是上表中的内存加上 sidecar。约 20 个 Claude Code Agent 空闲时大约占用主机 11 GiB 内存。 |
+| Kubernetes 上的 OpenSandbox | 每个沙箱请求 200m CPU 和 768 MiB 内存，调度器按这些请求放置沙箱。DeepSeek Harness 沙箱实际使用的内存超过它的请求，因此请按实际使用量而不是请求量规划节点内存。例如 19 个沙箱共请求 3.8 个 CPU 和 14.25 GiB 内存，大致相当于一个 4 vCPU、16 GiB 节点可分配给 Pod 的全部资源，而 19 个空闲的 DeepSeek Harness 沙箱实际使用约 17 GiB。 |
+| 已有的 OpenSandbox 服务 | 每个沙箱同样请求 200m CPU 和 768 MiB 内存；是否真正预留取决于该服务的运行时，与上面两行相同。无论哪种情况，都请按实际使用量规划内存。 |
+
+每个沙箱工作时最多可用 4 个 CPU（Docker 上不超过主机的 CPU 数）和 4 GiB 内存；上表
+是空闲的已准备沙箱占用的资源。要为某个 Agent 关闭预热，在它的「运行设置」中关闭
+「提前准备沙箱」，或通过 API 或 `astrabox.yaml` 文档设置 `"prewarm_enabled": false`。
 
 ## 检查健康状态和沙箱恢复
 

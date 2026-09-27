@@ -35,7 +35,8 @@ Tiers
 Always a string:
 
 * a literal value, given exactly as the read site's own fallback
-  (``"300"``, ``"true"``, ``"open_sandbox"``);
+  (``"300"``, ``"true"``, ``"open_sandbox"``), or ``str()`` of the read site's
+  own constant when it has one, so the two cannot differ;
 * ``""`` for "unset means off / no override" (the generator renders this as
   *(none)* in the docs table);
 * ``"derived"`` for a value computed from another setting rather than a fixed
@@ -64,6 +65,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Literal
+
+from astrabox.common.utils.settings import TITLE_MODEL_MAX_TOKENS
 
 Tier = Literal["public", "internal", "injected", "dev", "test"]
 
@@ -179,25 +182,31 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "LANGFUSE_PUBLIC_KEY",
         "public",
         "",
-        "Langfuse project public key consumed by LiteLLM's configured callback. "
-        "The integration stays off unless both Langfuse keys are set.",
-        "litellm.integrations.langfuse",
+        "Langfuse project public key for the bundled gateway's model-call "
+        "traces (LiteLLM's langfuse_otel logger). Traces are sent only when "
+        "both Langfuse keys are set; one key without the other stops the "
+        "gateway at startup.",
+        "containers.litellm.langfuse_tracing",
     ),
     (
         "LANGFUSE_SECRET_KEY",
         "public",
         "",
-        "Langfuse project secret key consumed by LiteLLM's configured callback. "
-        "The integration stays off unless both Langfuse keys are set.",
-        "litellm.integrations.langfuse",
+        "Langfuse project secret key for the bundled gateway's model-call "
+        "traces (LiteLLM's langfuse_otel logger). Traces are sent only when "
+        "both Langfuse keys are set; one key without the other stops the "
+        "gateway at startup.",
+        "containers.litellm.langfuse_tracing",
     ),
     (
         "LANGFUSE_HOST",
         "public",
         "",
-        "Optional Langfuse API origin consumed by LiteLLM's configured callback. "
-        "Unset uses the Langfuse SDK's cloud endpoint.",
-        "litellm.integrations.langfuse",
+        "Origin of the Langfuse deployment that receives the bundled gateway's "
+        "traces, such as https://cloud.langfuse.com. Unset sends to Langfuse "
+        "Cloud US (https://us.cloud.langfuse.com). Set without both Langfuse "
+        "keys, it stops the gateway at startup.",
+        "containers.litellm.langfuse_tracing",
     ),
     (
         "ASTRABOX_LLM_BASE_URL",
@@ -447,14 +456,17 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "internal",
         "false",
         "How the open_sandbox backend reaches a sandbox. False (default) takes the "
-        "direct route: the lifecycle server hands back a published host port and "
-        "AstraBox dials it — right when AstraBox and the Docker daemon share a "
-        "network namespace. True asks for endpoints that point at the lifecycle "
-        "server itself, which relays each request (HTTP, SSE and WebSocket) to the "
-        "sandbox's container IP on the Docker network — required when AstraBox runs "
-        "in a container, because the published ports are on the host and the host's "
-        "loopback is not the container's. The one-container deployment sets it; the "
-        "trade is that every data-plane byte crosses the server process.",
+        "direct route: AstraBox dials the endpoint the lifecycle server returns — "
+        "on Docker, the sandbox's published execd port (ASTRABOX_PUBLISH_HOST_IP "
+        "for the bundled server); "
+        "on Kubernetes, the Pod or ingress address. The Compose deployment uses it, "
+        "because its bundled lifecycle server shares AstraBox's network namespace. "
+        "True asks for endpoints that point at the lifecycle server itself, which "
+        "relays each request (HTTP, SSE and WebSocket) to the sandbox — only for a "
+        "deployment whose AstraBox cannot reach those addresses. The relay drops "
+        "Cookie and Authorization headers and replaces Host, so the DeepSeek "
+        "Harness and Hermes engines, whose in-box services authenticate with them, "
+        "cannot start through it.",
         "astrabox.common.utils.settings",
     ),
     (
@@ -518,7 +530,9 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "Redis URL passed to OpenSandbox's official client-side pool for "
         "distributed idle-capacity coordination. Redis is not AstraBox's product "
         "database and stores no workspace, credential, Agent, or Session data. "
-        "Required when Agent prewarming is enabled; bundled Compose sets it.",
+        "Required when Agent prewarming is enabled; bundled Compose sets it. "
+        "When set, a new Agent created without a prewarm choice is stored with "
+        "prewarming on; when unset, it is stored with prewarming off.",
         "astrabox.common.utils.settings",
     ),
     (
@@ -533,8 +547,33 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "ASTRABOX_GIT_HTTPS_TOKEN_SECRET_NAME",
         "public",
         "",
-        "Name of the secret holding a git host HTTPS access token, used to clone "
-        "plugin/default repos on backends that cannot reach git over SSH.",
+        "Name of the secret holding a Git host HTTPS access token. It is used "
+        "only where a sandbox backend cannot reach Git over SSH and an SSH "
+        "repository is cloned over HTTPS instead, and only for the host in "
+        "ASTRABOX_GIT_HTTPS_TOKEN_HOST. Startup refuses it on a backend that "
+        "clones over SSH. A repository declared as HTTPS never receives it; "
+        "private HTTPS sources use an http_basic Vault credential.",
+        "astrabox.common.utils.settings",
+    ),
+    (
+        "ASTRABOX_GIT_HTTPS_TOKEN_HOST",
+        "public",
+        "",
+        "The one Git host ASTRABOX_GIT_HTTPS_TOKEN_SECRET_NAME authenticates to, "
+        "for example github.com. Required with that setting and refused without "
+        "it; a clone of any other host does not receive the token.",
+        "astrabox.common.utils.settings",
+    ),
+    (
+        "ASTRABOX_DEPLOY_KEY_SECRET_NAMES",
+        "public",
+        "",
+        "Comma-separated secret names that Agent and Assistant repositories may "
+        "use as deploy_key_secret_name, for example your-repo-deploy-key. Each "
+        "name resolves like every secret name (upper-cased, hyphens to "
+        "underscores). Any other name is refused with "
+        "AGENT_DEPLOY_KEY_NOT_ALLOWED, so an author cannot read an arbitrary "
+        "server environment variable. Empty allows none.",
         "astrabox.common.utils.settings",
     ),
     (
@@ -567,22 +606,35 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "ASTRABOX_TITLE_MODEL_BASE_URL",
         "public",
         "",
-        "Base URL of a separate model used for titles and process summaries; empty "
-        "falls back to the main model config.",
+        "Base URL of a separate model endpoint for titles and process summaries. "
+        "Empty uses the model endpoint provider's server-side address (for LiteLLM: "
+        "ASTRABOX_LITELLM_SERVER_BASE_URL, an external shared URL, or the embedded "
+        "gateway's loopback), not the address sandboxes use. A URL that is not that "
+        "address (compared by scheme, host, port and path) requires "
+        "ASTRABOX_TITLE_MODEL_API_KEY or ASTRABOX_TITLE_MODEL_API_KEY_SECRET_NAME; "
+        "startup refuses it without one.",
         "astrabox.common.utils.settings",
     ),
     (
         "ASTRABOX_TITLE_MODEL_NAME",
         "public",
         "",
-        "Model name for session-title generation.",
+        "Model route for titles and process summaries. Empty uses the deployment's "
+        "default model, the route its seeded Agents use. With DeepSeek's endpoint "
+        "and the bundled gateway, the entry point sets it to the native "
+        "deepseek/<model> route, which disables DeepSeek's thinking; point it at a "
+        "non-thinking route for any provider whose route cannot.",
         "astrabox.common.utils.settings",
     ),
     (
         "ASTRABOX_TITLE_MODEL_API_KEY",
         "public",
         "",
-        "API key for the title-generation model.",
+        "API key for title and process-summary requests. Empty uses the model "
+        "endpoint provider's server credential (for LiteLLM: "
+        "ASTRABOX_LITELLM_API_KEY, else LITELLM_MASTER_KEY), which is sent only to "
+        "the gateway's own server-side address. Required when "
+        "ASTRABOX_TITLE_MODEL_BASE_URL names any other endpoint.",
         "astrabox.common.utils.settings",
     ),
     (
@@ -595,8 +647,10 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
     (
         "ASTRABOX_TITLE_MODEL_MAX_TOKENS",
         "internal",
-        "256",
-        "Max output tokens for title and process-summary completions, which explicitly disable reasoning.",
+        str(TITLE_MODEL_MAX_TOKENS),
+        "Max output tokens for title and process-summary completions. They send "
+        "reasoning_effort none; on a route that cannot disable reasoning, the "
+        "reasoning counts against this cap, and a reply that runs out has no text.",
         "astrabox.common.utils.settings",
     ),
     (
@@ -793,7 +847,9 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "internal",
         "",
         "Compose service name of the single-purpose sandbox callback/model "
-        "proxy. The bundled launcher discovers its bridge address from Docker labels.",
+        "proxy. The bundled launcher discovers its bridge address from Docker labels. "
+        "The all-in-one image creates this edge itself, sets the value and refuses "
+        "a supplied one.",
         "astrabox.deploy.onebox",
     ),
     (
@@ -802,7 +858,9 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "",
         "Compose service name of the DNS-only bridge forwarder used as the "
         "OpenSandbox egress DNS upstream. The bundled launcher discovers its "
-        "address from Docker labels and routes sandbox DNS directly to it.",
+        "address from Docker labels and routes sandbox DNS directly to it. The "
+        "all-in-one image creates this edge itself, sets the value and refuses a "
+        "supplied one.",
         "astrabox.deploy.onebox",
     ),
     (
@@ -812,6 +870,29 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "Port the sandbox-edge container exposes for capability-scoped "
         "platform callbacks; the maintained proxy listens on 8000.",
         "astrabox.deploy.onebox",
+    ),
+    (
+        "ASTRABOX_SANDBOX_EDGE_NETWORK",
+        "internal",
+        "",
+        "Compose network key of the private internal network the sandbox edges "
+        "reach the server on. The bundled launcher connects both edges to it, "
+        "so no server port is published on the Docker bridge sandboxes share. "
+        "Required whenever ASTRABOX_SANDBOX_EDGE_SERVICE is set. The all-in-one "
+        "image creates this network itself, sets the value and refuses a supplied one.",
+        "astrabox.deploy.onebox",
+    ),
+    (
+        "ASTRABOX_SANDBOX_EGRESS_DENY_CIDRS",
+        "internal",
+        "",
+        "Comma-separated IP networks every sandbox's egress policy denies in "
+        "every networking mode, ahead of every allow rule. Empty lets the "
+        "bundled Docker launcher fill it with Docker's built-in bridge subnet "
+        "minus the sandbox edge, so a sandbox cannot reach another sandbox or "
+        "the bridge gateway where sandbox ports are published. An explicit value "
+        "replaces that derived list.",
+        "astrabox.common.utils.settings",
     ),
     (
         "ASTRABOX_SANDBOX_LEASE_RENEW_THRESHOLD_SECONDS",
@@ -991,6 +1072,19 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "external base the server cannot derive from the request. Empty = derived "
         "as <request base>/api/v1/auth/callback.",
         "astrabox.providers.identity_oidc",
+    ),
+    (
+        "ASTRABOX_CASDOOR_ORGANIZATION",
+        "public",
+        "",
+        "Casdoor organization whose accounts may use AstraBox when the OIDC provider "
+        "is Casdoor; the bundled SSO overlay sets the one its seed creates, astrabox. "
+        "AstraBox then refuses an ID token or access token whose Casdoor `owner` claim "
+        "names another organization, such as `built-in`, whose administrators Casdoor "
+        "lets sign in to every application, and a client-credentials token from any "
+        "client but ASTRABOX_OIDC_API_CLIENT_ID. Access tokens must be Casdoor JWTs. "
+        "Empty checks no organization, for a provider other than Casdoor.",
+        "astrabox.identity.oidc",
     ),
     (
         "ASTRABOX_CASDOOR_ADMIN_URL",
@@ -1330,6 +1424,17 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "astrabox-admin",
         "Group name mapped to the 'admin' role; shared by both SSO resolvers (trusted-header and JWT).",
         "astrabox.providers.identity_sso",
+    ),
+    (
+        "ASTRABOX_AUTHORING_ADMIN_ONLY",
+        "public",
+        "false",
+        "When true, only holders of the administrator role create Agents and "
+        "Assistants; everyone else gets 403 FORBIDDEN and can still use the "
+        "Agents an administrator makes available. For a deployment whose users "
+        "should only use published Agents, such as an open or public one. What "
+        "any author's fields may reach is bounded either way.",
+        "astrabox.common.utils.settings",
     ),
     (
         "ASTRABOX_TRUSTED_HEADER_GATEWAY_SECRET",
@@ -1748,11 +1853,11 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "ASTRABOX_SANDBOX_EGRESS_MODE",
         "public",
         "dns+nft",
-        "How the outbound proxy enforces network rules: 'dns' filters on resolved names, "
-        "'dns+nft' adds packet-level rules. Only read when "
-        "ASTRABOX_SANDBOX_EGRESS_IMAGE is set. OpenSandbox egress v1.1.7 requires "
-        "'dns+nft' for its credential component; this provider constraint does not "
-        "couple AstraBox's Vault and Environment networking contracts.",
+        "How the outbound proxy enforces network rules. Only 'dns+nft' is accepted: "
+        "it filters names and enforces IP and CIDR rules with nftables. OpenSandbox's "
+        "'dns' mode filters names only, so the cloud-metadata deny, the Docker bridge "
+        "deny and address entries in Limited allow lists would reach no packet; the "
+        "server refuses to start with it.",
         "astrabox.deploy.sandbox_server",
     ),
     (
@@ -1857,19 +1962,19 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "ASTRABOX_SANDBOX_SERVER_PORT_RANGE",
         "public",
         "20000-32000",
-        "Host port range ('min-max', both >= 1024, spanning >= 100) the lifecycle "
-        "server publishes sandbox ports into. Each sandbox consumes 2-3 ports; narrow "
-        "it to match a firewall policy. It must not overlap the kernel's ephemeral "
-        "range (/proc/sys/net/ipv4/ip_local_port_range, 32768-60999 by default): a "
-        "published port and an outgoing connection's source port come from the same "
-        "numbers, so an overlapping range fails concurrent creates with 'address "
-        "already in use'. Startup refuses an overlap it can read. When multiple "
-        "lifecycle servers share one "
-        "Docker daemon, give every server a non-overlapping range: OpenSandbox probes "
-        "and releases candidate ports before Docker binds them, so overlapping ranges "
-        "can race during concurrent creates. The maintained Compose stack forwards this "
-        "setting. ASTRABOX_SANDBOX_SERVER_RUNTIME=docker only — Kubernetes publishes no "
-        "host ports at all.",
+        "Host port range ('min-max', both >= 1024, spanning >= 100) Docker publishes "
+        "sandbox ports into. Each sandbox consumes 3 ports (execd, file server and "
+        "egress API, all on its egress sidecar); narrow the range to match a firewall "
+        "policy. Docker chooses each port itself in the host's network namespace: it "
+        "skips ports it has published for any container and moves past ports a host "
+        "process holds, trying up to ten per binding. Lifecycle servers that share one "
+        "Docker daemon can therefore share the range. It must not overlap the kernel's "
+        "ephemeral range (/proc/sys/net/ipv4/ip_local_port_range, 32768-60999 by "
+        "default), where published ports and outgoing connections' source ports would "
+        "contend for the same numbers; startup refuses an overlap it can read. The "
+        "maintained Compose stack forwards this setting. "
+        "ASTRABOX_SANDBOX_SERVER_RUNTIME=docker only — Kubernetes publishes no host "
+        "ports at all.",
         "astrabox.deploy.sandbox_server",
     ),
     # ---- persistence / mongo ------------------------------------------------
@@ -1983,6 +2088,16 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "astrabox.core.service.orchestrator.sandbox_runner",
     ),
     (
+        "ASTRABOX_RUNNER_TOKEN_FILE",
+        "injected",
+        "",
+        "Sandbox file the platform writes the runner's credential into before its "
+        "first prepare. Required: the runner refuses to start without it, and "
+        "refuses every prepare while the file is absent or does not match. Set by "
+        "the image's runner launcher and the shared-sandbox launch line.",
+        "astrabox.core.service.orchestrator.sandbox_runner",
+    ),
+    (
         "ASTRABOX_TRANSCRIPT_MIRROR_ROOT",
         "injected",
         "",
@@ -2088,7 +2203,7 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "",
         "Platform-owned JSON object force-merged (overwrite mode) into the Hermes "
         "profile's config.yaml at every nested key; lists replace wholesale.",
-        "astrabox.core.service.orchestrator.engine.hermes_config_merge_runtime",
+        "scripts/runtime/hermes_config_merge.py (image: astrabox-hermes-config-merge)",
     ),
     (
         "ASTRABOX_HERMES_CONFIG_DEFAULTS",
@@ -2096,37 +2211,24 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "",
         "User-overridable JSON object merged (setdefault mode) into config.yaml; "
         "already-present keys are left untouched.",
-        "astrabox.core.service.orchestrator.engine.hermes_config_merge_runtime",
-    ),
-    (
-        "ASTRABOX_HERMES_SKILL_SOURCE_DIRS",
-        "injected",
-        "",
-        "JSON array of platform-owned shared skill source directories copied into "
-        "$HERMES_HOME/skills (only when the user's own copy is missing).",
-        "astrabox.core.service.orchestrator.engine.hermes_config_merge_runtime",
+        "scripts/runtime/hermes_config_merge.py (image: astrabox-hermes-config-merge)",
     ),
     (
         "ASTRABOX_HERMES_SOUL_B64",
         "injected",
         "",
-        "Base64-encoded UTF-8 SOUL.md content materialized into the Hermes profile home.",
-        "astrabox.core.service.orchestrator.engine.hermes_config_merge_runtime",
-    ),
-    (
-        "ASTRABOX_HERMES_CRON_JOBS_B64",
-        "injected",
-        "",
-        "Base64-encoded JSON array of platform-owned Hermes Cron jobs, reconciled "
-        "into $HERMES_HOME/cron/jobs.json.",
-        "astrabox.core.service.orchestrator.engine.hermes_config_merge_runtime",
+        "Base64-encoded UTF-8 SOUL.md content: the Assistant's system prompt, "
+        "written as the Hermes profile's SOUL.md identity. Absent when the "
+        "Assistant sets none, which hands a SOUL.md the platform wrote back to "
+        "Hermes' own default.",
+        "scripts/runtime/hermes_config_merge.py (image: astrabox-hermes-config-merge)",
     ),
     (
         "HERMES_HOME",
         "injected",
         "/root/.hermes",
         "Root directory of the Hermes profile the config-merge runtime materializes into.",
-        "astrabox.core.service.orchestrator.engine.hermes_config_merge_runtime",
+        "scripts/runtime/hermes_config_merge.py (image: astrabox-hermes-config-merge)",
     ),
     # ---- Hermes profile setup and TUI process (sandbox-side) ----------------
     (
@@ -2139,18 +2241,6 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "outbound request. An explicit Vault opt-out writes the real credential.",
         "astrabox.core.service.orchestrator.engine.hermes::"
         "_prepare_hermes_profile -> pinned Hermes custom provider",
-    ),
-    (
-        "ASTRABOX_HERMES_PLUGIN_FILES_B64",
-        "injected",
-        "",
-        "Base64-encoded JSON object of {profile-home-relative path: JSON payload} "
-        "plugin config files; the profile setup script decodes it and writes each "
-        "file under the profile home before TUI start. Set "
-        "host-side from _build_hermes_plugins(...).config_files when the resolved "
-        "Hermes plugin config declares config files.",
-        "astrabox.core.service.orchestrator.engine.hermes::"
-        "_HERMES_PROFILE_SETUP_SCRIPT (embedded script)",
     ),
     (
         "ASTRABOX_HERMES_WORKSPACE",
@@ -2227,6 +2317,15 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "containers/sandbox-hermes/astrabox-hermes-forward",
     ),
     (
+        "HERMES_VENV",
+        "internal",
+        "/opt/hermes/.venv",
+        "Virtual environment holding Hermes in the sandbox-hermes image, set by "
+        "the image's Dockerfile. The in-box launcher runs Hermes from it and the "
+        "forwarder runs its Host-rewriting relay with its Python.",
+        "containers/sandbox-hermes/astrabox-hermes-forward / astrabox-hermes-serve",
+    ),
+    (
         "ASTRABOX_HERMES_PROFILE_WAIT_SECONDS",
         "internal",
         "1800",
@@ -2301,16 +2400,16 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "CONV_UID",
         "injected",
         "",
-        "Optional numeric uid allocated for a conversation in a shared sandbox; it "
-        "must be supplied together with CONV_GID.",
+        "Numeric uid allocated for a shared Agent conversation or fixed for an "
+        "Assistant profile across replacement boxes; supplied with CONV_GID.",
         "astrabox.core.service.orchestrator.runtime/provision-conversation",
     ),
     (
         "CONV_GID",
         "injected",
         "",
-        "Optional numeric gid allocated for a conversation in a shared sandbox; it "
-        "must be supplied together with CONV_UID.",
+        "Numeric gid allocated for a shared Agent conversation or fixed for an "
+        "Assistant profile across replacement boxes; supplied with CONV_UID.",
         "astrabox.core.service.orchestrator.runtime/provision-conversation",
     ),
     (
@@ -2437,8 +2536,9 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "",
         "Optional server-side URL for the same LiteLLM proxy. Set it only when "
         "the sandbox-facing URL uses private DNS or a different network path; "
-        "the platform uses this address to query /v1/models. Unset defaults to "
-        "the external shared URL or embedded loopback.",
+        "the platform uses this address for its own gateway requests: model "
+        "discovery, key management, titles and process summaries. Unset defaults "
+        "to the external shared URL or embedded loopback.",
         "astrabox.providers.model",
     ),
     (
@@ -2523,8 +2623,9 @@ SECRET_NAME_PATTERN_ROW = EnvVarSpec(
         "secret_name.upper().replace('-', '_') from the environment for whatever "
         "secret_name a *_secret_name setting names (ASTRABOX_SANDBOX_API_KEY_SECRET_NAME, "
         "ASTRABOX_MODEL_API_KEY_SECRET_NAME, ASTRABOX_GIT_HTTPS_TOKEN_SECRET_NAME, "
-        "ASTRABOX_TITLE_MODEL_API_KEY_SECRET_NAME, or an environment's own "
-        "provider_access.api_key_secret_name) — the operator picks the name, so no "
+        "ASTRABOX_TITLE_MODEL_API_KEY_SECRET_NAME, an environment's own "
+        "provider_access.api_key_secret_name, or a repository deploy key listed "
+        "in ASTRABOX_DEPLOY_KEY_SECRET_NAMES) — the operator picks the name, so no "
         "single literal "
         "env var represents it."
     ),

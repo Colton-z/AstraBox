@@ -141,6 +141,7 @@ test('file panel uploads a file larger than 100MiB', async ({ page, request }) =
       name: `__e2e_large_upload_${runId}`,
       model,
       environment_name: environmentName,
+      prewarm_enabled: false,
     });
     agentId = String(agent.agent_id || '');
     expect(agentId, 'created agent must have an id').not.toEqual('');

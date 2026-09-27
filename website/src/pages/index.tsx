@@ -90,8 +90,8 @@ function Hero() {
           </Heading>
           <p className={styles.sub}>
             <Translate id="home.hero.sub">
-              Run Claude Code, Codex, Hermes, DeepSeek Harness and Pi as
-              managed Agents on your own infrastructure, with any model.
+              Run Claude Code, Codex, Hermes, DeepSeek Harness and Pi on your
+              own infrastructure, with any model.
               Conversations start and resume in seconds, while Sessions,
               sandboxes, credentials and history stay under your control.
             </Translate>
@@ -706,6 +706,25 @@ function Concepts() {
             </tbody>
           </table>
         </div>
+        <p className={styles.conceptNote}>
+          <Translate
+            id="home.concepts.products.body"
+            values={{
+              title: (
+                <strong>
+                  <Translate id="home.concepts.products.title">
+                    One platform for team Agents and personal Assistants.
+                  </Translate>
+                </strong>
+              ),
+              agent: <Link to="/docs/authoring-agents">Agent</Link>,
+              assistant: <Link to="/docs/assistants">Assistant</Link>,
+            }}>
+            {
+              "{title} An {agent} is a reusable cloud Agent for teams and automation. An {assistant} is one person's long-lived cloud workspace: all of its conversations share one workspace and the Agent program's state."
+            }
+          </Translate>
+        </p>
       </div>
     </section>
   );

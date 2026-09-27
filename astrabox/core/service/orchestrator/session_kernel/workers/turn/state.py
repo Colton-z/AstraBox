@@ -40,6 +40,9 @@ class _BridgeRunState:
     saw_error_event: bool = False
     saw_result_frame: bool = False
     saw_public_result_frame: bool = False
+    #: The engine's own result card, when it published one; the platform's
+    #: outcome is merged into it rather than published beside it.
+    public_result_card: dict[str, Any] | None = None
     saw_mirror_terminal_evidence: bool = False
     last_result_data: dict[str, Any] | None = None
     last_terminal_reason: str | None = None

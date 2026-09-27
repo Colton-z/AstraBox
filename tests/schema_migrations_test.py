@@ -139,6 +139,53 @@ async def test_default_migration_settles_only_the_idle_action_left_unstated() ->
     assert await environments.find_one({"_id": "stated-env"}) == stated
 
 
+async def test_startup_keys_agent_rows_a_released_store_holds_without_the_list_key(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A store written by 0.1.1 (schema version 4) has Agent rows without ``_name_key``.
+
+    Without the key the Agent list sorts them first and never resumes past
+    them, so they would drop out of it. The startup migration gives each its
+    key before the API serves, and says how many it keyed.
+    """
+    from astrabox.persistence.repository.agent_repository import AgentRepository
+
+    agents = await get_async_collection(AgentRepository()._collection_name)
+    await agents.insert_one({"_id": "a1", "agent_id": "agent-1", "name": "Claude Code", "deleted": False})
+    await agents.insert_one({"_id": "a2", "agent_id": "agent-2", "name": "ÉCLAIR", "deleted": True})
+    await agents.insert_one(
+        {"_id": "a3", "agent_id": "agent-3", "name": "Keyed", "_name_key": "keyed", "deleted": False}
+    )
+    schema = await get_async_collection(migrations.SCHEMA_META_COLLECTION)
+    await schema.insert_one(
+        {
+            "_id": "schema",
+            "version": 4,
+            "applied": [
+                {"version": version, "description": f"v{version}", "applied_at": "2026-09-22T00:00:00+00:00"}
+                for version in range(1, 5)
+            ],
+            "locked_by": None,
+            "locked_at": None,
+        }
+    )
+
+    with caplog.at_level("INFO", logger="astrabox.persistence.migrations"):
+        await migrations.run_pending_migrations()
+
+    rows = {doc["agent_id"]: doc async for doc in agents.find({})}
+    assert rows["agent-1"]["_name_key"] == "claude code"
+    assert rows["agent-2"]["_name_key"] == "éclair"
+    assert rows["agent-3"]["_name_key"] == "keyed"
+    assert "schema migration keyed 2 Agent row(s) for the list order" in caplog.text
+    doc = await _read_schema_doc()
+    assert doc is not None and doc["version"] == migrations.latest_known_version()
+
+    # Recorded as applied: the next start keys nothing and changes no row.
+    await migrations.run_pending_migrations()
+    assert {doc["agent_id"]: doc async for doc in agents.find({})} == rows
+
+
 # --------------------------------------------------------------------------- #
 # Fresh store: stamp latest directly, no historical apply() calls               #
 # --------------------------------------------------------------------------- #

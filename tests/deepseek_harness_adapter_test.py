@@ -232,7 +232,7 @@ async def test_a_published_runtime_is_moved_to_the_chosen_model(
     conversations that already exist.
     """
 
-    selected: list[str] = []
+    selected: list[tuple[str, str, str]] = []
 
     class _Client:
         engine_session_key = "session-x"
@@ -240,8 +240,10 @@ async def test_a_published_runtime_is_moved_to_the_chosen_model(
         async def set_permission_mode(self, mode: str) -> None:
             _ = mode
 
-        async def select_model(self, model: str) -> None:
-            selected.append(model)
+        async def select_model(
+            self, model: str, *, gateway_base_url: str, gateway_key_env: str
+        ) -> None:
+            selected.append((model, gateway_base_url, gateway_key_env))
 
     async def fake_initialize(client: Any, **kwargs: Any) -> Any:
         _ = (client, kwargs)
@@ -261,9 +263,15 @@ async def test_a_published_runtime_is_moved_to_the_chosen_model(
         terminal_cwd=_CWD,
         permission_mode=None,
         model="gpt-5.6-luna",
+        gateway_base_url="https://gateway.test/v1",
     )
 
-    assert selected == ["gpt-5.6-luna"], "the model must be applied, not assumed"
+    # The gateway facts travel with the model: a model outside the DeepSeek
+    # route's catalog is served by a route declared on this base URL and the
+    # credential variable the box already carries.
+    assert selected == [
+        ("gpt-5.6-luna", "https://gateway.test/v1", "DEEPSEEK_API_KEY")
+    ], "the model must be applied, not assumed"
 
 
 @pytest.mark.asyncio
@@ -275,7 +283,7 @@ async def test_a_runtime_without_a_model_selects_nothing(
     class _Client:
         engine_session_key = "session-x"
 
-        async def select_model(self, model: str) -> None:
+        async def select_model(self, model: str, **_gateway: str) -> None:
             raise AssertionError(f"nothing was selected; got {model!r}")
 
     async def fake_initialize(client: Any, **kwargs: Any) -> Any:
@@ -333,6 +341,7 @@ async def test_the_model_comes_from_the_environment_not_the_engine_options(
     )
 
     assert published.model == "deepseek-model"
+    assert published.gateway_base_url == "https://gateway.test/v1"
 
 
 @pytest.mark.asyncio

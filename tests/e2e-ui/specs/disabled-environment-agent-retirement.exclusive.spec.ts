@@ -177,6 +177,9 @@ for (const tenancy of ['agent', 'conversation'] as const) {
       expect(response.status(), 'disabled Environment must not break operational reads').toBe(200);
       expect((await response.json()).data).toMatchObject({ enabled: false, ready: false, prepared_count: 0 });
     }
+    const claimedRead = await request.get(apiPath(`/sessions/${sessionId}`));
+    expect(claimedRead.status(), 'the claimed Session stays readable by its owner').toBe(200);
+    expect((await claimedRead.json()).data).toMatchObject({ session_id: sessionId });
     let retired: SupplierRead = before;
     await expect.poll(() => {
       retired = supplierRead(backend, poolName, liveBox, spareBox);

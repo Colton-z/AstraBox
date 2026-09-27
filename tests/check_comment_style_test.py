@@ -585,7 +585,7 @@ def test_source_paths_include_mjs_but_exclude_generated_schema() -> None:
     assert "astrabox/core/service/orchestrator/runtime/provision-conversation" in paths
     assert ".env.example" in paths
     assert "Makefile" in paths
-    assert "containers/coredns/sandbox-edge.Corefile" in paths
+    assert "containers/sandbox-edge/dns-edge.nginx.conf" in paths
     assert "website/static/img/astrabox-mark.svg" in paths
     assert "channel-gateway/vendor/file-type-compat/index.cjs" not in paths
     assert not any(path.startswith("frontend/src/components/ai-elements/") for path in paths)

@@ -248,7 +248,9 @@ describe('a settled turn keeps an unfinished call outside its fold', () => {
     const { container } = renderSettled([
       tool('finished', 'output-available', { output: 'done' }),
       tool('stopped', 'input-available'),
-      { type: 'data-turn-failure', data: { error: 'Request interrupted by user', failure_phase: 'post_dispatch' } },
+      // A user stop completes the turn; the platform result records that it
+      // was cancelled, and that is the only fact the page has to go on.
+      { type: 'data-result', data: { finish_reason: 'cancelled' } },
     ]);
     const fold = await screen.findByTestId('assistant-turn-process', undefined, { timeout: 3_000 });
     expect(fold.querySelector('[data-tool-call-id="finished"]')).toBeTruthy();
@@ -256,6 +258,65 @@ describe('a settled turn keeps an unfinished call outside its fold', () => {
     const outside = container.querySelector('[data-tool-call-id="stopped"]');
     expect(outside).toBeTruthy();
     expect(outside?.closest('[data-testid="assistant-turn-process"]')).toBeNull();
+    expect(screen.getByText(i18n.t('chat:process.stopped'))).toBeTruthy();
+  });
+
+  it('keeps one header on a stopped record the server already folded, and says it stopped', async () => {
+    // The reloaded page receives the fold from the server as a
+    // `data-process-block`, with the call the stop landed on beside it.
+    const { container } = renderSettled([
+      {
+        type: 'data-process-block',
+        id: 'settled-turn:p0',
+        data: {
+          block_id: 'settled-turn:p0',
+          cursor: 'c',
+          session_id: 's',
+          message_id: 'settled-turn',
+          turn_id: 'settled-turn',
+          tool_count: 1,
+          summarize: true,
+          summary: { status: 'completed', summary: 'Ran the first command' },
+        },
+      },
+      tool('stopped', 'input-available'),
+      { type: 'data-result', data: { finish_reason: 'cancelled' } },
+    ]);
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+    expect(container.querySelectorAll('[data-testid="assistant-turn-process"]')).toHaveLength(1);
+    const outside = container.querySelector('[data-tool-call-id="stopped"]');
+    expect(outside?.closest('[data-testid="assistant-turn-process"]')).toBeNull();
+    expect(screen.getByText(i18n.t('chat:process.stopped'))).toBeTruthy();
+  });
+
+  it('says a turn stopped before its first token stopped, with nothing to fold', () => {
+    // A stop before the first token leaves the turn nothing but its result:
+    // the platform records the stop as a cancelled result and writes no work.
+    renderSettled([{ type: 'data-result', data: { finish_reason: 'cancelled' } }]);
+    expect(screen.getByText(i18n.t('chat:process.stopped'))).toBeTruthy();
+  });
+
+  it('says a stopped text-only turn stopped, and says nothing on a normal or failed end', () => {
+    const stopped = renderSettled([
+      { type: 'text', text: 'Partial answer' },
+      { type: 'data-result', data: { finish_reason: 'cancelled' } },
+    ]);
+    expect(screen.getByText(i18n.t('chat:process.stopped'))).toBeTruthy();
+    stopped.unmount();
+
+    const finished = renderSettled([
+      { type: 'text', text: 'Whole answer' },
+      { type: 'data-result', data: { finish_reason: 'stop' } },
+    ]);
+    expect(screen.queryByText(i18n.t('chat:process.stopped'))).toBeNull();
+    finished.unmount();
+
+    // A failure has its own card; the stop line is for a user stop.
+    renderSettled([
+      { type: 'text', text: 'Partial answer' },
+      { type: 'data-turn-failure', data: { error: 'upstream refused' } },
+    ]);
+    expect(screen.queryByText(i18n.t('chat:process.stopped'))).toBeNull();
   });
 
   it('keeps a call still awaiting its answer outside a normally ended turn', async () => {

@@ -13,6 +13,8 @@ AstraBox is an open-source, self-hosted runtime that turns installed Agent progr
 | **Session**     | One stateful Agent execution, including its messages, Events, and current state         | "A specific piece of work" |
 | **Event**       | The real-time event stream produced by a Session                                      | "Live progress feed"      |
 
+Alongside Agents for teams and automation, AstraBox offers [Assistants](assistants.md): one person's long-lived cloud workspace, where all conversations share the workspace and the Agent program's state.
+
 ## Workflow
 
 1. **Define an Agent.** Specify the model, system prompt, and extensions.
@@ -25,7 +27,7 @@ AstraBox is an open-source, self-hosted runtime that turns installed Agent progr
 One deployment brings up the pieces a team usually assembles by hand:
 
 - **Model gateway.** The bundled [LiteLLM](https://github.com/BerriAI/litellm) gateway is on by default. Agents select a route name; upstream keys, routing, budgets and request logs stay on the server, and any Anthropic, OpenAI-compatible or local provider can sit behind it. See [Connect a model service](models.md).
-- **Team login.** [Casdoor](https://github.com/casdoor/casdoor) is pre-integrated as the identity provider, with OIDC, organizations and roles, and sign-in through providers such as DingTalk, WeCom, Feishu or GitHub. One Compose overlay turns it on; see [Set up team login](team-login.md).
+- **Team login.** [Casdoor](https://github.com/casdoor/casdoor) is pre-integrated as the identity provider, with OIDC, organizations and roles, and sign-in through the identity providers an administrator adds in Casdoor, such as Google, Microsoft Entra ID, Okta, GitHub, SAML or LDAP. The installer turns it on with one setting; see [Set up team login](team-login.md).
 - **Isolated sandboxes.** [OpenSandbox](https://github.com/opensandbox-group/OpenSandbox) runs them on one Docker host or a Kubernetes cluster, and warm capacity lets conversations start and resume in seconds.
 - **Credentials outside the sandbox.** Vault credentials are injected at the sandbox's egress boundary; the Agent only sees a placeholder. See [Protect credentials used by Agents](egress-credential-injection.md).
 - **Triggers and channels.** Schedules, signed webhooks and messaging platforms start Agents without a person present. See [Automate Agent runs](deployments.md).

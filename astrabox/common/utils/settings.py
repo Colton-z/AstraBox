@@ -1,5 +1,5 @@
+import ipaddress
 import os
-import socket
 from typing import Any, Literal
 
 from pydantic import (
@@ -57,58 +57,17 @@ def _to_bool(value: Any, default: bool) -> bool:
     return bool(value)
 
 
-def _running_in_container() -> bool:
-    """True when this process is running inside a Docker/OCI container.
-
-    ``/.dockerenv`` is Docker's marker file; ``/run/.containerenv`` is Podman's.
-    """
-    return os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
-
-
-def _detect_own_container_ip() -> str:
-    """This container's own bridge-network IP, or "" if it can't be determined.
-
-    A *connected* UDP socket transmits nothing, but forces the kernel to resolve
-    the source IP it would egress from; on the default Docker bridge that is this
-    container's own 172.17.x.x address — the same address a sibling sandbox
-    container reaches this container at. The ``8.8.8.8`` literal is an arbitrary
-    off-box target used only to select a non-loopback route; no packet is sent.
-    """
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        sock.connect(("8.8.8.8", 80))
-        ip = str(sock.getsockname()[0] or "").strip()
-    except OSError:
-        return ""
-    finally:
-        sock.close()
-    if not ip or ip.startswith("127.") or ip == "0.0.0.0":
-        return ""
-    return ip
-
-
-def _default_mcp_proxy_base_url() -> str:
-    """Derive the sandbox->server callback base URL for the containerized quickstart.
-
-    When ``ASTRABOX_MCP_PROXY_BASE_URL`` is unset the lifecycle worker still builds
-    a sandbox-callback URL and fails loud on an empty base, 500ing session creation
-    in the README ``docker run`` topology. There the server runs in a container
-    that publishes its port to the host loopback only (``-p 127.0.0.1:8088:8000``)
-    and spawns sandbox containers on the same default bridge. A loopback-bound
-    host port is unreachable from a sandbox (host-gateway routes to the host,
-    which listens only on 127.0.0.1), so the reachable address is the server
-    container's own bridge IP plus its internal listen port (``ASTRABOX_PORT``,
-    default 8000). This derivation runs only inside a container; on the host the
-    operator sets the variable explicitly (``scripts/dev.sh`` and the e2e scripts
-    do), so returning "" preserves the fail-loud behavior there.
-    """
-    if not _running_in_container():
-        return ""
-    ip = _detect_own_container_ip()
-    if not ip:
-        return ""
-    port = str(os.environ.get("ASTRABOX_PORT") or "8000").strip() or "8000"
-    return f"http://{ip}:{port}"
+#: The output cap for titles, title decisions and process summaries. It is a
+#: cap, not spend: a route that honours ``reasoning_effort: "none"`` stops
+#: after the label whatever the cap. It must cover reasoning on routes that
+#: cannot disable it (an Anthropic- or OpenAI-compatible reasoning model),
+#: where every token of thinking counts against it and running out leaves no
+#: text. Measured on DeepSeek's thinking route with a 4-language x
+#: maths/plain matrix: 256 lost 20 of 80 titles to the cap, 1024 lost 1, and
+#: 2048 none (the longest title reply used 1120 tokens). Process summaries,
+#: asked for as one JSON label, completed 40 of 40 at 2048 on that route (the
+#: longest reply used 1208 tokens).
+TITLE_MODEL_MAX_TOKENS = 2048
 
 
 class AstraBoxRuntimeSettings(BaseSettings):
@@ -190,9 +149,8 @@ class AstraBoxRuntimeSettings(BaseSettings):
     )
     #: Ask the lifecycle server to hand back endpoints that point at the server
     #: itself and relay to the sandbox, instead of endpoints that point at a
-    #: published host port. See
-    #: ``providers/open_sandbox/_config.sdk_connection_config`` for the
-    #: reachability argument; the one-container deployment sets this.
+    #: published host port. See ``providers/open_sandbox/_config.use_server_proxy``
+    #: for when a deployment needs it and what the relay cannot carry.
     sandbox_endpoint_via_server_proxy: bool = Field(
         default=False,
         validation_alias=AliasChoices(
@@ -245,6 +203,26 @@ class AstraBoxRuntimeSettings(BaseSettings):
         validation_alias=AliasChoices(
             "ASTRABOX_GIT_HTTPS_TOKEN_SECRET_NAME",
             AliasPath("astrabox", "git", "https_token_secret_name"),
+        ),
+    )
+    # The one Git host that token authenticates to. The SSH-to-HTTPS
+    # translation adds the token only to a clone of this host, so an Agent that
+    # names another host cannot direct the deployment's token to it.
+    git_https_token_host: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "ASTRABOX_GIT_HTTPS_TOKEN_HOST",
+            AliasPath("astrabox", "git", "https_token_host"),
+        ),
+    )
+    # Comma-separated secret names Agents and Assistants may name as a
+    # repository deploy_key_secret_name. A name outside this list is refused,
+    # so an author cannot resolve an arbitrary server environment variable.
+    deploy_key_secret_names: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "ASTRABOX_DEPLOY_KEY_SECRET_NAMES",
+            AliasPath("astrabox", "git", "deploy_key_secret_names"),
         ),
     )
 
@@ -365,7 +343,7 @@ class AstraBoxRuntimeSettings(BaseSettings):
         ),
     )
     title_model_max_tokens: int = Field(
-        default=256,
+        default=TITLE_MODEL_MAX_TOKENS,
         validation_alias=AliasChoices(
             "ASTRABOX_TITLE_MODEL_MAX_TOKENS", AliasPath("astrabox", "title_model", "max_tokens")
         ),
@@ -395,8 +373,11 @@ class AstraBoxRuntimeSettings(BaseSettings):
     )
 
     # --- sandbox-facing platform callback base ----------------------------
-    # This is the sandbox-facing base for platform MCP and callback routes.
-    # Empty derives the server's own bridge address inside a container.
+    # This is the sandbox-facing base for platform MCP and callback routes. It
+    # is never derived: this server's own address would make every port it
+    # listens on an allowed egress target of every sandbox. The Compose stack
+    # sets it to the sandbox edge (astrabox/deploy/onebox.py); other shapes set
+    # it explicitly, and an empty value fails the first sandbox callback URL.
     mcp_proxy_base_url: str = Field(
         default="",
         validation_alias=AliasChoices(
@@ -571,6 +552,18 @@ class AstraBoxRuntimeSettings(BaseSettings):
             AliasPath("astrabox", "sandbox_egress_dns_upstream"),
         ),
     )
+    # Comma-separated IP networks every sandbox's egress policy denies in every
+    # networking mode, ahead of every allow rule. The maintained Compose stack
+    # fills it with Docker's built-in bridge minus the sandbox edge, so a
+    # sandbox reaches neither another sandbox nor the bridge gateway where
+    # sandbox ports are published.
+    sandbox_egress_deny_cidrs: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "ASTRABOX_SANDBOX_EGRESS_DENY_CIDRS",
+            AliasPath("astrabox", "sandbox_egress_deny_cidrs"),
+        ),
+    )
     # The model credential is held by the egress sidecar instead of being handed
     # to the sandbox. On by default; callers synthesize a deny-by-default policy
     # when the Environment has none. A requested path that the backend cannot
@@ -580,6 +573,16 @@ class AstraBoxRuntimeSettings(BaseSettings):
         validation_alias=AliasChoices(
             "ASTRABOX_SANDBOX_CREDENTIAL_VAULT",
             AliasPath("astrabox", "sandbox_credential_vault_enabled"),
+        ),
+    )
+    # Who may create Agents and Assistants. Default every signed-in user; true
+    # reserves creation to administrators, for a deployment whose users should
+    # only use the Agents an administrator published.
+    authoring_admin_only: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "ASTRABOX_AUTHORING_ADMIN_ONLY",
+            AliasPath("astrabox", "authoring_admin_only"),
         ),
     )
     sandbox_lease_renew_threshold_seconds: int = Field(  # renew when <1h remains
@@ -599,13 +602,24 @@ class AstraBoxRuntimeSettings(BaseSettings):
             raise ValueError("ASTRABOX_SANDBOX_ENDPOINT_SCHEME must be http or https")
         return normalized
 
+    @field_validator("sandbox_egress_deny_cidrs", mode="after")
+    @classmethod
+    def _validate_sandbox_egress_deny_cidrs(cls, value: str) -> str:
+        networks = []
+        for item in str(value or "").split(","):
+            if not item.strip():
+                continue
+            try:
+                networks.append(str(ipaddress.ip_network(item.strip(), strict=True)))
+            except ValueError as exc:
+                raise ValueError(
+                    f"ASTRABOX_SANDBOX_EGRESS_DENY_CIDRS entry {item.strip()!r} is not "
+                    f"an IP network: {exc}"
+                ) from exc
+        return ",".join(networks)
+
     @model_validator(mode="after")
     def _resolve_derived(self) -> "AstraBoxRuntimeSettings":
-        # Empty derives the server's own bridge address inside a container so
-        # platform MCP and callback routes remain reachable from a sandbox;
-        # inert on the host or when explicitly configured.
-        if not self.mcp_proxy_base_url:
-            self.mcp_proxy_base_url = _default_mcp_proxy_base_url()
         if self.sandbox_secure_access_enabled and self.sandbox_endpoint_via_server_proxy:
             raise ValueError(
                 "ASTRABOX_SANDBOX_SECURE_ACCESS cannot be combined with "

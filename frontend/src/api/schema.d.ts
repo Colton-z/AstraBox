@@ -3007,12 +3007,16 @@ export interface components {
          *     presentation and validation members (``group``, ``required``, ``enum``,
          *     ``path``, ``complex``, ``advanced``) appear per field. ``item_schema``
          *     describes the sub-fields of a nested object with this same grammar.
+         *     ``default`` is the value a create stores when the field is omitted; only
+         *     ``prewarm_enabled`` carries one, and its value follows the deployment.
          */
         AgentFormField: {
             /** Advanced */
             advanced?: boolean | null;
             /** Complex */
             complex?: boolean | null;
+            /** Default */
+            default?: unknown;
             /** Enum */
             enum?: string[] | null;
             /** Group */
@@ -3053,6 +3057,27 @@ export interface components {
             version: number;
         } & {
             [key: string]: unknown;
+        };
+        /**
+         * AgentListPage
+         * @description One page of the Agents the caller may see, by name regardless of case.
+         *
+         *     ``next_cursor`` is the value to pass back as ``cursor``; it is ``null`` on
+         *     the last page, which ``has_more`` reports independently. ``total`` and
+         *     ``enabled`` count every Agent the caller may see, whatever ``q`` and
+         *     ``status`` narrowed, and come with the first page only.
+         */
+        AgentListPage: {
+            /** Agents */
+            agents: components["schemas"]["AgentRecord"][];
+            /** Enabled */
+            enabled?: number | null;
+            /** Has More */
+            has_more: boolean;
+            /** Next Cursor */
+            next_cursor?: string | null;
+            /** Total */
+            total?: number | null;
         };
         /**
          * AgentMCPServerAssignment
@@ -3376,6 +3401,14 @@ export interface components {
             /** Message */
             message: string;
         };
+        /** ApiEnvelope[AgentListPage] */
+        ApiEnvelope_AgentListPage_: {
+            /** Code */
+            code: string;
+            data: components["schemas"]["AgentListPage"];
+            /** Message */
+            message: string;
+        };
         /** ApiEnvelope[AgentMCPServerAssignment] */
         ApiEnvelope_AgentMCPServerAssignment_: {
             /** Code */
@@ -3405,6 +3438,14 @@ export interface components {
             /** Code */
             code: string;
             data: components["schemas"]["AssistantDeletion"];
+            /** Message */
+            message: string;
+        };
+        /** ApiEnvelope[AssistantListPage] */
+        ApiEnvelope_AssistantListPage_: {
+            /** Code */
+            code: string;
+            data: components["schemas"]["AssistantListPage"];
             /** Message */
             message: string;
         };
@@ -3980,6 +4021,8 @@ export interface components {
             }[] | null;
             /** Skill Manifest Override */
             skill_manifest_override?: string[] | null;
+            /** System */
+            system?: string | null;
             /** Updated At */
             updated_at?: string | null;
             /** Workspace State */
@@ -4003,6 +4046,27 @@ export interface components {
             deleted?: boolean | null;
         } & {
             [key: string]: unknown;
+        };
+        /**
+         * AssistantListPage
+         * @description One page of the caller's Assistants, the most recently edited first.
+         *
+         *     ``next_cursor`` is the value to pass back as ``cursor``; it is ``null`` on
+         *     the last page, which ``has_more`` reports independently. ``total`` and
+         *     ``ready`` count every Assistant the caller owns, whatever ``q`` and
+         *     ``status`` narrowed, and come with the first page only.
+         */
+        AssistantListPage: {
+            /** Assistants */
+            assistants: components["schemas"]["Assistant"][];
+            /** Has More */
+            has_more: boolean;
+            /** Next Cursor */
+            next_cursor?: string | null;
+            /** Ready */
+            ready?: number | null;
+            /** Total */
+            total?: number | null;
         };
         /**
          * AssistantWorkspace
@@ -7367,7 +7431,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApiEnvelope_list_AgentRecord__"];
+                    "application/json": components["schemas"]["ApiEnvelope_AgentListPage_"] | components["schemas"]["ApiEnvelope_list_AgentRecord__"];
                 };
             };
         };
@@ -7881,7 +7945,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApiEnvelope_list_Assistant__"];
+                    "application/json": components["schemas"]["ApiEnvelope_AssistantListPage_"] | components["schemas"]["ApiEnvelope_list_Assistant__"];
                 };
             };
         };

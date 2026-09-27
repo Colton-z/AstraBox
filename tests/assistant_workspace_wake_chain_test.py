@@ -307,6 +307,7 @@ class _Template:
     name = "env-1"
     sandbox_backend = "open_sandbox"
     model_config: dict[str, Any] = {}
+    assistant_revision = "rev-1"
 
 
 class _AgentConfig:
@@ -739,6 +740,7 @@ async def test_conversation_creation_materializes_its_runtime_subject_in_backgro
         user_id=_USER.user_id,
         assistant_id=assistant_id,
         sandbox_id="sbx-1",
+        configuration_revision="rev-1",
     ) is not None
     assert world.bootstrap_sessions() == []
     assert world.runtime.created == [conversation["session_id"]]

@@ -283,6 +283,9 @@ export interface EnvironmentConfig {
   engine_kind?: string;
   engine_available?: boolean;
   supported_session_kinds?: string[];
+  // The permission modes the Environment's Agent program declares; empty when
+  // it has none, and then no form may offer or send one.
+  permission_modes?: string[];
   sandbox_backend?: string;
   networking?: {
     type: 'unrestricted' | 'limited';
@@ -327,6 +330,9 @@ export interface FormFieldSchema {
   complex?: boolean;
   advanced?: boolean;
   item_schema?: FormFieldSchema[];
+  // The value the server uses when a create leaves the field out, so a create
+  // form can start from what the record will hold.
+  default?: unknown;
   // Engine-declared fields (an Agent's engine_options bag) carry their OWN
   // copy: the strings are the engine author's voice, carried verbatim like
   // any other vendor vocabulary — the platform catalogue cannot know a
@@ -377,6 +383,12 @@ export interface OutboxItem {
   command_id?: string;
   input_id?: string;
   failure_reason?: string;
+  /**
+   * The refusal ended this message: the platform answered that the same
+   * message sent again cannot succeed (`error.retryable === false`). Sending
+   * it again has to be a new message, with its own `client_message_id`.
+   */
+  resend_as_new?: boolean;
   /**
    * The images this message was sent with. Held because retrying a failed row
    * has to resend the message, and resending only its text would quietly
@@ -499,6 +511,27 @@ export interface SessionListPage {
   sessions: SessionRecord[];
   has_more: boolean;
   next_cursor?: string | null;
+}
+
+/**
+ * One page of the Agents the caller may see, by name regardless of case.
+ * `total` and `enabled` count the whole list, whatever `q` and `status`
+ * narrowed, and come with the first page only.
+ */
+export interface AgentListPage {
+  agents: AgentConfig[];
+  has_more: boolean;
+  next_cursor?: string | null;
+  total?: number;
+  enabled?: number;
+}
+
+/** What a paged list read asks for: where to resume, how many, and the narrowing. */
+export interface ListPageQuery {
+  cursor?: string | null;
+  limit?: number;
+  q?: string;
+  status?: string;
 }
 
 // ── Admin session console (management surface) ──────────────────────────────
@@ -815,6 +848,9 @@ export interface ResultBlockData {
   num_turns?: number;
   stop_reason?: string;
   usage?: { input_tokens?: number; output_tokens?: number };
+  /** The platform's outcome for the turn; a user stop is `cancelled`. */
+  finish_reason?: string;
+  is_error?: boolean;
 }
 
 export interface TurnFailureBlockData {

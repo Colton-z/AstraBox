@@ -32,6 +32,7 @@ test('Agent conversation create survives a lost response without creating a dupl
     name,
     model: models.find((model) => model && !model.includes('*')) || 'deepseek-chat',
     environment_name: environmentName,
+    prewarm_enabled: false,
   });
   retainedAgentId = String(agent.agent_id || '');
   expect(retainedAgentId).not.toEqual('');

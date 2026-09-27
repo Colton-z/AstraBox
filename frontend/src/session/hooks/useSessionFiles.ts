@@ -35,6 +35,12 @@ export type UseSessionFilesResult = {
   mutating: boolean;
   loadedOnce: boolean;
   error: string | null;
+  /**
+   * The last listing failed because the conversation's sandbox is gone. The
+   * listing works again only after a message moves the conversation to a new
+   * sandbox, so there is nothing to wait for or refresh until then.
+   */
+  sandboxGone: boolean;
   ensureDirectoryLoaded: (
     path: string,
     options?: { force?: boolean },
@@ -53,13 +59,17 @@ type UseSessionFilesOptions = {
   enabled?: boolean;
 };
 
+function isSandboxGone(error: unknown): boolean {
+  return error instanceof ApiError && error.code === 'SANDBOX_GONE';
+}
+
 function getErrorMessage(error: unknown): string {
-  // A refusal the platform has an answer for is not news for the reader: the
-  // bound sandbox being gone starts a replacement. Its wire text is addressed
-  // to an operator — a code, a provider name, a sandbox identifier — and a
-  // person reading a file list can act on none of it. Branch on the code,
-  // which is the machine-readable half.
-  if (error instanceof ApiError && error.code === 'SANDBOX_GONE') {
+  // The bound sandbox being gone has one way forward for the reader: the
+  // conversation's next message moves it to a new sandbox, and the list works
+  // again there. The wire text is addressed to an operator — a code, a
+  // provider name, a sandbox identifier — and a person reading a file list can
+  // act on none of it. Branch on the code, which is the machine-readable half.
+  if (isSandboxGone(error)) {
     return i18n.t('chat:files.unavailable_sandbox_gone');
   }
   if (error instanceof Error) {
@@ -155,6 +165,7 @@ export function useSessionFiles(
   const [mutating, setMutating] = useState(false);
   const [loadedOnce, setLoadedOnce] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [sandboxGone, setSandboxGone] = useState(false);
 
   const rootPathRef = useRef<string | null>(null);
   const directoryEntriesByPathRef = useRef<SessionFilesDirectoryEntries>({});
@@ -180,6 +191,7 @@ export function useSessionFiles(
     setMutating(false);
     setLoadedOnce(false);
     setError(null);
+    setSandboxGone(false);
     rootPathRef.current = null;
     directoryEntriesByPathRef.current = {};
     loadedDirectoryPathsRef.current = new Set();
@@ -322,6 +334,7 @@ export function useSessionFiles(
       setLoading(true);
     }
     setError(null);
+    setSandboxGone(false);
 
     try {
       const listing = await listSessionFiles(
@@ -353,6 +366,7 @@ export function useSessionFiles(
           : rootPathRef.current !== null;
         if (!keepsLastRead(err, { background: options.background === true }, hasListing)) {
           setError(getErrorMessage(err));
+          setSandboxGone(isSandboxGone(err));
         }
       }
       throw err;
@@ -372,6 +386,7 @@ export function useSessionFiles(
       setLoading(false);
       setMutating(false);
       setError(null);
+      setSandboxGone(false);
       return;
     }
     let cancelled = false;
@@ -576,6 +591,7 @@ export function useSessionFiles(
     mutating,
     loadedOnce,
     error,
+    sandboxGone,
     ensureDirectoryLoaded,
     refresh,
     upload,

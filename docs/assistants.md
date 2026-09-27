@@ -32,13 +32,65 @@ Assistants.
 
 1. Open **Management console → Assistants** and select **New assistant**.
 2. Enter a name and select an **Environment**.
-3. Optionally add a description and choose the default
-   [permission mode](permission-modes.md).
+3. Optionally add a description and a [system prompt](#system-prompt), and
+   choose the default [permission mode](permission-modes.md).
 4. Select **Create**.
 
 The signed-in user becomes the owner. The Environment also determines the Agent
 program, and the console keeps both fixed after creation. The name, description,
-icon, and default permission mode remain editable.
+icon, system prompt, and default permission mode remain editable.
+
+## System prompt
+
+The system prompt defines the Assistant's role, style, and rules. It is the
+same setting an [Agent](authoring-agents.md) has, and the Agent program applies
+it through its own mechanism.
+
+Hermes, the bundled Assistant program, uses it as its `SOUL.md`: the identity at
+the start of its system prompt. The system prompt replaces Hermes' built-in
+"You are Hermes Agent" identity; the rest of Hermes' own prompt, such as its
+tool guidance, stays. Hermes checks this text the way it checks any
+`SOUL.md`: it withholds content that matches its prompt-injection patterns and
+truncates content longer than its context-file limit, which is at least 20,000
+characters.
+
+Leave the field empty to keep Hermes' own default identity. Clearing a system
+prompt that was set restores that default. The exception is a `SOUL.md` that
+changed after AstraBox wrote it, such as an edit made through Hermes; that
+version is kept. While a system prompt is set, AstraBox writes it again
+whenever Hermes starts or the Assistant's settings change, replacing such
+edits.
+
+## When a change takes effect
+
+Saving a change never ends a reply in progress. When the change reaches a
+conversation depends on when Hermes reads the setting:
+
+- **System prompt.** Hermes builds a conversation's prompt when the
+  conversation starts. AstraBox writes the new prompt into Hermes' profile:
+  conversations started after the change use it, and a conversation that is
+  already open keeps the prompt it started with.
+- **Model.** Hermes checks its configured model at the start of every reply.
+  AstraBox writes the new model into Hermes' profile: new conversations use it,
+  and a conversation that is already open switches to it from its next
+  message. A reply in progress finishes on the model it started with.
+- **MCP servers, and model credentials that the sandbox holds itself.** Hermes
+  reads these only when its program starts, so AstraBox restarts it. A restart
+  would end every reply in progress in the Assistant's other conversations, so
+  AstraBox first waits until none is running, including replies waiting for an
+  approval or an answer and background delegations. The new conversation shows
+  as preparing until then. If work is still running after 30 minutes, the new
+  conversation fails with an error that names it, and nothing is restarted.
+  A new MCP server's host is also added to what the workspace can reach.
+
+After a restart, the Assistant's other conversations continue with their
+history on their next message. If Hermes restarts for any other reason while
+a reply is in progress, that reply ends with an error saying the backend lost
+it, and the conversation accepts the next message.
+
+A conversation that cannot be prepared ends and shows why, for example when
+the Assistant names an MCP server but its Environment does not allow MCP
+servers. Fix the cause, then start a new conversation.
 
 ## Start and continue work
 
@@ -103,7 +155,8 @@ confirmed, the record remains available so deletion can be retried.
 ## API access
 
 Assistant creation, conversations, workspace lifecycle, and deletion are also
-available through the HTTP API. Each AstraBox instance publishes the exact
+available through the HTTP API. The system prompt is the Assistant's `system`
+field, as it is an Agent's. Each AstraBox instance publishes the exact
 Assistant endpoints in the interactive API reference at `/docs` and the OpenAPI
 document at `/openapi.json`. See [API overview](api.md) for authentication and
 request conventions.

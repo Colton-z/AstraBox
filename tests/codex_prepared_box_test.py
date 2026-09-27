@@ -287,7 +287,12 @@ def test_activation_adopts_binds_and_publishes_in_order(
         "runtime_env": {},
         "environment_credential_contract": [],
         "workspace_id": "workspace-1",
-        "runtime_identity": {"workspace_dir": "/workspace", "session_id": "slot-abc"},
+        "runtime_identity": {
+            "workspace_dir": "/workspace",
+            "session_id": "slot-abc",
+            "linux_user": "agent",
+            "home_dir": "/home/agent",
+        },
     }
 
     async def _win(**kwargs: Any) -> dict[str, Any]:
@@ -339,12 +344,17 @@ def test_activation_adopts_binds_and_publishes_in_order(
     async def _mark(*, agent_id: str, slot_id: str, session_id: str) -> None:
         events.append(f"mark:{slot_id}:{session_id}")
 
-    async def _target(sandbox: Any, manager_arg: Any, session_id: str, *, cwd: str) -> None:
-        events.append(f"mirror-target:{session_id}:{cwd}")
+    async def _target(sandbox: Any, manager_arg: Any, session_id: str) -> None:
+        events.append(f"mirror-target:{session_id}")
 
-    async def _connect(sandbox: Any, *, port: int = 44790) -> Any:
+    async def _connect(sandbox: Any, *, forward_token: str, port: int = 44790) -> Any:
         # Box-tenancy paths keep dialing the image's fixed forwarder port.
         assert port == 44790
+        # The claim presents the credential preparation delivered, recomputed
+        # from the box and its account rather than read back from anywhere.
+        assert forward_token == codex._forward_token(
+            "box-77", {"linux_user": "agent", "home_dir": "/home/agent"}
+        )
         events.append("link-connect")
         return SimpleNamespace(kind="link")
 
@@ -408,7 +418,7 @@ def test_activation_adopts_binds_and_publishes_in_order(
         "mark:slot-abc:session-1",
         "mint:session-1",
         f"vault:{workload_credential_name('slot-abc')}",
-        "mirror-target:session-1:/workspace",
+        "mirror-target:session-1",
         "link-connect",
         "publish",
     ]

@@ -8,6 +8,15 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from astrabox.persistence.repository import AgentRepository
+from astrabox.persistence.repository.agent_repository import NAME_SORT_KEY_FIELD
+from astrabox.persistence.repository.keyset import (
+    SWEEP_PAGE_SIZE,
+    InvalidListCursor,
+    decode_list_cursor,
+    encode_list_cursor,
+    iter_keyset_pages,
+    read_filtered_page,
+)
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.user_context import UserContext, default_org_id
@@ -25,6 +34,33 @@ logger = get_logger(__name__)
 # Bounds the post-wake ACTIVE-poll loop in
 # agent_mcp_service._ensure_active_agent.
 _AGENT_STARTUP_TIMEOUT_SECONDS = 300
+
+#: The status narrowings the Agent list page accepts.
+AGENT_LIST_STATUSES = frozenset({"all", "enabled", "disabled"})
+_AGENT_LIST_CURSOR_KEYS = ("name_key", "agent_id")
+
+
+def _agent_enabled(doc: dict[str, Any]) -> bool:
+    """An Agent is enabled unless its row says otherwise, as the console reads it."""
+
+    value = doc.get("enabled")
+    return not (value is False or str(value).strip().lower() == "false")
+
+
+def _agent_matches(doc: dict[str, Any], *, needle: str, status: str) -> bool:
+    """Whether a row passes the list page's search and status narrowing."""
+
+    enabled = _agent_enabled(doc)
+    if (status == "enabled" and not enabled) or (status == "disabled" and enabled):
+        return False
+    if not needle:
+        return True
+    display_meta = doc.get("display_meta")
+    display_name = display_meta.get("display_name") if isinstance(display_meta, dict) else None
+    return any(
+        needle in str(value or "").lower()
+        for value in (doc.get("name"), display_name, doc.get("model"))
+    )
 
 
 class AgentService:
@@ -96,8 +132,7 @@ class AgentService:
             self._raise_if_quiesced()
             if self._bootstrapped:
                 return
-            rows = await self._agent_repo.list_all_agents()
-            for row in rows:
+            async for row in self._live_agents():
                 self._schedule_runtime_reconciliation(str(row.get("agent_id") or ""))
             self._bootstrapped = True
 
@@ -141,9 +176,8 @@ class AgentService:
         target = str(environment_name or "").strip()
         if not target or self._quiesced_reason:
             return 0
-        rows = await self._agent_repo.list_all_agents()
         scheduled = 0
-        for row in rows:
+        async for row in self._live_agents():
             if str(row.get("environment_name") or "").strip() != target:
                 continue
             agent_id = str(row.get("agent_id") or "").strip()
@@ -152,6 +186,19 @@ class AgentService:
             self._schedule_runtime_reconciliation(agent_id)
             scheduled += 1
         return scheduled
+
+    def _live_agents(self) -> AsyncIterator[dict[str, Any]]:
+        """Every Agent that is not deleted, read in pages.
+
+        Preparation must reach every Agent; the display listing is capped.
+        """
+
+        return iter_keyset_pages(
+            lambda after: self._agent_repo.list_live_agents_page(
+                after_agent_id=after, limit=SWEEP_PAGE_SIZE
+            ),
+            key="agent_id",
+        )
 
     async def list_agents(self, user: UserContext) -> list[dict[str, Any]]:
         """The agents this caller may see — public ones, plus their own.
@@ -166,6 +213,76 @@ class AgentService:
         return [
             self._user_view(user, r) for r in rows if can_view_agent(r, user.user_id, user.roles)
         ]
+
+    async def list_agents_page(
+        self,
+        user: UserContext,
+        *,
+        limit: int,
+        cursor: str | None = None,
+        query: str = "",
+        status: str = "all",
+    ) -> dict[str, Any]:
+        """One page of the Agents this caller may see, by name regardless of case.
+
+        ``query`` matches the name, display name and model, case-insensitively;
+        ``status`` keeps enabled or disabled Agents. Both apply before the page
+        is cut, so a page is short only at the end of the list. The first page
+        (no ``cursor``) also counts every Agent the caller may see, and how
+        many of them are enabled, whatever the narrowing.
+        """
+        if status not in AGENT_LIST_STATUSES:
+            raise APIError(
+                code="INVALID_REQUEST",
+                message=f"status must be one of {sorted(AGENT_LIST_STATUSES)}",
+                status_code=400,
+            )
+        try:
+            after = decode_list_cursor(cursor, _AGENT_LIST_CURSOR_KEYS)
+        except InvalidListCursor as exc:
+            raise APIError(
+                code="INVALID_REQUEST",
+                message="cursor is not one this list returned",
+                status_code=400,
+            ) from exc
+        await self.ensure_bootstrap()
+        needle = str(query or "").strip().lower()
+        rows, has_more = await read_filtered_page(
+            lambda after_key, size: self._agent_repo.list_agents_by_name_page(
+                after=after_key, limit=size
+            ),
+            after=after,
+            key_of=lambda row: (
+                str(row.get(NAME_SORT_KEY_FIELD) or ""),
+                str(row.get("agent_id") or ""),
+            ),
+            keep=lambda row: can_view_agent(row, user.user_id, user.roles)
+            and _agent_matches(row, needle=needle, status=status),
+            limit=limit,
+        )
+        page: dict[str, Any] = {
+            "agents": [self._user_view(user, row) for row in rows],
+            "has_more": has_more,
+            "next_cursor": (
+                encode_list_cursor(
+                    {
+                        "name_key": str(rows[-1].get(NAME_SORT_KEY_FIELD) or ""),
+                        "agent_id": str(rows[-1].get("agent_id") or ""),
+                    }
+                )
+                if has_more and rows
+                else None
+            ),
+        }
+        if after is None:
+            visible = [
+                doc
+                for doc in await self._agent_repo.list_agent_access_docs()
+                if can_view_agent(doc, user.user_id, user.roles)
+            ]
+            page["total"] = len(visible)
+            page["enabled"] = sum(_agent_enabled(doc) for doc in visible)
+        return page
 
     async def list_all_agents(self) -> list[dict[str, Any]]:
         """Every agent, unfiltered — for internal paths that already hold their
@@ -249,6 +366,7 @@ class AgentService:
                     "ready": False,
                     "prepared_count": 0,
                     "state": "preparing",
+                    "client_pool_name": pool_name or None,
                     "last_error": agent.get("_prepared_runtime_error"),
                 }
         if (

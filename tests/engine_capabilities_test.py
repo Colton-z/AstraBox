@@ -439,6 +439,7 @@ def test_assistant_attach_maps_a_physical_cwd_back_to_the_visible_workspace() ->
         runtime_key="assistant-runtime",
         template=SimpleNamespace(),
         engine_kind="assistant",
+        resume_engine_session_key=None,
     )
     attached = planner.plan_assistant_runtime_attach(
         user_id="owner-1",
@@ -449,6 +450,7 @@ def test_assistant_attach_maps_a_physical_cwd_back_to_the_visible_workspace() ->
             f"/home/conversations/{account}/workspace/project"
         ),
         engine_kind="assistant",
+        resume_engine_session_key=None,
     )
 
     assert fresh.cwd == "/workspace"

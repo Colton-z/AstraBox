@@ -298,12 +298,6 @@ def _read_after_recovery(
 
     last = ""
     delay = 3.0
-    # ONE message id across every attempt. A retry that mints a fresh id is a
-    # second input rather than the same one again: the first is already queued
-    # when the box dies, and the engine then consumes them out of order —
-    # `Hermes input consumption is not the FIFO head`, which is the platform
-    # catching the test rather than the other way round.
-    message_id = uuid.uuid4().hex
     for attempt in range(attempts):
         if attempt:
             time.sleep(delay)
@@ -311,6 +305,11 @@ def _read_after_recovery(
             # turns themselves, and a 30s cap spends 105s of it asleep — which
             # times out inside `time.sleep` before the turns get their share.
             delay = min(delay * 2, 15.0)
+        # A new message each attempt, as the console's "Send again" sends one.
+        # A refused message's turn is settled with that refusal, and the same
+        # client_message_id sent again returns the recorded refusal instead of
+        # a new attempt; nothing of the refused message stays queued.
+        message_id = uuid.uuid4().hex
         try:
             resumed = stream_turn(
                 client,

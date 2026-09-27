@@ -22,6 +22,7 @@ import pytest
 from opensandbox.exceptions import SandboxApiException
 
 from astrabox.common.utils.errors import APIError
+from astrabox.common.utils.settings import load_astrabox_settings
 from astrabox.config.release_images import release_image
 from astrabox.core.service.orchestrator.stream_errors import is_sandbox_gone_error
 
@@ -31,8 +32,13 @@ from astrabox.providers.open_sandbox.sandbox import (
     OpenSandboxHandle,
     OpenSandboxSandboxProvider,
 )
+from astrabox.providers.open_sandbox.networking import sandbox_network_wiring
 from astrabox.providers.sandbox_image import AGENT_IMAGE_COMPONENT
-from astrabox.seams.sandbox import SandboxCreateSpec, SandboxNetworkPolicy
+from astrabox.seams.sandbox import (
+    SandboxCreateSpec,
+    SandboxNetworkPolicy,
+    sandbox_installation_id,
+)
 
 _BASE_URL = "http://opensandbox.test:8080"
 
@@ -201,6 +207,9 @@ async def test_create_kwargs_pin_the_activation_design(
         "astrabox.session-id": "sess-1",
         "astrabox.managed-by": "astrabox",
         "astrabox.assignment-id": "assignment-sess-1",
+        # What connect compares, so a box made before an edge moved is refused.
+        "astrabox.network-wiring": sandbox_network_wiring(load_astrabox_settings()),
+        "astrabox.installation": await sandbox_installation_id(),
     }
     assert kwargs["connection_config"] is not None
     assert kwargs["resource"] == {"cpu": "4", "memory": "4Gi"}

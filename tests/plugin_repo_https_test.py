@@ -55,7 +55,7 @@ async def test_public_https_clone_does_not_require_an_ssh_key(monkeypatch: pytes
     monkeypatch.setattr(
         _git_clone,
         "_resolve_git_https_token",
-        lambda *, required=True: None if not required else pytest.fail("public clone required a token"),
+        lambda **_: pytest.fail("a declared HTTPS clone asked for the deployment token"),
     )
 
     await _git_clone._clone_git_repo_in_sandbox(

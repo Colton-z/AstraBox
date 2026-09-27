@@ -2,6 +2,8 @@
  * A turn landing on a process with no resident runtime reattaches the existing
  * live sandbox even when the database lease projection has lapsed. Both
  * provider truth and the durable session projection must advance together.
+ * The dispatch or the expiration watcher may realign the lapsed projection
+ * first; either way the same box answers and the database follows the renewal.
  */
 import { expect, test } from '@playwright/test';
 
@@ -74,6 +76,10 @@ test('dispatch renews a transport-attached session sandbox lease before sending'
   await api.adminEvictRuntime(sessionId);
   const assistantsBefore = await api.assistantCount(sessionId);
   const expiredAt = new Date(Date.now() - 3_600_000).toISOString();
+  // The lapse's RETURNING row is the read-back of the fault. The expiration
+  // watcher realigns a lapsed lease over a live box to the provider's expiry
+  // on its next tick, so a second database read can observe that write
+  // instead of the fault.
   const lapse = lapseSessionSandboxLease(sessionId, sandboxId, expiredAt);
   expect(lapse, 'the fault must update exactly the original live binding').toEqual([
     { session_id: sessionId, sandbox_id: sandboxId, expires_at: expiredAt },
@@ -82,9 +88,6 @@ test('dispatch renews a transport-attached session sandbox lease before sending'
   expect(liveProvider.sandbox_id).toBe(sandboxId);
   expect(String(liveProvider.state).toLowerCase(), 'only the database lease is expired').toBe('running');
   expect(expiryMillis(liveProvider, 'live provider during fault')).toBeGreaterThan(Date.now());
-  const stale = sessionDoc(sessionId);
-  expect(stale).toMatchObject({ session_id: sessionId, sandbox_id: sandboxId, expires_at: expiredAt });
-  expect(expiryMillis(stale!, 'stale database lease')).toBeLessThan(Date.now());
   await test.info().attach('live-box-stale-lease', {
     body: JSON.stringify({
       lapse,
@@ -93,7 +96,7 @@ test('dispatch renews a transport-attached session sandbox lease before sending'
     contentType: 'application/json',
   });
 
-  // No Session GET or explicit recovery between the stale read and this send.
+  // No Session GET or explicit recovery between the fault and this send.
   const attachedTurn = await api.sendTurn(
     sessionId,
     'E2E lease after transport attach: do not use tools; reply briefly.',

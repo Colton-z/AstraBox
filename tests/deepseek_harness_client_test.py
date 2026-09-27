@@ -108,6 +108,26 @@ VENDOR_ARGS: dict[str, frozenset[str]] = {
     # `@Remote('selectModel') selectModel(request: SessionSelectModelRequest)`,
     # from `@deepseek-ai/dsh-api-session-controller`'s generated remote client.
     "session/selectModel": frozenset({"request"}),
+    # `@Remote('modelCatalog') modelCatalog()`, same controller: no arguments.
+    "session/modelCatalog": frozenset(),
+    # `settings.replace(ns, section, expectedRevision)` from
+    # `@deepseek-ai/dsh-api-settings-controller`; `expectedRevision` is
+    # declared `acceptsUndefined`, so the gateway lets it be omitted.
+    "settings/replace": frozenset({"ns", "section"}),
+}
+
+#: The DeepSeek route's advertised catalog when no `models` list is
+#: configured, from `@deepseek-ai/dsh-llm-deepseek`'s README, in the shape
+#: `session/modelCatalog` groups it.
+DEEPSEEK_ROUTE_CATALOG = {
+    "id": "deepseek-official",
+    "name": "DeepSeek",
+    "models": [
+        {"id": "deepseek-flash", "name": "DeepSeek Flash"},
+        {"id": "deepseek-v4-flash-vision-exp", "name": "DeepSeek V4 Flash Vision"},
+        {"id": "deepseek-v4-flash", "name": "DeepSeek V4 Flash"},
+        {"id": "deepseek-v4-pro", "name": "DeepSeek V4 Pro"},
+    ],
 }
 
 #: The fields `SessionSelectModelRequest` declares, transcribed from the same
@@ -146,6 +166,12 @@ class ScriptedLink:
         #: What `session/selectModel` normalizes the request to. ``None``
         #: keeps the vendor's own behaviour of echoing the requested pair.
         self.selected_model: dict[str, Any] | None = None
+        self.model_catalog: Any = {
+            "default": {"provider": "deepseek-official", "model": "deepseek-flash"},
+            "routableProviders": ["deepseek-official"],
+            "groups": [DEEPSEEK_ROUTE_CATALOG],
+            "failures": [],
+        }
         self.permission_options = [
             "read-only",
             "workspace-write",
@@ -187,6 +213,10 @@ class ScriptedLink:
             return {"sessionId": self.created_session_id, "agentPreset": "standard"}
         if method == "commands/execute":
             return self.command_reply
+        if method == "session/modelCatalog":
+            return self.model_catalog
+        if method == "settings/replace":
+            return {"ns": args["ns"], "revision": 1}
         if method == "session/selectModel":
             unknown = sorted(set(request) - SELECT_MODEL_REQUEST_FIELDS)
             assert not unknown, (
@@ -1533,6 +1563,9 @@ async def test_a_preset_the_harness_did_not_take_fails_loudly() -> None:
 
 
 # ── the model the platform chose ─────────────────────────────────────────
+_GATEWAY = {"gateway_base_url": "https://gateway.test/v1", "gateway_key_env": "DEEPSEEK_API_KEY"}
+
+
 @pytest.mark.asyncio
 async def test_the_conversation_is_moved_to_the_platforms_model() -> None:
     """`session/create` has no model field, so this is the only way in.
@@ -1543,12 +1576,15 @@ async def test_the_conversation_is_moved_to_the_platforms_model() -> None:
     it. Without this call every turn asked the DeepSeek adapter's advertised
     default no matter which model the Environment named, and the gateway
     refused a model nobody selected.
+
+    A model the DeepSeek route advertises stays on that route, which carries
+    DeepSeek's own wire fields; nothing else is declared for it.
     """
 
     link = ScriptedLink()
     client = await _bound(link, native=_NATIVE_ID)
 
-    await client.select_model("gpt-5.6-luna")
+    await client.select_model("deepseek-v4-pro", **_GATEWAY)
 
     method, payload, _ = link.calls[-1]
     assert method == "session/selectModel"
@@ -1557,28 +1593,78 @@ async def test_the_conversation_is_moved_to_the_platforms_model() -> None:
             "request": {
                 "sessionId": _NATIVE_ID,
                 "provider": "deepseek-official",
-                "model": "gpt-5.6-luna",
+                "model": "deepseek-v4-pro",
             }
         }
     }
+    assert "settings/replace" not in [name for name, _, _ in link.calls]
 
 
 @pytest.mark.asyncio
-async def test_a_gateway_model_outside_the_harnesss_catalogue_is_selectable() -> None:
-    """The advisory catalogue is not the set of selectable models.
+async def test_a_model_outside_the_deepseek_catalog_runs_on_a_declared_gateway_route() -> None:
+    """Another provider's model must not travel as a DeepSeek request.
 
-    The DeepSeek route advertises its own three models and states that any
-    other id passes through to the wire, which is what lets an AstraBox
-    gateway model be chosen here. A client that checked the catalogue first
-    would refuse exactly the models this platform serves.
+    The DeepSeek route sends a 256,000-token output cap by default; measured
+    against an OpenRouter model with a 262,144-token window, every turn was
+    refused before it started ("you requested about 264739 tokens"). The
+    vendor points OpenAI-compatible gateways at its pi-ai adapter, whose
+    routes a `llm-pi-ai` settings section declares, so the route is declared
+    on the gateway the box already reaches before the model is selected on
+    it.
     """
 
     link = ScriptedLink()
     client = await _bound(link, native=_NATIVE_ID)
+    model = "openai-compatible/nex-agi/nex-n2.5-pro:free"
 
-    await client.select_model("gpt-5.6-luna")
+    await client.select_model(model, **_GATEWAY)
 
-    assert "session/modelCatalog" not in [name for name, _, _ in link.calls]
+    names = [name for name, _, _ in link.calls]
+    assert names.index("settings/replace") < names.index("session/selectModel")
+    _, declared, _ = next(call for call in link.calls if call[0] == "settings/replace")
+    assert declared == {
+        "args": {
+            "ns": "llm-pi-ai",
+            "section": {
+                "providers": {
+                    "astrabox-gateway": {
+                        "displayName": "AstraBox model gateway",
+                        "api": "openai-completions",
+                        "baseURL": "https://gateway.test/v1",
+                        "apiKeyEnv": "DEEPSEEK_API_KEY",
+                        "models": [{"id": model}],
+                    }
+                }
+            },
+        }
+    }
+    _, selected, _ = link.calls[-1]
+    assert selected["args"]["request"]["provider"] == "astrabox-gateway"
+    assert selected["args"]["request"]["model"] == model
+
+
+@pytest.mark.asyncio
+async def test_a_deepseek_model_under_another_route_name_is_not_a_deepseek_route() -> None:
+    """The catalog id is the test, not a substring of the gateway's route name."""
+
+    link = ScriptedLink()
+    client = await _bound(link, native=_NATIVE_ID)
+
+    await client.select_model("openai-compatible/deepseek-flash", **_GATEWAY)
+
+    _, selected, _ = link.calls[-1]
+    assert selected["args"]["request"]["provider"] == "astrabox-gateway"
+
+
+@pytest.mark.asyncio
+async def test_a_harness_without_a_catalog_is_not_guessed_at() -> None:
+    link = ScriptedLink()
+    link.model_catalog = {"error": "no catalog"}
+    client = await _bound(link, native=_NATIVE_ID)
+
+    with pytest.raises(APIError, match="no model catalog"):
+        await client.select_model("deepseek-v4-pro", **_GATEWAY)
+    assert "session/selectModel" not in [name for name, _, _ in link.calls]
 
 
 @pytest.mark.asyncio
@@ -1598,7 +1684,17 @@ async def test_a_selection_that_landed_on_another_model_fails_loudly() -> None:
     client = await _bound(link, native=_NATIVE_ID)
 
     with pytest.raises(APIError, match="installed a different model"):
-        await client.select_model("gpt-5.6-luna")
+        await client.select_model("gpt-5.6-luna", **_GATEWAY)
+
+
+@pytest.mark.asyncio
+async def test_a_selection_on_another_route_fails_loudly() -> None:
+    link = ScriptedLink()
+    link.selected_model = {"provider": "deepseek-official", "model": "gpt-5.6-luna"}
+    client = await _bound(link, native=_NATIVE_ID)
+
+    with pytest.raises(APIError, match="installed a different model"):
+        await client.select_model("gpt-5.6-luna", **_GATEWAY)
 
 
 @pytest.mark.asyncio
@@ -1608,7 +1704,7 @@ async def test_a_reply_without_a_selection_is_not_read_as_success() -> None:
     client = await _bound(link, native=_NATIVE_ID)
 
     with pytest.raises(APIError, match="installed a different model"):
-        await client.select_model("gpt-5.6-luna")
+        await client.select_model("gpt-5.6-luna", **_GATEWAY)
 
 
 # ── failures the harness reports beside the turn ─────────────────────────
@@ -1768,6 +1864,117 @@ async def _park_on(frame: dict[str, Any]) -> tuple[ScriptedLink, DeepSeekHarness
         "interaction.request",
     ]
     return link, client, produced[-1]
+
+
+@pytest.mark.asyncio
+async def test_the_message_after_a_stopped_approval_answers_on_its_own_turn() -> None:
+    """A stop settles a turn parked on an approval on the platform side, and the
+    harness ends that turn on the wire: the denied call, then `turn/end`
+    reason aborted. Those records were queued for the parked turn, which
+    nobody reads again. The next message must end on its own turn's end,
+    not on the aborted one's."""
+
+    link, client, _ = await _park_on(_approval_frame())
+    assert await client.interrupt_active_turn()
+    link.push(_mux_session_event(_NATIVE_ID, "step/end", seq=3, data={"turn": 1, "step": 1}))
+    link.push(
+        _mux_session_event(
+            _NATIVE_ID,
+            "turn/end",
+            seq=4,
+            data={"turn": 1, "reason": {"kind": "aborted", "reason": {"kind": "user"}}},
+        )
+    )
+    # The relay takes them while the parked turn is still the platform's.
+    for _ in range(50):
+        await asyncio.sleep(0)
+
+    # As the platform sends it: the message is delivered, then its turn begins.
+    second = _command(content="second", seq=2)
+    await client.deliver(second)
+    receipt = await client.begin_delivery(second)
+    prompt_rpc_id = [
+        str(rpc_id)
+        for method, _, rpc_id in link.calls
+        if method == "session/prompt" and rpc_id is not None
+    ][-1]
+    link.push(_mux_session_event(_NATIVE_ID, "turn/start", seq=5, data={"turn": 2}))
+    link.push(
+        _mux_session_event(
+            _NATIVE_ID,
+            "user/message",
+            seq=6,
+            data={
+                "content": [{"type": "text", "text": "second"}],
+                "source": {"kind": "user", "rpcId": prompt_rpc_id},
+                "role": "user",
+            },
+            surface_op="append",
+        )
+    )
+    link.push(
+        _mux_session_event(
+            _NATIVE_ID, "turn/end", seq=7, data={"turn": 2, "reason": {"kind": "completed"}}
+        )
+    )
+
+    produced = [frame async for frame in client.iter_turn_events(receipt)]
+
+    assert produced[0]["type"] == "data-input-consumed"
+    assert [frame["type"] for frame in produced].count("result") == 1
+    assert produced[-1]["finishReason"] == "stop"
+
+
+@pytest.mark.asyncio
+async def test_a_message_sent_while_a_turn_streams_is_answered_on_that_turn() -> None:
+    """The platform delivers a message sent during a running turn at once and
+    starts no second turn for it: it joins the running turn's FIFO batch. The
+    harness queues it as the next native turn. The running stream must carry
+    the first turn to its end, then the queued input's consumption and answer,
+    and settle once, on the last turn/end."""
+
+    link = ScriptedLink()
+    client = await _bound(link, native=_NATIVE_ID)
+    first = _command(content="first", seq=1)
+    receipt = await client.begin_delivery(first)
+    first_rpc = [str(rpc) for method, _, rpc in link.calls if method == "session/prompt"][0]
+    link.push(_root_turn_start_frame())
+    link.push(_root_consumption_frame(first_rpc))
+    stream = client.iter_turn_events(receipt)
+    assert (await stream.__anext__())["type"] == "data-input-consumed"
+
+    # Mid-turn, exactly as the accepting request does it: delivery only.
+    second = _command(content="second", seq=2)
+    await client.deliver(second)
+    second_rpc = [str(rpc) for method, _, rpc in link.calls if method == "session/prompt"][-1]
+    assert second_rpc != first_rpc
+    link.push(_root_terminal_frame())
+    link.push(_mux_session_event(_NATIVE_ID, "turn/start", seq=3, data={"turn": 2}))
+    link.push(
+        _mux_session_event(
+            _NATIVE_ID,
+            "user/message",
+            seq=4,
+            data={
+                "content": [{"type": "text", "text": "second"}],
+                "source": {"kind": "user", "rpcId": second_rpc},
+                "role": "user",
+            },
+            surface_op="append",
+        )
+    )
+    link.push(
+        _mux_session_event(
+            _NATIVE_ID, "turn/end", seq=5, data={"turn": 2, "reason": {"kind": "completed"}}
+        )
+    )
+
+    rest = [frame async for frame in stream]
+
+    consumed = [frame["data"]["inputId"] for frame in rest if frame["type"] == "data-input-consumed"]
+    assert consumed == [second.input_id]
+    assert [frame["type"] for frame in rest].count("result") == 1
+    assert rest[-1]["type"] == "result" and rest[-1]["finishReason"] == "stop"
 
 
 @pytest.mark.asyncio

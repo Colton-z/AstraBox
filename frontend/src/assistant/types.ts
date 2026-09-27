@@ -34,8 +34,22 @@ export interface AssistantRecord {
   engine_kind: string;
   environment_name: string;
   permission_mode_default: string;
+  system?: string | null;
   workspace_state?: AssistantWorkspaceState | string;
   current_sandbox_id?: string | null;
   created_at?: string;
   updated_at?: string;
+}
+
+/**
+ * One page of the caller's Assistants, the most recently edited first. `total`
+ * and `ready` count every Assistant the caller owns, whatever `q` and `status`
+ * narrowed, and come with the first page only.
+ */
+export interface AssistantListPage {
+  assistants: AssistantRecord[];
+  has_more: boolean;
+  next_cursor?: string | null;
+  total?: number;
+  ready?: number;
 }

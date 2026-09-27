@@ -32,6 +32,7 @@ import astrabox.seams.sandbox as sandbox_seam
 from astrabox.seams.sandbox import (
     SANDBOX_LIFECYCLE_PROBE_FAILED,
     SANDBOX_LIFECYCLE_PROBE_NOT_FOUND,
+    SANDBOX_INSTALLATION_METADATA_KEY,
     SANDBOX_LIFECYCLE_PROBE_OK,
     SANDBOX_MANAGED_BY_METADATA_KEY,
     SANDBOX_MANAGED_BY_METADATA_VALUE,
@@ -151,10 +152,19 @@ def test_an_unconfirmed_destruction_hands_back_the_id_that_must_survive() -> Non
 # ── 3. ownership comes from a fact the box carries ───────────────────────────
 
 
-def _metadata(session_id: str, *, managed_by: str = SANDBOX_MANAGED_BY_METADATA_VALUE) -> dict[str, Any]:
+_INSTALLATION = "this-installation"
+
+
+def _metadata(
+    session_id: str,
+    *,
+    managed_by: str = SANDBOX_MANAGED_BY_METADATA_VALUE,
+    installation: str | None = _INSTALLATION,
+) -> dict[str, Any]:
     return {
         SANDBOX_SESSION_ID_METADATA_KEY: session_id,
         SANDBOX_MANAGED_BY_METADATA_KEY: managed_by,
+        **({SANDBOX_INSTALLATION_METADATA_KEY: installation} if installation else {}),
     }
 
 
@@ -166,6 +176,8 @@ def _claim(metadata: dict[str, Any] | None, *, expected: str | None) -> SandboxC
         session_id_key=SANDBOX_SESSION_ID_METADATA_KEY,
         managed_by_key=SANDBOX_MANAGED_BY_METADATA_KEY,
         managed_by_value=SANDBOX_MANAGED_BY_METADATA_VALUE,
+        installation_key=SANDBOX_INSTALLATION_METADATA_KEY,
+        installation_value=_INSTALLATION,
     )
 
 
@@ -185,6 +197,19 @@ def test_a_box_naming_another_deployment_is_foreign_even_on_a_matching_session()
     """Two deployments sharing a control plane can mint the same session id."""
     claim = _claim(_metadata("sess-1", managed_by="someone-else"), expected="sess-1")
     assert claim.verdict == SANDBOX_CLAIM_FOREIGN
+
+
+def test_a_box_of_another_astrabox_installation_is_foreign_on_a_matching_session() -> None:
+    """Two installations on one Docker daemon both write managed-by=astrabox."""
+    claim = _claim(_metadata("sess-1", installation="other-installation"), expected="sess-1")
+    assert claim.verdict == SANDBOX_CLAIM_FOREIGN
+    assert not claim.may_destroy
+
+
+def test_an_astrabox_box_naming_no_installation_is_unknown() -> None:
+    claim = _claim(_metadata("sess-1", installation=None), expected="sess-1")
+    assert claim.verdict == SANDBOX_CLAIM_UNKNOWN
+    assert not claim.may_destroy
 
 
 def test_a_control_plane_that_did_not_answer_is_unknown_not_unclaimed() -> None:

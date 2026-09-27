@@ -79,7 +79,8 @@ class FakeAppServer:
 
 async def _link(port: int) -> CodexAppServerLink:
     link = CodexAppServerLink(
-        endpoint=ResolvedExecdEndpoint(origin=f"http://127.0.0.1:{port}", headers={})
+        endpoint=ResolvedExecdEndpoint(origin=f"http://127.0.0.1:{port}", headers={}),
+        forward_token="forward-token",
     )
     await link._attach()
     return link

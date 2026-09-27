@@ -2204,13 +2204,26 @@ class _WsHostLink:
 
 
 class RunnerWsServer:
-    """Envelope endpoint for one prepared slot and its eventual Session."""
+    """Envelope endpoint for one prepared slot and its eventual Session.
+
+    ``activation_token_file`` is where the platform writes this runner's
+    credential before its first prepare. The runner starts before any
+    credential exists — a pooled box is created from the image alone — so it
+    reads the file when a prepare arrives, admits the prepare only if the frame
+    carries the same value, and refuses every prepare while the file is absent.
+    Without that, the first peer to reach an empty runner installs its own
+    token and gets an engine in a box that later serves a user.
+    """
 
     def __init__(self, *, host: str = "0.0.0.0", port: int = 8000,
-                 session_factory: SessionFactory) -> None:
+                 session_factory: SessionFactory,
+                 activation_token_file: str) -> None:
+        if not str(activation_token_file or "").strip():
+            raise ValueError("the runner requires the path of its credential file")
         self._host = host
         self._port = port
         self._session_factory = session_factory
+        self._activation_token_file = activation_token_file
         self.session: RunnerSession | None = None
         self._activation_token: str | None = None
         self._server: Any = None
@@ -2252,6 +2265,42 @@ class RunnerWsServer:
             self.session = None
         self._activation_token = None
 
+    def _require_delivered_token(self, opening: dict[str, Any]) -> str:
+        """The prepare's token, if it is the one the platform delivered.
+
+        Read on every prepare rather than at start, because the file arrives
+        after the runner starts. Absent or empty, it refuses at once: a runner
+        that waited for it would hold the host's prepare open with no end.
+        """
+        try:
+            with open(self._activation_token_file, encoding="utf-8") as handle:
+                expected = handle.read().strip()
+        except OSError:
+            expected = ""
+        if not expected:
+            raise RunnerProtocolError(
+                "prepare refused: the platform has not delivered this runner's credential"
+            )
+        presented = str(opening.get("activation_token") or "").strip()
+        if not presented or not secrets.compare_digest(presented, expected):
+            raise RunnerProtocolError("prepare token mismatch")
+        return presented
+
+    def _require_activation_token(self, opening: dict[str, Any], op: str) -> None:
+        """Refuse an opening that does not carry the token prepare installed.
+
+        The host derives the token from the deployment secret and this box's
+        identity, so it can present it again on every later connection
+        without keeping it; the runner compares against the value it admitted
+        at prepare, which matched the platform's file.
+        """
+        presented = str(opening.get("activation_token") or "").strip()
+        expected = str(self._activation_token or "")
+        if not presented or not expected or not secrets.compare_digest(
+            presented, expected
+        ):
+            raise RunnerProtocolError(f"{op} token mismatch")
+
     async def _handle(self, ws: Any) -> None:
         link = _WsHostLink(ws)
         try:
@@ -2282,6 +2331,7 @@ class RunnerWsServer:
             engine_contract,
         )
         if op == "prepare":
+            activation_token = self._require_delivered_token(opening)
             if self.session is not None:
                 raise RunnerProtocolError(
                     "prepare on a non-empty runner slot — attach instead"
@@ -2289,11 +2339,6 @@ class RunnerWsServer:
             slot_id = str(opening.get("slot_id") or "").strip()
             if not slot_id:
                 raise RunnerProtocolError("prepare missing slot_id")
-            activation_token = str(
-                opening.get("activation_token") or ""
-            ).strip()
-            if not activation_token:
-                raise RunnerProtocolError("prepare missing activation_token")
             session = self._session_factory(opening, link)
             self.session = session
             self._activation_token = activation_token
@@ -2325,6 +2370,7 @@ class RunnerWsServer:
             session = self.session
             if session is None or not session.is_prepared:
                 raise RunnerProtocolError("activate with no prepared slot")
+            self._require_activation_token(opening, op)
             if session.is_active:
                 raise RunnerProtocolError(
                     "activate on an active runner — attach instead"
@@ -2337,14 +2383,6 @@ class RunnerWsServer:
                     "activate slot mismatch: runner holds "
                     f"{session.slot_id!r}, host asked for {requested_slot!r}"
                 )
-            activation_token = str(
-                opening.get("activation_token") or ""
-            ).strip()
-            expected_token = str(self._activation_token or "")
-            if not activation_token or not secrets.compare_digest(
-                activation_token, expected_token
-            ):
-                raise RunnerProtocolError("activate token mismatch")
             session_id = str(opening.get("session_id") or "").strip()
             if not session_id:
                 raise RunnerProtocolError("activate missing session_id")
@@ -2383,17 +2421,19 @@ class RunnerWsServer:
         elif op == "attach":
             if self.session is None or not self.session.is_active:
                 raise RunnerProtocolError("attach with no active session")
+            # The credential, before anything the runner holds is compared or
+            # named. The session id is not a secret — the API surfaces it, and
+            # the mismatch message below names the held one — while this port
+            # answers any peer that can route to it: sibling conversations
+            # share the box network namespace, and on Kubernetes any pod
+            # reaches a sandbox Pod that has no ingress policy.
+            self._require_activation_token(opening, op)
             requested = str(opening.get("session_id") or "").strip()
             if not requested:
                 # Absence is refused separately because an empty string is
                 # falsy: a mismatch comparison guarded on the name being
                 # present does not run for an unnamed attach, and the newest
-                # connection wins the link unconditionally. Under shared
-                # tenancy that path needs no secret — sibling conversations
-                # share the box network namespace and the runner port is
-                # derived from the uid. The name is not a credential; the
-                # hello reply carries it back. Requiring it is the difference
-                # between needing the session id and needing nothing.
+                # connection would win the link unconditionally.
                 raise RunnerProtocolError("attach missing session_id")
             if requested != self.session.session_id:
                 raise RunnerProtocolError(
@@ -3184,9 +3224,16 @@ async def main() -> None:
     import signal
 
     logging.basicConfig(level=logging.INFO)
+    token_file = os.environ.get("ASTRABOX_RUNNER_TOKEN_FILE", "").strip()
+    if not token_file:
+        raise SystemExit(
+            "ASTRABOX_RUNNER_TOKEN_FILE is required: the runner admits a prepare "
+            "only with the credential the platform writes there"
+        )
     server = RunnerWsServer(
         port=int(os.environ.get("ASTRABOX_RUNNER_PORT", "8000")),
         session_factory=_real_session_factory,
+        activation_token_file=token_file,
     )
     await server.start()
     logger.info("sandbox runner listening on :%d (%s)", server.port, RUNNER_PROTOCOL)

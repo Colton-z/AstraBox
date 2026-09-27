@@ -58,6 +58,7 @@ test('a share link serves a read-only transcript until it is revoked', async ({ 
       name: `__e2e_share_${RUN_ID}`,
       model,
       environment_name: environmentName,
+      prewarm_enabled: false,
     });
     agentId = String(agent.agent_id || '');
     const created = await api.startConversation(agentId);

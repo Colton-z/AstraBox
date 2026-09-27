@@ -10,6 +10,7 @@ for the adapter's durable fold.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
@@ -22,7 +23,10 @@ from astrabox.core.service.orchestrator.engine.codex_client import (
     CodexEngineClient,
     _CodexRelaySeam,
 )
-from astrabox.core.service.orchestrator.engine.resident_relay import CountedRecord
+from astrabox.core.service.orchestrator.engine.resident_relay import (
+    CountedRecord,
+    ResidentRelay,
+)
 
 ROOT = "01a086fe-cd7e-77c1-b3fa-153cd0f7261d"
 CHILD = "01a0872e-8943-7182-b698-ad8a7468dc40"
@@ -238,3 +242,102 @@ def test_fold_thread_ignores_a_thread_that_is_not_this_conversations_child() -> 
     projector = CodexChildResources(root_thread_id="another-root", call=_no_call)
 
     assert projector.fold_thread(_thread("inProgress")) == []
+
+
+class _Journal:
+    """The engine event sink: what the idle relay journals for the durable fold."""
+
+    def __init__(self) -> None:
+        self.rows: list[dict[str, Any]] = []
+
+    async def persist_event(
+        self, *, engine_kind: str, causation_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        self.rows.append({"causation_id": causation_id, **payload})
+        return {}
+
+
+@pytest.mark.asyncio
+async def test_a_child_found_during_a_turn_keeps_its_idle_tool_call_in_the_durable_fold() -> None:
+    """A background child is found while the platform turn runs, and the turn
+    persists that child's facts itself. After the turn, the child's status push
+    changes nothing, and then its command starts. The durable fold learns a
+    child only from a thread document. So the discovery read has to reach the
+    journal, or the running command is missing from the child's transcript
+    until the child ends."""
+
+    identity = {**_thread("inProgress"), "turns": []}
+    link = _Link(identity, identity)
+    client = _client(link)
+    # The platform turn's own path: the spawn announcement on the root thread.
+    discovered = await client._child_frames(
+        _notification(
+            "item/completed",
+            ROOT,
+            turnId="turn-9",
+            item={
+                "type": "collabAgentToolCall",
+                "tool": "spawnAgent",
+                "id": "exec-1",
+                "status": "completed",
+                "senderThreadId": ROOT,
+                "receiverThreadIds": [CHILD],
+            },
+        )
+    )
+    assert [f["data"]["event"] for f in discovered] == ["opened"]
+
+    wire: asyncio.Queue[CountedRecord] = asyncio.Queue()
+    journal = _Journal()
+
+    async def _floor() -> int:
+        return 0
+
+    async def _send(payload: dict[str, Any]) -> None:
+        raise AssertionError(f"nothing is owed: {payload}")
+
+    relay = ResidentRelay(
+        seam=_CodexRelaySeam(client),
+        session_id="sess-1",
+        engine_session_key=None,
+        next_record=wire.get,
+        send_command=_send,
+        current_sequence=_floor,
+        resident_output_sink=None,
+        event_sink=journal,
+    )
+    command = {
+        "type": "commandExecution",
+        "id": "call-1",
+        "command": "/bin/bash -lc 'sleep 90'",
+        "cwd": "/workspace",
+        "status": "inProgress",
+    }
+    relay.start()
+    try:
+        await wire.put(CountedRecord(sequence=20, record=_notification(
+            "thread/status/changed", CHILD, status={"type": "active"},
+        )))
+        await wire.put(CountedRecord(sequence=21, record=_notification(
+            "item/started", CHILD, turnId="t1", item=command,
+        )))
+        for _ in range(50):
+            await asyncio.sleep(0)
+            if any(row["runner_sequence"] == 21 for row in journal.rows):
+                break
+    finally:
+        await relay.stop()
+    assert relay.failure is None
+
+    facts = CodexEngineAdapter().durable_child_resource_facts(
+        [row["message"] for row in journal.rows]
+    )
+    tool_calls = [
+        block
+        for _index, fact in facts
+        for block in fact.as_frame()["data"].get("content") or []
+        if block.get("type") == "tool_use"
+    ]
+    assert [(block["id"], block["name"]) for block in tool_calls] == [
+        ("call-1", "commandExecution")
+    ]

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """The outward hop, opened only once the app-server behind it can answer.
 
-Two jobs, and the second one is here because of a defect this image cannot
-reach.
+Three jobs. The second is here because of a defect this image cannot reach,
+and the third because this port is reachable by more than the platform.
 
 **Publish the socket on a port, once the server is really up.** The platform's
 readiness gate is a TCP connect to this port from inside the box, and that is
@@ -30,11 +30,26 @@ already caught for `max_size` ("proxy should not cap payloads"). Stripping the
 offer here is a byte forwarder declining to negotiate on behalf of a server
 that has no opinion it can express. It is removed from the request only;
 everything after the header block is relayed untouched.
+
+**Admit only the platform.** The unix socket behind this hop is guarded by
+file permissions, but this port answers anyone who can route to the box:
+sibling conversations under the shared tenancy share its network namespace,
+and on Kubernetes any pod can reach a sandbox Pod, which OpenSandbox gives no
+ingress policy. So every upgrade must carry `X-AstraBox-Codex-Token` equal to
+the credential the platform wrote into this account's home
+(`.astrabox-codex-forward-token`, owner-only), compared in constant time
+before the upstream socket is even opened; the header is then removed so the
+server never sees it. The file is read on each connection because a pooled
+box starts this program before the platform has handed it a credential: until
+the file exists, nothing is admitted. The platform derives the value from its
+own secret and this seat's identity, so a peer that knows every platform id
+still cannot produce it.
 """
 
 from __future__ import annotations
 
 import asyncio
+import hmac
 import os
 import sys
 import time
@@ -45,8 +60,15 @@ LISTEN_PORT = int(os.environ.get("ASTRABOX_CODEX_LISTEN_PORT", "44790"))
 # never cut off here; supervisord restarts this program if it is exceeded.
 DEADLINE_SECONDS = float(os.environ.get("ASTRABOX_CODEX_UPSTREAM_WAIT_SECONDS", "120"))
 
-_STRIPPED_HEADERS = (b"sec-websocket-extensions",)
+# The platform writes the credential into the serving account's home; both
+# launchers set HOME to that home.
+TOKEN_FILE = os.path.join(os.environ.get("HOME", ""), ".astrabox-codex-forward-token")
+_TOKEN_HEADER = b"x-astrabox-codex-token"
+_STRIPPED_HEADERS = (b"sec-websocket-extensions", _TOKEN_HEADER)
 _MAX_HEADER_BYTES = 64 * 1024
+_REFUSED = (
+    b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+)
 
 
 async def _upstream() -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
@@ -75,8 +97,38 @@ async def _server_answers() -> bool:
         writer.close()
 
 
-def _strip_extension_offer(head: bytes) -> bytes:
-    """Return the header block without the extension offer the server hates."""
+def _expected_token() -> bytes | None:
+    """The credential the platform delivered, or None until it has."""
+
+    try:
+        with open(TOKEN_FILE, "rb") as handle:
+            token = handle.read().strip()
+    except OSError:
+        return None
+    return token or None
+
+
+def _presented_token(head: bytes) -> bytes | None:
+    """The credential header's value, or None when it is absent or repeated."""
+
+    values = [
+        line.split(b":", 1)[1].strip()
+        for line in head.split(b"\r\n")
+        if line.lower().startswith(_TOKEN_HEADER + b":")
+    ]
+    return values[0] if len(values) == 1 else None
+
+
+def _admitted(head: bytes) -> bool:
+    expected = _expected_token()
+    presented = _presented_token(head)
+    if expected is None or presented is None:
+        return False
+    return hmac.compare_digest(presented, expected)
+
+
+def _forwarded_head(head: bytes) -> bytes:
+    """The header block the server receives: no extension offer, no credential."""
 
     lines = head.split(b"\r\n")
     kept = [
@@ -116,12 +168,20 @@ async def _handle(client_reader: asyncio.StreamReader, client_writer: asyncio.St
     if len(head) > _MAX_HEADER_BYTES:
         client_writer.close()
         return
+    if not _admitted(head):
+        try:
+            client_writer.write(_REFUSED)
+            await client_writer.drain()
+        except OSError:
+            pass
+        client_writer.close()
+        return
     try:
         upstream_reader, upstream_writer = await _upstream()
     except OSError:
         client_writer.close()
         return
-    upstream_writer.write(_strip_extension_offer(head))
+    upstream_writer.write(_forwarded_head(head))
     await upstream_writer.drain()
     await asyncio.gather(
         _pump(client_reader, upstream_writer),

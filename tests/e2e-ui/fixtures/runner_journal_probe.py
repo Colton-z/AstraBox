@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import json
+import os
 import sys
 from copy import deepcopy
 from pathlib import Path
@@ -41,6 +42,7 @@ def run_observed(image_path: str, threshold: int, evidence_path: Path) -> None:
                 evidence.write(json.dumps({
                     "session_id": sender._session_id,
                     "engine_requirements": requirements,
+                    "activation_token_file": os.environ["ASTRABOX_RUNNER_TOKEN_FILE"],
                     "result_sequence": checkpoint.live.value,
                     "store_sequence": checkpoint.store.value,
                     "last_sequence": sender.last_seq,
@@ -62,6 +64,9 @@ async def probe(port: int, session_id: str, evidence_path: Path) -> None:
     if not observations or any(row["session_id"] != session_id for row in observations):
         raise RuntimeError("compaction evidence must belong to the requested Session")
     last = observations[-1]
+    activation_token = Path(last["activation_token_file"]).read_text().strip()
+    if not activation_token:
+        raise RuntimeError("the runner's delivered credential is empty")
 
     async def read(after_sequence: int) -> dict[str, Any]:
         async with asyncio.timeout(10), connect(f"ws://127.0.0.1:{port}") as ws:
@@ -69,6 +74,7 @@ async def probe(port: int, session_id: str, evidence_path: Path) -> None:
                 "op": "attach", "session_id": session_id,
                 "last_seen_seq": after_sequence,
                 "engine_requirements": last["engine_requirements"],
+                "activation_token": activation_token,
             }))
             # _handle dispatches this read only after _open_session finishes
             # replay. Its response bounds the whole replay, including duplicate

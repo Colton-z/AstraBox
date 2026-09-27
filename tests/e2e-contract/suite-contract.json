@@ -23,7 +23,7 @@
         ]
       }
     },
-    "tests": {"no_volume_core": 496, "persistent_files": 23}
+    "tests": {"no_volume_core": 500, "persistent_files": 23}
   },
   "max_test_seconds": 180,
   "model_conditional_skips": [
@@ -33,9 +33,9 @@
   ],
   "playwright": {
     "exclusive": {
-      "files": 141,
-      "parallel_files": 94,
-      "parallel_tests": 144,
+      "files": 138,
+      "parallel_files": 91,
+      "parallel_tests": 138,
       "serial_files": [
         "specs/a-turn-that-ends-in-an-error-is-not-missing-its-proof.exclusive.spec.ts",
         "specs/admin-native-transcript-batch-export.exclusive.spec.ts",
@@ -87,24 +87,29 @@
       ],
       "serial_tests": 74,
       "serial_workers": 1,
-      "tests": 218,
+      "tests": 212,
       "workers": 5
     },
     "parallel": {
-      "files": 35,
-      "tests": 66,
+      "files": 36,
+      "tests": 67,
       "workers": 5
     }
   },
   "python": {
     "assistant": {
       "parallel_node_ids": [
+        "tests/e2e/test_assistant_mcp_change.py::test_an_mcp_server_added_to_a_running_assistant_is_reachable",
+        "tests/e2e/test_assistant_mcp_change.py::test_a_conversation_whose_setup_fails_says_why",
+        "tests/e2e/test_assistant_system_prompt.py::test_the_system_prompt_is_the_assistants_identity",
+        "tests/e2e/test_assistant_system_prompt.py::test_clearing_the_system_prompt_restores_the_programs_identity",
+        "tests/e2e/test_assistant_system_prompt.py::test_editing_the_assistant_never_ends_a_reply_in_progress",
         "tests/e2e/test_conversation_end.py::test_assistant_answers_a_second_message_in_the_same_conversation",
         "tests/e2e/test_conversation_end.py::test_assistant_conversation_end_starts_fresh_context_on_same_workspace",
         "tests/e2e/test_durable_workspace.py::test_an_assistant_remembers_its_conversations_after_its_box_is_destroyed"
       ],
       "restart_node_ids": [],
-      "tests": 3,
+      "tests": 8,
       "workers": 1
     },
     "main": {
@@ -114,7 +119,7 @@
         "codex",
         "pi"
       ],
-      "matrix_tests": 232,
+      "matrix_tests": 236,
       "parallel_node_ids": [
         "tests/e2e/test_background_subagent.py::test_background_subagent_surfaces_on_stream_and_stays_sendable",
         "tests/e2e/test_background_subagent.py::test_background_subagent_stop_is_accepted",
@@ -151,6 +156,7 @@
         "tests/e2e/test_messages.py::test_messages_transcript_has_user_and_assistant",
         "tests/e2e/test_native_config.py::test_native_json_configuration_reaches_supplier",
         "tests/e2e/test_permission_mode.py::test_accept_edits_writes_without_a_prompt",
+        "tests/e2e/test_prepared_runtime_activation.py::test_an_agent_created_without_a_choice_starts_from_a_prepared_box",
         "tests/e2e/test_prepared_runtime_activation.py::test_claim_activates_the_already_prepared_engine[conversation]",
         "tests/e2e/test_prepared_runtime_activation.py::test_claim_activates_the_already_prepared_engine[agent]",
         "tests/e2e/test_prepared_runtime_activation.py::test_prepared_runtime_resumes_native_history_without_disrupting_sibling[conversation]",
@@ -177,11 +183,11 @@
         "tests/e2e/test_reattach.py::test_sandbox_and_session_survive_backend_restart",
         "tests/e2e/test_reattach.py::test_reattach_turn_reuses_sandbox_without_rebuild"
       ],
-      "tests": 58,
+      "tests": 59,
       "workers": 5
     },
-    "matrix_tests": 235,
-    "tests": 61
+    "matrix_tests": 244,
+    "tests": 67
   },
   "suites": {
     "audit": {

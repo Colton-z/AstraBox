@@ -93,6 +93,11 @@ SESSIONS_ROOT = os.environ.get("ASTRABOX_TRANSCRIPT_MIRROR_ROOT", "").strip()
 SESSIONS_GLOB = os.environ.get("ASTRABOX_TRANSCRIPT_MIRROR_GLOB", "").strip()
 SUBPATH_PREFIX = os.environ.get("ASTRABOX_TRANSCRIPT_MIRROR_NAMESPACE", "").strip()
 
+#: Suffix of the directory beside SESSIONS_ROOT where the platform's restore
+#: leaves one record per log it put back. Named on both sides of the box: here,
+#: and in `engine/transcript_mirror.py` (``restore_record_path``).
+RESTORE_RECORD_DIR_SUFFIX = ".astrabox-restored"
+
 
 def log(message: str) -> None:
     print(f"astrabox-transcript-mirror: {message}", flush=True)
@@ -186,8 +191,52 @@ class Sender:
         self._sequences[scope] = sequence
 
 
+def restore_record_path(subpath: str) -> Path:
+    """Where the platform leaves the restore record for ``subpath``."""
+
+    digest = hashlib.sha256(subpath.encode("utf-8")).hexdigest()
+    return Path(SESSIONS_ROOT.rstrip("/") + RESTORE_RECORD_DIR_SUFFIX) / f"{digest}.json"
+
+
+def read_restore_record(path: Path, subpath: str) -> dict | None:
+    """The record a restore wrote for this log, or None when nothing was restored.
+
+    A record that exists but cannot be read is refused rather than ignored:
+    ignoring it would send the whole restored log to the store a second time.
+    """
+
+    try:
+        raw = json.loads(path.read_text("utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"unreadable restore record {path}: {exc}") from exc
+    size = raw.get("bytes") if isinstance(raw, dict) else None
+    epoch = str((raw or {}).get("epoch") or "").strip() if isinstance(raw, dict) else ""
+    if (
+        not isinstance(raw, dict)
+        or raw.get("subpath") != subpath
+        or isinstance(size, bool)
+        or not isinstance(size, int)
+        or size < 0
+        or not epoch
+    ):
+        raise RuntimeError(f"restore record {path} does not describe {subpath}")
+    return {"bytes": size, "epoch": epoch}
+
+
 class FileMirror:
-    """One rollout file's position, and the batch that may be in flight."""
+    """One rollout file's position, and the batch that may be in flight.
+
+    A log the platform restored into this box already IS the store's content.
+    Its restore record says how long it was and names an epoch; the mirror
+    starts at that length and names its batches under the epoch. A byte range
+    counts this box's bytes, and a replacement box writes the same entries with
+    a different byte layout, so a bare range could name a batch an earlier box
+    committed with other lines. A record with an epoch the state has not seen is
+    a newer restore of the file and replaces the state: the store, not this
+    box's earlier position, is what the restored bytes were read from.
+    """
 
     def __init__(self, path: Path, subpath: str, state_path: Path) -> None:
         self.path = path
@@ -196,6 +245,14 @@ class FileMirror:
         state = self._read_state()
         self.offset: int = int(state.get("offset") or 0)
         self.pending: dict | None = state.get("pending")
+        self.epoch: str | None = str(state.get("epoch") or "").strip() or None
+        record = read_restore_record(restore_record_path(subpath), subpath)
+        if record is not None and record["epoch"] != self.epoch:
+            self.offset = record["bytes"]
+            self.pending = None
+            self.epoch = record["epoch"]
+            self._write_state()
+            log(f"resuming restored {path} at offset {self.offset}")
         self._missing_reported = False
 
     def _read_state(self) -> dict:
@@ -210,7 +267,7 @@ class FileMirror:
         """Durable before it is believed: the offset is this box's only record
         of what the store already holds, and a torn write would re-send or skip.
         """
-        payload = {"offset": self.offset, "pending": self.pending}
+        payload = {"offset": self.offset, "pending": self.pending, "epoch": self.epoch}
         tmp = self._state_path.with_suffix(".tmp")
         with open(tmp, "w", encoding="utf-8") as handle:
             handle.write(json.dumps(payload))
@@ -274,10 +331,13 @@ class FileMirror:
             return 0
         end = self.offset + cut + 1
 
+        batch = f"{self.offset}-{end}"
         self.pending = {
             "start": self.offset,
             "end": end,
-            "append_id": f"{self.subpath}:{self.offset}-{end}",
+            "append_id": (
+                f"{self.subpath}@{self.epoch}:{batch}" if self.epoch else f"{self.subpath}:{batch}"
+            ),
         }
         self._write_state()
         return self.pump(sender)

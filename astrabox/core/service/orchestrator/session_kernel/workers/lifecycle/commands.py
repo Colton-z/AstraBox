@@ -497,6 +497,7 @@ class _LifecycleCommandsMixin:
             failure_phase="sandbox_reclaimed",
             error_text="sandbox reclaimed while awaiting interaction",
             causation=f"reclaim-settle:{session_id}:{turn_id}",
+            user_stop=False,
         )
 
     async def _assert_conversation_safe_to_take_offline(

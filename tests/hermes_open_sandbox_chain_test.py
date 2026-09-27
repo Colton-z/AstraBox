@@ -44,6 +44,7 @@ from astrabox.providers.open_sandbox.sandbox import (
     OpenSandboxHandle,
     OpenSandboxSandboxProvider,
 )
+from astrabox.providers.sandbox_image import SANDBOX_SELF_DESCRIPTION
 from astrabox.core.service.orchestrator.runtime.pty_terminal import EXECD_PORT
 from astrabox.seams.model import ResolvedModelAccess
 from astrabox.seams.storage import StorageMountPlan
@@ -423,7 +424,9 @@ def _bind_real_backend(
     async def backing_mounts(_assignment: str, mounts: Any) -> StorageMountPlan:
         return StorageMountPlan("backing-volume", mounts)
 
-    async def routed_mounts(_assignment: str, plan: StorageMountPlan) -> StorageMountPlan:
+    async def routed_mounts(
+        _assignment: str, plan: StorageMountPlan, **_kwargs: Any
+    ) -> StorageMountPlan:
         return StorageMountPlan("astrabox-workspaces", plan.mounts)
 
     monkeypatch.setattr(
@@ -601,10 +604,12 @@ async def test_assistant_restore_provisions_a_real_box_and_keeps_resume_key(
     (body,) = wire.create_bodies
     assert body["image"]["uri"] == "astrabox/sandbox-hermes:latest"
     assert body["entrypoint"] == ["/opt/gem/run.sh"]
-    assert body["env"] == {
-        "IS_SANDBOX": "1",
-        "DISABLE_BROWSER": "true",
-        "BROWSER_DOWNLOAD_DIR": "/tmp/astrabox-browser-downloads",
+    box_env = dict(body["env"])
+    # The box carries its per-box AIO :8080 gateway key, derived at create from
+    # the deployment secret and the assignment (not a fixed value).
+    assert box_env.pop("SANDBOX_API_KEY", "")
+    assert box_env == {
+        **SANDBOX_SELF_DESCRIPTION,
         "ASTRABOX_HERMES_AUTOSTART": "false",
     }
     assert body["metadata"]["astrabox.session-id"] == "session-1"

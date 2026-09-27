@@ -5,10 +5,89 @@ from __future__ import annotations
 import uuid
 from typing import Any, Protocol
 
+from astrabox.common.utils.errors import APIError
 from astrabox.core.service.orchestrator.engine.base import EngineInputCommand
 from astrabox.core.service.orchestrator.engine.input_content import (
     read_engine_content_blocks,
 )
+
+
+class InputDeliveryRefused(APIError):
+    """A delivery could not give the requested input a runtime to reach.
+
+    Raised where the delivery attaches its runtime. Whoever reports this to the
+    caller settles the input's turn first, so the refusal is the message's only
+    outcome: a turn left open would be delivered again by its worker.
+    """
+
+
+class InputAlreadySettled(APIError):
+    """The input's turn ended before the input reached an engine.
+
+    Carries the outcome recorded when that turn was settled, so every later
+    delivery of the same command (its worker's, or the caller sending the same
+    ``client_message_id`` again) answers what the first caller was told.
+    """
+
+
+async def settled_input_outcome(
+    journal_repo: Any,
+    session_id: str,
+    command_id: str,
+) -> InputAlreadySettled | None:
+    """The recorded outcome of a command whose turn ended before delivery.
+
+    A ``turn.failed`` with ``failure_phase == "pre_dispatch"`` is the settlement
+    the FIFO projection already reads as "never owed". When the settlement
+    recorded the refusal its caller received, that refusal is returned as it
+    was; otherwise the outcome is ``INPUT_NOT_DELIVERED`` with the recorded
+    reason.
+    """
+
+    normalized_command_id = str(command_id or "").strip()
+    if not normalized_command_id:
+        return None
+    failures = await journal_repo.list_events(
+        session_id,
+        after_seq=0,
+        event_type="turn.failed",
+        causation_id=normalized_command_id,
+        limit=1,
+    )
+    failure = failures[0] if failures else None
+    payload = (failure or {}).get("payload")
+    if not isinstance(payload, dict):
+        return None
+    if str(payload.get("failure_phase") or "").strip() != "pre_dispatch":
+        return None
+    refusal = payload.get("refusal")
+    if isinstance(refusal, dict) and str(refusal.get("code") or "").strip():
+        return InputAlreadySettled(
+            code=str(refusal["code"]),
+            message=str(refusal.get("message") or ""),
+            status_code=int(refusal.get("status_code") or 409),
+            data=refusal.get("data"),
+        )
+    reason = str(payload.get("error_text") or "").strip() or "its turn ended"
+    return InputAlreadySettled(
+        code="INPUT_NOT_DELIVERED",
+        message=(
+            f"this message was not delivered ({reason}); send a new message "
+            "to continue"
+        ),
+        status_code=409,
+    )
+
+
+def refusal_record(refusal: APIError) -> dict[str, Any]:
+    """The part of a refusal a settlement records, for later deliveries to return."""
+
+    return {
+        "code": refusal.code,
+        "message": refusal.message,
+        "status_code": refusal.status_code,
+        "data": refusal.data,
+    }
 
 
 def input_response_message_id(input_id: str) -> str:

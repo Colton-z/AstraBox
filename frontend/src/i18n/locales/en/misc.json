@@ -47,6 +47,8 @@
     "queue_waiting": "Queued",
     "retry": "Retry",
     "retry_queued": "Retry queued message",
+    "send_again": "Send again",
+    "send_again_queued": "Send this message again as a new message",
     "retry_disabled": "This session can't be retried",
     "remove_queued": "Remove queued message",
     "blocking": "Blocking",
@@ -331,7 +333,7 @@
       },
       "prewarm_enabled": {
         "label": "Keep a sandbox ready",
-        "help": "Prepare this Agent's image, Skills, and Plugins before a conversation starts. Works with both shared and conversation-specific sandboxes."
+        "help": "Prepare this Agent's image, Skills, and Plugins before a conversation starts. One idle sandbox stays reserved for this Agent until prewarming is turned off or the Agent or its Environment is disabled. Works with both shared and conversation-specific sandboxes."
       },
       "enabled": {
         "label": "Enabled",

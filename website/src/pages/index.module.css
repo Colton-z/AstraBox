@@ -331,6 +331,25 @@
   color: var(--fg-2);
 }
 
+.conceptNote {
+  font-size: 15px;
+  color: var(--fg-2);
+  line-height: 1.6;
+  max-width: 760px;
+  margin: 28px 0 0;
+}
+
+.conceptNote strong {
+  color: var(--fg-1);
+}
+
+/* Links inside running text need a mark besides colour to stand apart from it. */
+.conceptNote a {
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
 /* -- hairline grid ----------------------------------------------------- */
 
 .grid {

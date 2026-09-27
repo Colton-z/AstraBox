@@ -18,6 +18,7 @@ from astrabox.api.routes.conversation_models import (
     StartConversationRequest,
     conversation_idempotency_key,
 )
+from astrabox.api.routes._shared import list_page_limit
 from astrabox.api.routes.response_envelope import ApiEnvelope
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.api_response import success_response
@@ -69,6 +70,9 @@ class Assistant(BaseModel):
     engine_kind: str | None = None
     environment_name: str | None = None
     permission_mode_default: str | None = None
+    #: The system prompt, the same field an Agent carries; the Agent program
+    #: applies it through its own mechanism (Hermes: its SOUL.md identity).
+    system: str | None = None
     model_config_override: dict[str, Any] | None = None
     mcp_config_override: dict[str, Any] | None = None
     plugin_repos_override: list[dict[str, Any]] | None = None
@@ -77,6 +81,24 @@ class Assistant(BaseModel):
     updated_at: str | None = None
     workspace_state: str | None = None
     current_sandbox_id: str | None = None
+
+
+class AssistantListPage(BaseModel):
+    """One page of the caller's Assistants, the most recently edited first.
+
+    ``next_cursor`` is the value to pass back as ``cursor``; it is ``null`` on
+    the last page, which ``has_more`` reports independently. ``total`` and
+    ``ready`` count every Assistant the caller owns, whatever ``q`` and
+    ``status`` narrowed, and come with the first page only.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    assistants: list[Assistant]
+    has_more: bool
+    next_cursor: str | None = None
+    total: int | None = None
+    ready: int | None = None
 
 
 class AssistantDeletion(BaseModel):
@@ -186,11 +208,24 @@ def register_assistant_routes(app: Any) -> None:
 
     @app.get(
         "/api/v1/assistants",
-        response_model=ApiEnvelope[list[Assistant]],
+        # Two shapes, like GET /api/v1/agents: `page=1` answers one page
+        # (limit, cursor, q, status) for the console's list; without it the
+        # answer is every Assistant the caller owns.
+        response_model=ApiEnvelope[AssistantListPage] | ApiEnvelope[list[Assistant]],
         response_model_exclude_unset=True,
     )
     async def list_assistants(request: Request):
         user = await get_current_user_context(request)
+        params = request.query_params
+        if str(params.get("page") or "").strip() == "1":
+            page = await _service.list_assistants_page(
+                user,
+                limit=list_page_limit(params.get("limit")),
+                cursor=params.get("cursor"),
+                query=str(params.get("q") or ""),
+                status=str(params.get("status") or "all").strip() or "all",
+            )
+            return success_response(page)
         result = await _service.list_assistants(user)
         return success_response(result)
 

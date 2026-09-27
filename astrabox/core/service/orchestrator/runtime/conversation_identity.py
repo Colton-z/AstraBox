@@ -42,6 +42,7 @@ AGENT_RUNTIME_SKILL_CACHE_DIR = "/opt/conversation-runtime/claude-skills-cache"
 # it the same generous budget as the bootstrap.
 _SKILL_CACHE_PREP_TIMEOUT_MS = 300_000
 AGENT_RUNTIME_CONVERSATION_BOOTSTRAP_SCRIPT = "/usr/local/bin/astrabox-provision-conversation"
+ASSISTANT_PROFILE_BOOTSTRAP_SCRIPT = "/usr/local/bin/astrabox-provision-assistant-profile"
 AGENT_RUNTIME_CONVERSATION_BOOTSTRAP_API_PATH = "/conversation/bootstrap"
 AGENT_RUNTIME_CONVERSATION_BOOTSTRAP_HTTP_TIMEOUT_SECONDS = 120.0
 CONVERSATION_BOOTSTRAP_TRANSPORT_SIDECAR_HTTP = "sidecar_http"
@@ -605,7 +606,7 @@ def plan_assistant_profile_identity(
         SANDBOX_TENANCY_AGENT,
         session_kind="assistant_chat",
     )
-    return plan_conversation_identity(
+    identity = plan_conversation_identity(
         session_id=f"{normalized_user}:{normalized_assistant}",
         sandbox_id=sandbox_id,
         agent_id=None,
@@ -615,6 +616,11 @@ def plan_assistant_profile_identity(
             "assistant_id": normalized_assistant,
         },
     )
+    # One Assistant owns its box and its mounted profile. Reusing the platform's
+    # first workload UID in a replacement box preserves POSIX ownership without
+    # recursively rewriting the persistent files.
+    identity.update(uid=CONVERSATION_UID_BASE, gid=CONVERSATION_UID_BASE)
+    return identity
 
 
 def normalize_runtime_identity(value: Any) -> dict[str, Any] | None:
@@ -1001,6 +1007,7 @@ async def _run_installed_conversation_bootstrap_script_via_command(
     *,
     error_code: str,
     error_message: str,
+    assistant_profile: bool = False,
 ) -> str:
     command_runner = getattr(sandbox, "commands", None)
     run_fn = getattr(command_runner, "run", None) if command_runner is not None else None
@@ -1015,7 +1022,11 @@ async def _run_installed_conversation_bootstrap_script_via_command(
     # failure line goes to stderr, and those are the two answers this call has.
     # Keeping them on one channel means a failure arrives with the line that
     # names it rather than with the exit status alone.
-    command = f"bash {shlex.quote(AGENT_RUNTIME_CONVERSATION_BOOTSTRAP_SCRIPT)} 2>&1"
+    script = (
+        ASSISTANT_PROFILE_BOOTSTRAP_SCRIPT
+        if assistant_profile else AGENT_RUNTIME_CONVERSATION_BOOTSTRAP_SCRIPT
+    )
+    command = f"bash {shlex.quote(script)} 2>&1"
     bootstrap_timeout_ms = 300_000
     streamed: list[str] = []
 
@@ -1183,6 +1194,8 @@ async def run_conversation_bootstrap_script(
 async def provision_conversation_identity_with_bootstrap_script(
     sandbox: Any,
     identity: dict[str, Any],
+    *,
+    assistant_profile: bool = False,
 ) -> dict[str, Any]:
     """Provision identity via the installed bootstrap script, not inline shell.
 
@@ -1203,6 +1216,7 @@ async def provision_conversation_identity_with_bootstrap_script(
         env,
         error_code="CONVERSATION_IDENTITY_UNSUPPORTED",
         error_message="failed to provision conversation identity via installed bootstrap script",
+        assistant_profile=assistant_profile,
     )
     ready = dict(normalized)
     ready["status"] = "ready"
@@ -1210,7 +1224,10 @@ async def provision_conversation_identity_with_bootstrap_script(
     stage_evidence = ready.get("stage_evidence") if isinstance(ready.get("stage_evidence"), dict) else {}
     ready["stage_evidence"] = {
         **stage_evidence,
-        "bootstrap_script": AGENT_RUNTIME_CONVERSATION_BOOTSTRAP_SCRIPT,
+        "bootstrap_script": (
+            ASSISTANT_PROFILE_BOOTSTRAP_SCRIPT
+            if assistant_profile else AGENT_RUNTIME_CONVERSATION_BOOTSTRAP_SCRIPT
+        ),
         "bootstrap_transport": "sandbox_command_script",
         "bootstrap_output": output[:1000],
     }

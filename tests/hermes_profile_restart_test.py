@@ -1,22 +1,23 @@
-"""A changed Hermes profile must reach the backend that already read one.
+"""A changed Hermes profile reaches new conversations without ending running ones.
 
-Hermes composes its agent — the model route, the API key, and everything
-`astrabox-hermes-config-merge` writes into `~/.hermes/config.json` — once, when
-it starts. The PTY design never had to think about this: every conversation was
-a new process, so the newest profile was always the one in effect. The resident
-backend is one supervised process for the life of the box, so an Assistant whose
-model changed would keep being answered by the old one, silently, until the box
-next restarted.
+The resident backend is one supervised Hermes process serving every
+conversation of an Assistant. What a changed Assistant needs from it depends on
+when Hermes reads the input. The model, its provider and SOUL.md are read for
+each new session, so they are written into the profile in place and the running
+backend keeps serving the other conversations. The process environment and the
+MCP servers are fixed when the process starts, so they need a restart; a restart
+ends every turn running in the backend, so it waits until none is.
 
-These pin the decision that closes that, and both halves of it: the box is
-asked what profile it already holds BEFORE the new one overwrites it, and only a
-genuine change spends a restart. Restarting on every wake would give back the
-startup time this whole workstream bought; restarting on none would answer from
-a configuration the owner replaced.
+These pin the decision and its order: the box is asked which process
+configuration its backend runs under BEFORE the new profile overwrites the
+evidence, a per-session change never restarts, and a process change restarts
+only after the backend reported itself idle.
 """
 
 from __future__ import annotations
 
+import base64
+import shlex
 from types import SimpleNamespace
 from typing import Any
 
@@ -30,48 +31,75 @@ from astrabox.core.service.orchestrator.engine import hermes
 class _Box:
     """A box that answers commands, recording what it was asked to run."""
 
-    def __init__(self, *, standing: str = "UNCHANGED", restart_output: str = "started") -> None:
+    def __init__(
+        self,
+        *,
+        standing: str = "PROCESS_UNCHANGED",
+        fresh: bool = False,
+        restart_output: str = "started",
+        events: list[str] | None = None,
+    ) -> None:
         self.commands: list[str] = []
+        self.events = events if events is not None else []
         self._standing = standing
+        self._fresh = fresh
         self._restart_output = restart_output
 
     async def run(self, command: str, **_kwargs: Any) -> Any:
         self.commands.append(command)
-        if "sha256sum" in command:
+        if "PROCESS_UNCHANGED" in command:
             return SimpleNamespace(error=None, stdout=f"{self._standing}\n")
         if "supervisorctl" in command:
+            self.events.append("restart")
             return SimpleNamespace(error=None, stdout=self._restart_output)
         if " publish " in command:
-            return SimpleNamespace(error=None, stdout="HERMES_PROFILE_INITIALIZED fresh=0\n")
+            return SimpleNamespace(
+                error=None, stdout=f"HERMES_PROFILE_INITIALIZED fresh={int(self._fresh)}\n"
+            )
+        if "astrabox-hermes-config-merge" in command:
+            self.events.append("merge_in_place")
+            # As execd delivers it: one stdout event per printed line, each
+            # without its newline. The merge prints the SOUL marker first.
+            return SimpleNamespace(
+                error=None,
+                exit_code=0,
+                logs=SimpleNamespace(
+                    stdout=[
+                        SimpleNamespace(text="ASTRABOX_HERMES_SOUL_READY"),
+                        SimpleNamespace(text="ASTRABOX_HERMES_CONFIG_READY"),
+                    ],
+                    stderr=[],
+                ),
+            )
         return SimpleNamespace(error=None, stdout="HERMES_PROFILE_READY\n")
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("verdict", ["ABSENT", "UNCHANGED", "CHANGED"])
-async def test_the_box_is_asked_which_profile_it_already_holds(verdict: str) -> None:
-    """The comparison happens in the box, against the digest about to be written."""
+@pytest.mark.parametrize("verdict", ["ABSENT", "PROCESS_UNCHANGED", "PROCESS_CHANGED"])
+async def test_the_box_is_asked_which_process_configuration_it_runs(verdict: str) -> None:
+    """Compared in the box against the recorded digest; the profile is never read."""
 
     box = _Box(standing=verdict)
 
-    answer = await hermes._hermes_profile_env_standing(
-        box.run, path="/home/u/.hermes/astrabox-hermes.env", digest="d" * 64
+    answer = await hermes._hermes_process_standing(
+        box.run,
+        env_path="/home/u/.hermes/astrabox-hermes.env",
+        digest_path="/home/u/.hermes/astrabox-hermes-process.sha256",
+        digest="d" * 64,
     )
 
     assert answer == verdict
     assert len(box.commands) == 1
     probe = box.commands[0]
-    assert "sha256sum" in probe, "the profile must not be read back out of the box"
     assert "/home/u/.hermes/astrabox-hermes.env" in probe
+    assert "/home/u/.hermes/astrabox-hermes-process.sha256" in probe
     assert "d" * 64 in probe
+    assert 'cat "$1"' not in probe, "the profile carries the model credential"
 
 
 @pytest.mark.asyncio
 async def test_an_unreadable_standing_answer_fails_loudly() -> None:
-    """Not knowing is not the same as unchanged.
-
-    Defaulting to "unchanged" here would be the quiet degradation this codebase
-    forbids: the backend would keep serving a profile nobody could confirm.
-    """
+    """Not knowing is not the same as unchanged."""
 
     class _Mute(_Box):
         async def run(self, command: str, **_kwargs: Any) -> Any:
@@ -79,8 +107,8 @@ async def test_an_unreadable_standing_answer_fails_loudly() -> None:
             return SimpleNamespace(error=None, stdout="")
 
     with pytest.raises(APIError) as excinfo:
-        await hermes._hermes_profile_env_standing(
-            _Mute().run, path="/p/env", digest="x" * 64
+        await hermes._hermes_process_standing(
+            _Mute().run, env_path="/p/env", digest_path="/p/digest", digest="x" * 64
         )
 
     assert excinfo.value.code == "HERMES_PROFILE_SETUP_FAILED"
@@ -112,22 +140,39 @@ def _sandbox(box: _Box) -> Any:
     return SimpleNamespace(sandbox_id="sb-1", commands=SimpleNamespace(run=box.run))
 
 
-async def _prepare(box: _Box, monkeypatch: pytest.MonkeyPatch) -> str:
+_MODEL = "hermes-model"
+
+
+async def _prepare(
+    box: _Box,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    template: AgentView | None = None,
+    model: str = _MODEL,
+    model_api_key: str = "model-key",
+    written: list[str] | None = None,
+    installed: list[str] | None = None,
+) -> str:
     """Run the real profile preparation against a fake box.
 
-    Only the collaborators that reach outside it are replaced — the skill
-    repos and the file install. Everything that decides whether the backend
-    must restart is the real code.
+    Only the collaborators that reach outside it are replaced — the file
+    installs, whose content lands in ``written``, and the wait for the backend
+    to go idle, which records itself in the box's event order. Everything that
+    decides what the profile says and how it takes effect is the real code.
     """
 
-    async def _no_repos(*_args: Any, **_kwargs: Any) -> list[str]:
-        return []
+    async def _record_profile_env(*_args: Any, content: str, **_kwargs: Any) -> None:
+        if written is not None:
+            written.append(content)
 
-    async def _no_install(*_args: Any, **_kwargs: Any) -> None:
-        return None
+    async def _no_install(*_args: Any, path: str, **_kwargs: Any) -> None:
+        if installed is not None:
+            installed.append(path)
 
-    monkeypatch.setattr(hermes, "_prepare_hermes_skill_repos", _no_repos)
-    monkeypatch.setattr(hermes, "_install_hermes_profile_env_file", _no_install)
+    async def _wait_until_idle() -> None:
+        box.events.append("waited_until_idle")
+
+    monkeypatch.setattr(hermes, "_install_hermes_profile_env_file", _record_profile_env)
     monkeypatch.setattr(hermes, "install_verified_text_script", _no_install)
 
     return await hermes._prepare_hermes_profile(
@@ -141,20 +186,17 @@ async def _prepare(box: _Box, monkeypatch: pytest.MonkeyPatch) -> str:
             "workspace_dir": "/home/conversations/user-1/asst-1/workspace",
             "workspace_source_dir": "/home/conversations/user-1/asst-1/workspace",
         },
-        deployment_settings=SimpleNamespace(),
-        template=AgentView(engine_kind="assistant"),
+        deployment_settings=SimpleNamespace(mcp_proxy_base_url="https://proxy.test"),
+        template=template or AgentView(engine_kind="assistant"),
         model_access=hermes.ResolvedModelAccess(
             configuration={},
             base_url="https://gateway.test/v1",
-            model_name="hermes-model",
+            model_name=model,
             credential="k",
             credential_kind="bearer",
             endpoint_provider="litellm",
         ),
-        model_api_key="model-key",
-        user_id="user-1",
-        conversation_user_id="user-1",
-        assistant_id="asst-1",
+        model_api_key=model_api_key,
         runtime_state_store={
             "base_url": "https://backend.test/api/v1/runtime-state",
             "owner": {
@@ -164,43 +206,150 @@ async def _prepare(box: _Box, monkeypatch: pytest.MonkeyPatch) -> str:
                 "engine_kind": "assistant",
             },
         },
+        mcp_deployment_id="deployment-1",
+        wait_until_backend_idle=_wait_until_idle,
     )
 
 
 @pytest.mark.asyncio
-async def test_a_changed_profile_restarts_the_backend(
+async def test_a_process_change_restarts_only_after_the_backend_is_idle(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The whole point, pinned where dropping the call would show.
+    """The restart ends every running turn, so the wait comes first, always."""
 
-    Without this the helpers above stay green while an Assistant is answered by
-    a backend still running under the profile it was configured away from.
-    """
-
-    box = _Box(standing="CHANGED")
+    box = _Box(standing="PROCESS_CHANGED")
 
     await _prepare(box, monkeypatch)
 
-    assert any("supervisorctl restart astrabox-hermes" in c for c in box.commands), (
-        "a profile whose content moved must reach the backend that read the old one"
-    )
+    assert box.events == ["waited_until_idle", "restart"]
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("verdict", ["UNCHANGED", "ABSENT"])
-async def test_an_unmoved_profile_does_not_spend_a_restart(
-    verdict: str, monkeypatch: pytest.MonkeyPatch
+async def test_a_per_session_change_is_written_in_place_without_a_restart(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Every ordinary wake, and the first materialization, cost nothing.
+    """The running backend keeps serving; the next session reads the new files."""
 
-    ``ABSENT`` is the first materialization: `astrabox-hermes-serve` is still
-    waiting for this very file, and restarting would fight its readiness gate.
-    ``UNCHANGED`` is every wake after — restarting there would give back the
-    startup time this transport was built to save.
+    box = _Box(standing="PROCESS_UNCHANGED")
+    installed: list[str] = []
+
+    await _prepare(box, monkeypatch, installed=installed)
+
+    assert box.events == ["merge_in_place"]
+    assert not any(path.endswith("astrabox-hermes-process.sha256") for path in installed), (
+        "the recorded digest already names this process configuration"
+    )
+    merge = next(c for c in box.commands if "astrabox-hermes-config-merge" in c)
+    argv = shlex.split(merge)
+    assert argv[:3] == ["runuser", "-u", "u1"], "the merge runs as the profile's account"
+    assert "/home/conversations/user-1/asst-1/.hermes/astrabox-hermes.env" in argv
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("standing", "fresh"),
+    [("ABSENT", False), ("PROCESS_CHANGED", True), ("PROCESS_UNCHANGED", True)],
+)
+async def test_a_backend_that_has_not_started_is_left_to_its_launcher(
+    standing: str, fresh: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No running backend: nothing to wait for, restart, or patch in place.
+
+    ``ABSENT`` is the first materialization, and ``fresh=1`` a box whose
+    initialization this publish just released; either way
+    `astrabox-hermes-serve` merges the profile and then starts Hermes under it.
     """
 
-    box = _Box(standing=verdict)
+    box = _Box(standing=standing, fresh=fresh)
 
     await _prepare(box, monkeypatch)
 
-    assert not [c for c in box.commands if "supervisorctl" in c]
+    assert box.events == []
+
+
+@pytest.mark.asyncio
+async def test_only_process_inputs_move_the_fingerprint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """What the fingerprint separates is exactly what needs a restart.
+
+    The model and the system prompt are read per session: equal fingerprints,
+    so the attachment every other conversation streams on is kept. The model
+    credential in the process environment and the MCP servers are read at
+    start: a different fingerprint.
+    """
+
+    async def fingerprint(**kwargs: Any) -> str:
+        return await _prepare(_Box(standing="ABSENT"), monkeypatch, **kwargs)
+
+    base = await fingerprint()
+    assert await fingerprint(model="another-model") == base
+    assert (
+        await fingerprint(template=AgentView(engine_kind="assistant", system="You are Quill."))
+        == base
+    )
+    assert await fingerprint(model_api_key="another-key") != base
+    assert (
+        await fingerprint(
+            template=AgentView(
+                engine_kind="assistant",
+                mcp_servers={"search": {"type": "http", "url": "https://mcp.test/mcp"}},
+            )
+        )
+        != base
+    )
+
+
+def _soul_of(profile_env: str) -> str | None:
+    """The SOUL.md content a profile env file carries, decoded, or None."""
+
+    for line in profile_env.splitlines():
+        prefix = "export ASTRABOX_HERMES_SOUL_B64="
+        if line.startswith(prefix):
+            return base64.b64decode(shlex.split(line[len(prefix):])[0]).decode("utf-8")
+    return None
+
+
+@pytest.mark.asyncio
+async def test_the_system_prompt_is_the_profile_soul(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An Assistant's system prompt reaches Hermes as SOUL.md, verbatim.
+
+    The profile env file is the only channel into the box's backend, so this
+    is where an Assistant whose instructions never arrive would show: the
+    Hermes identity stays "You are Hermes Agent" while the platform stored
+    something else.
+    """
+
+    written: list[str] = []
+    instructions = "You are Quill.\n\nAnswer in one sentence."
+
+    await _prepare(
+        _Box(standing="ABSENT"),
+        monkeypatch,
+        template=AgentView(engine_kind="assistant", system=f"  {instructions}  \n"),
+        written=written,
+    )
+
+    assert len(written) == 1
+    assert _soul_of(written[0]) == f"{instructions}\n"
+
+
+@pytest.mark.asyncio
+async def test_no_system_prompt_writes_no_soul(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unset hands SOUL.md back to Hermes: the variable's absence is the signal."""
+
+    written: list[str] = []
+
+    await _prepare(
+        _Box(standing="ABSENT"),
+        monkeypatch,
+        template=AgentView(engine_kind="assistant", system="   "),
+        written=written,
+    )
+
+    assert len(written) == 1
+    assert _soul_of(written[0]) is None

@@ -47,6 +47,7 @@ export function markOutboxItemFailed(
   outbox: OutboxItem[],
   clientMessageId: string,
   failureReason: string,
+  resendAsNew = false,
 ): OutboxItem[] {
   const normalizedClientMessageId = String(clientMessageId ?? '').trim();
   if (!normalizedClientMessageId) {
@@ -65,6 +66,7 @@ export function markOutboxItemFailed(
       ...item,
       status: 'failed' as const,
       failure_reason: failureReason,
+      ...(resendAsNew ? { resend_as_new: true } : {}),
     };
   });
   return changed ? next : outbox;

@@ -1,0 +1,48 @@
+# Deny cross-pod ingress to AstraBox sandbox Pods.
+#
+# WHY: OpenSandbox creates no NetworkPolicy, so by Kubernetes' default a Pod
+# accepts connections from anywhere in the cluster. A sandbox Pod listens on
+# several ports bound to 0.0.0.0 — the in-box control runner, each engine's
+# backend forwarder, the base image's web UI (which fronts JupyterLab and a
+# VNC desktop), execd and the egress sidecar — so without this any Pod in the
+# cluster, including another tenant's sandbox, can reach them. This closes that
+# at the network layer, as defence in depth: it requires a CNI that enforces
+# NetworkPolicy (k3s's built-in controller does; not every cluster does), so it
+# is never the only control — the ports keep their own authentication.
+#
+# SCOPE: Ingress only. It never restricts what a sandbox reaches (the egress
+# sidecar owns that); it restricts who may open a connection TO a sandbox.
+#
+# ALLOWED INITIATORS: this manifest allows the OpenSandbox ingress gateway
+# (gateway / Secure Access mode, where all platform traffic reaches sandboxes
+# through it). A deployment that reaches sandbox Pod IPs directly — the bundled
+# lifecycle server in `ingress.mode=direct` — must ALSO allow that source, an
+# ipBlock of the address the sandbox sees it as. That address is deployment and
+# CNI specific (it is the node/masquerade address, or the platform's own
+# container network when the server runs off-cluster), so it is not written
+# here; add an ipBlock `from` entry for it. `scripts/k8s-testbed.sh` does this
+# for the cluster it installs, including the overlay address a sandbox on
+# another node sees the platform's traffic come from. Sandbox-to-sandbox is
+# never allowed.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: astrabox-sandbox-ingress
+  namespace: opensandbox
+spec:
+  # Every AstraBox sandbox Pod carries this label
+  # (astrabox/seams/sandbox.py: SANDBOX_MANAGED_BY_METADATA_KEY). The model
+  # gateway and other in-namespace fixtures do not, so they are unaffected.
+  podSelector:
+    matchLabels:
+      astrabox.managed-by: astrabox
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        # The ingress gateway lives in this namespace. Label it so the selector
+        # is stable across gateway Deployment changes; kube-system-style
+        # metadata.name labels are added by the API server on modern clusters.
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: opensandbox-system

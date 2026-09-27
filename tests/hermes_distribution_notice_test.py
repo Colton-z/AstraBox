@@ -20,6 +20,6 @@ def test_pinned_hermes_license_and_notice_agree() -> None:
     notice = (_ROOT / "NOTICE").read_text(encoding="utf-8")
 
     assert "HERMES_AGENT_VERSION=0.21.0" in dockerfile
-    assert "HERMES_SOURCE_COMMIT=29112bef099274229cadff79cdff7bf7b99c4b77" in dockerfile
+    assert "hermes-agent/archive/29112bef099274229cadff79cdff7bf7b99c4b77.tar.gz" in dockerfile
     assert "MIT-licensed Hermes agent" in dockerfile
     assert "Hermes Agent (Nous Research, MIT License)" in notice

@@ -196,6 +196,7 @@ test("a scheduled Deployment's record page shows the Run its cron just made, wit
     name: agentName,
     model,
     environment_name: environmentName,
+    prewarm_enabled: false,
   });
   agentId = String(agent.agent_id || '').trim();
   expect(agentId, 'the schedule needs an Agent to run').not.toEqual('');

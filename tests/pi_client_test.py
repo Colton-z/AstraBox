@@ -18,7 +18,10 @@ from typing import Any
 import pytest
 
 from astrabox.core.service.orchestrator.engine.base import EngineInputCommand
-from astrabox.core.service.orchestrator.engine.emissions import TurnTerminal
+from astrabox.core.service.orchestrator.engine.emissions import (
+    InteractionRequested,
+    TurnTerminal,
+)
 from astrabox.core.service.orchestrator.engine.pi_client import PiEngineClient, _PiRelaySeam
 from astrabox.core.service.orchestrator.engine.pi_events import PiProtocolError
 from astrabox.core.service.orchestrator.engine.pi_pipe import PiWireRecord
@@ -211,6 +214,71 @@ async def test_only_an_acknowledged_abort_cancels_an_error_terminal(cancel: bool
     assert not await client.cancel_turn(receipt)
     second = await _drive_one_turn(client, _command(2, "second"))
     assert second[-1].outcome == "completed"
+
+
+class _DialogThenAbort(_FakeProcess):
+    """The first prompt stops at an extension dialog; an abort ends that run."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.prompts = 0
+
+    async def command(self, request_id: str, payload: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+        kind = payload.get("type")
+        if kind == "prompt":
+            self.prompts += 1
+        if kind == "prompt" and self.prompts == 1:
+            self.sent.append({**payload, "id": request_id})
+            self._queue.extend([
+                {"type": "agent_start"},
+                {"type": "turn_start"},
+                {
+                    "type": "extension_ui_request",
+                    "id": "dialog-1",
+                    "method": "confirm",
+                    "title": "Proceed?",
+                    "message": "Write the file",
+                },
+            ])
+            self._arrived.set()
+            return {"id": request_id, "type": "response", "command": "prompt", "success": True}
+        if kind == "abort":
+            self.sent.append({**payload, "id": request_id})
+            self._queue.extend([
+                {"type": "turn_end"},
+                {"type": "agent_end", "willRetry": False},
+                {"type": "agent_settled"},
+            ])
+            self._arrived.set()
+            return {"id": request_id, "type": "response", "command": "abort", "success": True}
+        return await super().command(request_id, payload, **kwargs)
+
+
+@pytest.mark.asyncio
+async def test_the_message_after_a_stopped_dialog_gets_its_own_turn() -> None:
+    """A stop settles a turn parked at a dialog on the platform side, so no
+    stream reads the aborted run's end or releases the turn. The next message
+    must still be sent and answered on a turn of its own."""
+
+    process = _DialogThenAbort()
+    client = _client(process)
+    first = _command(1, "first")
+    await client.deliver(first)
+    receipt = await client.begin_delivery(first)
+    parked = [emission async for emission in client.iter_turn_events(receipt)]
+    assert isinstance(parked[-1], InteractionRequested)
+
+    assert await client.interrupt_active_turn()
+    for _ in range(50):
+        await asyncio.sleep(0)
+
+    second = await _drive_one_turn(client, _command(2, "second"))
+
+    assert isinstance(second[-1], TurnTerminal)
+    assert second[-1].outcome == "completed"
+    prompts = [record for record in process.sent if record.get("type") == "prompt"]
+    assert [record["message"] for record in prompts] == ["first", "second"]
+    assert "streamingBehavior" not in prompts[1]
 
 
 @pytest.mark.asyncio

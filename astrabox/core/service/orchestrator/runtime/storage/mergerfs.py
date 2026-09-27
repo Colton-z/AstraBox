@@ -7,6 +7,7 @@ import hashlib
 import json
 import shlex
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -15,11 +16,19 @@ from astrabox.core.service.orchestrator.runtime.sandbox_client import get_underl
 from astrabox.core.service.orchestrator.runtime.storage._command_result import (
     _extract_command_output_text,
 )
+from astrabox.seams.sandbox import SANDBOX_INSTALLATION_METADATA_KEY, sandbox_installation_id
 from astrabox.seams.storage import StorageMountPlan, WorkspaceRef
 
 OWNER = "astrabox.storage-assignment"
 INPUT = "astrabox.storage-input"
 MANAGED = "astrabox.storage-managed"
+#: Receipt fields. The helper carries the first three from the moment it is
+#: created; a view's separate attached receipt adds the sandbox that mounts it.
+STORAGE_ID = "astrabox.storage-id"
+SANDBOX_BACKEND = "astrabox.sandbox-backend"
+INSTALLATION = SANDBOX_INSTALLATION_METADATA_KEY
+SANDBOX_ID = "astrabox.sandbox-id"
+RECEIPT = "astrabox.storage-receipt"
 CLI = ["python3", "/opt/astrabox/mergerfs_node.py"]
 
 
@@ -139,6 +148,30 @@ def verify_status(output: str, assignment: MountAssignment, binding: str | None 
         )
 
 
+#: Where the documentation explains persistent workspaces with an existing
+#: OpenSandbox service (docs/providers/opensandbox.md).
+EXISTING_SERVICE_WORKSPACES_DOC = (
+    "https://www.astrabox.ai/docs/providers/opensandbox#connect-an-existing-opensandbox-service"
+)
+
+
+def existing_lifecycle_service_url() -> str:
+    """The lifecycle API address when it is not the bundled server's, else ``""``.
+
+    The bundled lifecycle server's address is the one the launcher composes
+    (``sandbox_server.lifecycle_base_url``), which the entry point hands to
+    AstraBox when it starts that server. Any other configured address is a
+    service the deployment runs itself. The Lifecycle API reports no runtime,
+    so this says only which server it is, not what it runs.
+    """
+    from astrabox.deploy.sandbox_server import lifecycle_base_url
+
+    configured = str(load_astrabox_settings().sandbox_openapi_base_url or "").strip()
+    if not configured or configured.rstrip("/") == lifecycle_base_url().rstrip("/"):
+        return ""
+    return configured
+
+
 class MergerfsWorkspaceRouter:
     """A common platform route; it does not select or implement a storage medium."""
 
@@ -168,11 +201,24 @@ class MergerfsWorkspaceRouter:
         return DockerMounts()
 
     async def provision_mounts(
-        self, assignment_id: str, backing: StorageMountPlan
+        self, assignment_id: str, backing: StorageMountPlan, *, sandbox_backend: str
     ) -> StorageMountPlan:
-        """Schedule a helper, then expose its ready views through a standard volume."""
+        """Schedule a helper, then expose its ready views through a standard volume.
+
+        The helper is the first resource a view creates, and it is created
+        carrying the view's pending receipt: the storage assignment, the backend
+        expected to create the box that mounts it, and this installation. A view
+        whose box never arrives — the create failed, or provisioning stopped
+        part way — is therefore still visible to
+        :func:`~astrabox.core.service.orchestrator.runtime.storage.mounts.reconcile_workspace_mounts`.
+        """
         assignment = MountAssignment.configured(assignment_id, backing)
-        await asyncio.to_thread(self._provision, assignment)
+        receipt = {
+            STORAGE_ID: assignment_id,
+            SANDBOX_BACKEND: sandbox_backend,
+            INSTALLATION: await sandbox_installation_id(),
+        }
+        await asyncio.to_thread(self._provision, assignment, receipt)
         return StorageMountPlan(
             volume_name=assignment.name,
             # Export the workspace child, never the FUSE root containing the
@@ -183,15 +229,16 @@ class MergerfsWorkspaceRouter:
             ),
         )
 
-    def _provision(self, assignment: MountAssignment) -> None:
+    def _provision(self, assignment: MountAssignment, receipt: dict[str, str]) -> None:
         try:
             with self._driver() as driver:
-                driver.provision(assignment)
+                driver.provision(assignment, receipt)
         except Exception as exc:
             raise RuntimeError(
                 f"workspace provisioning failed; assignment={assignment.assignment_id!r}, "
                 f"helper/view={assignment.name!r}, host_path={assignment.host_path!r}; "
-                f"created resources are retained for diagnosis: {exc}"
+                "created resources are retained for diagnosis until workspace "
+                f"reconciliation finds no sandbox for them: {exc}"
             ) from exc
 
     async def bind(
@@ -213,19 +260,37 @@ class MergerfsWorkspaceRouter:
         self, assignment_id: str, *, sandbox_id: str, sandbox_backend: str
     ) -> None:
         """Record which supplier box must disappear before a view can be released."""
-        await asyncio.to_thread(self._attach, assignment_id, sandbox_id, sandbox_backend)
+        installation = await sandbox_installation_id()
+        await asyncio.to_thread(
+            self._attach, assignment_id, sandbox_id, sandbox_backend, installation
+        )
 
-    def _attach(self, assignment_id: str, sandbox_id: str, backend: str) -> None:
+    def _attach(self, assignment_id: str, sandbox_id: str, backend: str, installation: str) -> None:
         with self._driver() as driver:
-            driver.attach(assignment_id, sandbox_id, backend)
+            driver.attach(assignment_id, sandbox_id, backend, installation)
 
     async def attached_mounts(self) -> list[tuple[str, str, str]]:
-        """Return storage/backend/box receipts for the existing lifecycle reconciler."""
-        return await asyncio.to_thread(self._attached)
+        """This installation's storage/backend/box receipts, for the lifecycle reconciler."""
+        installation = await sandbox_installation_id()
+        return await asyncio.to_thread(self._attached, installation)
 
-    def _attached(self) -> list[tuple[str, str, str]]:
+    def _attached(self, installation: str) -> list[tuple[str, str, str]]:
         with self._driver() as driver:
-            result: list[tuple[str, str, str]] = driver.attached()
+            result: list[tuple[str, str, str]] = driver.attached(installation)
+            return result
+
+    async def unattached_mounts(self) -> list[tuple[str, str, datetime]]:
+        """This installation's views no box was recorded for, with their helpers' age.
+
+        Each is ``(storage assignment, sandbox backend, helper creation time)``,
+        read from the pending receipt the helper was created with.
+        """
+        installation = await sandbox_installation_id()
+        return await asyncio.to_thread(self._unattached, installation)
+
+    def _unattached(self, installation: str) -> list[tuple[str, str, datetime]]:
+        with self._driver() as driver:
+            result: list[tuple[str, str, datetime]] = driver.unattached(installation)
             return result
 
     def _release(self, assignment_id: str) -> None:
@@ -250,7 +315,16 @@ class MergerfsWorkspaceRouter:
         commands = underlying.commands
         result = await commands.run("findmnt -n -o FSTYPE -T " + shlex.quote(box_path))
         if _extract_command_output_text(result).strip() != "fuse.mergerfs":
-            raise RuntimeError(f"workspace {ref.key()!r} at {box_path!r} is not a mergerfs view")
+            message = f"workspace {ref.key()!r} at {box_path!r} is not a mergerfs view"
+            external = existing_lifecycle_service_url()
+            if external:
+                message += (
+                    f". This deployment uses an existing OpenSandbox service ({external}), "
+                    "and on OpenSandbox's Docker runtime a workspace view is not mounted "
+                    "into sandboxes: persistent workspaces with an existing service need "
+                    f"its Kubernetes runtime. See {EXISTING_SERVICE_WORKSPACES_DOC}"
+                )
+            raise RuntimeError(message)
 
 
 workspace_router = MergerfsWorkspaceRouter()

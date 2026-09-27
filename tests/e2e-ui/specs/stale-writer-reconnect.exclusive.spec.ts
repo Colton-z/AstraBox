@@ -68,6 +68,7 @@ function launchAuxiliaryAttach(
   handle: SandboxHandle,
   sessionId: string,
   runnerPort: number,
+  runtimeHome: string,
   paths: AuxiliaryProbePaths,
 ): void {
   expect(
@@ -75,6 +76,7 @@ function launchAuxiliaryAttach(
     'the auxiliary attach requires the exact platform session identity',
   ).toMatch(/^[A-Za-z0-9_-]+$/);
   expect(Number.isSafeInteger(runnerPort) && runnerPort > 0).toBe(true);
+  expect(runtimeHome, 'the exact runner seat must have a private home').toMatch(/^\//);
 
   const python = [
     'import asyncio',
@@ -90,11 +92,17 @@ function launchAuxiliaryAttach(
     `disconnected = pathlib.Path(${JSON.stringify(paths.disconnected)})`,
     `failed = pathlib.Path(${JSON.stringify(paths.failed)})`,
     '',
+    `token_file = pathlib.Path(${JSON.stringify(runtimeHome)}) / ".astrabox-runner-token"`,
+    'activation_token = token_file.read_text(encoding="utf-8").strip()',
+    'if not activation_token:',
+    '    raise RuntimeError("runner seat credential is empty")',
+    '',
     'async def main():',
     '    async with websockets.connect(uri, ping_interval=None) as websocket:',
     '        await websocket.send(json.dumps({',
     '            "op": "attach",',
     '            "session_id": session_id,',
+    '            "activation_token": activation_token,',
     '            "last_seen_seq": 0,',
     '            "engine_requirements": {',
     '                "adapter": "claude_code",',
@@ -185,7 +193,8 @@ test('platform can send after the superseding runner link disconnects', async ({
   const handle = await requireSandboxHandle(api, sandboxId);
   const paths = auxiliaryProbePaths(runId);
 
-  launchAuxiliaryAttach(handle, sessionId, runnerPort, paths);
+  const runtimeHome = String((runtimeIdentity as Record<string, unknown>).home_dir || '').trim();
+  launchAuxiliaryAttach(handle, sessionId, runnerPort, runtimeHome, paths);
   await expect.poll(
     () => probeStatus(handle, paths),
     {
@@ -195,9 +204,8 @@ test('platform can send after the superseding runner link disconnects', async ({
     },
   ).toContain('READY');
 
-  // Disconnect the newest link. There is intentionally no generation token or
-  // writer epoch here: the exact sandbox address plus the runner's session
-  // hello is the identity proof, and one link owner is the whole arbitration.
+  // The seat credential authenticates the auxiliary link; the session hello
+  // confirms its address. Disconnect its ownership before sending again.
   sandboxExec(handle, `touch ${paths.release}`);
   await expect.poll(
     () => probeStatus(handle, paths),

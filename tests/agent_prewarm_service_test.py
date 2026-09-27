@@ -54,6 +54,13 @@ class _Repo:
     async def list_all_agents(self) -> list[dict[str, Any]]:
         return [dict(self.row)] if self.row is not None else []
 
+    async def list_live_agents_page(
+        self, *, after_agent_id: str | None = None, limit: int = 200
+    ) -> list[dict[str, Any]]:
+        if self.row is None or self.row.get("deleted") or after_agent_id is not None:
+            return []
+        return [dict(self.row)]
+
     async def soft_delete(self, agent_id: str, user_id: str) -> bool:
         self.soft_deleted.append((agent_id, user_id))
         if self.row is not None:
@@ -322,6 +329,40 @@ async def test_agent_manager_reads_platform_prepared_runtime_status(
         "sandbox_id": "box-ready",
         "last_error": None,
     }
+
+
+@pytest.mark.parametrize("pool_name", [None, "supplier-pool-existing"])
+async def test_config_refresh_keeps_pool_identity_without_advertising_stale_capacity(
+    monkeypatch: pytest.MonkeyPatch, pool_name: str | None,
+) -> None:
+    row = {
+        "agent_id": "agent-1",
+        "created_by": "owner-1",
+        "prewarm_enabled": True,
+        "_client_pool_name": pool_name,
+        "_prepared_runtime_generation": "generation-old",
+        "_prepared_slot": {
+            "state": "prepared",
+            "placement": "shared_slot",
+            "sandbox_id": "box-existing",
+            "runtime_generation": "generation-old",
+        },
+    }
+    repo = _Repo(row)
+    service = _service(repo, SimpleNamespace(agent_id="agent-1", sandbox_tenancy="agent"))
+    monkeypatch.setattr(
+        runtime_generation_module, "runtime_generations",
+        AsyncMock(return_value=("generation-new", "box-generation")),
+    )
+
+    status = await service.get_prepared_runtime_status(UserContext("owner-1"), "agent-1")
+
+    assert status["client_pool_name"] == pool_name
+    assert status["state"] == "preparing"
+    assert status["ready"] is False
+    assert status["prepared_count"] == 0
+    assert repo.updates == []
+    assert repo.compares == []
 
 
 async def test_regular_viewer_cannot_read_prepared_runtime_status() -> None:

@@ -132,6 +132,10 @@ class CodexEngineClient:
         #: `turn/start` carries the override that actually moves enforcement.
         self._pending_mode_override: str | None = None
         self._receipts: dict[str, EngineTurnReceipt] = {}
+        #: The relay's number for each written input, and the inputs whose
+        #: platform turn has begun.
+        self._submission_numbers: dict[str, int] = {}
+        self._begun_turns: set[str] = set()
         #: input id → what was sent, so the consumption frame can carry the
         #: message back verbatim rather than an empty string.
         self._sent_content: dict[str, str] = {}
@@ -318,6 +322,14 @@ class CodexEngineClient:
             self._turn_idle.clear()
             self._ensure_relay().platform_turn_reattached()
             return receipt
+        if command.command_id not in self._begun_turns:
+            # The platform opens this turn now. Its input may already be
+            # written (delivery precedes the turn), so the boundary is named
+            # by the input rather than by the next write.
+            self._begun_turns.add(command.command_id)
+            self._ensure_relay().platform_turn_begins(
+                self._submission_numbers.get(command.command_id)
+            )
         return await self._submit(command)
 
     async def _submit(self, command: EngineInputCommand) -> EngineTurnReceipt:
@@ -356,7 +368,7 @@ class CodexEngineClient:
         # Marked before the request is written: its acknowledgement and the
         # run's first notification are two messages on one socket, and the
         # relay may take the second before this coroutine takes the first.
-        relay.platform_input_submitted()
+        self._submission_numbers[command.command_id] = relay.platform_input_submitted()
         try:
             started = await self._link.call("turn/start", params)
         except BaseException:

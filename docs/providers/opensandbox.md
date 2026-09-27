@@ -73,7 +73,7 @@ same software. Clusters that add nodes on demand may also need a longer
 `ASTRABOX_SANDBOX_SERVER_KUBE_CREATE_TIMEOUT_SECONDS` for node startup and image
 pulls.
 
-## Connect an existing OpenSandbox service
+## Connect an existing OpenSandbox service {#connect-an-existing-opensandbox-service}
 
 Set the Lifecycle API address and its named API key in the AstraBox server
 process environment:
@@ -96,6 +96,19 @@ returned by that API. Require OpenSandbox API-key authentication whenever the
 service is exposed beyond a trusted loopback network. The bundled lifecycle
 service listens only inside the AstraBox container and does not need a second
 public endpoint.
+
+Persistent workspaces (`ASTRABOX_SANDBOX_WORKSPACE_VOLUME`) with an existing
+service require its Kubernetes runtime. OpenSandbox's Docker runtime mounts a
+volume sub-path by binding that directory under the volume's Docker mount
+point, and a workspace view volume is mounted there only while a container uses
+it by name, so every sandbox would receive an empty `/workspace`. The bundled
+lifecycle service has Docker mount the sub-path instead (see
+[Docker requirements](../deploy.md#docker-requirements)); a service started
+from upstream's `opensandbox-server` does not. The Lifecycle API does not
+report which runtime a service uses (`/health` and `/version` carry no
+runtime), so AstraBox cannot refuse the combination at startup. Each
+conversation fails instead when its sandbox is created or starts: with the
+service on the AstraBox host, with `workspace ... is not a mergerfs view`.
 
 ## Prepare sandbox images
 
@@ -256,15 +269,57 @@ guide contains the current installation requirements.
 ## Publish sandbox services safely
 
 AstraBox can connect directly to an endpoint returned by OpenSandbox or ask the
-Lifecycle API to relay HTTP, SSE, and WebSocket traffic. The maintained Docker
-deployment uses the relay because AstraBox runs inside a container while the
-published ports belong to the host.
+Lifecycle API to relay HTTP, SSE, and WebSocket traffic
+(`ASTRABOX_SANDBOX_ENDPOINT_VIA_SERVER_PROXY`). The maintained Docker
+deployment connects directly: its bundled Lifecycle API runs in the AstraBox
+container and publishes sandbox ports on the Docker bridge gateway, which
+AstraBox reaches from the same container. Use the relay only when AstraBox
+cannot reach the sandbox endpoints. The relay removes `Cookie` and
+`Authorization` headers and replaces `Host` on every request, so the DeepSeek
+Harness and Hermes engines cannot authenticate to their in-box services
+through it.
 
 Kubernetes deployments can use direct Pod routing or the OpenSandbox ingress
 component. Before exposing a sandbox service to an untrusted network, enable
 OpenSandbox Secure Access and configure matching signing keys for AstraBox and
 the ingress component. AstraBox checks Session access before issuing a
 short-lived signed URL.
+
+### Isolate sandbox Pods from the rest of the cluster {#sandbox-network-policy}
+
+A sandbox Pod listens on several ports bound to all interfaces — the in-box
+control runner, each engine's backend forwarder, the base image's web UI
+(which fronts a JupyterLab and a VNC desktop), execd and the egress sidecar.
+OpenSandbox creates no `NetworkPolicy`, so by Kubernetes' default any Pod in
+the cluster — including another tenant's sandbox — can open a connection to
+those ports. Apply a `NetworkPolicy` to the sandbox namespace so a sandbox Pod
+accepts ingress only from the platform, not from other Pods.
+
+The control runner and the Codex backend forwarder also refuse a connection
+that does not carry a credential derived from the deployment's own secret, so
+reaching those two ports is not enough to use them. The policy is what keeps
+other Pods from reaching the rest.
+
+AstraBox ships one at
+[`containers/kubernetes/sandbox-ingress-networkpolicy.yaml`](https://github.com/colton-z/astrabox/blob/main/containers/kubernetes/sandbox-ingress-networkpolicy.yaml).
+It selects sandbox Pods by the `astrabox.managed-by: astrabox` label, restricts
+ingress only (a sandbox's own outbound path is unaffected), and as shipped
+admits the OpenSandbox ingress-gateway namespace. Apply it, and add the source
+your platform reaches sandboxes from:
+
+- **Gateway / Secure Access mode:** the shipped manifest is complete — every
+  platform request reaches sandboxes through the ingress gateway, which the
+  policy already admits.
+- **Direct Pod routing:** add an `ipBlock` `from` peer for the address a
+  sandbox Pod sees the lifecycle server as. That address is cluster and CNI
+  specific (the node or masquerade address, or the server's own container
+  network when it runs off-cluster); determine it for your cluster rather than
+  copying a value. `scripts/k8s-testbed.sh` does this for the single-node
+  testbed by admitting its Docker bridge networks and the node address.
+
+This is defence in depth: it only takes effect on a CNI that enforces
+`NetworkPolicy` (k3s's built-in controller does; some managed clusters ship a
+CNI that ignores it), so it is a second layer, not the sandbox's only control.
 
 ## Inspect a deployment
 

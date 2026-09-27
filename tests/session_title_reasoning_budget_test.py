@@ -48,7 +48,7 @@ async def test_platform_label_requests_explicitly_disable_reasoning(operation: s
         assert body["reasoning_effort"] == "none"
         assert "chat_template_kwargs" not in body
         content = (
-            "检索并核对行业文章"
+            json.dumps({"label": "检索并核对行业文章"}, ensure_ascii=False)
             if operation == "process"
             else json.dumps({"title": "行业文章检索", "should_generate": True})
         )

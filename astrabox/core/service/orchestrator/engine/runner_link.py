@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable, Collection
+from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -32,8 +32,31 @@ logger = get_logger(__name__)
 RUNNER_PROTOCOL = "astrabox.runner-wire.v1"
 
 
+#: The file in the seat's home the platform writes the runner's credential
+#: into before its first prepare. The runner's launchers name the same file in
+#: ``ASTRABOX_RUNNER_TOKEN_FILE``: `containers/sandbox-claude-code/start-runner.sh`
+#: and the adapter's shared-sandbox launch line.
+RUNNER_TOKEN_FILE_NAME = ".astrabox-runner-token"
+
+
 class RunnerLinkError(Exception):
     """Protocol violation or runner-reported error. Fail loud."""
+
+
+def runner_activation_token(
+    sandbox_id: str, runtime_identity: Mapping[str, Any] | None
+) -> str:
+    """The token one box seat's runner accepts on prepare, activate and attach."""
+
+    from astrabox.core.service.orchestrator.engine.provisioning import (
+        in_box_service_token,
+    )
+
+    return in_box_service_token(
+        purpose="claude-runner",
+        sandbox_id=sandbox_id,
+        runtime_identity=runtime_identity,
+    )
 
 
 class _InputAckConnectionLost(Exception):
@@ -110,15 +133,27 @@ def _validate_runner_engine_contract(
 
 
 class RunnerLink:
-    """One websocket to one box's runner. Use as an async context manager."""
+    """One websocket to one box's runner. Use as an async context manager.
+
+    ``activation_token`` is the credential every opening frame carries:
+    prepare installs it in the runner, and activate and attach must present
+    it again. The caller derives it (:func:`runner_activation_token`), so a
+    reconnect — this link's own reattach, or a new link after a server
+    restart — presents the same value without anyone storing it.
+    """
 
     def __init__(
         self,
         uri: str,
         *,
+        activation_token: str,
         persistent_event_handler: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     ) -> None:
+        token = str(activation_token or "").strip()
+        if not token:
+            raise RunnerLinkError("runner link requires an activation token")
         self._uri = uri
+        self._activation_token = token
         self._persistent_event_handler = persistent_event_handler
         self._ws: Any = None
         self._recv_task: asyncio.Task[None] | None = None
@@ -228,7 +263,6 @@ class RunnerLink:
         self,
         slot_id: str,
         *,
-        activation_token: str,
         options: dict[str, Any] | None = None,
         claimed_by: str | None = None,
         store: dict[str, Any] | None = None,
@@ -246,9 +280,6 @@ class RunnerLink:
         target = str(slot_id or "").strip()
         if not target:
             raise RunnerLinkError("prepare requires slot_id")
-        token = str(activation_token or "").strip()
-        if not token:
-            raise RunnerLinkError("prepare requires activation_token")
         resolved_options = dict(options or {})
         claimant = str(claimed_by or "").strip()
         if str(resolved_options.get("resume") or "").strip() and not (
@@ -273,7 +304,7 @@ class RunnerLink:
         frame = {
             "op": "prepare",
             "slot_id": target,
-            "activation_token": token,
+            "activation_token": self._activation_token,
             "options": resolved_options,
             "engine_requirements": requirements,
             **({"claimed_by": claimant} if claimant else {}),
@@ -296,7 +327,6 @@ class RunnerLink:
         slot_id: str,
         session_id: str,
         *,
-        activation_token: str,
         store: dict[str, Any] | None = None,
         death_notice: dict[str, Any] | None = None,
         required_option_keys: Collection[str] | None = None,
@@ -309,9 +339,6 @@ class RunnerLink:
         target_slot = str(slot_id or "").strip()
         if not target_slot:
             raise RunnerLinkError("activate requires slot_id")
-        token = str(activation_token or "").strip()
-        if not token:
-            raise RunnerLinkError("activate requires activation_token")
         requirements = (
             dict(self._opening_engine_requirements)
             if required_option_keys is None
@@ -327,7 +354,7 @@ class RunnerLink:
         return await self._open_session({
             "op": "activate",
             "slot_id": target_slot,
-            "activation_token": token,
+            "activation_token": self._activation_token,
             "session_id": session_id,
             "permission_mode": activation_mode,
             "mcp_servers": [
@@ -353,7 +380,6 @@ class RunnerLink:
         # composite at the host API avoids duplicating a fresh-session flow;
         # there is no ``configure`` operation on the wire.
         slot_id = f"direct-{uuid.uuid4().hex}"
-        activation_token = uuid.uuid4().hex + uuid.uuid4().hex
         resolved_options = dict(options or {})
         if "resume_transcript" in resolved_options:
             raise RunnerLinkError(
@@ -380,7 +406,6 @@ class RunnerLink:
             }
         await self.prepare(
             slot_id,
-            activation_token=activation_token,
             options=resolved_options,
             claimed_by=session_id,
             store=store,
@@ -389,7 +414,6 @@ class RunnerLink:
         return await self.activate(
             slot_id,
             session_id,
-            activation_token=activation_token,
             store=store,
             death_notice=death_notice,
         )
@@ -420,6 +444,7 @@ class RunnerLink:
         )
         return await self._open_session({
             "op": "attach",
+            "activation_token": self._activation_token,
             "session_id": session_id,
             "last_seen_seq": last_seen_seq,
             "engine_requirements": requirements,

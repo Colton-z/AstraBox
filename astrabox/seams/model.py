@@ -95,6 +95,28 @@ class ModelEndpointProvider(ABC):
         its own configuration is missing rather than degrade to passthrough.
         """
 
+    def server_endpoint(self, *, settings: Any = None) -> ModelEndpoint:
+        """Return the address and credential for the AstraBox server's own requests.
+
+        Conversation titles and process summaries are completions the AstraBox
+        server makes itself. :meth:`resolve` answers for a sandbox instead,
+        whose gateway address can be a name only the sandbox's egress DNS
+        resolves and whose credential can be held by its egress sidecar, so
+        neither is usable from the server process.
+
+        ``base_url`` and ``api_key`` are required; ``model_name`` stays
+        ``None`` because the caller selects the route. Raise
+        :class:`ModelEndpointConfigurationError` when the configuration does
+        not determine them. This default raises, because a provider that
+        declares no server-side endpoint has none the platform could reach.
+        """
+
+        _ = settings
+        raise ModelEndpointConfigurationError(
+            f"model endpoint provider {self.name!r} declares no server-side "
+            "endpoint for the AstraBox server's own model requests"
+        )
+
     def list_models(self, *, provider_access: Any = None, settings: Any = None) -> list[str]:
         """The model ids the console can offer for an agent on this gateway.
 

@@ -161,6 +161,7 @@ async function runSupersededQuestion(request: APIRequestContext, fault: 'sandbox
       name: `__e2e_channel_exited_ask_${runId}`,
       model,
       environment_name: environmentName,
+      prewarm_enabled: false,
     });
   agentId = String(agent.agent_id || '').trim();
   const deployment = await platform.createDeployment(agentId, {

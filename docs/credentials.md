@@ -22,6 +22,17 @@ Agents often need to access third-party services — GitHub, Jira, databases, or
 - Credentials are available only to assigned workloads. Agent preparation also
   uses assigned HTTP Basic credentials to download private Skills and Plugins
   before a Session exists.
+- Only an administrator assigns a Vault to an Agent or Assistant. Whoever
+  authors the Agent chooses which MCP URLs it calls, but a Credential is
+  attached only to requests for the destination it is bound to. An Agent's own
+  MCP server definition cannot set `provider` or `credential_target_url`: those
+  fields select the platform's gateway credential or point a Credential at
+  another URL, and only an administrator's MCP catalog assignment sets them.
+  A definition that sets either is refused with `AGENT_MCP_FIELD_RESERVED`
+  (403).
+- Repository deploy keys are deployment secrets, not Vault Credentials. An
+  Agent can name only the ones an administrator lists; see
+  [Access GitHub](working-with-repos.md#who-may-use-which-credentials).
 
 ## End-to-end flow
 

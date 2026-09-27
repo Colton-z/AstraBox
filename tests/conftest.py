@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import subprocess
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -196,3 +198,55 @@ def _default_transcript_signing_key() -> object:
             os.environ.pop("ASTRABOX_TRANSCRIPT_SIGNING_KEY", None)
         else:
             os.environ["ASTRABOX_TRANSCRIPT_SIGNING_KEY"] = original
+
+
+_SQL_ENGINE_MODULE = "astrabox.persistence.repository.sqlite.engine"
+
+
+@pytest.fixture(autouse=True)
+def _dispose_sql_engines_the_test_opened() -> Iterator[None]:
+    """Close the SQL pools a test opened, whichever fixture chose its database.
+
+    The store caches one engine per database URL for the life of the process,
+    which fits a server with one database. A test that points the store at its
+    own directory creates a new URL, and without disposal every pooled
+    connection keeps its database, WAL and shared-memory descriptors open until
+    the run ends. Across the suite that exhausts the process's descriptor limit,
+    and unrelated later tests fail to open files. Engines that existed before
+    the test, such as ones a wider-scoped fixture opened, are left alone.
+    """
+    engines = sys.modules.get(_SQL_ENGINE_MODULE)
+    before = set(engines._ENGINES) if engines is not None else set()
+    yield
+    engines = sys.modules.get(_SQL_ENGINE_MODULE)
+    if engines is None:
+        return
+    opened = sorted({url for url, mode in engines._ENGINES if (url, mode) not in before})
+    for url in opened:
+        # The test's event loop is closed by now; aiosqlite and asyncpg close
+        # a connection from whichever loop awaits the close.
+        asyncio.run(engines.dispose_engines(url))
+
+
+#: The installation id the general suite runs as. Outside tests the id is read
+#: from the installation's database on first use; tests that create or reap
+#: sandboxes without a database need it answered the same way.
+TEST_SANDBOX_INSTALLATION_ID = "unit-test-installation"
+
+
+@pytest.fixture(autouse=True)
+def _sandbox_installation_id() -> Iterator[None]:
+    """Answer :func:`sandbox_installation_id` with the suite's id, then restore."""
+    from astrabox.seams import sandbox as sandbox_seam
+
+    loader, cached = sandbox_seam._INSTALLATION_LOADER, sandbox_seam._INSTALLATION_ID
+
+    async def _load() -> str:
+        return TEST_SANDBOX_INSTALLATION_ID
+
+    sandbox_seam.set_sandbox_installation_loader(_load)
+    try:
+        yield
+    finally:
+        sandbox_seam._INSTALLATION_LOADER = loader
+        sandbox_seam._INSTALLATION_ID = cached

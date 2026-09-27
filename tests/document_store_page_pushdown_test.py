@@ -151,6 +151,49 @@ def test_a_page_does_not_parse_the_documents_behind_it(store) -> None:
     asyncio.run(run())
 
 
+def test_a_keyset_page_does_not_parse_the_rows_before_its_cursor(store) -> None:
+    """A page that resumes after a key costs a page, wherever the key is.
+
+    The keyset condition is a range on the sort keys. Left to the matcher, the
+    ordered read streams every row before the cursor only to reject it, so the
+    last page of a list costs the whole list. The caller declared the sort keys
+    strings, so the range narrows in SQL too.
+    """
+
+    async def run() -> None:
+        docs = [
+            {"_id": f"a{index:04d}", "name": f"agent-{index:04d}", "agent_id": f"a{index:04d}"}
+            for index in range(1000)
+        ]
+        coll = await _seed(store, "agents", docs)
+        seen = [0]
+        real_matches = collection_module.matches
+
+        def counting_matches(doc: dict[str, Any], query: dict[str, Any]) -> bool:
+            seen[0] += 1
+            return real_matches(doc, query)
+
+        after = ("agent-0899", "a0899")
+        query = {
+            "$or": [
+                {"name": {"$gt": after[0]}},
+                {"name": after[0], "agent_id": {"$gt": after[1]}},
+            ]
+        }
+        collection_module.matches = counting_matches  # type: ignore[assignment]
+        try:
+            rows = await (
+                coll.find(query).sort([("name", 1), ("agent_id", 1)], string_keyed=True).limit(20)
+            ).to_list()
+        finally:
+            collection_module.matches = real_matches  # type: ignore[assignment]
+
+        assert [row["name"] for row in rows] == [f"agent-{index:04d}" for index in range(900, 920)]
+        assert seen[0] <= 20, f"a twenty-row page after row 900 examined {seen[0]} documents"
+
+    asyncio.run(run())
+
+
 def test_an_unmarked_sort_still_takes_the_python_path(store) -> None:
     """Without the caller's statement the order stays in Python.
 

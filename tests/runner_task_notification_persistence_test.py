@@ -243,7 +243,7 @@ async def test_uncommitted_engine_message_cannot_be_compacted(
     assert sender.first_retained_seq == result_sequence
 
 
-async def test_post_result_task_notification_persists_and_settles_manifest() -> None:
+async def test_post_result_task_notification_persists_and_settles_manifest(tmp_path) -> None:
     """The resident SDK pump, not a parent transcript line, closes the task."""
 
     journal = _JournalRepo()
@@ -258,10 +258,18 @@ async def test_post_result_task_notification_persists_and_settles_manifest() -> 
             activation_callback=lambda target, store: store_bindings.append((target, store)),
         )
 
-    server = RunnerWsServer(host="127.0.0.1", port=0, session_factory=factory)
+    token_file = tmp_path / ".astrabox-runner-token"
+    token_file.write_text("host-activation-token", encoding="utf-8")
+    server = RunnerWsServer(
+        host="127.0.0.1",
+        port=0,
+        session_factory=factory,
+        activation_token_file=str(token_file),
+    )
     await server.start()
     link = RunnerLink(
         f"ws://127.0.0.1:{server.port}/",
+        activation_token="host-activation-token",
         persistent_event_handler=_runner_event_persister(
             "platform-session",
             event_sink=PlatformEngineEventSink(

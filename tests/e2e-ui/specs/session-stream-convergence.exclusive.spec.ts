@@ -47,6 +47,7 @@ interface StreamConnection {
   raw: string;
   /** The bytes handed on to the application. */
   delivered: string;
+  headersDelivered: boolean;
   held: boolean;
   upstreamClosed: boolean;
   closed: boolean;
@@ -67,7 +68,9 @@ type HoldWindow = Window & typeof globalThis & {
  *
  * The page's transport calls `globalThis.fetch`, so wrapping `window.fetch`
  * before the app's first script puts this between the backend and the AI SDK
- * parser. The response object the app receives carries the backend's own
+ * parser. Headers wait at the same gate so the application's body-silence
+ * watchdog starts only when delivery begins, after the real turns are written.
+ * The response object the app receives carries the backend's own
  * status, statusText and headers; the body re-emits the backend's own chunks.
  * A held connection keeps READING the backend — its terminal really arrives and
  * really closes the upstream — and only the handover waits.
@@ -135,13 +138,15 @@ async function installSessionStreamHold(page: Page, sessionId: string): Promise<
         contentType: response.headers.get('content-type') || '',
         raw: '',
         delivered: '',
-        // The source holds the replacement stream during its window checks.
-        held: state.connections.length > 0,
+        headersDelivered: false,
+        // Both the first response and its replacement wait for explicit release.
+        held: true,
         upstreamClosed: false,
         closed: false,
       };
       state.connections.push(record);
       if (response.status !== 200 || !record.contentType.includes('text/event-stream') || !response.body) {
+        record.headersDelivered = true;
         record.upstreamClosed = true;
         record.closed = true;
         return response;
@@ -189,6 +194,8 @@ async function installSessionStreamHold(page: Page, sessionId: string): Promise<
           await reader.cancel(reason);
         },
       });
+      await gate;
+      record.headersDelivered = true;
       return new Response(body, {
         status: response.status,
         statusText: response.statusText,
@@ -386,6 +393,7 @@ test('terminal convergence keeps the reading window and holds the next stream un
 
     const withheld = await streamConnections(page);
     expect(withheld, 'a withheld terminal must not make the page open another subscription').toHaveLength(subscriptionsBefore);
+    expect(withheld[armed.id].headersDelivered, 'the held response must not start body liveness yet').toBe(false);
     expect(
       withheld[armed.id].delivered,
       'nothing of the withheld response may reach the page yet',
@@ -460,6 +468,7 @@ test('terminal convergence keeps the reading window and holds the next stream un
         'the page must consume exactly the withheld real response bytes',
       ).toBe(afterRelease[armed.id].raw);
       expect(afterRelease[armed.id].closed).toBe(true);
+      expect(afterRelease[armed.id].headersDelivered).toBe(true);
       expect(historyRequests.length, 'the terminal must produce exactly one convergence read').toBe(historyReadsBefore + 1);
 
       const envelope = JSON.parse(convergenceBody) as { code: string; data: MessagePage };
@@ -553,6 +562,7 @@ test('terminal convergence keeps the reading window and holds the next stream un
           contentType: connection.contentType,
           rawBytes: connection.raw.length,
           deliveredBytes: connection.delivered.length,
+          headersDelivered: connection.headersDelivered,
           held: connection.held,
           upstreamClosed: connection.upstreamClosed,
           closed: connection.closed,

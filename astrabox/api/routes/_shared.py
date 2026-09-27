@@ -48,6 +48,20 @@ from astrabox.api.routes.http_common import (
 logger = get_logger(__name__)
 
 
+def list_page_limit(raw: str | None, *, default: int = 50, maximum: int = 100) -> int:
+    """A list page's ``limit`` query parameter, clamped to ``1..maximum``."""
+
+    try:
+        value = int(str(raw).strip()) if raw not in (None, "") else default
+    except ValueError as exc:
+        raise APIError(
+            code="INVALID_REQUEST",
+            message="limit must be a whole number",
+            status_code=400,
+        ) from exc
+    return min(max(value, 1), maximum)
+
+
 # --------------------------------------------------------------------------- #
 # Lazy platform-service accessor                                                #
 # --------------------------------------------------------------------------- #

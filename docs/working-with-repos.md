@@ -18,10 +18,11 @@ Start a new Session when you need a separate checkout.
 
 ## Workflow
 
-1. **Prepare repository access.** For a private default repository, create an
-   SSH deploy key that grants the repository permissions required for the task
-   — read, write, and so on. Store the private key in the AstraBox service
-   environment.
+1. **Prepare repository access.** For a private default repository, an
+   administrator creates an SSH deploy key that grants the repository
+   permissions required for the task — read, write, and so on — stores the
+   private key in the AstraBox service environment, and lists its secret name
+   in `ASTRABOX_DEPLOY_KEY_SECRET_NAMES`.
 2. **Configure the repository on the Agent.** Add the SSH URL and Deploy Key
    secret name under **Project repository**. For one public-repository task,
    send the HTTPS URL in the user message instead.
@@ -45,7 +46,7 @@ under **Project repository**:
 | --- | --- | --- | --- |
 | `url` | string | Yes | SSH repository URL, for example `git@github.com:your-org/your-repo.git`. |
 | `protocol` | string | No | Use `ssh` for the default repository. It is the current runtime-supported protocol. |
-| `deploy_key_secret_name` | string | Yes | Logical name of the environment secret containing the SSH private key. |
+| `deploy_key_secret_name` | string | Yes | Logical name of the environment secret containing the SSH private key. It must be listed in `ASTRABOX_DEPLOY_KEY_SECRET_NAMES`. |
 | `branch` | string | No | Branch or tag to clone. Omission uses the repository default. |
 | `depth` | integer | No | Positive shallow-clone depth. Omission clones full history. |
 
@@ -54,6 +55,32 @@ The checkout is placed in the Session working directory before the first turn.
 :::note
 `deploy_key_secret_name` stores only a logical secret name on the Agent. The private key is read on the AstraBox server when the checkout is prepared and is never returned by the Agent API.
 :::
+
+## Who may use which credentials {#who-may-use-which-credentials}
+
+Any signed-in user may create an Agent, and its fields decide what the sandbox
+clones and connects to. An Agent can therefore use only what an administrator
+made available:
+
+- **Deploy keys.** `deploy_key_secret_name` resolves only a name listed in
+  `ASTRABOX_DEPLOY_KEY_SECRET_NAMES`. Any other name is refused when the Agent
+  is saved, with `AGENT_DEPLOY_KEY_NOT_ALLOWED` (403), and again before a
+  sandbox is prepared. The server's other environment variables cannot be
+  named as a deploy key. The value must be a PEM or OpenSSH private key.
+- **Key lifetime in the sandbox.** The deploy key is written to the Session
+  user's `~/.ssh/id_ed25519` for the clone and stays there for later pushes.
+  When the clone fails, the key is removed.
+- **Private HTTPS repositories.** A Plugin or Skill repository declared with an
+  HTTPS URL never receives a deployment-wide token. Use an `http_basic`
+  Credential assigned to the Agent; the sandbox's egress proxy adds it outside
+  the sandbox. See [Authenticate with Vaults](credentials.md#2-add-a-credential).
+- **Repository hosts in a limited Environment.** Plugin and Skill Git hosts join
+  a limited Environment's allowed hosts only when they are public internet
+  addresses or the Environment already lists them. A private, loopback or
+  link-local address, or a name that resolves to one or does not resolve, is
+  refused with `AGENT_EGRESS_HOST_REFUSED` (403). To use a Git server on your
+  own network, an administrator adds its host, IP or CIDR to the Environment's
+  allowed hosts.
 
 ## Configure a GitHub repository on an Agent
 
@@ -103,19 +130,23 @@ The default repository uses an SSH deploy key. Create one key per repository and
 ssh-keygen -t ed25519 -f astrabox-deploy -N ""
 ```
 
-Add `astrabox-deploy.pub` to the GitHub repository as a deploy key. Store the private key in the AstraBox service environment. Logical names are converted to uppercase and hyphens become underscores, so `your-repo-deploy-key` reads `YOUR_REPO_DEPLOY_KEY`:
+Add `astrabox-deploy.pub` to the GitHub repository as a deploy key. Store the private key in the AstraBox service environment, and list its logical name in `ASTRABOX_DEPLOY_KEY_SECRET_NAMES` (comma-separated) so Agents may use it. Logical names are converted to uppercase and hyphens become underscores, so `your-repo-deploy-key` reads `YOUR_REPO_DEPLOY_KEY`:
 
 ```yaml
 services:
   server:
     environment:
+      ASTRABOX_DEPLOY_KEY_SECRET_NAMES: your-repo-deploy-key
       YOUR_REPO_DEPLOY_KEY: |
         -----BEGIN OPENSSH PRIVATE KEY-----
         ...
         -----END OPENSSH PRIVATE KEY-----
 ```
 
-Some sandbox backends allow HTTP/HTTPS egress but not SSH. For those backends, AstraBox translates the clone to HTTPS and uses the deployment secret named by `ASTRABOX_GIT_HTTPS_TOKEN_SECRET_NAME`.
+Every Agent author on the deployment may use a listed key, so list only keys
+whose repository access you would give each of them.
+
+Some sandbox backends allow HTTP/HTTPS egress but not SSH. For those backends, AstraBox translates an SSH clone to HTTPS and uses the deployment secret named by `ASTRABOX_GIT_HTTPS_TOKEN_SECRET_NAME`, only for the Git host in `ASTRABOX_GIT_HTTPS_TOKEN_HOST`; a repository on any other host is refused. The two settings are set together, and AstraBox refuses to start with them on a backend that clones over SSH, where no clone would use the token.
 
 ### Recommended permissions
 

@@ -15,7 +15,6 @@ same product without a core-code allowlist.
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import uuid
 from dataclasses import dataclass
@@ -24,6 +23,12 @@ from typing import Any, Callable
 
 from astrabox.persistence.repository.assistant_catalog_repository import (
     AssistantCatalogRepository,
+)
+from astrabox.persistence.repository.keyset import (
+    InvalidListCursor,
+    decode_list_cursor,
+    encode_list_cursor,
+    read_filtered_page,
 )
 from astrabox.persistence.repository.session_repository import SessionRepository
 from astrabox.common.logger.logger_factory import get_logger
@@ -44,12 +49,34 @@ from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.settings import load_astrabox_settings
 from astrabox.common.utils.time_utils import parse_iso, utcnow_iso
 from astrabox.common.utils.user_context import UserContext
+from astrabox.core.service.orchestrator.agent_access import assert_may_author
+from astrabox.core.service.orchestrator.author_boundary import (
+    validate_author_declarations,
+)
 from astrabox.core.service.orchestrator.assistant.assistant_workspace_service import (
     AssistantWorkspaceService,
 )
 from astrabox.seams.sandbox_disposal import SandboxDestruction, may_sever_last_name
 
 logger = get_logger(__name__)
+
+#: The workspace narrowings the Assistant list page accepts.
+ASSISTANT_LIST_STATUSES = frozenset({"all", "ready", "dormant"})
+_ASSISTANT_LIST_CURSOR_KEYS = ("updated_at", "assistant_id")
+
+
+def _assistant_matches(row: dict[str, Any], *, needle: str, status: str) -> bool:
+    """Whether a listed Assistant passes the list page's search and status narrowing."""
+
+    ready = row.get("workspace_state") == "READY"
+    if (status == "ready" and not ready) or (status == "dormant" and ready):
+        return False
+    if not needle:
+        return True
+    return any(
+        needle in str(row.get(field) or "").lower()
+        for field in ("display_name", "assistant_id", "environment_name", "engine_kind")
+    )
 
 # Engine validity comes from the single matrix (domain-model.md §2).
 _IMMUTABLE_AFTER_MATERIALIZE = frozenset({"engine_kind", "environment_name", "owner_id"})
@@ -75,6 +102,65 @@ class AssistantWorkspaceAcquisition:
     workspace: dict[str, Any]
     owns_materialization: bool
     response: dict[str, Any]
+
+
+#: The one key an Assistant's model override has a reader for:
+#: ``AgentConfigService._resolve_assistant_harness`` takes the model from it.
+_MODEL_CONFIG_OVERRIDE_KEYS = frozenset({"model_name"})
+
+
+def _normalize_system(value: Any) -> str | None:
+    """An Assistant's system prompt, or ``None`` when it sets none.
+
+    The same field an Agent carries: engine-neutral text each adapter applies
+    through its own program's mechanism. Blank means unset, so clearing the
+    field hands the identity back to the Agent program's own default.
+    """
+
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise APIError(
+            code="ASSISTANT_INVALID",
+            message="system must be a string or null",
+            status_code=400,
+        )
+    return value.strip() or None
+
+
+def _normalize_model_config_override(value: Any) -> dict[str, Any] | None:
+    """Refuse model override keys nothing reads.
+
+    Only ``model_name`` reaches the runtime; any other key was stored and then
+    ignored, so a caller could believe it had configured something it had not.
+    """
+
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise APIError(
+            code="INVALID_REQUEST",
+            message="model_config_override must be an object or null",
+            status_code=400,
+        )
+    unsupported = sorted(set(value) - _MODEL_CONFIG_OVERRIDE_KEYS)
+    if unsupported:
+        raise APIError(
+            code="INVALID_REQUEST",
+            message=(
+                "model_config_override accepts only model_name; unsupported "
+                f"keys: {', '.join(unsupported)}"
+            ),
+            status_code=400,
+        )
+    model_name = value.get("model_name")
+    if model_name is not None and not isinstance(model_name, str):
+        raise APIError(
+            code="INVALID_REQUEST",
+            message="model_config_override.model_name must be a string",
+            status_code=400,
+        )
+    return dict(value)
 
 
 class AssistantService:
@@ -262,6 +348,9 @@ class AssistantService:
     async def create_assistant(
         self, user: UserContext, config: dict[str, Any]
     ) -> dict[str, Any]:
+        assert_may_author(
+            user.roles, admin_only=load_astrabox_settings().authoring_admin_only
+        )
         display_name = str(config.get("display_name") or "").strip()
         environment_name = str(config.get("environment_name") or "").strip()
         if not display_name:
@@ -341,6 +430,13 @@ class AssistantService:
                 "plugin_repos": plugin_repos_override,
             },
         )
+        await validate_author_declarations(
+            owner=f"Assistant {display_name!r}",
+            networking=environment.get("networking"),
+            skills=config.get("skill_manifest_override"),
+            plugin_repos=plugin_repos_override,
+            mcp_servers=config.get("mcp_config_override"),
+        )
         payload = {
             "assistant_id": assistant_id,
             "owner_id": user.user_id,
@@ -350,7 +446,10 @@ class AssistantService:
             "engine_kind": engine_kind,
             "environment_name": environment_name,
             "permission_mode_default": permission_mode_default,
-            "model_config_override": config.get("model_config_override"),
+            "system": _normalize_system(config.get("system")),
+            "model_config_override": _normalize_model_config_override(
+                config.get("model_config_override")
+            ),
             "mcp_config_override": config.get("mcp_config_override"),
             "plugin_repos_override": plugin_repos_override,
             "skill_manifest_override": config.get("skill_manifest_override"),
@@ -359,9 +458,89 @@ class AssistantService:
         return self._sanitize_assistant(created)
 
     async def list_assistants(self, user: UserContext) -> list[dict[str, Any]]:
-        rows, workspaces = await asyncio.gather(
-            self._catalog_repo.list_assistants(),
-            self._workspace_service.list_user_workspaces(user_id=user.user_id),
+        """Every Assistant the caller owns, the most recently edited first."""
+
+        rows = await self._catalog_repo.list_owner_assistants(user.user_id)
+        return await self._with_workspace_state(user, rows)
+
+    async def list_assistants_page(
+        self,
+        user: UserContext,
+        *,
+        limit: int,
+        cursor: str | None = None,
+        query: str = "",
+        status: str = "all",
+    ) -> dict[str, Any]:
+        """One page of the caller's Assistants, the most recently edited first.
+
+        ``query`` matches the display name, id, environment and engine,
+        case-insensitively; ``status`` keeps Assistants whose workspace is
+        ``ready`` or not (``dormant``). Both apply before the page is cut, so a
+        page is short only at the end of the list. The first page (no
+        ``cursor``) also counts every Assistant the caller owns, and how many
+        of their workspaces are ready, whatever the narrowing.
+        """
+
+        if status not in ASSISTANT_LIST_STATUSES:
+            raise APIError(
+                code="INVALID_REQUEST",
+                message=f"status must be one of {sorted(ASSISTANT_LIST_STATUSES)}",
+                status_code=400,
+            )
+        try:
+            after = decode_list_cursor(cursor, _ASSISTANT_LIST_CURSOR_KEYS)
+        except InvalidListCursor as exc:
+            raise APIError(
+                code="INVALID_REQUEST",
+                message="cursor is not one this list returned",
+                status_code=400,
+            ) from exc
+        needle = str(query or "").strip().lower()
+
+        async def _page(after_key: Any, size: int) -> list[dict[str, Any]]:
+            rows = await self._catalog_repo.list_owner_assistants_page(
+                user.user_id, after=after_key, limit=size
+            )
+            # The raw page's length tells read_filtered_page whether the set
+            # ended, so the join keeps every row it was given.
+            return await self._with_workspace_state(user, rows)
+
+        rows, has_more = await read_filtered_page(
+            _page,
+            after=after,
+            key_of=lambda row: (str(row.get("updated_at") or ""), str(row.get("assistant_id") or "")),
+            keep=lambda row: _assistant_matches(row, needle=needle, status=status),
+            limit=limit,
+        )
+        page: dict[str, Any] = {
+            "assistants": rows,
+            "has_more": has_more,
+            "next_cursor": (
+                encode_list_cursor(
+                    {
+                        "updated_at": str(rows[-1].get("updated_at") or ""),
+                        "assistant_id": str(rows[-1].get("assistant_id") or ""),
+                    }
+                )
+                if has_more and rows
+                else None
+            ),
+        }
+        if after is None:
+            owned = await self.list_assistants(user)
+            page["total"] = len(owned)
+            page["ready"] = sum(row.get("workspace_state") == "READY" for row in owned)
+        return page
+
+    async def _with_workspace_state(
+        self, user: UserContext, rows: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Catalog rows as the list renders them, with their workspace joined."""
+
+        workspaces = await self._workspace_service.list_user_workspaces(
+            user_id=user.user_id,
+            assistant_ids=[str((row or {}).get("assistant_id") or "") for row in rows],
         )
         workspace_by_assistant = {
             str(workspace.get("assistant_id") or "").strip(): workspace
@@ -431,12 +610,21 @@ class AssistantService:
                 "icon",
                 "description",
                 "permission_mode_default",
+                "system",
                 "model_config_override",
                 "mcp_config_override",
                 "plugin_repos_override",
                 "skill_manifest_override",
             }
         }
+        if "system" in sanitized_updates:
+            sanitized_updates["system"] = _normalize_system(sanitized_updates["system"])
+        if "model_config_override" in sanitized_updates:
+            sanitized_updates["model_config_override"] = (
+                _normalize_model_config_override(
+                    sanitized_updates["model_config_override"]
+                )
+            )
         if "permission_mode_default" in sanitized_updates:
             sanitized_updates["permission_mode_default"] = (
                 self._resolve_permission_mode_default(
@@ -449,22 +637,41 @@ class AssistantService:
             sanitized_updates["plugin_repos_override"] = normalize_plugin_repos(
                 sanitized_updates["plugin_repos_override"]
             )
+        effective = {
+            platform_name: (
+                sanitized_updates[override_name]
+                if override_name in sanitized_updates
+                else assistant.get(override_name)
+            )
+            for platform_name, override_name in (
+                ("mcp_servers", "mcp_config_override"),
+                ("skills", "skill_manifest_override"),
+                ("plugin_repos", "plugin_repos_override"),
+            )
+        }
         self._validate_engine_configuration(
             str(assistant.get("engine_kind") or "").strip(),
-            {
-                platform_name: (
-                    sanitized_updates[override_name]
-                    if override_name in sanitized_updates
-                    else assistant.get(override_name)
-                )
-                for platform_name, override_name in (
-                    ("mcp_servers", "mcp_config_override"),
-                    ("skills", "skill_manifest_override"),
-                    ("plugin_repos", "plugin_repos_override"),
-                )
-            },
+            effective,
+        )
+        environment_name = str(assistant.get("environment_name") or "").strip()
+        environment = await self._agent_config.get_environment(environment_name)
+        if not environment:
+            raise APIError(
+                code="ASSISTANT_ENVIRONMENT_MISSING",
+                message=f"environment '{environment_name}' not found",
+                status_code=403,
+            )
+        await validate_author_declarations(
+            owner=f"Assistant {str(assistant.get('display_name') or assistant_id)!r}",
+            networking=environment.get("networking"),
+            skills=effective["skills"],
+            plugin_repos=effective["plugin_repos"],
+            mcp_servers=effective["mcp_servers"],
         )
         if sanitized_updates:
+            # The Assistant's definition changed only if an authored field did.
+            if any(assistant.get(key) != value for key, value in sanitized_updates.items()):
+                sanitized_updates["updated_at"] = utcnow_iso()
             await self._catalog_repo.update_assistant(assistant_id, sanitized_updates)
         refreshed = await self._catalog_repo.get_assistant(assistant_id)
         return self._sanitize_assistant(refreshed or assistant)
@@ -590,10 +797,16 @@ class AssistantService:
         provisioning_session_id: str,
         provisioning_sandbox_generation: str,
         sandbox_id: str,
+        configuration_revision: str,
         expires_at: str | None,
         runtime_identity: dict[str, Any] | None,
     ) -> None:
-        """Publish profile readiness and, for the elected Session, owner readiness."""
+        """Publish profile readiness and, for the elected Session, owner readiness.
+
+        ``configuration_revision`` is the Assistant revision the runtime was
+        prepared from, recorded so a later conversation can tell whether that
+        profile still describes the Assistant.
+        """
 
         session_id = str(provisioning_session_id or "").strip()
         resolved_sandbox_id = str(sandbox_id or "").strip()
@@ -625,6 +838,7 @@ class AssistantService:
                 provisioning_session_id=session_id,
                 provisioning_sandbox_generation=provisioning_sandbox_generation,
                 sandbox_id=resolved_sandbox_id,
+                configuration_revision=configuration_revision,
                 expires_at=expires_at,
                 runtime_identity=runtime_identity,
             )
@@ -643,6 +857,7 @@ class AssistantService:
             user_id=user.user_id,
             assistant_id=assistant_id,
             sandbox_id=resolved_sandbox_id,
+            configuration_revision=configuration_revision,
         )
         if not updated:
             raise APIError(

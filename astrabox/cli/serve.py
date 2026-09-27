@@ -31,7 +31,9 @@ import argparse
 import asyncio
 import json
 import os
+import signal
 from pathlib import Path
+from types import FrameType
 from typing import Any
 
 #: Import string for uvicorn's factory mode. Kept as a constant so there is a
@@ -166,10 +168,7 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     :func:`astrabox.api.app.create_app`.
     """
     _guard_unauthenticated_bind(args.host)
-
-    import uvicorn
-
-    uvicorn.run(
+    return _serve_until_stopped(
         APP_FACTORY,
         host=args.host,
         port=args.port,
@@ -177,6 +176,42 @@ def _cmd_serve(args: argparse.Namespace) -> int:
         log_level=args.log_level,
         factory=True,
     )
+
+
+#: The signals uvicorn turns into a graceful shutdown (``uvicorn.server.HANDLED_SIGNALS``
+#: on Linux).
+_STOP_SIGNALS = (signal.SIGTERM, signal.SIGINT)
+
+
+def _stop_requested(_signal_number: int, _frame: FrameType | None) -> None:
+    """End the process as a requested stop: status 0."""
+    raise SystemExit(0)
+
+
+def _serve_until_stopped(app: Any, **uvicorn_kwargs: Any) -> int:
+    """Run uvicorn; a stop signal it shuts down on ends the process with status 0.
+
+    uvicorn handles SIGTERM and SIGINT with a graceful shutdown, then restores
+    the handlers installed before it started and raises the captured signal
+    again (``Server.capture_signals`` in uvicorn 0.52.4), so that the program
+    embedding it decides what the signal means once the server is down. Under
+    Python's default handler that re-raise kills the process with the signal:
+    a ``docker stop`` that shut down cleanly reported status 143 from ``tini``,
+    or 241 once the entry point passed on the negative child status. This
+    installs the handler uvicorn restores, and it ends the process with status
+    0: the stop was requested and completed. A signal that arrives before
+    uvicorn has installed its own handlers ends the process at once, as the
+    default handler would, also as a requested stop. A failed startup or a
+    crash still exits non-zero.
+    """
+    import uvicorn
+
+    previous = {number: signal.signal(number, _stop_requested) for number in _STOP_SIGNALS}
+    try:
+        uvicorn.run(app, **uvicorn_kwargs)
+    finally:
+        for number, handler in previous.items():
+            signal.signal(number, handler)
     return 0
 
 

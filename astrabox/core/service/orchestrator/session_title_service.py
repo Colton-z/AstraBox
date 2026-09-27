@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from typing import Any, Callable
+from urllib.parse import urlsplit
 
 import httpx
 
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.secrets import SecretProvider
-from astrabox.common.utils.settings import load_astrabox_settings
+from astrabox.common.utils.settings import TITLE_MODEL_MAX_TOKENS, load_astrabox_settings
 from astrabox.common.utils.time_utils import utcnow_iso
 from astrabox.core.service.orchestrator.history_blocks import (
     preceding_user_text,
@@ -20,6 +22,11 @@ from astrabox.core.service.orchestrator.runtime.config_resolver import (
 from astrabox.persistence.repository.process_summary_repository import (
     ProcessSummaryRepository,
 )
+from astrabox.seams.model import (
+    ModelEndpoint,
+    ModelEndpointConfigurationError,
+    model_endpoint_for_name,
+)
 
 logger = get_logger(__name__)
 
@@ -28,7 +35,6 @@ TITLE_GENERATION_STATUS_GENERATING = "GENERATING"
 TITLE_GENERATION_STATUS_COMPLETED = "COMPLETED"
 TITLE_GENERATION_STATUS_FAILED = "FAILED"
 TITLE_GENERATION_STATUS_SKIPPED = "SKIPPED"
-_TITLE_MAX_TOKENS = 256
 _TITLE_GENERATION_MAX_USER_TURNS = 3
 _TITLE_DECISION_USER_TURN_LIMIT = 2
 
@@ -96,7 +102,15 @@ _PROCESS_SUMMARY_SYSTEM_PROMPT = (
     "Keep a name or scope the action needs to be understood; list no commands, timings or next steps.\n"
     "Do not address the user and do not claim an action that did not finish.\n"
     "An explicit interruption may be noted briefly, for example 'compared disk usage, scan interrupted'.\n"
-    "Return one line of plain text: no JSON, no field names, no quotes, no markdown."
+    "Return exactly one JSON object and nothing else.\n"
+    "The JSON schema is {\"label\": \"string\"}; the label is one line with no markdown or quotes.\n"
+    "Examples:\n"
+    "User: why does the dashboard load slowly\n"
+    "Process: read nginx.conf; timed GET /api/stats with curl; searched the logs for slow queries\n"
+    "{\"label\":\"Read the nginx config, timed the stats API, searched slow-query logs\"}\n"
+    "User: 这个函数为什么返回空列表\n"
+    "Process: 读取 utils.py；运行单元测试；在代码里搜索 filter 的调用\n"
+    "{\"label\":\"读取 utils.py，运行测试并搜索 filter 调用\"}"
 )
 
 #: The label is one line; anything longer is the model answering instead of
@@ -131,7 +145,7 @@ class TitleModelRequestConfig:
         self.base_url = str(base_url or "").strip()
         self.api_key = str(api_key or "").strip()
         self.model_name = str(model_name or "").strip()
-        self.max_tokens = max(32, int(max_tokens or _TITLE_MAX_TOKENS))
+        self.max_tokens = max(32, int(max_tokens or TITLE_MODEL_MAX_TOKENS))
 
 
 class SessionTitleGenerationError(RuntimeError):
@@ -161,6 +175,93 @@ def _clean_model_title(raw_title: str) -> str:
     return title
 
 
+_LATIN = "Latin"
+#: Unicode character-name prefixes that name a writing system other than the
+#: first word of the name. Everything else is keyed by that first word
+#: (CYRILLIC, GREEK, ARABIC, HEBREW, THAI, DEVANAGARI, ...).
+_WRITING_SYSTEM_PREFIXES = (
+    ("CJK ", "Chinese characters (Han)"),
+    ("IDEOGRAPHIC ", "Chinese characters (Han)"),
+    ("HIRAGANA", "Japanese kana"),
+    ("KATAKANA", "Japanese kana"),
+    ("HALFWIDTH KATAKANA", "Japanese kana"),
+    ("HANGUL", "Korean Hangul"),
+    ("HALFWIDTH HANGUL", "Korean Hangul"),
+    ("LATIN", _LATIN),
+    ("FULLWIDTH LATIN", _LATIN),
+    ("MATHEMATICAL", _LATIN),
+)
+
+
+def _writing_systems(text: str) -> frozenset[str]:
+    """The writing systems of the letters in ``text``, by Unicode character name.
+
+    Only letters count, so digits, operators, punctuation and emoji say
+    nothing. Formula letters (``n``, italic ``𝑛``) count as Latin.
+    """
+
+    systems: set[str] = set()
+    for char in str(text or ""):
+        if not unicodedata.category(char).startswith("L"):
+            continue
+        name = unicodedata.name(char, "")
+        for prefix, system in _WRITING_SYSTEM_PREFIXES:
+            if name.startswith(prefix):
+                systems.add(system)
+                break
+        else:
+            if name:
+                systems.add(name.split(" ", 1)[0].capitalize())
+    return frozenset(systems)
+
+
+def _title_language_instruction(user_text: str) -> str:
+    """Name the writing systems the title may use, from the user's own message.
+
+    The title model writes "the language of the conversation", but a message
+    that is mostly formulas gives it little prose to go on, and a model can
+    then answer in a language the user never wrote. The writing systems in the
+    user's message are a deterministic fact, so the request states them. Latin
+    letters stay allowed everywhere because names and code use them in every
+    language. A message without letters gets no instruction.
+    """
+
+    systems = _writing_systems(user_text)
+    if not systems:
+        return ""
+    others = sorted(systems - {_LATIN})
+    if not others:
+        return (
+            "The user wrote only in Latin script. Write the title in the user's "
+            "language, using Latin letters only.\n"
+        )
+    return (
+        f"Besides Latin letters, the user wrote in: {', '.join(others)}. Write the "
+        "title in the user's language; it may use only these writing systems and "
+        "Latin letters for names or code.\n"
+    )
+
+
+def _require_title_writing_systems(title: str, user_text: str) -> None:
+    """Refuse a title in a writing system the user's message does not use.
+
+    This is what the instruction above asked for, checked after the fact: a
+    model that ignores it produces a recorded failure, never a sidebar title
+    in a language the user did not write. Latin letters are always allowed,
+    and a user message without letters constrains nothing.
+    """
+
+    allowed = _writing_systems(user_text)
+    if not allowed:
+        return
+    foreign = sorted(_writing_systems(title) - allowed - {_LATIN})
+    if foreign:
+        raise SessionTitleGenerationError(
+            f"title model wrote in {', '.join(foreign)}, which the user's message "
+            f"does not use (it uses {', '.join(sorted(allowed))}): {title!r}"
+        )
+
+
 def _parse_title_json(raw_text: str) -> str:
     text = str(raw_text or "").strip()
     if not text:
@@ -175,6 +276,20 @@ def _parse_title_json(raw_text: str) -> str:
     if not isinstance(title, str):
         raise SessionTitleGenerationError("title model json.title must be a string")
     return title
+
+
+def _parse_label_json(raw_text: str) -> str:
+    text = str(raw_text or "").strip()
+    if not text:
+        raise SessionTitleGenerationError("process model returned empty text")
+    try:
+        payload = json.loads(text)
+    except Exception as exc:
+        raise SessionTitleGenerationError(f"process model returned non-json text: {exc}") from exc
+    label = payload.get("label") if isinstance(payload, dict) else None
+    if not isinstance(label, str):
+        raise SessionTitleGenerationError("process model json.label must be a string")
+    return label
 
 
 def _parse_title_decision_json(raw_text: str) -> TitleGenerationDecision:
@@ -203,6 +318,85 @@ def _normalize_chat_completions_base_url(raw_value: str) -> str:
     if lowered.endswith(suffix):
         return value[: -len(suffix)].rstrip("/")
     return value
+
+
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def _endpoint_identity(raw_value: str) -> tuple[str, str, str, str]:
+    """Scheme, host, effective port and path of a chat-completions base URL."""
+
+    parts = urlsplit(_normalize_chat_completions_base_url(raw_value))
+    scheme = parts.scheme.lower()
+    host = str(parts.hostname or "").lower().rstrip(".")
+    try:
+        port = str(parts.port or _DEFAULT_PORTS.get(scheme, ""))
+    except ValueError:
+        # An unparseable port matches no other URL, so it can never be taken
+        # for the gateway's own address.
+        port = f"invalid:{parts.netloc}"
+    return scheme, host, port, parts.path.rstrip("/")
+
+
+def _gateway_credential_refusal(
+    *, title_base_url: str, server_base_url: str, reason: str = ""
+) -> str | None:
+    """Explain why a title base URL may not receive the gateway's credential.
+
+    The server's gateway credential is sent only to the gateway's own
+    server-side address. A title base URL that normalizes to a different
+    scheme, host, port or path needs its own key. Returns ``None`` when the
+    URL is unset or names the gateway itself.
+    """
+
+    if not title_base_url:
+        return None
+    if server_base_url and _endpoint_identity(title_base_url) == _endpoint_identity(
+        server_base_url
+    ):
+        return None
+    gateway = server_base_url or f"unavailable: {reason}"
+    return (
+        f"ASTRABOX_TITLE_MODEL_BASE_URL={title_base_url} is not the model "
+        f"gateway's server-side address ({gateway}), so it requires "
+        "ASTRABOX_TITLE_MODEL_API_KEY or ASTRABOX_TITLE_MODEL_API_KEY_SECRET_NAME. "
+        "The server's gateway credential is sent only to the gateway itself."
+    )
+
+
+def validate_title_model_settings(settings: Any) -> None:
+    """Refuse title settings that would send the gateway credential elsewhere.
+
+    Startup runs this so that a title base URL outside the gateway without a
+    title key fails the deployment instead of every title request. Raises
+    :class:`SessionTitleGenerationError` with the operator's remedy.
+    """
+
+    if not bool(getattr(settings, "title_model_enabled", True)):
+        return
+    title_base_url = _normalize_chat_completions_base_url(
+        str(getattr(settings, "title_model_base_url", "") or "")
+    )
+    has_title_key = bool(
+        str(getattr(settings, "title_model_api_key", "") or "").strip()
+        or str(getattr(settings, "title_model_api_key_secret_name", "") or "").strip()
+    )
+    if not title_base_url or has_title_key:
+        return
+    reason = ""
+    try:
+        server = model_endpoint_for_name(
+            str(getattr(settings, "model_endpoint_provider", "") or "")
+        ).server_endpoint(settings=settings)
+    except ModelEndpointConfigurationError as exc:
+        server, reason = ModelEndpoint(), str(exc)
+    refusal = _gateway_credential_refusal(
+        title_base_url=title_base_url,
+        server_base_url=str(server.base_url or ""),
+        reason=reason,
+    )
+    if refusal:
+        raise SessionTitleGenerationError(refusal)
 
 
 def _extract_chat_completion_content(payload: dict[str, Any]) -> str:
@@ -245,18 +439,52 @@ class ConversationTitleModel:
         self._request_timeout_s = self._settings.title_model_request_timeout_seconds
 
     def resolve_request_config(self) -> TitleModelRequestConfig:
+        """Resolve where the AstraBox server sends title and summary requests.
+
+        The ``title_model`` base URL and credential settings override their
+        counterparts. Any part they leave empty comes from the selected model
+        endpoint provider's server-side endpoint, never from the sandbox-facing
+        model access: that address can resolve only through the sandbox's
+        egress DNS. The provider's credential goes only to the provider's own
+        server-side address; a title base URL anywhere else must bring its own
+        key. ``title_model.model_name`` selects the gateway route; empty
+        selects the deployment's default model, the route its seeded Agents
+        use.
+
+        Raises :class:`SessionTitleGenerationError` when no base URL,
+        credential or model can be determined, or when the only credential
+        available belongs to a different endpoint.
+        """
+
         model_access = self._resolver.resolve_model_access({})
-        title_base_url = str(
-            getattr(self._settings, "title_model_base_url", "") or ""
-        ).strip()
-        base_url = _normalize_chat_completions_base_url(
-            title_base_url or str(model_access.base_url or "")
+        title_base_url = _normalize_chat_completions_base_url(
+            str(getattr(self._settings, "title_model_base_url", "") or "")
         )
+        api_key = self._resolve_title_model_credential()
+        server = ModelEndpoint()
+        reason = ""
+        if not title_base_url or not api_key:
+            try:
+                server = model_endpoint_for_name(
+                    model_access.endpoint_provider
+                ).server_endpoint(settings=self._settings)
+            except ModelEndpointConfigurationError as exc:
+                if not title_base_url:
+                    raise SessionTitleGenerationError(str(exc)) from exc
+                reason = str(exc)
+        server_base_url = str(server.base_url or "")
+        if not api_key:
+            refusal = _gateway_credential_refusal(
+                title_base_url=title_base_url,
+                server_base_url=server_base_url,
+                reason=reason,
+            )
+            if refusal:
+                raise SessionTitleGenerationError(refusal)
+            api_key = str(server.api_key or "").strip()
+        base_url = title_base_url or _normalize_chat_completions_base_url(server_base_url)
         if not base_url:
             raise SessionTitleGenerationError("model base_url not configured")
-        api_key = self._resolve_title_model_credential(
-            fallback=str(model_access.credential or "")
-        )
         if not api_key:
             raise SessionTitleGenerationError("model api key not configured")
         model_name = str(
@@ -268,7 +496,7 @@ class ConversationTitleModel:
             raise SessionTitleGenerationError("model_name not configured")
         max_tokens = max(
             32,
-            int(getattr(self._settings, "title_model_max_tokens", _TITLE_MAX_TOKENS) or _TITLE_MAX_TOKENS),
+            int(getattr(self._settings, "title_model_max_tokens", TITLE_MODEL_MAX_TOKENS) or TITLE_MODEL_MAX_TOKENS),
         )
         return TitleModelRequestConfig(
             base_url=base_url,
@@ -277,7 +505,7 @@ class ConversationTitleModel:
             max_tokens=max_tokens,
         )
 
-    def _resolve_title_model_credential(self, *, fallback: str) -> str:
+    def _resolve_title_model_credential(self) -> str:
         secret_name = str(
             getattr(self._settings, "title_model_api_key_secret_name", "") or ""
         ).strip()
@@ -290,10 +518,7 @@ class ConversationTitleModel:
                 "fallback to the next source",
                 secret_name,
             )
-        configured = str(
-            getattr(self._settings, "title_model_api_key", "") or ""
-        ).strip()
-        return configured or fallback
+        return str(getattr(self._settings, "title_model_api_key", "") or "").strip()
 
     async def generate_title(
         self,
@@ -311,6 +536,7 @@ class ConversationTitleModel:
             "<assistant_message>\n"
             f"{_truncate_middle(assistant_text, 4000)}\n"
             "</assistant_message>\n\n"
+            f"{_title_language_instruction(user_text)}"
             "Generate the conversation title now as JSON:"
         )
         raw_text = await self._complete_json(
@@ -321,6 +547,7 @@ class ConversationTitleModel:
         title = _clean_model_title(_parse_title_json(raw_text))
         if not title:
             raise SessionTitleGenerationError("title model returned empty title")
+        _require_title_writing_systems(title, user_text)
         return title
 
     async def decide_title_generation(
@@ -342,6 +569,7 @@ class ConversationTitleModel:
             "<current_assistant_message>\n"
             f"{_truncate_middle(assistant_text, 4000)}\n"
             "</current_assistant_message>\n\n"
+            f"{_title_language_instruction(user_text)}"
             "Decide whether to generate a saved-chat title now as JSON:"
         )
         raw_text = await self._complete_json(
@@ -355,6 +583,8 @@ class ConversationTitleModel:
             raise SessionTitleGenerationError("title decision model returned empty title")
         if not decision.should_generate:
             title = ""
+        else:
+            _require_title_writing_systems(title, user_text)
         return TitleGenerationDecision(should_generate=decision.should_generate, title=title)
 
     async def generate_process_summary(
@@ -366,30 +596,33 @@ class ConversationTitleModel:
     ) -> str:
         """Name the work inside one folded process in a single line.
 
-        This is a plain-text completion, not a JSON one: the answer is the
-        label itself, and a model asked for an object here spends its budget on
-        the wrapper. Structure in the reply is therefore a rejection reason —
-        braces or a fenced block mean the model answered the conversation
-        instead of naming the operations, which is exactly what the reply below
-        the folded header already does.
+        The label is asked for the way titles are: one JSON field, examples,
+        and a closing instruction after the quoted data. On a route that keeps
+        reasoning, a bare plain-text request let the model answer the user's
+        question at length instead of naming the operations. Structure inside
+        the label is still a rejection reason: braces or a fenced block mean
+        the model answered the conversation, which the reply below the folded
+        header already does.
         """
 
         config = request_config or self.resolve_request_config()
-        user_prompt = json.dumps(
-            {
-                "user": _truncate_middle(user_text, _PROCESS_SUMMARY_USER_TEXT_LIMIT),
-                "process": _truncate_middle(
-                    process_text, _PROCESS_SUMMARY_PROCESS_TEXT_LIMIT
-                ),
-            },
-            ensure_ascii=False,
+        user_prompt = (
+            json.dumps(
+                {
+                    "user": _truncate_middle(user_text, _PROCESS_SUMMARY_USER_TEXT_LIMIT),
+                    "process": _truncate_middle(
+                        process_text, _PROCESS_SUMMARY_PROCESS_TEXT_LIMIT
+                    ),
+                },
+                ensure_ascii=False,
+            )
+            + "\n\nWrite the label for this process now as JSON:"
         )
-        summary = (
-            await self._complete(
+        summary = _parse_label_json(
+            await self._complete_json(
                 config=config,
                 system_prompt=_PROCESS_SUMMARY_SYSTEM_PROMPT,
                 user_prompt=user_prompt,
-                response_format=None,
             )
         ).strip()
         if not summary or len(summary) > _PROCESS_SUMMARY_MAX_CHARS:

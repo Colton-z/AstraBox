@@ -411,7 +411,12 @@ export function patchSessionDoc(sessionId: string, patch: Record<string, unknown
   return patchDocs(COLLECTIONS.sessions, { '$.session_id': sessionId }, patch);
 }
 
-/** Lapse only this still-bound sandbox's lease; never restore a concurrently cleared binding. */
+/**
+ * Lapse only this still-bound sandbox's lease; never restore a concurrently cleared binding.
+ *
+ * The `RETURNING` projection is the read-back: the expiration watcher writes
+ * this row, and realigns a lapsed lease over a live box on its next tick.
+ */
 export function lapseSessionSandboxLease(
   sessionId: string, sandboxId: string, expiresAt: string,
 ): Record<string, unknown>[] {
@@ -638,6 +643,32 @@ export function restampPreparedSlotGeneration(
 
 export function patchSnapshotDoc(sessionId: string, patch: Record<string, unknown>): Record<string, unknown>[] {
   return patchDocs(COLLECTIONS.snapshots, { '$.session_id': sessionId }, patch);
+}
+
+/** Restore only the injected missing address, refusing a changed placement. */
+export function restoreSessionSandboxPointer(original: Record<string, unknown>): void {
+  for (const field of ['session_id', 'agent_id', 'sandbox_id']) {
+    if (typeof original[field] !== 'string' || !String(original[field]).trim()) {
+      throw new Error(`sandbox-pointer repair requires the original ${field}`);
+    }
+  }
+  const identity = ['session_id', 'agent_id', 'isolated_session_id', 'terminal_isolated_session_id']
+    .map((field) => `COALESCE(doc -> ${sqlLiteral(field)}, 'null'::jsonb) = `
+      + `${sqlLiteral(JSON.stringify(original[field] ?? null))}::jsonb`).join(' AND ');
+  const sql = `WITH repaired AS (
+    UPDATE astrabox_documents
+    SET doc = jsonb_set(doc, '{sandbox_id}', ${sqlLiteral(JSON.stringify(original.sandbox_id))}::jsonb, true)
+    WHERE collection = ${sqlLiteral(COLLECTIONS.sessions)} AND ${identity}
+      AND doc ->> 'sandbox_id' IS NULL
+    RETURNING doc
+  ) SELECT doc::text FROM repaired;`;
+  const rows = postgresTextRows(
+    postgresContainerName(), process.env.ASTRABOX_E2E_POSTGRES_DB || 'astrabox',
+    process.env.ASTRABOX_E2E_POSTGRES_USER || 'astrabox', sql, { timeoutMs: 20_000 },
+  );
+  if (rows.length !== 1) {
+    throw new Error(`sandbox-pointer repair expected one unchanged placement for ${original.session_id}, got ${rows.length}`);
+  }
 }
 
 export function restoreDoc(

@@ -1,11 +1,14 @@
 import i18n from '@/i18n';
 
+import type { ListPageQuery } from '@/types';
+
 import type {
   AssistantConversationResult,
+  AssistantListPage,
   AssistantRecord,
   AssistantWorkspaceResult,
 } from './types';
-import { apiClient, sendApi, startConversationRequest } from '../api';
+import { apiClient, listPageQuery, sendApi, startConversationRequest } from '../api';
 
 export async function listAssistants(): Promise<AssistantRecord[]> {
   const data = await sendApi((wire) => apiClient.GET('/api/v1/assistants', wire));
@@ -14,6 +17,21 @@ export async function listAssistants(): Promise<AssistantRecord[]> {
   // catch, while a null passes through to render and takes the page with it.
   throw new Error(
     i18n.t('misc:api_error.malformed_list', {
+      endpoint: '/assistants',
+      got: data === null ? 'null' : typeof data,
+    }),
+  );
+}
+
+/** One page of the caller's Assistants, narrowed and counted by the server. */
+export async function listAssistantsPage(query: ListPageQuery = {}): Promise<AssistantListPage> {
+  const data = await sendApi((wire) => apiClient.GET('/api/v1/assistants', {
+    ...wire,
+    params: { query: listPageQuery(query) },
+  }));
+  if (data && typeof data === 'object' && 'assistants' in data) return data as AssistantListPage;
+  throw new Error(
+    i18n.t('misc:api_error.malformed_record', {
       endpoint: '/assistants',
       got: data === null ? 'null' : typeof data,
     }),
@@ -50,8 +68,8 @@ export function createAssistant(config: Record<string, unknown>): Promise<Assist
 /**
  * Patch an existing assistant's mutable fields. The backend
  * (PATCH /api/v1/assistants/{id}) sanitizes the body to the editable set
- * (display_name / icon / description / permission_mode_default / *_override) and
- * rejects identity fields (engine_kind / template_name) with 409 once the
+ * (display_name / icon / description / permission_mode_default / system /
+ * *_override) and rejects identity fields (engine_kind / template_name) with 409 once the
  * workspace is materialized — so this only ever sends the mutable subset.
  */
 export function updateAssistant(

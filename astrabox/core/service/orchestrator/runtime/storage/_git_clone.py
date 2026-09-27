@@ -3,8 +3,6 @@
 Chooses SSH vs HTTPS per backend (``sandbox_for_sandbox(underlying).requires_https_git``),
 retries a transient egress 403 with linear backoff, and stages a remote-mount clone through
 sandbox-local /tmp when needed. ``_git_clone_with_askpass_command`` has no callers.
-``_normalize_deploy_private_key`` is defined here and imported by its
-underscore-prefixed name from ``engine/hermes.py`` and ``storage/_default_repo.py``.
 """
 
 from __future__ import annotations
@@ -15,7 +13,7 @@ import hashlib
 import re
 import uuid
 import shlex
-from typing import Any, Literal, overload
+from typing import Any
 from urllib.parse import quote, urlsplit, urlunsplit
 
 from astrabox.common.logger.logger_factory import get_logger
@@ -214,11 +212,14 @@ async def _clone_git_repo_in_sandbox(
 ) -> None:
     """Clone a git repo inside a sandbox, adapting source protocol and backend.
 
-    A declared HTTPS repository is cloned over HTTPS on every backend. Public
-    repositories need no credential; when an operator configured the shared Git
-    HTTPS token it is added without exposing it in logs. A declared SSH source
-    keeps using its per-repository deploy key, except on HTTP-only backends where
-    it is translated to HTTPS and therefore requires the configured token.
+    A declared HTTPS repository is cloned over HTTPS on every backend, without
+    the deployment's Git HTTPS token: a token in the clone URL is stored in the
+    checkout's ``.git/config`` inside the sandbox, where the Agent reads it. A
+    private HTTPS source authenticates through an ``http_basic`` Vault
+    credential, which the egress sidecar adds outside the sandbox. A declared
+    SSH source uses its deploy key, which must be one an administrator listed,
+    except on HTTP-only backends where it is translated to HTTPS and therefore
+    requires the token configured for that repository's host.
 
     ``sha`` pins the checkout, and it is done HERE rather than by the caller
     afterwards. A caller's ``git -C target checkout`` rewrites the working tree
@@ -268,14 +269,17 @@ async def _clone_git_repo_in_sandbox(
             status_code=500,
         )
     clone_over_https = declared_protocol == "https" or _underlying_requires_https_git(underlying)
+    key_written = False
+    _key_path = ""
     if clone_over_https:
-        # An explicitly-HTTPS public repository is valid without a token. The
-        # SSH-to-HTTPS fallback is used for repositories configured around a
-        # deploy key, so it still requires the operator's HTTPS credential.
+        # A declared HTTPS repository never receives the deployment token (see
+        # the docstring). The SSH-to-HTTPS translation serves repositories
+        # configured around a deploy key, so it requires the token, and only a
+        # clone of the host that token was configured for may carry it.
         https_token = (
-            _resolve_git_https_token(required=False)
+            None
             if declared_protocol == "https"
-            else _resolve_git_https_token()
+            else _resolve_git_https_token(host=_ssh_url_host(ssh_url))
         )
         # Token embedded in the URL (https://git:<token>@host/path) + plain clone,
         # run as root (not via command_for_identity's runuser); the tree is handed to
@@ -346,17 +350,13 @@ async def _clone_git_repo_in_sandbox(
                 message=f"{label}.deploy_key_secret_name is required for ssh protocol",
                 status_code=500,
             )
-        private_key = SecretProvider.get_secret(deploy_key_secret_name)
-        if not private_key:
-            raise APIError(
-                code=error_code,
-                message=f"failed to resolve deploy key for {label} from secret_name={deploy_key_secret_name!r}",
-                status_code=500,
-            )
-        private_key = _normalize_deploy_private_key(private_key, secret_name=deploy_key_secret_name)
+        private_key = _resolve_author_deploy_key(
+            deploy_key_secret_name, label=label, error_code=error_code
+        )
         encoded_key = base64.b64encode(private_key.encode("utf-8")).decode("ascii")
         _ssh_dir = ssh_key_dir or ("/root/.ssh" if not identity else f"{identity['home_dir'].rstrip('/')}/.ssh")
         _key_path = ssh_key_path or f"{_ssh_dir}/id_ed25519"
+        key_written = True
         setup_cmd = (
             "set -e; "
             f"mkdir -p {shlex.quote(_ssh_dir)} && chmod 700 {shlex.quote(_ssh_dir)} && "
@@ -372,6 +372,7 @@ async def _clone_git_repo_in_sandbox(
         setup_err = getattr(setup_result, "error", None)
         if setup_err:
             setup_stderr = _extract_command_stream_text(setup_result, "stderr").strip()
+            await _remove_deploy_key(underlying, _key_path)
             raise APIError(
                 code=error_code,
                 message=f"failed to write deploy key for {label}: {setup_err}; stderr={setup_stderr!r}",
@@ -422,6 +423,10 @@ async def _clone_git_repo_in_sandbox(
 
     clone_err = _redact_secret_text(getattr(clone_result, "error", None), secret_for_redact)
     if clone_err:
+        if key_written:
+            # A clone that failed does not need its key, and the sandbox's
+            # user must not keep a secret the checkout never used.
+            await _remove_deploy_key(underlying, _key_path)
         clone_stdout = _redact_secret_text(
             _extract_command_stream_text(clone_result, "stdout").strip(), secret_for_redact,
         )
@@ -553,24 +558,37 @@ def _git_clone_with_askpass_command(clone_url: str, target: str, branch: str, de
     )
 
 
-@overload
-def _resolve_git_https_token(*, required: Literal[True] = True) -> str: ...
+def _ssh_url_host(ssh_url: str) -> str:
+    """The host of ``git@host:group/repo.git``, lower-cased; "" when absent."""
+    match = re.fullmatch(r"[^@\s]+@([^:\s]+):.+", str(ssh_url or "").strip())
+    return match.group(1).lower() if match else ""
 
 
-@overload
-def _resolve_git_https_token(*, required: Literal[False]) -> str | None: ...
+def _resolve_git_https_token(*, host: str) -> str:
+    """The deployment's Git HTTPS token, for a clone of the host it belongs to.
 
-
-def _resolve_git_https_token(*, required: bool = True) -> str | None:
+    The token authenticates to the one host named by
+    ``ASTRABOX_GIT_HTTPS_TOKEN_HOST``. A repository on any other host was
+    chosen by an Agent's author, and the token is not theirs to send there.
+    """
     settings = load_astrabox_settings()
     name = str(getattr(settings, "git_https_token_secret_name", "") or "").strip()
     if not name:
-        if not required:
-            return None
         raise APIError(
             code="REPO_MISSING_TOKEN",
             message="git https token secret not configured "
             "(astrabox.git.https_token_secret_name)",
+            status_code=500,
+        )
+    token_host = str(getattr(settings, "git_https_token_host", "") or "").strip().lower()
+    if not host or host.lower() != token_host:
+        raise APIError(
+            code="REPO_MISSING_TOKEN",
+            message=(
+                f"no Git HTTPS token is configured for host {host!r}; the "
+                f"deployment token authenticates only to {token_host!r} "
+                "(ASTRABOX_GIT_HTTPS_TOKEN_HOST)"
+            ),
             status_code=500,
         )
     token = SecretProvider.get_secret(name)
@@ -581,6 +599,49 @@ def _resolve_git_https_token(*, required: bool = True) -> str | None:
             status_code=500,
         )
     return str(token).strip()
+
+
+def _resolve_author_deploy_key(secret_name: str, *, label: str, error_code: str) -> str:
+    """The deploy key an Agent's repository names, once an administrator allowed it.
+
+    The name is checked before anything is read: an unlisted name could be any
+    server environment variable. The value must then be a private key, so a
+    listed name that holds something else is refused before it is written into
+    the sandbox.
+    """
+    from astrabox.core.service.orchestrator.author_boundary import (
+        require_allowed_deploy_key,
+    )
+
+    require_allowed_deploy_key(secret_name, label=label)
+    private_key = SecretProvider.get_secret(secret_name)
+    if not private_key:
+        raise APIError(
+            code=error_code,
+            message=f"failed to resolve deploy key for {label} from secret_name={secret_name!r}",
+            status_code=500,
+        )
+    key = _normalize_deploy_private_key(private_key, secret_name=secret_name)
+    if not re.search(r"^-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----$", key, re.MULTILINE):
+        raise APIError(
+            code="DEFAULT_REPO_INVALID_KEY",
+            message=f"deploy key secret {secret_name!r} is not a PEM or OpenSSH private key",
+            status_code=500,
+        )
+    return key
+
+
+async def _remove_deploy_key(underlying: Any, key_path: str) -> None:
+    """Delete a deploy key written for a clone that did not complete."""
+    if not key_path:
+        return
+    result = await underlying.commands.run(f"rm -f -- {shlex.quote(key_path)}")
+    if getattr(result, "error", None):
+        logger.error(
+            "could not remove deploy key after a failed clone: path=%s error=%s",
+            key_path,
+            getattr(result, "error", None),
+        )
 
 
 def _normalize_deploy_private_key(private_key: str, *, secret_name: str) -> str:

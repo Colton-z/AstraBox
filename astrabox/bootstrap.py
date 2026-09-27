@@ -123,44 +123,38 @@ def _assert_idle_action_is_honored(backend_name: str) -> None:
     )
 
 
-def _assert_box_callback_base_is_reachable() -> None:
-    """Refuse a box-facing callback URL a sandbox Pod cannot route to.
+def _assert_git_https_token_is_honored(backend_name: str) -> None:
+    """Refuse a Git HTTPS token that no clone reads or that names no host.
 
-    ``ASTRABOX_MCP_PROXY_BASE_URL`` is the address the box calls back on for
-    platform MCP, lifecycle notices, and the transcript mirror. Left unset
-    inside a container it is derived as the server container's own Docker-bridge
-    IP, which is correct for the quickstart and wrong for the Kubernetes runtime,
-    where a sandbox is a Pod with no route to the bridge at all.
-
-    Getting it wrong does not fail: it makes every turn pay the box's retry budget
-    against an address nothing answers. The in-box transcript mirror retries 3×30s
-    inside the first turn, so a one-word answer from a fast model takes ~93 s and
-    reads as a slow model rather than as a misconfiguration. This refuses to boot
-    instead.
-
-    An explicitly set value is the operator's to get right and is never second-
-    guessed; an empty one already fails loud downstream where the URL is built.
+    The token is added only when an SSH repository is cloned over HTTPS on a
+    backend that cannot reach Git over SSH, and only to a clone of
+    ``ASTRABOX_GIT_HTTPS_TOKEN_HOST``. On a backend that clones over SSH nothing
+    reads it. Without a host, the host an Agent's author names would decide
+    where the deployment's token goes. Both are refused rather than kept.
     """
-    import os
-
     from astrabox.common.utils.settings import load_astrabox_settings
+    from astrabox.seams.sandbox import sandbox_for_name
 
-    runtime = str(os.environ.get("ASTRABOX_SANDBOX_SERVER_RUNTIME") or "").strip().lower()
-    if runtime != "kubernetes":
+    settings = load_astrabox_settings()
+    name = str(settings.git_https_token_secret_name or "").strip()
+    host = str(settings.git_https_token_host or "").strip()
+    if not name and not host:
         return
-    if str(os.environ.get("ASTRABOX_MCP_PROXY_BASE_URL") or "").strip():
-        return
-    derived = str(load_astrabox_settings().mcp_proxy_base_url or "").strip()
-    if not derived:
+    if not name or not host:
+        raise BootstrapConfigError(
+            "ASTRABOX_GIT_HTTPS_TOKEN_SECRET_NAME and ASTRABOX_GIT_HTTPS_TOKEN_HOST "
+            "are set together: the token authenticates to one Git host, and a "
+            "clone of any other host must not receive it. Set both, or neither."
+        )
+    provider = sandbox_for_name(backend_name)
+    if provider.requires_https_git:
         return
     raise BootstrapConfigError(
-        f"ASTRABOX_MCP_PROXY_BASE_URL is unset, so the box-facing callback base was "
-        f"derived as {derived!r} — this container's own Docker-bridge address. Under "
-        f"ASTRABOX_SANDBOX_SERVER_RUNTIME=kubernetes a sandbox is a Pod and has no "
-        f"route to that, so platform MCP and transcript callbacks would time out "
-        f"inside every turn instead of failing. Set ASTRABOX_MCP_PROXY_BASE_URL to an "
-        f"address the Pod network can reach (the node's own IP and this server's "
-        f"published port, or a Service that fronts it)."
+        f"ASTRABOX_GIT_HTTPS_TOKEN_SECRET_NAME is set, but the {provider.name!r} "
+        f"sandbox backend clones SSH repositories over SSH, so no clone uses the "
+        f"token. Unset it. A private HTTPS Skill or Plugin repository "
+        f"authenticates through an http_basic Vault credential assigned to the "
+        f"Agent."
     )
 
 
@@ -179,6 +173,27 @@ def _assert_model_gateway_https_requirement() -> None:
             settings=settings
         )
     except ModelEndpointConfigurationError as exc:
+        raise BootstrapConfigError(str(exc)) from exc
+
+
+def _assert_title_model_credential_target() -> None:
+    """Refuse a title base URL that could only receive the gateway credential.
+
+    Title and process-summary requests without their own key present the
+    server's model gateway credential, which may go only to the gateway
+    itself. Refusing here names both settings at startup instead of failing
+    every conversation's title.
+    """
+
+    from astrabox.common.utils.settings import load_astrabox_settings
+    from astrabox.core.service.orchestrator.session_title_service import (
+        SessionTitleGenerationError,
+        validate_title_model_settings,
+    )
+
+    try:
+        validate_title_model_settings(load_astrabox_settings())
+    except SessionTitleGenerationError as exc:
         raise BootstrapConfigError(str(exc)) from exc
 
 
@@ -222,7 +237,11 @@ def bootstrap(*, sandbox_backend: str | None = None) -> None:
         load_entry_point_providers,
         register_builtin_providers,
     )
-    from astrabox.seams.sandbox import set_default_sandbox_backend
+    from astrabox.persistence.installation import load_installation_id
+    from astrabox.seams.sandbox import (
+        set_default_sandbox_backend,
+        set_sandbox_installation_loader,
+    )
     from astrabox.seams.storage import set_configured_storage_provider
 
     register_builtin_providers()
@@ -231,6 +250,9 @@ def bootstrap(*, sandbox_backend: str | None = None) -> None:
         sandbox_backend if sandbox_backend is not None else get_settings().sandbox_backend
     )
     set_default_sandbox_backend(effective_backend)
+    # The installation id lives in the database, so it is read on first use,
+    # not here: composing the registries must not need a reachable database.
+    set_sandbox_installation_loader(load_installation_id)
     # Not derived from the sandbox backend: where a workspace lives is a
     # durability decision, not a runtime one, which is why storage is keyed by
     # its own name.
@@ -243,8 +265,9 @@ def bootstrap(*, sandbox_backend: str | None = None) -> None:
         raise BootstrapConfigError(f"workspace routing: {exc}") from exc
     _assert_nas_knobs_are_honored(effective_backend)
     _assert_idle_action_is_honored(effective_backend)
-    _assert_box_callback_base_is_reachable()
+    _assert_git_https_token_is_honored(effective_backend)
     _assert_model_gateway_https_requirement()
+    _assert_title_model_credential_target()
     if not _bootstrapped:
         logger.info("astrabox provider composition bootstrapped")
     _bootstrapped = True

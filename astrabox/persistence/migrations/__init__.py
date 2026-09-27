@@ -163,6 +163,42 @@ async def _v4_retire_transcript_entry_uuid_index(
     logger.info("schema migration dropped index ux_transcript_scope_uuid")
 
 
+async def _v5_key_agents_for_the_list_order(get_collection: GetCollection) -> None:
+    """Give each Agent row stored without it the key the Agent list is ordered by.
+
+    The list pages by ``(_name_key, agent_id)`` and resumes after the last key
+    it read, so a row without the key would sort first and never match a
+    resume condition: it would drop out of the list without an error. Every
+    write through ``AgentRepository`` sets the key with the name, so only rows
+    stored before the key existed need it. Rows that already carry one are left
+    alone, which makes a repeated run a no-op.
+    """
+    from astrabox.common.utils.settings import load_astrabox_settings
+    from astrabox.persistence.repository.agent_repository import (
+        NAME_SORT_KEY_FIELD,
+        agent_name_sort_key,
+    )
+
+    collection = await get_collection(load_astrabox_settings().agents_collection)
+    keyless = [
+        document
+        async for document in collection.find(
+            {NAME_SORT_KEY_FIELD: {"$exists": False}},
+            projection={"_id": 1, "agent_id": 1, "name": 1},
+        )
+    ]
+    keyed = 0
+    for document in keyless:
+        agent_id = str(document.get("agent_id") or "").strip()
+        identity = {"agent_id": agent_id} if agent_id else {"_id": document.get("_id")}
+        result = await collection.update_one(
+            {**identity, NAME_SORT_KEY_FIELD: {"$exists": False}},
+            {"$set": {NAME_SORT_KEY_FIELD: agent_name_sort_key(document.get("name"))}},
+        )
+        keyed += int(getattr(result, "modified_count", 0) or 0)
+    logger.info("schema migration keyed %d Agent row(s) for the list order", keyed)
+
+
 MIGRATIONS: list[Migration] = [
     Migration(
         1,
@@ -183,6 +219,11 @@ MIGRATIONS: list[Migration] = [
         4,
         "retire the transcript entry-uuid unique index superseded by batch identity",
         _v4_retire_transcript_entry_uuid_index,
+    ),
+    Migration(
+        5,
+        "key Agent rows stored before the Agent list's case-insensitive order",
+        _v5_key_agents_for_the_list_order,
     ),
 ]
 

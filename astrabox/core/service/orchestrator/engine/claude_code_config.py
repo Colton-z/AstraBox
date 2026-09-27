@@ -337,13 +337,20 @@ def build_claude_options_kwargs(
         options_kwargs["resume"] = resume
 
     apply_claude_engine_options(options_kwargs, template)
+    # Claude Code's own system prompt goes with its own tool preset. The SDK
+    # turns a missing system_prompt into `--system-prompt ""`, which runs the
+    # CLI with an empty prompt, so the preset is always named. The Agent's
+    # instructions go where the vendor takes additions, the preset's `append`.
+    system_prompt: dict[str, Any] = {"type": "preset", "preset": "claude_code"}
     system_instructions = str(getattr(template, "system", None) or "").strip()
     if system_instructions:
-        options_kwargs["system_prompt"] = {
-            "type": "preset",
-            "preset": "claude_code",
-            "append": system_instructions,
-        }
+        system_prompt["append"] = system_instructions
+    if slot_scope:
+        # A prepared slot is spawned before its Session exists. The vendor's
+        # `exclude_dynamic_sections` moves the preset's per-Session sections
+        # (working directory, memory, git status) into the first input.
+        system_prompt["exclude_dynamic_sections"] = True
+    options_kwargs["system_prompt"] = system_prompt
     max_buffer_size = options_kwargs.get("max_buffer_size")
     if (
         isinstance(max_buffer_size, bool)

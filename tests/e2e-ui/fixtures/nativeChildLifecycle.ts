@@ -30,6 +30,7 @@ export interface NativeChildTool extends NativeCall {
   nativeThreadId?: string;
   nativeSessionCwd?: string;
   completedCommand?: Record<string, unknown>;
+  recordedFunctionOutput?: string;
 }
 
 function objects(value: unknown): Record<string, unknown>[] {
@@ -82,6 +83,15 @@ export function childToolEvidence(
         ...call, completedCommand: item,
         result: { output: item.aggregated_output, isError: item.status !== 'completed' || item.exit_code !== 0 },
       });
+    }
+    for (const row of rows) {
+      if (!children.has(row.subpath) || row.entry.type !== 'response_item') continue;
+      const payload = row.entry.payload as Record<string, unknown> | undefined;
+      if (payload?.type !== 'function_call_output' || typeof payload.call_id !== 'string'
+          || typeof payload.output !== 'string') continue;
+      const key = `${String(children.get(row.subpath)!.id)}:${payload.call_id}`;
+      const call = tools.get(key);
+      if (call) tools.set(key, { ...call, recordedFunctionOutput: payload.output });
     }
     // Native thread/read documents provide an additional presentation check
     // when journaled; they are not required to prove either lifecycle stage.

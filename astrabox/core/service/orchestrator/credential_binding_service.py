@@ -28,6 +28,30 @@ _HOLDERS_NAMED = 3
 logger = get_logger(__name__)
 
 
+def _binding_updates(
+    row: dict[str, Any], vault_ids: list[str], user_id: str, *, records_editor: bool
+) -> dict[str, Any]:
+    """The fields a credential-binding write sets on an Agent or Assistant.
+
+    The binding is authored, so a changed vault list is a changed definition
+    and moves ``updated_at`` with it, and ``updated_by`` on a record that keeps
+    its editor (an Agent). Saving the same list records the save in
+    ``credentials_updated_*`` and leaves the definition's timestamp alone.
+    """
+
+    now = utcnow_iso()
+    updates: dict[str, Any] = {
+        "credential_vault_ids": vault_ids,
+        "credentials_updated_by": user_id,
+        "credentials_updated_at": now,
+    }
+    if list(row.get("credential_vault_ids") or []) != vault_ids:
+        updates["updated_at"] = now
+        if records_editor:
+            updates["updated_by"] = user_id
+    return updates
+
+
 class CredentialBindingService:
     """Persist admin policy; never consult the conversation user's identity."""
 
@@ -62,7 +86,8 @@ class CredentialBindingService:
     async def set_agent_binding(
         self, user: UserContext, agent_id: str, vault_ids: list[str]
     ) -> dict[str, Any]:
-        if await self._agents.get_agent(agent_id) is None:
+        agent = await self._agents.get_agent(agent_id)
+        if agent is None:
             raise APIError(
                 code="AGENT_NOT_FOUND", message="agent not found", status_code=404
             )
@@ -70,12 +95,7 @@ class CredentialBindingService:
             user, vault_ids, target_type="agent"
         )
         await self._agents.update_agent(
-            agent_id,
-            {
-                "credential_vault_ids": cleaned,
-                "credentials_updated_by": user.user_id,
-                "credentials_updated_at": utcnow_iso(),
-            },
+            agent_id, _binding_updates(agent, cleaned, user.user_id, records_editor=True)
         )
         # Binding writes use the same preparation entry as Agent and extension
         # writes. The supplier's existing pool still holds its original recipe.
@@ -118,7 +138,8 @@ class CredentialBindingService:
     async def set_assistant_binding(
         self, user: UserContext, assistant_id: str, vault_ids: list[str]
     ) -> dict[str, Any]:
-        if await self._assistants.get_assistant(assistant_id) is None:
+        assistant = await self._assistants.get_assistant(assistant_id)
+        if assistant is None:
             raise APIError(
                 code="ASSISTANT_NOT_FOUND",
                 message="assistant not found",
@@ -129,11 +150,7 @@ class CredentialBindingService:
         )
         await self._assistants.update_assistant(
             assistant_id,
-            {
-                "credential_vault_ids": cleaned,
-                "credentials_updated_by": user.user_id,
-                "credentials_updated_at": utcnow_iso(),
-            },
+            _binding_updates(assistant, cleaned, user.user_id, records_editor=False),
         )
         return await self._view(
             user,

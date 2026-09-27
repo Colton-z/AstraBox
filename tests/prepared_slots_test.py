@@ -108,7 +108,6 @@ def _manifest(**overrides: Any) -> dict[str, Any]:
         "workspace_dir": "/workspace",
         "workspace_source_dir": "/home/conversations/conv_x/workspace",
         "runner_port": 9001,
-        "activation_token": "tok",
         "runtime_generation": "generation-1",
         "spawn_fingerprint": "sf-1",
         "activation_mcp_servers": [],

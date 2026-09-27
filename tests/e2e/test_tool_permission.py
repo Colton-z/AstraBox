@@ -244,7 +244,20 @@ def test_tool_permission_deny_blocks_the_write(e2e_client: httpx.Client) -> None
         )
         iid = str(pi["interaction_id"])
 
-        result = respond_interaction(e2e_client, sid, iid, {"decision": decision("reject"), "comment": "no thanks"})
+        # A decision card lists the answers this request accepts and marks the
+        # ones that deny. The engine narrows them per request: a Codex command
+        # approval has offered accept and cancel with no decline. So the denial
+        # comes from the request when the engine's usual reject word is not
+        # among its denials.
+        denials = [
+            str(option.get("id"))
+            for option in pi.get("options") or []
+            if isinstance(option, dict) and option.get("denial") is True
+        ]
+        deny = decision("reject")
+        if denials and deny not in denials:
+            deny = denials[0]
+        result = respond_interaction(e2e_client, sid, iid, {"decision": deny, "comment": "no thanks"})
         assert result.get("answered") is True, f"deny was not accepted: {result}"
 
         # The load-bearing assertion: a denied tool has NO side effect. The Write is

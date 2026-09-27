@@ -122,7 +122,6 @@ def _preparation_context(
     return EnginePreparationContext(
         template=selected,
         slot_id="slot-abc",
-        activation_token="token",
         placement=pb.PLACEMENT_CONVERSATION_BOX,
         sandbox=sandbox or _box(_models_config("deepseek-chat")),
         sandbox_id="box-77",
@@ -625,8 +624,8 @@ def _activation_harness(
     async def _mark(*, agent_id: str, slot_id: str, session_id: str) -> None:
         events.append(f"mark:{slot_id}:{session_id}")
 
-    async def _target(sandbox: Any, manager_arg: Any, session_id: str, *, cwd: str) -> None:
-        events.append(f"mirror-target:{session_id}:{cwd}")
+    async def _target(sandbox: Any, manager_arg: Any, session_id: str) -> None:
+        events.append(f"mirror-target:{session_id}")
 
     async def _unexpected_instructions(*args: Any, **kwargs: Any) -> None:
         raise AssertionError("claim must not rewrite Agent-level instructions")
@@ -729,7 +728,7 @@ def test_activation_binds_the_mirror_target_before_parked_pi_is_adopted(
     assert "adopt:session-1" in events
     assert "allocation:box-77:sandbox" in events
     assert f"vault:{workload_credential_name('slot-abc')}" in events
-    assert "mirror-target:session-1:/workspace" in events
+    assert "mirror-target:session-1" in events
     assert cleared == ["slot-abc"]
     assert refills == ["agent-1"]
 

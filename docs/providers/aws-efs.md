@@ -87,7 +87,8 @@ AstraBox stores the Agent program's native session data in the platform
 database, so conversation recovery does not depend on EFS. Releasing a
 workspace assignment deletes only the helper Pod and the view PV/PVC that
 AstraBox created for it. The backing claim, its PV and the EFS data stay in
-place.
+place. A view is released after its sandbox is gone, or, when no sandbox was
+ever created for it, ten minutes after its helper Pod was created.
 
 A successful driver installation or a `Bound` claim shows only that Kubernetes
 can mount the filesystem. Verify workspace persistence separately, with

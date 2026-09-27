@@ -10,7 +10,6 @@ from typing import Any
 
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
-from astrabox.common.utils.secrets import SecretProvider
 from astrabox.core.service.orchestrator.runtime.conversation_identity import (
     command_for_identity,
     identity_path_to_source,
@@ -22,8 +21,9 @@ from astrabox.core.service.orchestrator.runtime.storage._command_result import (
 )
 from astrabox.core.service.orchestrator.runtime.storage._git_clone import (
     _clone_git_repo_in_sandbox,
-    _normalize_deploy_private_key,
+    _resolve_author_deploy_key,
     _resolve_git_https_token,
+    _ssh_url_host,
 )
 from astrabox.core.service.orchestrator.runtime.storage._scope import _template_default_repo
 
@@ -88,17 +88,12 @@ def _build_default_repo_bootstrap_payload(
         "target": target,
     }
     if secret_name:
-        private_key = SecretProvider.get_secret(secret_name)
-        if not private_key:
-            raise APIError(
-                code="DEFAULT_REPO_MISSING_KEY",
-                message=f"failed to resolve deploy key from secret_name={secret_name!r}",
-                status_code=500,
-            )
-        private_key = _normalize_deploy_private_key(private_key, secret_name=secret_name)
+        private_key = _resolve_author_deploy_key(
+            secret_name, label="default_repo", error_code="DEFAULT_REPO_MISSING_KEY"
+        )
         payload["key_b64"] = base64.b64encode(private_key.encode("utf-8")).decode("ascii")
     if use_https_git:
-        payload["https_token"] = _resolve_git_https_token()
+        payload["https_token"] = _resolve_git_https_token(host=_ssh_url_host(url))
     branch = str(repo.get("branch") or "").strip()
     if branch:
         payload["branch"] = branch

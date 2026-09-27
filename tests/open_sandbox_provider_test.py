@@ -70,6 +70,7 @@ from astrabox.seams.sandbox import (
     SANDBOX_SESSION_ID_METADATA_KEY,
     SandboxLifecycleProbeResult,
     SandboxProvider,
+    sandbox_installation_id,
 )
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -639,6 +640,38 @@ async def test_connect_dead_box_fails_fast_before_any_endpoint_fetch() -> None:
     assert endpoint_fetches == [], "still no endpoint fetch for a dead box"
 
 
+async def test_connect_refuses_a_box_recorded_with_other_network_wiring() -> None:
+    # A box whose recorded DNS upstream, deny list or callback base is not the
+    # deployment's cannot reach the model or the platform; it is gone to every
+    # caller, which is what arms the same-send re-borrow with history.
+    from astrabox.common.utils.settings import load_astrabox_settings
+    from astrabox.providers.open_sandbox.networking import (
+        SANDBOX_NETWORK_WIRING_METADATA_KEY,
+        sandbox_network_wiring,
+    )
+
+    fake = _FakeLifecycle()
+    fake.add_sandbox(
+        "sb-stale", metadata={SANDBOX_NETWORK_WIRING_METADATA_KEY: "0" * 32}
+    )
+    fake.add_sandbox(
+        "sb-current",
+        metadata={
+            SANDBOX_NETWORK_WIRING_METADATA_KEY: sandbox_network_wiring(
+                load_astrabox_settings()
+            )
+        },
+    )
+    provider = _provider(fake)
+    with pytest.raises(APIError) as err:
+        await provider.connect("sb-stale")
+    assert err.value.code == "SANDBOX_GONE"
+    assert "network wiring" in err.value.message
+    assert [p for _, p in fake.requests if "/endpoints/" in p] == []
+    handle = await provider.connect("sb-current")
+    await handle.close()
+
+
 async def test_connect_returns_an_owned_handle_without_a_sandbox_attribute() -> None:
     fake = _FakeLifecycle()
     fake.add_sandbox("sb-1")
@@ -808,6 +841,18 @@ async def test_browser_endpoint_does_not_return_the_services_internal_relay(
     assert resolved is not None
     assert resolved.endpoint == f"http://{_EXECD_HOST}:5173"
     assert fake.endpoint_queries[-1]["use_server_proxy"] == ["false"]
+
+
+async def test_browser_endpoint_refuses_the_sandbox_control_port() -> None:
+    fake = _FakeLifecycle()
+    fake.add_sandbox("sb-1")
+
+    with pytest.raises(APIError) as caught:
+        await _provider(fake).resolve_browser_endpoint("sb-1", 8080)
+
+    assert caught.value.code == "EXPOSE_PORT_RESERVED"
+    assert caught.value.status_code == 400
+    assert fake.endpoint_queries == []
 
 
 async def test_resolve_browser_endpoint_uses_the_sdk_signed_url_operation() -> None:
@@ -1065,8 +1110,11 @@ async def test_create_sandbox_maps_every_spec_field_onto_the_create_wire(
     assert body["entrypoint"] == ["/opt/gem/run.sh"]
     # TTL is the deployment lease, never the SDK's 600 s default.
     assert body["timeout"] == 3600
-    # env is the spec's, VERBATIM — the provider adds nothing of its own.
-    assert body["env"] == {"ASTRABOX_HERMES_AUTOSTART": "false"}
+    # The create path injects the per-box AIO :8080 gateway key (derived, not a
+    # fixed value); everything else is the spec's env, verbatim.
+    box_env = dict(body["env"])
+    assert box_env.pop("SANDBOX_API_KEY", "")
+    assert box_env == {"ASTRABOX_HERMES_AUTOSTART": "false"}
     assert body["resourceLimits"] == {"cpu": "4", "memory": "4Gi"}
     assert body["resourceRequests"] == {"cpu": "200m", "memory": "768Mi"}
     # session_id rides as reverse-lookup metadata.
@@ -1164,6 +1212,7 @@ async def test_correlated_create_refuses_duplicate_assignment_stamps() -> None:
         "astrabox.session-id": "sess-assistant-1",
         "astrabox.managed-by": "astrabox",
         "astrabox.assignment-id": "assignment-assistant-1",
+        "astrabox.installation": await sandbox_installation_id(),
     }
     fake.add_sandbox("sb-duplicate-1", metadata=metadata)
     fake.add_sandbox("sb-duplicate-2", metadata=metadata)
@@ -1184,6 +1233,7 @@ async def test_correlated_create_refuses_an_assignment_owned_by_another_session(
             "astrabox.session-id": "sess-other",
             "astrabox.managed-by": "astrabox",
             "astrabox.assignment-id": "assignment-assistant-1",
+            "astrabox.installation": await sandbox_installation_id(),
         },
     )
 
@@ -1203,6 +1253,7 @@ async def test_correlated_create_removes_an_unusable_exact_resource_before_faili
             "astrabox.session-id": "sess-assistant-1",
             "astrabox.managed-by": "astrabox",
             "astrabox.assignment-id": "assignment-assistant-1",
+            "astrabox.installation": await sandbox_installation_id(),
         },
     )
 
@@ -1643,6 +1694,22 @@ async def test_probe_generic_failure_text_is_scrubbed(
 
 
 # ── control-plane inventory: list / describe / diagnostics ───────────────────
+
+
+async def test_list_sandboxes_narrows_on_the_server_before_paging() -> None:
+    # Another installation's boxes on the same daemon must not use up the page:
+    # the server filters first, and its counters count only the matches.
+    fake = _FakeLifecycle()
+    fake.list_page_size = 1
+    fake.add_sandbox("theirs", metadata={"astrabox.installation": "other"})
+    fake.add_sandbox("ours", metadata={"astrabox.installation": "this"})
+
+    page = await _provider(fake).list_sandboxes(
+        page=1, page_size=1, metadata={"astrabox.installation": "this"}
+    )
+
+    assert [item.sandbox_id for item in page.items] == ["ours"]
+    assert (page.total_items, page.has_next_page) == (1, False)
 
 
 async def test_list_sandboxes_pages_at_the_source() -> None:

@@ -149,8 +149,8 @@ mkdir -p "$log_dir"
 #
 # It also keeps the credential simple. Hermes' dashboard auth gate (password or
 # OAuth providers) engages only on a NON-loopback bind; on loopback the WS
-# upgrade takes the session token as a `?token=` query parameter, which is what
-# the host presents.
+# upgrade takes the session token as a `?token=` query parameter.
+# hermes_host_relay.py puts it there from the header the host sends it in.
 # The profile env is sourced again INSIDE the workload account's shell, and
 # every variable in it reaches the backend. Naming a few by hand instead — the
 # account, the home, the token — is what a first attempt did, and it started a

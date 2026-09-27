@@ -28,9 +28,12 @@
 # Docker's built-in `bridge` network. Long-lived platform services do not need
 # to live there. PostgreSQL is on a separate user-defined network shared only
 # with the services that use it; only its host-development port is published,
-# and that bind is loopback-only. The callback, model, and DNS ports are
-# published on the bridge gateway only for two dedicated edge containers;
-# sandboxes are never permitted to connect to that shared gateway directly.
+# and that bind is loopback-only. No server port is published on the bridge:
+# two dedicated edge containers have their own bridge addresses and reach the
+# server over the private `sandbox-edges` network, which no sandbox joins.
+# Every sandbox's egress policy denies the rest of the bridge, including its
+# gateway, where the lifecycle server publishes each sandbox's execd and file
+# ports (ASTRABOX_PUBLISH_HOST_IP) for the server alone.
 
 services:
   redis:
@@ -79,35 +82,32 @@ services:
       retries: 12
 
   # The egress proxy needs a DNS upstream for the private model-gateway name.
-  # Giving it the Docker bridge gateway as that upstream also permits other
-  # ports on the same host in current OpenSandbox releases. This dedicated DNS
-  # forwarder has no secrets, host ports, Docker socket, or database network.
+  # OpenSandbox's policy treats an allowed DNS upstream as a reachable host, so
+  # a sandbox is pointed at this DNS-only forwarder, never at the server. It
+  # has no secrets, host ports, Docker socket, or database network. Compose
+  # cannot attach one service to the built-in bridge and a second network, so
+  # the server connects it to `sandbox-edges` at startup (onebox).
   sandbox-dns-edge:
-    image: coredns/coredns:1.13.1
+    image: nginx:1.27-alpine
     restart: unless-stopped
     network_mode: bridge
-    command: ["-conf", "/etc/coredns/Corefile"]
-    environment:
-      ASTRABOX_EDGE_DNS_UPSTREAM: ${ASTRABOX_DOCKER_BRIDGE_GATEWAY:-172.17.0.1}:${ASTRABOX_GATEWAY_DNS_HOST_PORT:-1053}
     volumes:
-      - ./coredns/sandbox-edge.Corefile:/etc/coredns/Corefile:ro
+      - ./sandbox-edge/dns-edge.nginx.conf:/etc/nginx/nginx.conf:ro
 
-  # OpenSandbox's egress policy matches hosts, not ports. Sandboxes therefore
-  # must not be told to allow the Docker bridge gateway itself: doing so would
-  # also expose every unrelated host service published there. This proxy gets
-  # its own address on the built-in bridge and forwards only the two surfaces a
-  # sandbox needs. It has no Docker socket, database network, host port, or
-  # deployment secret.
+  # OpenSandbox's egress policy matches hosts, not ports, so a sandbox is
+  # never allowed the server itself. This proxy gets its own address on the
+  # built-in bridge and forwards only the two surfaces a sandbox needs to the
+  # server, over the private `sandbox-edges` network the server connects it to
+  # at startup (onebox; Compose cannot attach one service to the built-in
+  # bridge and a second network). It has no Docker socket, database network,
+  # host port, or deployment secret.
   sandbox-edge:
     image: nginx:1.27-alpine
     restart: unless-stopped
     network_mode: bridge
     environment:
       NGINX_ENVSUBST_FILTER: ^ASTRABOX_EDGE_
-      ASTRABOX_EDGE_MODEL_UPSTREAM_PORT: ${ASTRABOX_MODEL_GATEWAY_HOST_PORT:-80}
-      ASTRABOX_EDGE_CALLBACK_UPSTREAM_PORT: ${ASTRABOX_SERVER_SANDBOX_PORT:-8000}
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      ASTRABOX_EDGE_UPSTREAM_HOST: server
     volumes:
       - ./sandbox-edge/default.conf.template:/etc/nginx/templates/default.conf.template:ro
 
@@ -133,27 +133,27 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      # The server connects the edges to `sandbox-edges` and reads their
+      # bridge addresses at startup; a recreated edge restarts the server so
+      # the connection and the addresses sandboxes are given follow it.
       sandbox-edge:
         condition: service_started
+        restart: true
       sandbox-dns-edge:
         condition: service_started
+        restart: true
     networks:
       - platform
       - database
+      - sandbox-edges
     ports:
       # Host loopback 8088 → container 8000 (the app's ASTRABOX_PORT default).
       # Bound to 127.0.0.1 so the no-auth admin surface is not reachable from the
       # LAN (the README documents this loopback posture). Widen deliberately, and
-      # only behind real auth, to expose beyond this host.
+      # only behind real auth, to expose beyond this host. Nothing else is
+      # published: the edges reach the callback, model and DNS ports over
+      # `sandbox-edges`.
       - "127.0.0.1:${ASTRABOX_SERVER_HOST_PORT:-8088}:8000"
-      # Only sandbox-edge and sandbox-dns-edge use these bridge publications. A
-      # sandbox's deny-by-default policy permits those single-purpose
-      # containers, not this shared host gateway. PostgreSQL and Redis have no
-      # bridge bind.
-      - "${ASTRABOX_DOCKER_BRIDGE_GATEWAY:-172.17.0.1}:${ASTRABOX_SERVER_SANDBOX_PORT:-8000}:8000"
-      - "${ASTRABOX_DOCKER_BRIDGE_GATEWAY:-172.17.0.1}:${ASTRABOX_MODEL_GATEWAY_HOST_PORT:-80}:80"
-      - "${ASTRABOX_DOCKER_BRIDGE_GATEWAY:-172.17.0.1}:${ASTRABOX_GATEWAY_DNS_HOST_PORT:-1053}:5353/tcp"
-      - "${ASTRABOX_DOCKER_BRIDGE_GATEWAY:-172.17.0.1}:${ASTRABOX_GATEWAY_DNS_HOST_PORT:-1053}:5353/udp"
     secrets:
       - astrabox_database_password
       - litellm_database_password
@@ -196,6 +196,7 @@ services:
       ANTHROPIC_MODEL:
       # Omit when unset so the application YAML remains the default authority.
       ASTRABOX_TITLE_MODEL_ENABLED:
+      ASTRABOX_TITLE_MODEL_NAME:
       ASTRABOX_TITLE_MODEL_REQUEST_TIMEOUT_SECONDS:
       # ── AstraBox runtime knobs (already baked as image defaults; pinned here
       #    for visibility/override) ──────────────────────────────────────────────
@@ -225,17 +226,19 @@ services:
       # explicit request to hand the model/gateway credential to the Agent
       # process instead of keeping it in the egress sidecar.
       ASTRABOX_SANDBOX_CREDENTIAL_VAULT: ${ASTRABOX_SANDBOX_CREDENTIAL_VAULT:-true}
+      # OpenSandbox Secure Access for sandbox endpoints: Kubernetes with the
+      # ingress gateway only. The bundled Docker runtime refuses it at startup.
+      ASTRABOX_SANDBOX_SECURE_ACCESS: ${ASTRABOX_SANDBOX_SECURE_ACCESS:-false}
       ASTRABOX_SANDBOX_EGRESS_IMAGE: ${ASTRABOX_SANDBOX_EGRESS_IMAGE:-opensandbox/egress:v1.1.7}
       ASTRABOX_SANDBOX_EGRESS_MODE: ${ASTRABOX_SANDBOX_EGRESS_MODE:-dns+nft}
       ASTRABOX_SANDBOX_SERVER_NETWORK_MODE: bridge
-      # OpenSandbox probes and then releases a candidate host port before
-      # Docker binds it. If multiple lifecycle servers share one daemon, give
-      # each deployment a non-overlapping range to prevent cross-server races.
+      # Docker chooses each published sandbox port from this range in the
+      # host's network namespace, so deployments sharing a daemon can share it.
       ASTRABOX_SANDBOX_SERVER_PORT_RANGE: ${ASTRABOX_SANDBOX_SERVER_PORT_RANGE:-20000-32000}
-      # The lifecycle server stays on container loopback, while protected
-      # sandboxes expose their sidecar through Docker host-port mappings. This
+      # The lifecycle server stays on container loopback, while each sandbox's
+      # execd, file and egress-API ports are Docker host-port mappings. This
       # bridge-gateway address lets the server reach those mappings without
-      # publishing them on the host's LAN interfaces.
+      # publishing them on the host's LAN interfaces; sandboxes are denied it.
       ASTRABOX_PUBLISH_HOST_IP: ${ASTRABOX_PUBLISH_HOST_IP:-${ASTRABOX_DOCKER_BRIDGE_GATEWAY:-172.17.0.1}}
       # onebox discovers the edge's dynamic built-in-bridge IP by Compose
       # labels, then fills the callback base and private gateway DNS target.
@@ -245,6 +248,10 @@ services:
       ASTRABOX_SANDBOX_EDGE_SERVICE: sandbox-edge
       ASTRABOX_SANDBOX_DNS_EDGE_SERVICE: sandbox-dns-edge
       ASTRABOX_SANDBOX_EDGE_CALLBACK_PORT: "8000"
+      ASTRABOX_SANDBOX_EDGE_NETWORK: sandbox-edges
+      # Empty: onebox denies every sandbox Docker's built-in bridge except the
+      # sandbox edge. A value replaces that list.
+      ASTRABOX_SANDBOX_EGRESS_DENY_CIDRS: ${ASTRABOX_SANDBOX_EGRESS_DENY_CIDRS:-}
       ASTRABOX_MCP_PROXY_BASE_URL: ${ASTRABOX_MCP_PROXY_BASE_URL:-}
       ASTRABOX_SANDBOX_GATEWAY_IP: ${ASTRABOX_SANDBOX_GATEWAY_IP:-}
       ASTRABOX_SANDBOX_EGRESS_DNS_UPSTREAM: ${ASTRABOX_SANDBOX_EGRESS_DNS_UPSTREAM:-}
@@ -317,10 +324,12 @@ services:
       OPENAI_COMPATIBLE_BASE_URL:
       OPENAI_COMPATIBLE_API_KEY:
       # ── LLM observability: bring-your-own Langfuse (OFF by default) ─────────
-      # config.yaml registers the langfuse success/failure callbacks; they are
-      # INERT until this trio is set (the langfuse SDK self-disables with no
-      # public key). Set all three to stream tokens/cost/latency/prompt for
-      # every model call to your Langfuse — zero AstraBox code.
+      # With both keys set, the bundled gateway sends tokens, cost, latency,
+      # prompt and completion for every model call to your Langfuse project
+      # (litellm/langfuse_tracing.py). LANGFUSE_HOST is your Langfuse origin;
+      # unset, LiteLLM sends to Langfuse Cloud US. Without the keys nothing is
+      # sent; a key without its pair, or a host without keys, stops the
+      # gateway at startup.
       LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
       LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
       LANGFUSE_HOST: ${LANGFUSE_HOST:-}
@@ -346,6 +355,11 @@ networks:
     driver: bridge
   database:
     driver: bridge
+  # The only path from the sandbox edges to the server. `internal` gives it no
+  # route off the host; sandboxes never join it.
+  sandbox-edges:
+    driver: bridge
+    internal: true
 
 secrets:
   postgres_admin_password:

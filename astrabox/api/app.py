@@ -96,6 +96,10 @@ async def _seed_default_agent_if_empty() -> None:
     """
     import uuid
 
+    from astrabox.common.utils.settings import load_astrabox_settings
+    from astrabox.core.service.orchestrator.agent_schema import (
+        agents_prewarm_by_default,
+    )
     from astrabox.persistence.repository import AgentRepository, EnvironmentRepository
     from astrabox.seams.sandbox import default_sandbox_backend, sandbox_for_name
 
@@ -158,6 +162,9 @@ async def _seed_default_agent_if_empty() -> None:
     )
 
     deployment_model = _seed_default_model()
+    # The seed writes the repository directly, so it applies the same
+    # create-time default as AgentConfigService.create_agent_config.
+    seeded_prewarm = agents_prewarm_by_default(load_astrabox_settings())
     investment_engine_options = {"sdk_options": {"strict_mcp_config": True}}
     from astrabox.core.service.orchestrator.engine.claude_code_options import (
         CLAUDE_ENGINE_OPTIONS_SCHEMA,
@@ -200,6 +207,7 @@ async def _seed_default_agent_if_empty() -> None:
             "system": system,
             "environment_name": _DEFAULT_ENVIRONMENT_NAME,
             "display_meta": {"display_name": name},
+            "prewarm_enabled": seeded_prewarm,
             **(capabilities or {}),
         }
 
@@ -323,6 +331,10 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
        to the running code's latest known version right after the DDL
        bring-up above. It is a no-op when the store already carries the latest
        registered schema version.
+       ``sandbox_installation_id()`` then reads the installation id this
+       database holds (creating it on a new database), which every sandbox
+       create stamps and the ownerless reap matches, so a database that cannot
+       answer fails startup instead of a first create.
     7. ``_seed_default_agent_if_empty()`` — seed the built-in ``claude-code``
        environment + a default Agent so the first turn has something to run.
     8. ``_install_e2e_fault_hooks_if_armed()`` — E2E-only; a no-op unless
@@ -348,6 +360,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # --- Startup composition, persistence, and default resources --------------
     from astrabox.persistence.repository import backend as _dal_backend
     from astrabox.persistence.migrations import run_pending_migrations
+    from astrabox.seams.sandbox import sandbox_installation_id
     from astrabox.bootstrap import bootstrap
     from astrabox.core.service.orchestrator.transcript_capability import (
         validate_signing_key_config,
@@ -363,6 +376,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     bootstrap()
     await _dal_backend.create_all()
     await run_pending_migrations()
+    await sandbox_installation_id()
     await _seed_default_agent_if_empty()
     _install_e2e_fault_hooks_if_armed()
 

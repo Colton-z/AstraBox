@@ -46,6 +46,7 @@ from astrabox.core.service.orchestrator.engine.base import (
 from astrabox.core.service.orchestrator.engine.provisioning import (
     EngineSandboxRequest,
     ModelCredentialRequest,
+    deliver_in_box_service_token,
 )
 from astrabox.core.service.orchestrator.engine.claude_code_options import (
     CLAUDE_WIRE_OPTION_KEYS,
@@ -366,6 +367,14 @@ async def activate_runtime(context: EngineStartupContext) -> SessionRuntime:
             context.sandbox_id,
             str((context.runtime_identity or {}).get("isolated_session_id") or ""),
         )
+        from astrabox.core.service.orchestrator.engine.runner_link import (
+            RUNNER_TOKEN_FILE_NAME,
+            runner_activation_token,
+        )
+
+        activation_token = runner_activation_token(
+            context.sandbox_id, context.runtime_identity
+        )
         if context.attach_mode is not None:
             runner_options = _disable_plugin_mcp_autostart(
                 options,
@@ -378,6 +387,7 @@ async def activate_runtime(context: EngineStartupContext) -> SessionRuntime:
             )
             engine_client, how = await _attach_runner_engine_client(
                 runner_uri,
+                activation_token=activation_token,
                 session_id=context.session_id,
                 workspace_dir=str(options.cwd or ""),
                 sdk_options=_runner_configure_options(runner_options),
@@ -398,7 +408,7 @@ async def activate_runtime(context: EngineStartupContext) -> SessionRuntime:
             engine_client = await _activate_runner_engine_client(
                 runner_uri,
                 slot_id=str(prepared.get("slot_id") or ""),
-                activation_token=str(prepared.get("activation_token") or ""),
+                activation_token=activation_token,
                 session_id=context.session_id,
                 workspace_dir=str(options.cwd or ""),
                 permission_mode=context.permission_mode,
@@ -424,8 +434,17 @@ async def activate_runtime(context: EngineStartupContext) -> SessionRuntime:
                     or []
                 ),
             )
+            # A start that claimed nothing is this seat's setup: the runner
+            # admits the prepare inside configure only against this file.
+            await deliver_in_box_service_token(
+                context.sandbox,
+                context.runtime_identity,
+                file_name=RUNNER_TOKEN_FILE_NAME,
+                token=activation_token,
+            )
             engine_client = await _connect_runner_engine_client(
                 runner_uri,
+                activation_token=activation_token,
                 session_id=context.session_id,
                 workspace_dir=str(options.cwd or ""),
                 sdk_options=_runner_configure_options(runner_options),
@@ -671,22 +690,6 @@ async def prepare_runtime(context: EnginePreparationContext) -> dict[str, Any]:
         model_runtime_creds=model_runtime_creds,
         runtime_env=context.runtime_env,
     )
-    system_prompt = getattr(options, "system_prompt", None)
-    if system_prompt is None:
-        system_prompt = {"type": "preset", "preset": "claude_code"}
-    if not isinstance(system_prompt, dict):
-        raise APIError(
-            code="AGENT_PREWARM_UNSUPPORTED",
-            message=(
-                "prepared Claude slots require the vendor's preset system "
-                "prompt so dynamic Session sections can move to first input"
-            ),
-            status_code=409,
-        )
-    options.system_prompt = {
-        **system_prompt,
-        "exclude_dynamic_sections": True,
-    }
 
     wire_options = _runner_configure_options(options)
     spawn_fingerprint = hashlib.sha256(
@@ -697,16 +700,25 @@ async def prepare_runtime(context: EnginePreparationContext) -> dict[str, Any]:
             separators=(",", ":"),
         ).encode("utf-8")
     ).hexdigest()
-    from astrabox.core.service.orchestrator.engine.runner_link import RunnerLink
+    from astrabox.core.service.orchestrator.engine.runner_link import (
+        RUNNER_TOKEN_FILE_NAME,
+        RunnerLink,
+        runner_activation_token,
+    )
 
-    link = RunnerLink(str(context.runner_uri or ""))
+    activation_token = runner_activation_token(context.sandbox_id, runtime_identity)
+    # Before the first prepare, not after: the runner refuses every prepare
+    # until this file exists, which is what keeps a peer from preparing it first.
+    await deliver_in_box_service_token(
+        context.sandbox,
+        runtime_identity,
+        file_name=RUNNER_TOKEN_FILE_NAME,
+        token=activation_token,
+    )
+    link = RunnerLink(str(context.runner_uri or ""), activation_token=activation_token)
     await link.__aenter__()
     try:
-        await link.prepare(
-            target_slot,
-            activation_token=context.activation_token,
-            options=wire_options,
-        )
+        await link.prepare(target_slot, options=wire_options)
     finally:
         await link.close()
     return {
@@ -838,6 +850,7 @@ def _runner_event_persister(
 async def _connect_runner_engine_client(
     runner_uri: str,
     *,
+    activation_token: str,
     session_id: str,
     workspace_dir: str,
     sdk_options: dict[str, Any],
@@ -894,6 +907,7 @@ async def _connect_runner_engine_client(
         )
     link = RunnerLink(
         runner_uri,
+        activation_token=activation_token,
         persistent_event_handler=_runner_event_persister(
             session_id,
             event_sink=event_sink,
@@ -982,6 +996,7 @@ async def _activate_runner_engine_client(
         )
     link = RunnerLink(
         runner_uri,
+        activation_token=activation_token,
         persistent_event_handler=_runner_event_persister(
             session_id,
             event_sink=event_sink,
@@ -993,7 +1008,6 @@ async def _activate_runner_engine_client(
         await link.activate(
             slot_id,
             session_id,
-            activation_token=activation_token,
             permission_mode=normalize_claude_permission_mode(permission_mode),
             resume_session_key=resume_session_key,
             mcp_servers=activation_mcp_servers,
@@ -1017,6 +1031,7 @@ async def _activate_runner_engine_client(
 async def _attach_runner_engine_client(
     runner_uri: str,
     *,
+    activation_token: str,
     session_id: str,
     workspace_dir: str,
     sdk_options: dict[str, Any],
@@ -1033,8 +1048,10 @@ async def _attach_runner_engine_client(
     surfaced as a ``gap`` against the durable store); a fresh runner process
     (box restarted, runner died and was relaunched) refuses it, and the host
     configures it with ``resume`` — the SDK restores the conversation from
-    its own session file. A runner holding a different session refuses both
-    opens loudly; that box is mis-assigned and must not be adopted.
+    its own session file. That configure's prepare is admitted against the
+    credential file the seat's setup wrote into its home, which lives as long
+    as the box. A runner holding a different session refuses both opens
+    loudly; that box is mis-assigned and must not be adopted.
     Module-level seam, patched by the flow characterization suite. Returns
     ``(engine_client, "attached" | "configured")``.
     """
@@ -1051,6 +1068,7 @@ async def _attach_runner_engine_client(
         )
     link = RunnerLink(
         runner_uri,
+        activation_token=activation_token,
         persistent_event_handler=_runner_event_persister(
             session_id,
             event_sink=event_sink,
@@ -1090,6 +1108,7 @@ async def _attach_runner_engine_client(
         )
     client = await _connect_runner_engine_client(
         runner_uri,
+        activation_token=activation_token,
         session_id=session_id,
         workspace_dir=workspace_dir,
         sdk_options=sdk_options,

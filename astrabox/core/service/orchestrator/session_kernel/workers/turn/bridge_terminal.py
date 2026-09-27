@@ -35,7 +35,6 @@ from astrabox.core.service.orchestrator.session_mirror import (
 )
 from astrabox.core.service.orchestrator.session_kernel.conversation_recovery import (
     AI_SDK_FINISH_REASON_STOP,
-    USER_STOP_FAILURE_TEXT,
     build_turn_terminal_snapshot_updates,
     coerce_int as _coerce_int,
     is_terminal_data_result_frame,
@@ -630,12 +629,10 @@ async def _project_turn_terminal(
                 },
                 turn_id=state.effective_turn_id,
             )
-    if state.effective_turn_id and (
-        (not turn_failed and session_state == SessionState.READY.value)
-        or (
-            turn_failed
-            and str(state.last_error_text or "").strip() == USER_STOP_FAILURE_TEXT
-        )
+    if (
+        state.effective_turn_id
+        and not turn_failed
+        and session_state == SessionState.READY.value
     ):
         # Settling the turn must not wait on a model call. The label is offered
         # here so it is already there when the page renders the folded header,

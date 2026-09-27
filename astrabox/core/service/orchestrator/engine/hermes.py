@@ -24,13 +24,13 @@ import base64
 import hashlib
 import json
 import posixpath
-from urllib.parse import quote, urlsplit
+from urllib.parse import urlsplit
 import re
 import shlex
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable, Mapping
 
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.config.release_images import release_image
@@ -62,8 +62,10 @@ from astrabox.core.service.orchestrator.engine.hermes_client import (
     decode_turn_anchor,
 )
 from astrabox.core.service.orchestrator.engine.hermes_gateway import (
+    HermesGatewayHandle,
     gateway_handle_for_sandbox,
     resolve_gateway_handle,
+    wait_until_backend_idle,
 )
 from astrabox.core.service.orchestrator.runtime.pty_terminal import (
     EXECD_PORT,
@@ -86,21 +88,16 @@ from astrabox.core.service.orchestrator.runtime.conversation_identity import (
     plan_assistant_profile_identity,
     run_sandbox_command,
 )
-from astrabox.core.service.orchestrator.runtime.storage import (
-    _normalize_deploy_private_key,
-)
 
 
 HERMES_RUNTIME_IMAGE_COMPONENT = "sandbox-hermes"
 
 logger = get_logger(__name__)
 
-HERMES_SKILL_REPO_CACHE_DIR = "/opt/astrabox/hermes-skill-repos"
 _HERMES_PROFILE_SETUP_SCRIPT_PATH = "/usr/local/bin/astrabox-hermes-profile-setup"
 _HERMES_PROFILE_ENV_FILENAME = "astrabox-hermes.env"
 _HERMES_RUNTIME_STATE_FILENAME = "astrabox-runtime-state.json"
 _HERMES_STATE_BOOTSTRAP = "/opt/astrabox/hermes/hermes_state_bootstrap.py"
-_HERMES_SKILL_REPO_CACHE_SCRIPT_PATH = "/usr/local/bin/astrabox-hermes-skill-repo-cache"
 _HERMES_CONFIG_MERGE_SCRIPT_PATH = "/usr/local/bin/astrabox-hermes-config-merge"
 _HERMES_CUSTOM_PROVIDER_NAME = "AstraBox"
 _HERMES_DEFAULT_API_MODE = "chat_completions"
@@ -122,22 +119,42 @@ _HERMES_DEFAULT_API_MODE = "chat_completions"
 # gap to paper over.
 _HERMES_MODEL_API_KEY_ENV = "ASTRABOX_HERMES_MODEL_API_KEY"
 
-# Generic profile envs consumed by scripts/runtime/hermes_config_merge.py
-# inside the runtime image. Platform pushes JSON blobs/base64 text; bootstrap
-# materializes profile-owned config.yaml, skills, and SOUL.md before TUI start.
+# Profile envs consumed by scripts/runtime/hermes_config_merge.py inside the
+# runtime image, which materializes the profile-owned config.yaml and SOUL.md.
+# The backend's launcher runs it before Hermes starts, and profile preparation
+# runs it again in place when only these inputs changed.
 _HERMES_CONFIG_OVERWRITE_ENV = "ASTRABOX_HERMES_CONFIG_OVERWRITE"
 _HERMES_CONFIG_DEFAULTS_ENV = "ASTRABOX_HERMES_CONFIG_DEFAULTS"
-_HERMES_SKILL_SOURCE_DIRS_ENV = "ASTRABOX_HERMES_SKILL_SOURCE_DIRS"
+# Present exactly when the Assistant sets a system prompt. Hermes reads
+# ``$HERMES_HOME/SOUL.md`` as its identity, the first slot of its system prompt,
+# replacing its built-in "You are Hermes Agent" text and keeping the rest of its
+# prompt; absent, the merge hands SOUL.md back to Hermes' own default.
 _HERMES_SOUL_B64_ENV = "ASTRABOX_HERMES_SOUL_B64"
-_HERMES_CRON_JOBS_B64_ENV = "ASTRABOX_HERMES_CRON_JOBS_B64"
+# What the merge prints last when it finished: it wrote config.yaml, or had
+# nothing to write.
+_HERMES_CONFIG_MERGE_MARKERS = ("ASTRABOX_HERMES_CONFIG_READY", "ASTRABOX_HERMES_CONFIG_NOOP")
 
-# Generic plugin passthrough. A Hermes plugin (a memory provider such as
-# OpenViking, or any other) is pure configuration the operator supplies in the
-# template's ``model_config.hermes.plugins`` — the engine core knows no plugin
-# by name. ``_PLUGIN_FILES_B64`` carries the {relative-path: json} config files
-# the profile setup writes under the profile home. Plugin environment variables
-# are written directly into the profile's private launcher env file.
-_HERMES_PLUGIN_FILES_B64_ENV = "ASTRABOX_HERMES_PLUGIN_FILES_B64"
+# What a running Hermes backend reads again for every new conversation, and so
+# never needs a restart to apply. Hermes builds each session's agent when the
+# session is created: the model and its provider come from config.yaml, which
+# it re-reads whenever the file changes (``_load_cfg`` and ``load_config`` are
+# keyed on the file's mtime), and the system prompt is assembled then, reading
+# SOUL.md from disk. A live session keeps its system prompt and adopts a
+# changed model at its next turn start (``_sync_agent_model_with_config``);
+# neither touches a turn in progress.
+_HERMES_PER_SESSION_ENVS = frozenset(
+    {_HERMES_CONFIG_OVERWRITE_ENV, _HERMES_CONFIG_DEFAULTS_ENV, _HERMES_SOUL_B64_ENV}
+)
+# The part of config.yaml Hermes reads only when the process starts: MCP
+# servers are discovered once into a process-wide registry, and a session's
+# agent snapshots its tools from it. The vendor's live alternative,
+# ``reload.mcp``, tears that registry down under every session and fails
+# their in-flight MCP calls, so it is no gentler than a restart.
+_HERMES_PROCESS_CONFIG_KEYS = ("mcp_servers",)
+
+#: Beside the profile env file: the digest of the process configuration the
+#: running backend was started from (:func:`_hermes_process_digest`).
+_HERMES_PROCESS_DIGEST_FILENAME = "astrabox-hermes-process.sha256"
 
 
 _HERMES_PROFILE_SETUP_SCRIPT = (
@@ -249,14 +266,16 @@ class HermesEngineAdapter(EngineAdapter):
                     "readlink",
                     "hermes",
                     "/usr/local/bin/astrabox-provision-conversation",
+                    "/usr/local/bin/astrabox-provision-assistant-profile",
                     "/usr/local/bin/astrabox-hermes-profile-setup",
                 ),
             ),
             conversation_placement=CONVERSATION_PLACEMENT_PER_ACCOUNT,
             default_runtime_image=release_image(HERMES_RUNTIME_IMAGE_COMPONENT),
             # Hermes renders platform MCP bindings into its native config.
-            # Its skills use Hermes-owned source repositories instead of the
-            # Agent/Assistant skill list, and it has no Claude plugin format.
+            # It discovers skills in its own profile (``$HERMES_HOME/skills``),
+            # which the platform does not populate, and it has no Claude
+            # plugin format.
             configuration_inputs=frozenset({"mcp_servers"}),
         )
 
@@ -283,30 +302,10 @@ class HermesEngineAdapter(EngineAdapter):
         model_access: Any,
         deployment_settings: Any,
     ) -> EngineStartupMaterialRequest:
-        """Declare repository keys for platform resolution before box setup."""
+        """Declare the runtime-state target Hermes' profile restore reads."""
 
-        _ = template
-        repos = _get_hermes_skill_repos(
-            deployment_settings,
-            dict(model_access.configuration),
-        )
-        names: list[str] = []
-        for index, repo in enumerate(repos):
-            name = str(repo.get("deploy_key_secret_name") or "").strip()
-            if not name:
-                raise APIError(
-                    code="HERMES_SKILL_REPO_MISSING_KEY",
-                    message=(
-                        f"hermes_skill_repos[{index}].deploy_key_secret_name "
-                        "is required for ssh protocol"
-                    ),
-                    status_code=500,
-                )
-            if name not in names:
-                names.append(name)
-        return EngineStartupMaterialRequest(
-            secret_names=tuple(names), runtime_state_store=True
-        )
+        _ = template, model_access, deployment_settings
+        return EngineStartupMaterialRequest(secret_names=(), runtime_state_store=True)
 
     async def activate_runtime(
         self,
@@ -317,9 +316,6 @@ class HermesEngineAdapter(EngineAdapter):
         template = context.template
         workspace_plan = context.workspace_plan
         user_id = context.user_id
-        conversation_user_id = str(
-            getattr(workspace_plan, "user_id", None) or ""
-        ).strip() or None
         profile_ref = _resolve_hermes_profile_ref(
             user_id=user_id,
             assistant_id=workspace_plan.assistant_id,
@@ -339,6 +335,17 @@ class HermesEngineAdapter(EngineAdapter):
                 )
             spawn_fingerprint = None
             if context.attach_mode != "lightweight":
+
+                async def _wait_until_backend_idle() -> None:
+                    await wait_until_backend_idle(
+                        await self._resident_backend(
+                            sandbox,
+                            identity=runtime_identity,
+                            profile_ref=profile_ref,
+                            spawn_fingerprint=None,
+                        )
+                    )
+
                 spawn_fingerprint = await _prepare_hermes_profile(
                     sandbox,
                     identity=runtime_identity,
@@ -346,13 +353,10 @@ class HermesEngineAdapter(EngineAdapter):
                     template=template,
                     model_access=context.model_access,
                     model_api_key=context.model_credential,
-                    user_id=profile_ref["user_id"],
-                    conversation_user_id=conversation_user_id,
-                    assistant_id=profile_ref["assistant_id"],
                     runtime_env=dict(context.runtime_env or {}),
                     mcp_deployment_id=context.platform_mcp_deployment_id,
-                    platform_secrets=context.platform_secrets,
                     runtime_state_store=context.runtime_state_store,
+                    wait_until_backend_idle=_wait_until_backend_idle,
                 )
             engine_client = await self._start_engine(
                 sandbox,
@@ -410,18 +414,42 @@ class HermesEngineAdapter(EngineAdapter):
     ) -> EngineClient:
         """Resolve the profile's resident gateway and open one session on it.
 
-        The gateway spawn (with the vendor's ``gateway.ready`` barrier) is the
-        engine's preparation cost and runs here at most once per profile per
-        box; every later conversation of the profile finds the resident
-        gateway and pays only ``session.create``/``session.resume``.
-        ``spawn_fingerprint`` names the profile configuration just written
-        (the callers that rewrite it pass the value from
-        :func:`_prepare_hermes_profile`, which is also where a backend running
-        under older content is restarted, since reconnecting cannot correct
-        one). Here it only fences this host's attachment: one established
-        under the old content is dropped rather than kept for new sessions.
-        ``None`` accepts the standing resident, for attaches that do not touch
-        the profile.
+        Every conversation of the profile finds the resident backend and pays
+        only ``session.create``/``session.resume``. ``spawn_fingerprint`` is
+        the process configuration :func:`_prepare_hermes_profile` left the
+        backend running under; see :meth:`_resident_backend`.
+        """
+
+        gateway = await self._resident_backend(
+            sandbox,
+            identity=identity,
+            profile_ref=profile_ref,
+            spawn_fingerprint=spawn_fingerprint,
+        )
+        return HermesEngineClient(
+            gateway=gateway,
+            platform_session_id=session_id,
+            resume_session_key=resume_session_key,
+        )
+
+    async def _resident_backend(
+        self,
+        sandbox: Any,
+        *,
+        identity: dict[str, Any] | None,
+        profile_ref: dict[str, str] | None,
+        spawn_fingerprint: str | None,
+    ) -> HermesGatewayHandle:
+        """This host's attachment to the box's resident Hermes backend.
+
+        ``spawn_fingerprint`` names the process configuration the backend runs
+        under (:func:`_hermes_process_digest`). An attachment established
+        under a different one belongs to a backend that has since restarted,
+        so it is dropped rather than kept for new sessions. A change Hermes
+        reads per session leaves the fingerprint alone, and with it the
+        attachment every other conversation of the profile is streaming on.
+        ``None`` accepts the standing attachment, for callers that do not
+        touch the profile.
         """
 
         normalized = normalize_runtime_identity(identity)
@@ -450,18 +478,14 @@ class HermesEngineAdapter(EngineAdapter):
         # under supervisord and `astrabox-hermes-forward` publishes it once it
         # answers, so this resolves an address rather than starting anything.
         endpoint = await resolve_sandbox_endpoint(sandbox, HERMES_BACKEND_PORT)
-        gateway = await resolve_gateway_handle(
-            url=hermes_backend_ws_url(_hermes_backend_token(normalized)),
-            dial=hermes_backend_dial(endpoint.origin),
-            headers=endpoint.headers,
+        return await resolve_gateway_handle(
+            url=hermes_backend_ws_url(endpoint.origin),
+            headers=hermes_backend_headers(
+                endpoint.headers, _hermes_backend_token(normalized)
+            ),
             sandbox_id=sandbox_id,
             profile_key=profile_ref["profile_key"],
             spawn_fingerprint=spawn_fingerprint,
-        )
-        return HermesEngineClient(
-            gateway=gateway,
-            platform_session_id=session_id,
-            resume_session_key=resume_session_key,
         )
 
     async def quiesce_and_save_runtime_state(
@@ -601,28 +625,27 @@ async def _prepare_hermes_profile(
     template: Any,
     model_access: ResolvedModelAccess,
     model_api_key: str,
-    user_id: str,
-    conversation_user_id: str | None,
-    assistant_id: str,
     runtime_state_store: dict[str, Any] | None,
     runtime_env: dict[str, str] | None = None,
     mcp_deployment_id: str | None = None,
-    platform_secrets: dict[str, str] | None = None,
+    wait_until_backend_idle: Callable[[], Awaitable[None]],
 ) -> str:
-    """Materialize the profile in the box; return its spawn fingerprint.
+    """Materialize the profile in the box; return its process fingerprint.
 
-    The fingerprint hashes what fixes the resident backend's behaviour at
-    start: the profile env file's content — model route and key identity,
-    config blobs, plugin env, skill sources, SOUL, cron. Hermes reads all of it
-    once, when it constructs the agent, so a backend already running under
-    older content cannot be corrected by reconnecting to it. This function is
-    therefore where a change takes effect: it compares before writing and
-    restarts the supervised backend when the content moved. The fingerprint's
-    remaining job is downstream — an attachment established under the old
-    content must not keep gaining sessions under the new one.
+    This is where a changed Assistant takes effect for the conversation being
+    started, and how depends on what changed. Hermes reads the model, its
+    provider and SOUL.md for each new session (``_HERMES_PER_SESSION_ENVS``),
+    so those are written into the profile in place and the running backend
+    keeps serving everyone else. What Hermes reads only when its process
+    starts — its environment and its MCP servers — needs a restart, and a
+    restart ends every turn running in the backend. So that path first waits,
+    through ``wait_until_backend_idle``, until nothing is running, while this
+    conversation stays in preparation.
+
+    The returned fingerprint is :func:`_hermes_process_digest`: an attachment
+    to a backend started under a different one is dropped downstream.
     """
 
-    model_config_payload = dict(model_access.configuration)
     normalized = normalize_runtime_identity(identity)
     if not normalized:
         raise APIError(
@@ -639,39 +662,14 @@ async def _prepare_hermes_profile(
             status_code=502,
         )
 
-    repo_source_dirs = await _prepare_hermes_skill_repos(
-        sandbox,
-        deployment_settings=deployment_settings,
-        model_config_payload=model_config_payload,
-        platform_secrets=dict(platform_secrets or {}),
-    )
     overwrite_blob = _build_hermes_config_overwrite(
         deployment_settings,
         template=template,
         model_access=model_access,
         mcp_deployment_id=mcp_deployment_id,
     )
-    # Operator-configured plugins (a memory provider such as OpenViking, or any
-    # other) are pure config in the template; the engine passes them through
-    # generically with the conversation's runtime identity substituted in.
-    plugins = _build_hermes_plugins(
-        model_config_payload,
-        runtime_vars={
-            "conversation_user_id": str(conversation_user_id or "").strip(),
-            "assistant_id": str(assistant_id or "").strip(),
-            "user_id": str(user_id or "").strip(),
-        },
-    )
-    defaults_blob = _build_hermes_config_defaults(
-        plugin_config_defaults=plugins.config_defaults,
-    )
-    skill_source_dirs = _build_hermes_skill_source_dirs(
-        deployment_settings,
-        model_config_payload=model_config_payload,
-        repo_source_dirs=repo_source_dirs,
-    )
-    soul_content = _build_hermes_soul_content(model_config_payload)
-    cron_jobs_payload = _build_hermes_cron_jobs_payload(model_config_payload)
+    defaults_blob = _build_hermes_config_defaults()
+    soul_content = _build_hermes_soul_content(template)
     normalized_model_api_key = str(model_api_key or "").strip()
     if not normalized_model_api_key:
         raise APIError(
@@ -688,27 +686,12 @@ async def _prepare_hermes_profile(
             defaults_blob, ensure_ascii=False, sort_keys=True
         ),
         _HERMES_MODEL_API_KEY_ENV: normalized_model_api_key,
-        **plugins.env,
         "HERMES_HOME": normalized["config_dir"],
         **dict(runtime_env or {}),
     }
-    if skill_source_dirs:
-        env[_HERMES_SKILL_SOURCE_DIRS_ENV] = json.dumps(
-            skill_source_dirs, ensure_ascii=False
-        )
     if soul_content:
         env[_HERMES_SOUL_B64_ENV] = base64.b64encode(
             soul_content.encode("utf-8")
-        ).decode("ascii")
-    env[_HERMES_CRON_JOBS_B64_ENV] = base64.b64encode(
-        json.dumps(cron_jobs_payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
-    ).decode("ascii")
-    if plugins.config_files:
-        plugin_files_json = json.dumps(
-            plugins.config_files, ensure_ascii=True, sort_keys=True
-        )
-        env[_HERMES_PLUGIN_FILES_B64_ENV] = base64.b64encode(
-            plugin_files_json.encode("utf-8")
         ).decode("ascii")
     env.update(
         {
@@ -733,16 +716,15 @@ async def _prepare_hermes_profile(
         _HERMES_PROFILE_ENV_FILENAME,
     )
     profile_env_content = _build_hermes_profile_env_exports(env)
-    # The identity of the CONFIGURATION the backend is serving: this file and
-    # nothing else. The launcher command is deliberately not part of it — the
-    # image owns that (`astrabox-hermes-serve`), so hashing it would hash a
-    # constant. What the fence enforces is that an attachment established under
-    # different content must not keep gaining sessions under the new one.
-    spawn_fingerprint = hashlib.sha256(
-        profile_env_content.encode("utf-8")
-    ).hexdigest()
-    standing = await _hermes_profile_env_standing(
-        run_fn, path=profile_env_path, digest=spawn_fingerprint
+    process_digest = _hermes_process_digest(env, overwrite_blob)
+    process_digest_path = posixpath.join(
+        normalized["config_dir"], _HERMES_PROCESS_DIGEST_FILENAME
+    )
+    standing = await _hermes_process_standing(
+        run_fn,
+        env_path=profile_env_path,
+        digest_path=process_digest_path,
+        digest=process_digest,
     )
     if not runtime_state_store:
         raise APIError(
@@ -806,9 +788,48 @@ async def _prepare_hermes_profile(
             message="failed to publish this box's Hermes profile initialization",
             status_code=502,
         )
-    if standing == "CHANGED" and "fresh=0" in _hermes_command_output(initialized):
+    # A freshly initialized box has not started Hermes yet: publishing just
+    # released `astrabox-hermes-serve`, which merges this profile and then
+    # starts the backend under it.
+    running = "fresh=0" in _hermes_command_output(initialized)
+    if running and standing == "PROCESS_UNCHANGED":
+        # The recorded digest already names this process configuration.
+        await _apply_hermes_profile_in_place(
+            run_fn, normalized=normalized, profile_env_path=profile_env_path
+        )
+        return process_digest
+    if running and standing == "PROCESS_CHANGED":
+        await wait_until_backend_idle()
         await _restart_hermes_backend(run_fn)
-    return spawn_fingerprint
+    await install_verified_text_script(
+        sandbox,
+        path=process_digest_path,
+        content=process_digest,
+        mode=0o600,
+        error_code="HERMES_PROFILE_ENV_INSTALL_FAILED",
+        error_message="failed to record the Hermes backend's process configuration",
+    )
+    return process_digest
+
+
+def _hermes_process_digest(env: dict[str, str], overwrite_blob: dict[str, Any]) -> str:
+    """The configuration a Hermes backend process fixes when it starts.
+
+    Its environment (the profile env file minus the inputs Hermes reads per
+    session) and the ``config.yaml`` keys it reads only at start. Two profiles
+    with equal digests can be served by the same running backend; a different
+    digest needs a restart.
+    """
+
+    payload = {
+        "environment": {
+            key: value for key, value in env.items() if key not in _HERMES_PER_SESSION_ENVS
+        },
+        "config": {key: overwrite_blob.get(key) for key in _HERMES_PROCESS_CONFIG_KEYS},
+    }
+    return hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()
 
 
 #: The port `astrabox-hermes-forward` publishes the backend on. The backend
@@ -816,43 +837,27 @@ async def _prepare_hermes_profile(
 #: one the sandbox's endpoint face knows about.
 HERMES_BACKEND_PORT = 9118
 
-#: Where `hermes serve` binds inside the box, as the `Host` header of an
-#: upgrade must name it. Not an address reachable from here: the bind is
-#: loopback on purpose and `astrabox-hermes-forward` is what publishes it.
-#: Only the host half is load-bearing — Hermes strips the port before
-#: comparing — so this does not have to be kept in step with the box's
-#: `ASTRABOX_HERMES_LOOPBACK_PORT`; it names the real one because a URL that
-#: named a different port would read as a mistake to the next person.
-HERMES_BACKEND_BOUND_ADDRESS = "127.0.0.1:9119"
+
+#: The upgrade header that carries the backend credential from this host into
+#: the box. `containers/sandbox-hermes/hermes_host_relay.py` moves it into the
+#: `?token=` query Hermes reads, and names it in its own constant; the two must
+#: match.
+HERMES_BACKEND_TOKEN_HEADER = "X-AstraBox-Hermes-Token"
 
 
-def hermes_backend_ws_url(token: str) -> str:
-    """The backend's JSON-RPC socket, as the backend itself is addressed.
+def hermes_backend_ws_url(origin: str) -> str:
+    """The backend's JSON-RPC socket at the resolved endpoint ``origin``.
 
-    Not the address this host dials — that is the forwarder's, carried
-    separately as the connection's ``dial`` — because Hermes refuses an
-    upgrade whose `Host` names anything but its own loopback bind. The
-    reasoning, the measurement behind it and the rejected alternatives are on
-    :meth:`HermesBackendChannel.connect`.
+    The socket is addressed exactly as the sandbox backend returned the
+    endpoint: a Pod address, an OpenSandbox ingress route, or execd's
+    ``/proxy/<port>`` route on Docker. Whatever routes the connection reads
+    that address — an ingress gateway routes on the path in uri mode and on
+    `Host` in wildcard mode — so the scheme, authority and path all stay as
+    issued. Hermes requires a `Host` naming its own loopback bind;
+    `containers/sandbox-hermes/hermes_host_relay.py` supplies it inside the
+    box, behind every one of those routes.
 
-    The credential is a QUERY parameter rather than a header, which is Hermes'
-    own arrangement for a loopback bind and not a shortcut: an Authorization
-    header on this upgrade is refused with 403, found by probing a real
-    backend before any of this was written.
-    """
-
-    return (
-        f"ws://{HERMES_BACKEND_BOUND_ADDRESS}"
-        f"/api/ws?token={quote(str(token), safe='')}"
-    )
-
-
-def hermes_backend_dial(origin: str) -> tuple[str, int]:
-    """Split a resolved endpoint origin into the ``(host, port)`` to connect to.
-
-    The sandbox backend's endpoint face answers with whatever is reachable from
-    here — a pod address on Kubernetes without an ingress, a mapped host port
-    on local Docker — so both halves come from it rather than from a constant.
+    The URL carries no credential; :func:`hermes_backend_headers` does.
     """
 
     parsed = urlsplit(str(origin or "").strip().rstrip("/"))
@@ -862,32 +867,67 @@ def hermes_backend_dial(origin: str) -> tuple[str, int]:
             message=f"Hermes backend endpoint is not an http origin: {origin!r}",
             status_code=502,
         )
-    port = parsed.port or (443 if parsed.scheme == "https" else 80)
-    return (str(parsed.hostname), int(port))
+    scheme = "wss" if parsed.scheme == "https" else "ws"
+    return f"{scheme}://{parsed.netloc}{parsed.path}/api/ws"
+
+
+def hermes_backend_headers(endpoint_headers: Mapping[str, str], token: str) -> dict[str, str]:
+    """The upgrade headers: the endpoint's own, plus the backend credential.
+
+    On a loopback bind Hermes accepts the credential only as a `?token=`
+    query parameter (`_ws_auth_reason` in `hermes_cli/web_server.py`), and
+    every proxy between this host and the box records the request line: the
+    OpenSandbox ingress gateway and execd's ``/proxy/<port>`` route both log
+    the request URI. The credential therefore travels in
+    :data:`HERMES_BACKEND_TOKEN_HEADER`, which those proxies forward without
+    logging, and the relay in the box moves it into the query on the loopback
+    hop. `Authorization` and `Cookie` are not used because the lifecycle
+    server's relay removes them.
+    """
+
+    headers = {
+        name: value
+        for name, value in endpoint_headers.items()
+        if name.lower() != HERMES_BACKEND_TOKEN_HEADER.lower()
+    }
+    headers[HERMES_BACKEND_TOKEN_HEADER] = str(token)
+    return headers
 
 
 def _hermes_backend_token(normalized: dict[str, Any]) -> str:
     """The WebSocket credential for this profile's in-box Hermes backend.
 
-    A function of the profile, not a random draw, because the backend is a
-    supervised service: supervisord may restart it at any time, and a secret
-    drawn afresh on each start would leave the host holding one the restarted
-    box rejects. Deriving it lets the host present the same credential for the
-    life of the profile without storing a second secret anywhere.
+    Keyed by the deployment's own secret, through the same master-key
+    derivation the platform uses elsewhere (:func:`derive_platform_key`), so it
+    cannot be recomputed by anyone who merely knows the box's identity. A hash
+    of that identity alone would not do: it is reproducible by a co-tenant, and
+    on Kubernetes a sandbox Pod has no ingress NetworkPolicy, so any pod in the
+    cluster can reach this port.
 
-    It authorizes a loopback socket inside one workspace box whose profile
-    directory is already mode 700, so its blast radius is that box. It is not
-    a platform credential and must never be reused as one.
+    Still a pure function of the profile, not a random draw, so a backend
+    supervisord restarts keeps the credential the host already holds. Both the
+    write into the box's profile env and the host's own upgrade compute it here,
+    in the server process, from the same identity and the same secret, so they
+    always agree; nothing is stored a second time. The subject is the box's
+    account and home, which are what the token authorizes a loopback socket in.
     """
+    from astrabox.core.service.orchestrator.platform_secret import (
+        derive_platform_key,
+        platform_secret_root,
+    )
 
-    material = "|".join(
-        (
-            "astrabox-hermes-backend",
+    subject = json.dumps(
+        [
             str(normalized.get("linux_user") or ""),
             str(normalized.get("home_dir") or ""),
-        )
+        ],
+        separators=(",", ":"),
     )
-    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+    return derive_platform_key(
+        platform_secret_root(),
+        domain="astrabox-hermes-backend-ws",
+        subject=subject,
+    ).hex()
 
 
 def _build_hermes_profile_env_exports(env: dict[str, str]) -> str:
@@ -910,33 +950,34 @@ def _build_hermes_profile_env_exports(env: dict[str, str]) -> str:
 _HERMES_BACKEND_PROGRAM = "astrabox-hermes"
 
 
-async def _hermes_profile_env_standing(
-    run_fn: Any, *, path: str, digest: str
+async def _hermes_process_standing(
+    run_fn: Any, *, env_path: str, digest_path: str, digest: str
 ) -> str:
-    """Whether the box already holds this profile, a different one, or none.
+    """Whether the box's backend can serve this profile without a restart.
 
-    Asked before writing, because the answer decides whether the resident
-    backend has to be restarted and the write destroys the evidence for it. The
-    comparison happens inside the box so the profile — which carries the model
-    credential — is never read back out of it.
+    ``ABSENT`` is the first materialization: no profile yet, so the backend has
+    not started and `astrabox-hermes-serve` is waiting for this very file.
+    ``PROCESS_UNCHANGED`` means the running backend was started under the same
+    process configuration (the digest recorded beside the profile), so every
+    other change is one Hermes reads per session. ``PROCESS_CHANGED`` — a
+    different digest, or none recorded — needs a restart.
 
-    ``ABSENT`` is the first materialization: the backend has not started yet,
-    `astrabox-hermes-serve` is still waiting for this very file, and restarting
-    would only fight its own readiness gate. ``UNCHANGED`` is every ordinary
-    wake. ``CHANGED`` is the one that costs a restart.
+    Asked before writing, because the write destroys the evidence. The digest
+    file holds a hash, never the profile, which carries the model credential.
     """
 
     probe = (
         'set -euo pipefail; '
         'if [ ! -f "$1" ]; then echo ABSENT; '
-        'elif [ "$(sha256sum < "$1" | cut -d" " -f1)" = "$2" ]; then echo UNCHANGED; '
-        'else echo CHANGED; fi'
+        'elif [ -f "$2" ] && [ "$(cat "$2")" = "$3" ]; then echo PROCESS_UNCHANGED; '
+        'else echo PROCESS_CHANGED; fi'
     )
     result = await run_fn(
-        "bash -lc " + shlex.quote(probe) + " _ " + shlex.quote(path) + " " + shlex.quote(digest)
+        "bash -lc " + shlex.quote(probe) + " _ " + shlex.quote(env_path)
+        + " " + shlex.quote(digest_path) + " " + shlex.quote(digest)
     )
     output = _hermes_command_output(result)
-    for verdict in ("UNCHANGED", "CHANGED", "ABSENT"):
+    for verdict in ("PROCESS_UNCHANGED", "PROCESS_CHANGED", "ABSENT"):
         if verdict in output:
             return verdict
     raise APIError(
@@ -949,21 +990,63 @@ async def _hermes_profile_env_standing(
     )
 
 
+async def _apply_hermes_profile_in_place(
+    run_fn: Any, *, normalized: dict[str, Any], profile_env_path: str
+) -> None:
+    """Write the per-session inputs into the running backend's profile.
+
+    The same merge `astrabox-hermes-serve` runs before starting Hermes, run as
+    the profile's account against the profile just written. It rewrites
+    ``config.yaml`` and SOUL.md atomically, so a session being built
+    concurrently reads either the old files or the new ones, never a torn
+    one; the next session built reads the new ones.
+    """
+
+    merge_script = (
+        'set -euo pipefail; source "$1"; '
+        'exec "$HERMES_VENV/bin/python" "$2"'
+    )
+    command = shlex.join([
+        "runuser", "-u", normalized["linux_user"], "--", "env",
+        f"HOME={normalized['home_dir']}",
+        f"USER={normalized['linux_user']}",
+        f"LOGNAME={normalized['linux_user']}",
+        "bash", "--noprofile", "--norc", "-c", merge_script,
+        "astrabox-hermes-config-merge", profile_env_path,
+        _HERMES_CONFIG_MERGE_SCRIPT_PATH,
+    ])
+    result = await run_fn(command)
+    # execd delivers each printed line as its own stdout event and the text
+    # joins them with no separator, so the config marker follows the SOUL
+    # marker on the same "line"; it is matched as a substring, like every
+    # other marker this module reads.
+    output = _hermes_command_output(result)
+    if (
+        getattr(result, "error", None)
+        or getattr(result, "exit_code", 0) not in (0, None)
+        or not any(marker in output for marker in _HERMES_CONFIG_MERGE_MARKERS)
+    ):
+        raise APIError(
+            code="HERMES_PROFILE_SETUP_FAILED",
+            message=(
+                "failed to apply the changed Hermes profile to the running "
+                f"backend: {getattr(result, 'error', None) or 'no merge marker'}; "
+                f"output={output[:2000]!r}"
+            ),
+            status_code=502,
+        )
+
+
 async def _restart_hermes_backend(run_fn: Any) -> None:
-    """Restart the resident backend so it re-reads a profile that changed.
+    """Restart the resident backend so it re-reads its process configuration.
 
-    Hermes reads its configuration once, when the agent is constructed at
-    startup: the model route, the API key and everything
-    `astrabox-hermes-config-merge` writes into `~/.hermes/config.json`. The PTY
-    design got this for free — every conversation was a new process — and the
-    resident one does not, so changing an Assistant's model would otherwise
-    take effect only when the box next restarted, silently and with the old
-    model answering in the meantime.
+    Hermes fixes its environment (the model API key among it) and its MCP
+    servers when the process starts, so a change to either reaches a running
+    backend only through a restart. Everything it reads per session is applied
+    in place instead (:func:`_apply_hermes_profile_in_place`).
 
-    Restarting drops the box's in-flight turns, which is why it is done only
-    when the profile actually changed: that is a deliberate act by the owner of
-    every session on this box, and the alternative is answering them from a
-    configuration they replaced.
+    Restarting ends every turn running in the backend, so callers wait until
+    none is (``wait_until_backend_idle``) before calling this.
 
     The host is not assembling a capability here — the service is the image's,
     supervised by the image — it is telling a service its inputs moved. The
@@ -1069,8 +1152,13 @@ def _build_hermes_config_overwrite(
     Composes the model/custom_providers subtree. Consumed inside the runtime
     image by scripts/runtime/hermes_config_merge.py via the
     ``ASTRABOX_HERMES_CONFIG_OVERWRITE`` env JSON blob.
+
+    Hermes' own session titles are switched off
+    (``auxiliary.title_generation.enabled: false``, the vendor's documented
+    switch in its configuration guide). Hermes titles a session with two model
+    calls on every conversation's first turn, and nothing in the platform reads
+    that title: conversation titles are the platform's own.
     """
-    model_config_payload = dict(model_access.configuration)
     model_base_url = _resolve_hermes_openai_base_url(model_access)
     if not model_base_url:
         raise APIError(
@@ -1078,31 +1166,15 @@ def _build_hermes_config_overwrite(
             message="OpenAI-compatible model base_url not configured for hermes template",
             status_code=500,
         )
-    model_name = _resolve_hermes_model_name(model_access)
+    model_name = str(model_access.model_name or "").strip()
     if not model_name:
         raise APIError(
             code="HERMES_MODEL_NAME_NOT_CONFIGURED",
             message="model_name not configured for hermes template",
             status_code=500,
         )
-    api_mode = (
-        str(
-            model_config_payload.get("api_mode")
-            or model_config_payload.get("hermes_api_mode")
-            or _HERMES_DEFAULT_API_MODE
-        ).strip()
-        or _HERMES_DEFAULT_API_MODE
-    )
-    provider_name = (
-        str(
-            model_config_payload.get("provider_name")
-            or model_config_payload.get("custom_provider_name")
-            or _HERMES_CUSTOM_PROVIDER_NAME
-        ).strip()
-        or _HERMES_CUSTOM_PROVIDER_NAME
-    )
     provider_slug = (
-        re.sub(r"[^a-z0-9_-]+", "-", provider_name.lower()).strip("-") or "astrabox"
+        re.sub(r"[^a-z0-9_-]+", "-", _HERMES_CUSTOM_PROVIDER_NAME.lower()).strip("-")
     )
     payload: dict[str, Any] = {
         "model": {
@@ -1111,13 +1183,14 @@ def _build_hermes_config_overwrite(
         },
         "custom_providers": [
             {
-                "name": provider_name,
+                "name": _HERMES_CUSTOM_PROVIDER_NAME,
                 "base_url": model_base_url,
                 "key_env": _HERMES_MODEL_API_KEY_ENV,
                 "model": model_name,
-                "api_mode": api_mode,
+                "api_mode": _HERMES_DEFAULT_API_MODE,
             }
         ],
+        "auxiliary": {"title_generation": {"enabled": False}},
     }
     if template_mcp_servers(getattr(template, "mcp_servers", None)):
         mcp_servers = runtime_mcp_servers_for_binding(
@@ -1132,516 +1205,42 @@ def _build_hermes_config_overwrite(
     return payload
 
 
-def _build_hermes_config_defaults(
-    *, plugin_config_defaults: dict[str, Any] | None = None
-) -> dict[str, Any]:
+def _build_hermes_config_defaults() -> dict[str, Any]:
     """User-overridable profile yaml (setdefault).
 
-    The platform base (terminal/approvals/security) plus whatever the configured
-    plugins contribute (e.g. a memory provider's ``memory: {provider: …}``).
-    Anything the user later sets via ``hermes config set …`` is preserved.
+    The platform base (terminal/approvals/security). Anything the user later
+    sets via ``hermes config set …`` is preserved.
     """
-    defaults: dict[str, Any] = {
+    return {
         "terminal": {"backend": "local"},
         "approvals": {"mode": "off", "cron_mode": "approve"},
         "security": {"tirith_enabled": False},
     }
-    if plugin_config_defaults:
-        defaults = _deep_merge(defaults, plugin_config_defaults)
-    return defaults
 
 
-def _build_hermes_skill_source_dirs(
-    deployment_settings: Any,
-    *,
-    model_config_payload: dict[str, Any],
-    repo_source_dirs: list[str] | None = None,
-) -> list[str]:
-    """Hermes-native platform skill distribution source directories.
+def _build_hermes_soul_content(template: Any) -> str:
+    """The Assistant's system prompt as Hermes' ``SOUL.md``, or ``""`` for none.
 
-    Claude Code template ``skills`` are intentionally not used here: Hermes
-    discovers skills from ``$HERMES_HOME/skills``. The runtime bootstrap copies
-    missing platform skills from these shared source dirs into the user's
-    profile, preserving any existing user-edited skill copy.
+    Hermes documents SOUL.md as the agent's identity: slot one of its system
+    prompt, replacing the built-in "You are Hermes Agent" text while the rest of
+    its prompt stays. That is the vendor's own place for who the agent is, so
+    the platform's system prompt lands there verbatim, with no wrapper.
     """
-    values: list[str] = []
-    values.extend(
-        _normalize_hermes_skill_source_dirs(
-            getattr(deployment_settings, "hermes_skill_source_dirs", [])
-        )
-    )
-    hermes_config = model_config_payload.get("hermes")
-    if isinstance(hermes_config, dict):
-        skills_config = hermes_config.get("skills")
-        if isinstance(skills_config, dict):
-            values.extend(
-                _normalize_hermes_skill_source_dirs(skills_config.get("source_dirs"))
-            )
-    values.extend(
-        _normalize_hermes_skill_source_dirs(
-            model_config_payload.get("hermes_skill_source_dirs")
-        )
-    )
-    values.extend(_normalize_hermes_skill_source_dirs(repo_source_dirs))
 
-    seen: set[str] = set()
-    result: list[str] = []
-    for value in values:
-        if value in seen:
-            continue
-        seen.add(value)
-        result.append(value)
-    return result
-
-
-def _build_hermes_soul_content(model_config_payload: dict[str, Any]) -> str:
-    hermes_config = model_config_payload.get("hermes")
-    if not isinstance(hermes_config, dict):
-        return ""
-    raw_soul = hermes_config.get("soul")
-    if raw_soul is None:
-        return ""
-    if not isinstance(raw_soul, str):
-        raise APIError(
-            code="HERMES_SOUL_INVALID",
-            message="model_config.hermes.soul must be a string",
-            status_code=500,
-        )
-    content = raw_soul.strip()
-    if not content:
-        return ""
-    return f"{content}\n"
-
-
-def _build_hermes_cron_jobs_payload(model_config_payload: dict[str, Any]) -> list[dict[str, Any]]:
-    hermes_config = model_config_payload.get("hermes")
-    if hermes_config is None:
-        return []
-    if not isinstance(hermes_config, dict):
-        raise APIError(
-            code="HERMES_CRON_INVALID",
-            message="model_config.hermes must be an object when configuring Hermes cron",
-            status_code=500,
-        )
-    cron_config = hermes_config.get("cron")
-    if cron_config is None:
-        return []
-    if not isinstance(cron_config, dict):
-        raise APIError(
-            code="HERMES_CRON_INVALID",
-            message="model_config.hermes.cron must be an object",
-            status_code=500,
-        )
-    jobs = cron_config.get("jobs", [])
-    if not isinstance(jobs, list):
-        raise APIError(
-            code="HERMES_CRON_INVALID",
-            message="model_config.hermes.cron.jobs must be an array",
-            status_code=500,
-        )
-    normalized: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for index, raw_job in enumerate(jobs):
-        label = f"model_config.hermes.cron.jobs[{index}]"
-        if not isinstance(raw_job, dict):
-            raise APIError(
-                code="HERMES_CRON_INVALID",
-                message=f"{label} must be an object",
-                status_code=500,
-            )
-        job_id = str(raw_job.get("id") or "").strip()
-        if not job_id:
-            raise APIError(
-                code="HERMES_CRON_INVALID",
-                message=f"{label}.id is required",
-                status_code=500,
-            )
-        if job_id in seen:
-            raise APIError(
-                code="HERMES_CRON_INVALID",
-                message=f"{label}.id duplicates {job_id!r}",
-                status_code=500,
-            )
-        seen.add(job_id)
-        schedule = raw_job.get("schedule")
-        if not isinstance(schedule, (str, dict)):
-            raise APIError(
-                code="HERMES_CRON_INVALID",
-                message=f"{label}.schedule must be a string or object",
-                status_code=500,
-            )
-        no_agent = raw_job.get("no_agent", False)
-        if not isinstance(no_agent, bool):
-            raise APIError(
-                code="HERMES_CRON_INVALID",
-                message=f"{label}.no_agent must be a boolean",
-                status_code=500,
-            )
-        prompt = raw_job.get("prompt")
-        script = raw_job.get("script")
-        if no_agent:
-            if not isinstance(script, str) or not script.strip():
-                raise APIError(
-                    code="HERMES_CRON_INVALID",
-                    message=f"{label}.script is required when no_agent=true",
-                    status_code=500,
-                )
-        elif not isinstance(prompt, str) or not prompt.strip():
-            raise APIError(
-                code="HERMES_CRON_INVALID",
-                message=f"{label}.prompt is required",
-                status_code=500,
-            )
-        normalized.append(dict(raw_job))
-    return normalized
-
-
-def _normalize_hermes_skill_source_dirs(raw: Any) -> list[str]:
-    if raw is None or raw == "":
-        return []
-    if isinstance(raw, list) or isinstance(raw, tuple):
-        return [str(item).strip() for item in raw if str(item).strip()]
-    if isinstance(raw, str):
-        return [part.strip() for part in raw.split(",") if part.strip()]
-    return [str(raw).strip()] if str(raw).strip() else []
-
-
-async def _prepare_hermes_skill_repos(
-    sandbox: Any,
-    *,
-    deployment_settings: Any,
-    model_config_payload: dict[str, Any],
-    platform_secrets: dict[str, str],
-) -> list[str]:
-    repos = _get_hermes_skill_repos(deployment_settings, model_config_payload)
-    if not repos:
-        return []
-    command_runner = getattr(sandbox, "commands", None)
-    run_fn = getattr(command_runner, "run", None) if command_runner is not None else None
-    if not callable(run_fn):
-        raise APIError(
-            code="HERMES_SKILL_REPO_CLONE_FAILED",
-            message="sandbox command runner is required to clone hermes skill repos",
-            status_code=502,
-        )
-
-    cache_hash = _hermes_skill_repo_cache_hash(repos)
-    cache_dir = f"{HERMES_SKILL_REPO_CACHE_DIR.rstrip('/')}/{cache_hash}"
-    payload_repos: list[dict[str, Any]] = []
-    for index, repo in enumerate(repos):
-        label = f"hermes_skill_repos[{index}]"
-        secret_name = str(repo.get("deploy_key_secret_name") or "").strip()
-        if not secret_name:
-            raise APIError(
-                code="HERMES_SKILL_REPO_MISSING_KEY",
-                message=f"{label}.deploy_key_secret_name is required for ssh protocol",
-                status_code=500,
-            )
-        private_key = platform_secrets.get(secret_name)
-        if not private_key:
-            raise APIError(
-                code="HERMES_SKILL_REPO_MISSING_KEY",
-                message=(
-                    f"the platform supplied no deploy key for {label} "
-                    f"(secret_name={secret_name!r})"
-                ),
-                status_code=500,
-            )
-        private_key = _normalize_deploy_private_key(private_key, secret_name=secret_name)
-        payload_repos.append(
-            {
-                "index": index,
-                "url": repo["url"],
-                "branch": repo.get("branch") or "",
-                "depth": repo.get("depth"),
-                "sha": repo.get("sha") or "",
-                "skill_paths": repo.get("skill_paths") or ["."],
-                "checkout_rel": _hermes_skill_repo_checkout_rel(index, repo),
-                "key_b64": base64.b64encode(private_key.encode("utf-8")).decode("ascii"),
-            }
-        )
-
-    payload = {
-        "cache_dir": cache_dir,
-        "cache_hash": cache_hash,
-        "repos": payload_repos,
-    }
-    payload_b64 = base64.b64encode(
-        json.dumps(payload, ensure_ascii=True, sort_keys=True).encode("utf-8")
-    ).decode("ascii")
-    result = await run_fn(
-        f"python3 {shlex.quote(_HERMES_SKILL_REPO_CACHE_SCRIPT_PATH)} {shlex.quote(payload_b64)}"
-    )
-    output = _hermes_command_output(result)
-    if getattr(result, "error", None) or "HERMES_SKILL_REPO_CACHE_READY" not in output:
-        raise APIError(
-            code="HERMES_SKILL_REPO_CLONE_FAILED",
-            message=(
-                "failed to prepare hermes skill repo cache: "
-                f"error={getattr(result, 'error', None) or 'missing readiness marker'}; "
-                f"output={output[:2000]!r}"
-            ),
-            status_code=502,
-        )
-    return _hermes_skill_repo_source_dirs(cache_dir, repos)
-
-
-def _get_hermes_skill_repos(
-    deployment_settings: Any,
-    model_config_payload: dict[str, Any],
-) -> list[dict[str, Any]]:
-    raw_repos: list[Any] = []
-    raw_repos.extend(getattr(deployment_settings, "hermes_skill_repos", []) or [])
-    hermes_config = model_config_payload.get("hermes")
-    if isinstance(hermes_config, dict):
-        skills_config = hermes_config.get("skills")
-        if isinstance(skills_config, dict):
-            raw_repos.extend(skills_config.get("repos") or [])
-    raw_repos.extend(model_config_payload.get("hermes_skill_repos") or [])
-    return _normalize_hermes_skill_repos(raw_repos)
-
-
-def _normalize_hermes_skill_repos(raw: Any) -> list[dict[str, Any]]:
-    if raw is None or raw == "":
-        return []
-    if not isinstance(raw, list):
-        raise APIError(
-            code="HERMES_SKILL_REPO_INVALID",
-            message=f"hermes skill repos must be a list, got {type(raw).__name__}",
-            status_code=500,
-        )
-    repos: list[dict[str, Any]] = []
-    for index, item in enumerate(raw):
-        if not isinstance(item, dict):
-            raise APIError(
-                code="HERMES_SKILL_REPO_INVALID",
-                message=f"hermes skill repos[{index}] must be an object",
-                status_code=500,
-            )
-        url = str(item.get("url") or "").strip()
-        if not url:
-            raise APIError(
-                code="HERMES_SKILL_REPO_INVALID",
-                message=f"hermes skill repos[{index}].url is required",
-                status_code=500,
-            )
-        protocol = str(item.get("protocol") or "ssh").strip().lower()
-        if protocol != "ssh":
-            raise APIError(
-                code="HERMES_SKILL_REPO_UNSUPPORTED_PROTOCOL",
-                message=f"hermes skill repos[{index}].protocol={protocol!r} not supported",
-                status_code=500,
-            )
-        if not url.startswith("git@"):
-            raise APIError(
-                code="HERMES_SKILL_REPO_INVALID",
-                message=(
-                    f"hermes skill repos[{index}].url={url!r} must be an SSH URL "
-                    "(git@host:group/repo.git)"
-                ),
-                status_code=500,
-            )
-        repos.append(
-            {
-                "url": url,
-                "protocol": protocol,
-                "deploy_key_secret_name": str(item.get("deploy_key_secret_name") or "").strip(),
-                "branch": str(item.get("branch") or item.get("ref") or "").strip(),
-                "depth": item.get("depth"),
-                "sha": str(item.get("sha") or item.get("commit") or "").strip(),
-                "skill_paths": _normalize_hermes_skill_paths(item.get("skill_paths"), index),
-            }
-        )
-    return repos
-
-
-def _normalize_hermes_skill_paths(raw: Any, repo_index: int) -> list[str]:
-    if raw is None or raw == "":
-        return ["."]
-    values = raw if isinstance(raw, list) else [raw]
-    paths: list[str] = []
-    for path_index, value in enumerate(values):
-        path = str(value or "").strip()
-        if not path:
-            raise APIError(
-                code="HERMES_SKILL_REPO_INVALID",
-                message=f"hermes skill repos[{repo_index}].skill_paths[{path_index}] is empty",
-                status_code=500,
-            )
-        if path.startswith("/"):
-            raise APIError(
-                code="HERMES_SKILL_REPO_INVALID",
-                message=f"hermes skill repos[{repo_index}].skill_paths[{path_index}] must be relative",
-                status_code=500,
-            )
-        normalized = posixpath.normpath(path)
-        if normalized in {"", "."}:
-            normalized = "."
-        if normalized == ".." or normalized.startswith("../"):
-            raise APIError(
-                code="HERMES_SKILL_REPO_INVALID",
-                message=f"hermes skill repos[{repo_index}].skill_paths[{path_index}] escapes repo root",
-                status_code=500,
-            )
-        paths.append(normalized)
-    return paths
-
-
-def _hermes_skill_repo_cache_hash(repos: list[dict[str, Any]]) -> str:
-    payload = json.dumps(
-        {"hermes_skill_repos": repos},
-        ensure_ascii=True,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
-def _hermes_skill_repo_checkout_rel(index: int, repo: dict[str, Any]) -> str:
-    return f"repos/{index:02d}-{_repo_slug(str(repo.get('url') or 'repo'))}"
-
-
-def _hermes_skill_repo_source_dirs(cache_dir: str, repos: list[dict[str, Any]]) -> list[str]:
-    dirs: list[str] = []
-    root = str(cache_dir).rstrip("/")
-    for index, repo in enumerate(repos):
-        checkout = f"{root}/{_hermes_skill_repo_checkout_rel(index, repo)}"
-        for skill_path in repo.get("skill_paths") or ["."]:
-            dirs.append(checkout if skill_path == "." else f"{checkout}/{skill_path}")
-    return dirs
-
-
-def _repo_slug(url: str) -> str:
-    tail = url.rstrip("/").rsplit("/", 1)[-1].rsplit(":", 1)[-1]
-    if tail.endswith(".git"):
-        tail = tail[:-4]
-    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", tail.strip()).strip(".-")
-    return cleaned or "repo"
-
-
-@dataclass(frozen=True)
-class _HermesPlugins:
-    """Aggregated, runtime-substituted contribution of the configured plugins."""
-
-    env: dict[str, str]
-    env_keys: tuple[str, ...]
-    config_files: dict[str, Any]
-    config_defaults: dict[str, Any]
-
-
-def _substitute_runtime_vars(value: Any, runtime_vars: dict[str, str]) -> Any:
-    """Recursively substitute ``{name}`` runtime placeholders in string leaves.
-
-    Only the whitelisted names in ``runtime_vars`` (conversation_user_id,
-    assistant_id, user_id) are replaced; an unknown ``{...}`` is left verbatim so
-    a plugin's own literal braces survive.
-    """
-    if isinstance(value, str):
-        out = value
-        for name, replacement in runtime_vars.items():
-            out = out.replace("{" + name + "}", replacement)
-        return out
-    if isinstance(value, dict):
-        return {k: _substitute_runtime_vars(v, runtime_vars) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_substitute_runtime_vars(v, runtime_vars) for v in value]
-    return value
-
-
-def _deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
-    """Recursively merge ``overlay`` into ``base`` (overlay wins at leaves)."""
-    result = dict(base)
-    for key, value in overlay.items():
-        existing = result.get(key)
-        if isinstance(existing, dict) and isinstance(value, dict):
-            result[key] = _deep_merge(existing, value)
-        else:
-            result[key] = value
-    return result
-
-
-def _build_hermes_plugins(
-    model_config_payload: dict[str, Any],
-    *,
-    runtime_vars: dict[str, str],
-) -> _HermesPlugins:
-    """Aggregate the operator-configured Hermes plugins into engine-neutral parts.
-
-    Plugins are pure configuration under ``model_config.hermes.plugins`` — the engine
-    core knows no plugin by name. Each entry is a dict::
-
-        {
-          "name": "openviking",              # label only, for diagnostics
-          "env": {"OPENVIKING_ENDPOINT": "https://…",
-                  "OPENVIKING_USER": "{conversation_user_id}"},
-          "config_files": {".openviking/ov.conf": { … }},  # written under profile home
-          "config": {"memory": {"provider": "openviking"}} # merged into config defaults
-        }
-
-    ``{conversation_user_id}`` / ``{assistant_id}`` / ``{user_id}`` placeholders in
-    any string leaf of ``env`` / ``config_files`` / ``config`` are substituted
-    from ``runtime_vars``. A memory provider such as OpenViking is expressed
-    entirely as one such entry in the template — nothing here is provider-specific.
-    """
-    hermes_config = model_config_payload.get("hermes")
-    hermes_config = hermes_config if isinstance(hermes_config, dict) else {}
-    raw_plugins = hermes_config.get("plugins")
-    if not isinstance(raw_plugins, list):
-        return _HermesPlugins(env={}, env_keys=(), config_files={}, config_defaults={})
-
-    env: dict[str, str] = {}
-    env_keys: list[str] = []
-    config_files: dict[str, Any] = {}
-    config_defaults: dict[str, Any] = {}
-    for entry in raw_plugins:
-        if not isinstance(entry, dict):
-            raise APIError(
-                code="HERMES_PLUGIN_INVALID",
-                message="each hermes plugin must be an object",
-                status_code=400,
-            )
-        plugin_env = _substitute_runtime_vars(entry.get("env") or {}, runtime_vars)
-        if not isinstance(plugin_env, dict):
-            raise APIError(code="HERMES_PLUGIN_INVALID", message="plugin.env must be an object", status_code=400)
-        for key, value in plugin_env.items():
-            env[str(key)] = str(value)
-            env_keys.append(str(key))
-        plugin_files = _substitute_runtime_vars(entry.get("config_files") or {}, runtime_vars)
-        if not isinstance(plugin_files, dict):
-            raise APIError(code="HERMES_PLUGIN_INVALID", message="plugin.config_files must be an object", status_code=400)
-        config_files.update(plugin_files)
-        plugin_config = _substitute_runtime_vars(entry.get("config") or {}, runtime_vars)
-        if not isinstance(plugin_config, dict):
-            raise APIError(code="HERMES_PLUGIN_INVALID", message="plugin.config must be an object", status_code=400)
-        config_defaults = _deep_merge(config_defaults, plugin_config)
-
-    return _HermesPlugins(
-        env=env,
-        env_keys=tuple(dict.fromkeys(env_keys)),
-        config_files=config_files,
-        config_defaults=config_defaults,
-    )
+    content = str(getattr(template, "system", None) or "").strip()
+    return f"{content}\n" if content else ""
 
 
 def _resolve_hermes_openai_base_url(
     model_access: ResolvedModelAccess,
 ) -> str:
-    model_config_payload = model_access.configuration
-    explicit_openai_url = str(
-        model_config_payload.get("openai_base_url")
-        or model_config_payload.get("openai_compatible_base_url")
-        or ""
-    ).strip()
-    if explicit_openai_url:
-        base_url = _normalize_hermes_openai_base_url(explicit_openai_url)
-    else:
-        base_url = _normalize_hermes_openai_base_url(model_access.base_url or "")
+    base_url = _normalize_hermes_openai_base_url(model_access.base_url or "")
     if _looks_anthropic_compatible_base_url(base_url):
         raise APIError(
             code="HERMES_MODEL_BASE_URL_NOT_OPENAI_COMPATIBLE",
             message=(
-                "hermes template requires OpenAI-compatible model base_url; "
-                "configure template.model_config.base_url or openai_base_url"
+                "Hermes requires an OpenAI-compatible model base URL; the "
+                "Environment's model connection names an Anthropic-compatible one"
             ),
             status_code=500,
         )
@@ -1663,17 +1262,6 @@ def _normalize_hermes_openai_base_url(raw_value: str) -> str:
 def _looks_anthropic_compatible_base_url(value: str) -> bool:
     lowered = str(value or "").strip().lower().rstrip("/")
     return lowered.endswith("/api/anthropic") or "/api/anthropic/" in lowered
-
-
-def _resolve_hermes_model_name(
-    model_access: ResolvedModelAccess,
-) -> str:
-    model_config_payload = model_access.configuration
-    for key in ("hermes_model_name", "openai_model_name"):
-        value = str(model_config_payload.get(key) or "").strip()
-        if value:
-            return value
-    return str(model_access.model_name or "").strip()
 
 
 class HermesProcessDisposal:

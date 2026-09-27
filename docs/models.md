@@ -23,8 +23,13 @@ astrabox:
 The environment equivalent is `ASTRABOX_TITLE_MODEL_ENABLED=false`. Existing saved
 titles and summaries remain readable. New work uses a fixed outer “Process” heading
 and inner “Tool calls” or “Reasoning” headings; tool records remain expandable.
-Generation is enabled by default. Empty model connection fields reuse the main
-model configuration and do not disable generation.
+Generation is enabled by default. Empty model connection fields do not disable
+generation: the AstraBox server then sends these requests to the model gateway
+at its server-side address with the server's gateway credential, using the
+deployment's default model. The server's gateway credential is sent only to
+the gateway itself: a `title_model.base_url` that names any other endpoint needs
+its own `title_model.api_key` or `title_model.api_key_secret_name`, and AstraBox
+refuses to start without one.
 
 ## Choose the connection that fits your deployment
 
@@ -178,10 +183,33 @@ request-matching path.
 
 Automatic titles use a separate, non-streaming model request from the AstraBox
 server. Titles, title decisions and execution-process summaries explicitly send
-`reasoning_effort: "none"`; configure a model endpoint that supports non-thinking
-completions. LiteLLM translates this option for the selected provider. These
-requests do not inherit an Agent's reasoning settings. Configure their timeout
-in `astrabox/config/app.yml`:
+`reasoning_effort: "none"` with an output cap of 2048 tokens. These requests do not
+inherit an Agent's reasoning settings. Whether thinking is actually off depends
+on the route LiteLLM serves the title model from. For the routes the installer
+configures:
+
+| Title route on the bundled gateway | What LiteLLM sends upstream |
+|---|---|
+| `deepseek/<model>` (LiteLLM's native DeepSeek adapter) | `thinking: {"type": "disabled"}` |
+| `claude-*` and `anthropic/<model>` (Anthropic Messages) | no `thinking` field: Anthropic's default of no extended thinking. An Anthropic-compatible service that thinks by default still thinks. |
+| `openai-compatible/<model>` and the OpenAI-wire DeepSeek routes | nothing: LiteLLM drops the option for a model it does not know to support it, and the service's own default applies |
+
+With DeepSeek's endpoint, AstraBox selects `deepseek/<model>` for titles
+automatically. For another service whose default model thinks, set
+`title_model.model_name` (`ASTRABOX_TITLE_MODEL_NAME`) to a non-thinking route.
+The cap is not spent on a non-thinking route, which stops after the label. On
+a thinking route it has to hold the reasoning as well: a reply that runs out
+has no text, and the Session keeps its default title. 2048 tokens is enough
+for titles and process summaries on DeepSeek's thinking route; a non-thinking
+route needs only a small part of it and answers faster.
+
+Titles are written in the user's language. The request names the writing
+systems of the user's own message, because a message that is mostly formulas
+gives a model little prose to judge by. A title in a non-Latin writing system
+the user did not write is recorded as a failed title rather than shown; Latin
+letters are always allowed for names and code.
+
+Configure the request timeout in `astrabox/config/app.yml`:
 
 ```yaml
 astrabox:

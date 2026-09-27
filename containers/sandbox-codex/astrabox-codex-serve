@@ -28,10 +28,11 @@ set -euo pipefail
 # adapter is a plain websocket and the supported listener is the one serving
 # it.
 #
-# It also removes an authentication question rather than answering it: the
-# websocket listener demands `--ws-auth` for non-loopback binds, which would
-# put a secret in the image or in this box's environment. A unix socket has
-# file permissions instead, and they are the workload account's own.
+# The socket's own guard is its file permissions, the workload account's. The
+# forwarder that publishes it on a port answers anyone who can route to the
+# box, so the caller check lives there (see astrabox-codex-forward): the
+# vendor's `--ws-auth` is fixed on this command line, which a pooled box runs
+# before the platform has a credential for it.
 CODEX_SOCKET="${ASTRABOX_CODEX_SOCKET:-/run/astrabox-codex/app-server.sock}"
 
 # `codex app-server daemon` is NOT used, and the reason is worth recording so

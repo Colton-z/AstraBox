@@ -69,6 +69,8 @@ def _pi() -> PiEngineClient:
     client._delivery_sequence = 0  # type: ignore[attr-defined]
     client._streaming = False  # type: ignore[attr-defined]
     client._platform_session_id = "s1"  # type: ignore[attr-defined]
+    # The relay starts with pi's process, and this box's process never did.
+    client._relay = None  # type: ignore[attr-defined]
 
     async def _ensure_process() -> Any:
         raise _Boom("pi process is gone")

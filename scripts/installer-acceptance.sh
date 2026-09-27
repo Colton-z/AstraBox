@@ -11,7 +11,9 @@
 # Agent image the installation was expected to resolve. With --turn it also
 # sends one message and requires one complete, normally finished reply and the
 # Session's return to READY, so it needs a configured model service. The reply
-# is judged by the stream's structure, not by its wording.
+# is judged by the stream's structure, not by its wording, with the verdict of
+# scripts/installer-engine-acceptance.py, which runs the same turn for every
+# engine.
 #
 # Used by .github/workflows/installer.yml and by maintainers' verification of
 # the installer on a Docker host; the deployment itself never runs it. Needs
@@ -104,70 +106,9 @@ fi
 
 curl -sS --no-buffer --max-time 600 -X POST "$base_url/api/v1/sessions/$session_id/ai-stream" \
   -H 'Content-Type: application/json' -H 'Accept: text/event-stream' \
-  --data '{"content": "Reply with one short sentence.", "client_message_id": "installer-acceptance-turn"}' \
+  --data '{"content": "What is the capital of France? Answer in one sentence.", "client_message_id": "installer-acceptance-turn"}' \
   >"$work/turn.sse" || fail "the message request failed"
-verdict="$(python3 - "$work/turn.sse" <<'PY'
-import json
-import sys
-
-# The Claude Code CLI reports a model or gateway HTTP error as text, not as an
-# error frame; such text is a failed turn, never a reply.
-MODEL_ERROR_MARKERS = (
-    "api error",
-    "authentication error",
-    "invalid api key",
-    "status code: 401",
-)
-
-
-def model_error(text: str) -> bool:
-    folded = " ".join(text.lower().split())
-    return any(marker in folded for marker in MODEL_ERROR_MARKERS)
-
-
-error = ""
-open_blocks: set[str] = set()
-completed: list[str] = []
-text: dict[str, list[str]] = {}
-finish = ""
-for line in open(sys.argv[1], encoding="utf-8", errors="replace"):
-    if not line.startswith("data:"):
-        continue
-    payload = line[len("data:"):].strip()
-    if not payload or payload == "[DONE]":
-        continue
-    frame = json.loads(payload)
-    kind = frame.get("type")
-    if kind == "text-start":
-        open_blocks.add(frame["id"])
-        text[frame["id"]] = []
-    elif kind == "text-delta" and frame.get("id") in open_blocks:
-        text[frame["id"]].append(str(frame.get("delta") or ""))
-    elif kind == "text-end" and frame.get("id") in open_blocks:
-        open_blocks.discard(frame["id"])
-        completed.append("".join(text[frame["id"]]))
-    elif kind == "error":
-        error = error or str(frame.get("errorText") or "error frame")
-    elif kind == "data-result" and isinstance(frame.get("data"), dict):
-        result = frame["data"]
-        if result.get("is_error") or model_error(str(result.get("result") or "")):
-            error = error or str(result.get("result") or "is_error result")
-    elif kind == "finish":
-        finish = str(frame.get("finishReason") or "")
-
-reply = " ".join(block.strip() for block in completed if block.strip())
-if not error and model_error(reply):
-    error = reply
-if error:
-    print("FAIL the turn failed: " + " ".join(error.split())[:300])
-elif not reply:
-    print("FAIL the turn produced no complete text block")
-elif finish != "stop":
-    print(f"FAIL the stream finished with {finish or 'no finish frame'}")
-else:
-    print("PASS " + reply[:200])
-PY
-)"
+verdict="$(python3 "$(dirname "$0")/installer-engine-acceptance.py" judge "$work/turn.sse")"
 case "$verdict" in
   PASS*) pass "the Agent replied through the model service: ${verdict#PASS }" ;;
   *) fail "${verdict#FAIL }" ;;

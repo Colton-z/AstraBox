@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -84,8 +83,7 @@ async def prepare_pool_runtime(sandbox: Any, *, template: Any, manager: Any) -> 
         )
         manifest = await prepare_engine_runtime(
             EnginePreparationContext(
-                template=template, slot_id=slot_id, activation_token=secrets.token_hex(32),
-                placement="conversation_box", sandbox=sandbox, sandbox_id=sandbox_id,
+                template=template, slot_id=slot_id, placement="conversation_box", sandbox=sandbox, sandbox_id=sandbox_id,
                 cwd=str(identity["workspace_dir"]), runtime_identity=identity,
                 model_access=model_access, model_credential=credential, runtime_env=runtime_env,
                 runner_uri=runner_uri, preparation_fingerprint=template.runtime_generation,
@@ -130,7 +128,6 @@ async def prepare_engine_runtime(
         "runtime_identity": context.runtime_identity,
         "runtime_generation": context.preparation_fingerprint,
         "workspace_id": context.workspace_id,
-        "activation_token": context.activation_token,
         "runner_port": runner_port,
         "gateway_substitution": context.gateway_substitution,
         "model_credential": context.model_credential,

@@ -67,6 +67,7 @@ test('session history stays listed after its Agent is deleted', async ({ request
       name: agentName,
       model,
       environment_name: environmentName,
+      prewarm_enabled: false,
     });
     const agentId = String(agent.agent_id || '');
     expect(agentId, 'created agent must have an id').not.toEqual('');

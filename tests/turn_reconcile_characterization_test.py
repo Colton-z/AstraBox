@@ -173,6 +173,9 @@ def _make_service(snapshot_base: dict[str, Any] | None = None) -> Any:
         return_value={"completed": False}
     )
     service._try_recover_from_transcript = AsyncMock(return_value=None)
+    service._turn_service = SimpleNamespace(
+        input_delivery_in_progress=lambda _session_id: False
+    )
     return service
 
 
@@ -450,6 +453,31 @@ class NoAnchorAdjudicationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNotNone(result)
         self.assertEqual(result["delivery_state"], "NOT_RECEIVED")
+
+    async def test_a_delivery_replacing_the_box_is_not_a_death_verdict(
+        self,
+    ) -> None:
+        # Replacing a lost box marks the conversation unavailable while the new
+        # box is prepared, and the turn being delivered has no engine anchor
+        # yet. Its delivery is still under way on this server, so the turn is
+        # not dead: failing it here would refuse a message whose replacement
+        # then succeeds.
+        snapshot = _no_anchor_snapshot(updated_at=_now_iso())
+        service = _make_service(snapshot)
+        service._turn_service = SimpleNamespace(
+            input_delivery_in_progress=lambda session_id: session_id == "s6"
+        )
+
+        result = await service._adjudicate_no_anchor_delivery(
+            session_id="s6",
+            session={"session_id": "s6", "runtime_unavailable": True},
+            snapshot=snapshot,
+            conversation_state="PROCESSING",
+            turn_id="turn-6",
+        )
+
+        self.assertIs(result, snapshot)
+        service._session_events_repo.list_frames.assert_not_awaited()
 
     async def test_confirmed_dead_compute_spares_a_turn_that_reached_the_engine(
         self,

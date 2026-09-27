@@ -434,6 +434,7 @@ class _StartupOrchestrationMixin:
                         user_id=user_id,
                         permission_mode=permission_mode,
                         session_kind=workspace_plan.session_kind,
+                        engine_session_key=workspace_plan.resume_engine_session_key,
                         workspace_plan=workspace_plan,
                     )
                 )
@@ -627,6 +628,7 @@ class _StartupOrchestrationMixin:
             )
             await self._runtime_subjects.publish_runtime_ready(
                 session=active_session,
+                template=template,
                 sandbox_id=sandbox_id,
                 expires_at=expires_at_iso,
                 runtime_identity=getattr(runtime, "runtime_identity", None),

@@ -38,8 +38,10 @@ import contextlib
 import json
 from collections.abc import Awaitable
 from typing import Any, Callable
+from urllib.parse import urlsplit
 
 import websockets
+from websockets.exceptions import InvalidMessage, InvalidStatus
 
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.core.service.orchestrator.runtime.execd_json_lines import (
@@ -62,6 +64,73 @@ CONNECT_TIMEOUT_SECONDS = 30.0
 RecordSink = Callable[[dict[str, Any], int], Awaitable[None]]
 FailureSink = Callable[[BaseException], Awaitable[None]]
 
+#: The statuses with which a proxy in front of the backend reports that it
+#: could not reach it: the forwarder's port not yet published behind the
+#: sandbox endpoint, or the backend restarting behind the forwarder. Any other
+#: status is an answer, and a status that refuses the upgrade stays a refusal.
+_UPSTREAM_UNREACHABLE_STATUSES = frozenset({502, 503, 504})
+
+#: How much of a refusal's response body is carried into the error.
+_REFUSAL_BODY_EXCERPT_BYTES = 300
+
+
+class BackendNotListening(ExecdChannelDetached):
+    """Nothing is accepting connections at the backend's address yet.
+
+    The one connect failure that time can cure: the backend is starting under
+    supervisord, or restarting for a changed profile, and the forwarder has not
+    published it. A caller with a startup budget may wait on this and on
+    nothing else.
+    """
+
+
+class BackendRefusedUpgrade(RuntimeError):
+    """The backend, or the endpoint in front of it, answered and refused.
+
+    A rejected credential or a ``Host`` the backend was not bound to — Hermes
+    refuses both before accepting the WebSocket, which reaches the client as an
+    HTTP status on the upgrade. Waiting cannot change the answer, so it is
+    reported at once with the status and what the response said.
+    """
+
+    def __init__(self, *, label: str, host: str, status: int, body: bytes) -> None:
+        excerpt = body[:_REFUSAL_BODY_EXCERPT_BYTES].decode("utf-8", "replace").strip()
+        super().__init__(
+            f"{label} refused the WebSocket upgrade for Host {host} with HTTP "
+            f"{status}" + (f": {excerpt}" if excerpt else " and no response body")
+        )
+        self.status = status
+
+
+def _classify_connect_failure(
+    exc: BaseException, *, label: str, url: str
+) -> BaseException:
+    """Name why an upgrade failed: not listening, refused, or neither.
+
+    Not listening is a connection nobody accepted or that closed before any
+    HTTP reply (the forwarder accepts and then finds no backend), a connect
+    that timed out, or a proxy's unreachable-upstream status. A status the
+    server chose is a refusal. Anything else is returned as it came.
+    """
+
+    if isinstance(exc, InvalidStatus):
+        status = int(exc.response.status_code)
+        if status in _UPSTREAM_UNREACHABLE_STATUSES:
+            return BackendNotListening(
+                f"{label} is not reachable yet: the endpoint answered HTTP {status}"
+            )
+        return BackendRefusedUpgrade(
+            label=label,
+            # The authority the upgrade presented, never the query: the URL
+            # carries the backend's credential there.
+            host=urlsplit(url).netloc,
+            status=status,
+            body=bytes(exc.response.body or b""),
+        )
+    if isinstance(exc, (OSError, TimeoutError, InvalidMessage)):
+        return BackendNotListening(f"{label} is not listening yet: {exc}")
+    return exc
+
 
 class HermesBackendChannel:
     """A JSON-RPC WebSocket to one box's resident Hermes backend.
@@ -79,12 +148,9 @@ class HermesBackendChannel:
         on_record: RecordSink,
         on_failure: FailureSink,
         headers: dict[str, str] | None = None,
-        dial: tuple[str, int] | None = None,
     ) -> None:
-        #: Already carries its credential. The backend binds loopback inside
-        #: the box, where the WS upgrade takes the session token as a `?token=`
-        #: query parameter — a header is refused, which is what a first probe
-        #: found the hard way.
+        #: Carries no credential: every proxy on the way logs the request line.
+        #: The credential is one of :attr:`headers`.
         self.url = str(url)
         #: Named in every failure message so an operator can tell what died.
         self.label = str(label or "engine")
@@ -93,10 +159,6 @@ class HermesBackendChannel:
         #: against a hardened Kubernetes ingress, which is the shape of bug
         #: that only appears on the deployment that matters.
         self.headers = dict(headers or {})
-        #: ``(host, port)`` of the box's published forwarder — where the TCP
-        #: connection actually goes, while :attr:`url` stays the address the
-        #: backend bound to. See :meth:`connect` for why the two differ.
-        self.dial = (str(dial[0]), int(dial[1])) if dial is not None else None
         self._on_record = on_record
         self._on_failure = on_failure
         self._ws: Any = None
@@ -141,41 +203,20 @@ class HermesBackendChannel:
         backend emits immediately on accept — and establishing it is the
         adapter's call, the same division the execd channel keeps.
 
-        The URI and the TCP target are deliberately different addresses, and
-        conflating them is what a first attempt did: every upgrade came back
-        `HTTP 403`. Hermes binds loopback and then checks that the `Host`
-        header names the interface it bound to — its DNS-rebinding defence,
-        GHSA-ppp5-vxwm-4cf7 — so a peer that dials the box by address is
-        refused on arrival. The vendor's supported answer is to reach a
-        loopback bind through a tunnel, and `astrabox-hermes-forward` is that
-        tunnel; a tunnel's client addresses the service by the name the
-        service bound to and connects where the tunnel opens. So the URI
-        carries the loopback address, which is what `websockets` builds the
-        `Host` header from, and ``dial`` carries the box's, which it takes as
-        the connection target (`kwargs.setdefault("host", ...)` in
-        `websockets.asyncio.client`).
-
-        Naming the `Host` header through `additional_headers` instead does not
-        work and was measured, not assumed: the header store is multi-valued,
-        so the request goes out with two `Host` lines.
-
-        The alternative — binding the backend to all interfaces — is closed by
-        the vendor on purpose: since its June 2026 hardening a non-loopback
-        bind ALWAYS requires an auth provider, `--insecure` is a no-op, and a
-        `?token=` credential is refused in that mode.
+        :attr:`url` is the sandbox endpoint itself, so the connection goes
+        where the endpoint routes and presents the `Host` that route expects.
+        Hermes accepts only a `Host` naming its loopback bind — its
+        DNS-rebinding defence, GHSA-ppp5-vxwm-4cf7 — and the image's
+        `hermes_host_relay.py` supplies that on the box side of every route.
         """
 
         if self.is_connected:
             return
-        dial_kwargs: dict[str, Any] = {}
-        if self.dial is not None:
-            dial_kwargs["host"], dial_kwargs["port"] = self.dial
         try:
             self._ws = await websockets.connect(
                 self.url,
                 open_timeout=CONNECT_TIMEOUT_SECONDS,
                 max_size=4 * 1024 * 1024,
-                **dial_kwargs,
                 **websocket_header_kwargs(self.headers),
             )
             self._connected.set()
@@ -187,7 +228,9 @@ class HermesBackendChannel:
         except asyncio.CancelledError:
             raise
         except BaseException as exc:
-            await self.fail(exc)
+            await self.fail(
+                _classify_connect_failure(exc, label=self.label, url=self.url)
+            )
             assert self._fatal is not None
             raise self._fatal
 

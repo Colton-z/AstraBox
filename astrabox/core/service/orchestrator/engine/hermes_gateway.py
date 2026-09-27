@@ -58,6 +58,21 @@ logger = get_logger(__name__)
 _ATTACH_BUDGET_SECONDS = 120.0
 _ATTACH_RETRY_SECONDS = 1.0
 
+#: How often, and for how long, a restart of the backend waits for the work
+#: already running in it. The budget matches the image's own profile wait
+#: (`ASTRABOX_HERMES_PROFILE_WAIT_SECONDS`): a turn is allowed to run long,
+#: and a conversation start that has waited half an hour is reported rather
+#: than left hanging.
+_IDLE_POLL_SECONDS = 2.0
+_IDLE_BUDGET_SECONDS = 1800.0
+
+#: `session.active_list`'s word for a live session with nothing running. Every
+#: other status — ``working`` (a turn), ``waiting`` (a turn parked on an
+#: approval or question), ``starting`` (an agent being built for a new
+#: conversation) — is work a restart would end, and so is a status this
+#: adapter does not know.
+_IDLE_SESSION_STATUS = "idle"
+
 #: Builds one attachment to the resident backend. The default is the real
 #: :class:`HermesTuiProcess`; tests substitute a fake wire.
 GatewayProcessFactory = Callable[..., HermesTuiProcess]
@@ -114,7 +129,6 @@ class HermesGatewayHandle:
         *,
         url: str,
         headers: dict[str, str] | None = None,
-        dial: tuple[str, int] | None = None,
         sandbox_id: str,
         profile_key: str,
         spawn_fingerprint: str = "",
@@ -122,7 +136,6 @@ class HermesGatewayHandle:
     ) -> None:
         self._url = str(url)
         self._headers = dict(headers or {})
-        self._dial = dial
         self.sandbox_id = str(sandbox_id)
         self.profile_key = str(profile_key)
         self._spawn_fingerprint = str(spawn_fingerprint or "")
@@ -174,8 +187,12 @@ class HermesGatewayHandle:
         releases `astrabox-hermes-serve` to start Hermes.
         `astrabox-hermes-forward` publishes the port after the backend answers.
         An immediate attachment was observed to return ``Connection refused``
-        during that startup interval, so connection attempts retry within
-        ``_ATTACH_BUDGET_SECONDS`` and propagate the error when it expires.
+        during that startup interval, so an attempt that nothing accepted
+        retries within ``_ATTACH_BUDGET_SECONDS`` and propagates the error when
+        it expires. Every other failure propagates at once: a backend that
+        answered and refused the upgrade — a credential or ``Host`` it does not
+        accept — says the same thing on every retry, and waiting out the budget
+        only hides the status that names the cause.
 
         On resume with a persistent profile, startup does not wait for the host
         to write that file; the backend starts with the box.
@@ -192,13 +209,14 @@ class HermesGatewayHandle:
             attempt = 0
             while True:
                 attempt += 1
-                process = self._process_factory(
-                    url=self._url, headers=self._headers, dial=self._dial
-                )
+                process = self._process_factory(url=self._url, headers=self._headers)
                 try:
                     await process.connect(require_gateway_ready=require_gateway_ready)
-                except BaseException as exc:
-                    if time.monotonic() >= deadline:
+                except Exception as exc:
+                    if (
+                        not process.backend_not_listening
+                        or time.monotonic() >= deadline
+                    ):
                         raise
                     logger.info(
                         "resident Hermes backend not listening yet; retrying: "
@@ -329,6 +347,69 @@ class HermesGatewayHandle:
                 subscription._offer(exc)
 
 
+async def wait_until_backend_idle(
+    handle: HermesGatewayHandle,
+    *,
+    budget_seconds: float | None = None,
+    poll_seconds: float | None = None,
+) -> None:
+    """Return once nothing is running in the box's Hermes backend.
+
+    Asked of the backend itself, because it is the one that knows: every live
+    session on it, from any host, reports its status through
+    ``session.active_list``, and background delegations that outlive their
+    turn are listed by ``delegation.status``. Quiet means every session idle
+    and no delegation active.
+
+    The caller is about to restart the backend, which ends everything in it,
+    so this waits for the work to finish rather than for a deadline to pass
+    over it; past the budget it fails, naming what is still running, and the
+    restart does not happen.
+    """
+
+    budget = _IDLE_BUDGET_SECONDS if budget_seconds is None else budget_seconds
+    poll = _IDLE_POLL_SECONDS if poll_seconds is None else poll_seconds
+    deadline = time.monotonic() + budget
+    reported: tuple[str, ...] | None = None
+    while True:
+        live = await handle.request("session.active_list", {})
+        delegations = await handle.request("delegation.status", {})
+        busy = tuple(
+            sorted(
+                f"{row.get('id')}:{row.get('status')}"
+                for row in live.get("sessions") or []
+                if isinstance(row, dict)
+                and row.get("status") != _IDLE_SESSION_STATUS
+            )
+        ) + tuple(
+            f"delegation:{item.get('subagent_id')}"
+            for item in delegations.get("active") or []
+            if isinstance(item, dict)
+        )
+        if not busy:
+            return
+        if busy != reported:
+            reported = busy
+            logger.info(
+                "Hermes backend restart waits for running work: sandbox=%s "
+                "profile=%s running=%s",
+                handle.sandbox_id,
+                handle.profile_key,
+                ", ".join(busy),
+            )
+        if time.monotonic() >= deadline:
+            raise APIError(
+                code="HERMES_GATEWAY_START_FAILED",
+                message=(
+                    "the Assistant's Hermes backend must restart to apply a "
+                    "changed configuration, and work is still running in it "
+                    f"after {budget:.0f}s: {', '.join(busy)}"
+                ),
+                status_code=502,
+            )
+        await asyncio.sleep(poll)
+
+
 # One handle per (sandbox_id, profile_key) in this host process. The dict is
 # module state on purpose: the resident gateway outlives every conversation
 # runtime, so no SessionRuntime can own it.
@@ -366,7 +447,6 @@ async def resolve_gateway_handle(
     *,
     url: str,
     headers: dict[str, str] | None,
-    dial: tuple[str, int] | None = None,
     sandbox_id: str,
     profile_key: str,
     spawn_fingerprint: str | None,
@@ -425,7 +505,6 @@ async def resolve_gateway_handle(
         fresh = HermesGatewayHandle(
             url=url,
             headers=headers,
-            dial=dial,
             sandbox_id=target_sandbox,
             profile_key=target_profile,
             spawn_fingerprint=spawn_fingerprint or "",
@@ -459,4 +538,5 @@ __all__ = [
     "gateway_handle_for_sandbox",
     "reset_gateway_registry",
     "resolve_gateway_handle",
+    "wait_until_backend_idle",
 ]

@@ -61,9 +61,10 @@ export default function AssistantCreatePage() {
     void load();
   }, [load]);
 
+  const environmentName = draft?.environment_name ?? '';
   const sections = useMemo(
-    () => buildAssistantCreateSections(environments),
-    [environments, t],
+    () => buildAssistantCreateSections(environments, environmentName),
+    [environments, environmentName, t],
   );
 
   if (loading) {
@@ -122,7 +123,8 @@ export default function AssistantCreatePage() {
           description: draft.description.trim() || undefined,
           engine_kind: draft.engine_kind,
           environment_name: environment,
-          permission_mode_default: draft.permission_mode_default,
+          permission_mode_default: draft.permission_mode_default || undefined,
+          system: draft.system.trim() || undefined,
         })
           .then((created) =>
             navigate(`/manage/assistants/${encodeURIComponent(created.assistant_id)}`),

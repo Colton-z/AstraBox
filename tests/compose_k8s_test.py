@@ -55,6 +55,31 @@ def test_kubernetes_external_gateway_requires_https() -> None:
     assert environment["ASTRABOX_MODEL_GATEWAY_REQUIRE_HTTPS"] == "true"
 
 
+def test_the_ingress_and_secure_access_settings_reach_the_kubernetes_server() -> None:
+    """Compose forwards only the variables a service names.
+
+    A setting the overlay does not name never reaches the lifecycle launcher,
+    so an operator's Secure Access switch would leave sandboxes unprotected
+    with nothing refusing it.
+    """
+
+    base, overlay = _compose_servers()
+    environment = {**base["environment"], **overlay["environment"]}
+    for name in (
+        "ASTRABOX_SANDBOX_SERVER_INGRESS_MODE",
+        "ASTRABOX_SANDBOX_SERVER_INGRESS_GATEWAY_ADDRESS",
+        "ASTRABOX_SANDBOX_SERVER_INGRESS_ROUTE_MODE",
+        "ASTRABOX_SANDBOX_SERVER_INGRESS_SIGNING_KEY",
+        "ASTRABOX_SANDBOX_SERVER_INGRESS_SIGNING_KEY_ID",
+        "ASTRABOX_SANDBOX_ENDPOINT_SCHEME",
+    ):
+        assert environment[name] == f"${{{name}:-}}"
+    assert (
+        environment["ASTRABOX_SANDBOX_SECURE_ACCESS"]
+        == "${ASTRABOX_SANDBOX_SECURE_ACCESS:-false}"
+    )
+
+
 def test_kubernetes_external_gateway_drops_embedded_litellm_database_state() -> None:
     base, overlay = _compose_servers()
     embedded_database_environment = {

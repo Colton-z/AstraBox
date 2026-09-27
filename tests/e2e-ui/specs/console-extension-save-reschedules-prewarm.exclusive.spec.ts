@@ -153,7 +153,9 @@ async function pickServer(page: Page, serverName: string): Promise<void> {
   await input.click();
   await input.fill(serverName);
   await page.getByRole('option', { name: serverName }).click();
-  await page.keyboard.press('Escape');
+  // A pick closes the popup. Escape would not: Base UI's ComboboxInput clears
+  // the whole selection on Escape once the popup has unmounted.
+  await expect(input).toHaveAttribute('aria-expanded', 'false');
   await expect(
     page.locator('[data-slot="card"]').filter({ has: page.locator('#agent-extension-mcp') }).locator(`[aria-label="${serverName}"]`),
   ).toBeVisible();

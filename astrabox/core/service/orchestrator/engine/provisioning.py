@@ -879,6 +879,82 @@ def engine_service_credential(
     ).hex()
 
 
+def in_box_service_token(
+    *,
+    purpose: str,
+    sandbox_id: str,
+    runtime_identity: Mapping[str, Any] | None,
+) -> str:
+    """The credential one in-box service demands of the host for one seat.
+
+    Keyed by the deployment's own secret (:func:`derive_platform_key` under
+    :func:`platform_secret_root`), so a peer that knows every platform id —
+    session, sandbox, account — still cannot compute it. That peer exists: on
+    Kubernetes a sandbox Pod has no ingress policy of OpenSandbox's making, so
+    any pod in the cluster can route to its ports, and under the shared
+    tenancy sibling conversations share the box's network namespace.
+
+    The subject is what stays fixed from a slot's preparation through every
+    later connection to it: the box, and the account and home the service
+    runs as. So preparation, a claim and a reconnect after a server restart
+    all compute the same value, and nothing stores it.
+    """
+
+    identity = dict(runtime_identity or {})
+    subject = [
+        str(sandbox_id or "").strip(),
+        str(identity.get("linux_user") or "").strip(),
+        str(identity.get("home_dir") or "").strip(),
+    ]
+    if not all(subject):
+        raise RuntimeError(
+            f"the {purpose} credential requires the sandbox id and the "
+            "runtime account and home"
+        )
+    from astrabox.core.service.orchestrator.platform_secret import (
+        derive_platform_key,
+        platform_secret_root,
+    )
+
+    return derive_platform_key(
+        platform_secret_root(),
+        domain=f"astrabox-{purpose}",
+        subject=json.dumps(subject, separators=(",", ":")),
+    ).hex()
+
+
+async def deliver_in_box_service_token(
+    sandbox: Any,
+    runtime_identity: Mapping[str, Any] | None,
+    *,
+    file_name: str,
+    token: str,
+) -> None:
+    """Write one in-box service's credential into its seat's home.
+
+    The service reads it on each connection, because it starts before any
+    credential exists and admits nothing until the file does. Written where a
+    seat is first set up — its preparation, or a start that claimed nothing —
+    and kept for the life of the box, so a claim or a reconnect presents the
+    derived value without writing again. Owner-only, like the rest of that home.
+    """
+
+    identity = dict(runtime_identity or {})
+    home_dir = str(identity.get("home_dir") or "").strip()
+    linux_user = str(identity.get("linux_user") or "").strip()
+    if not home_dir or not linux_user:
+        raise RuntimeError(
+            f"the seat carries no home or account to deliver {file_name} into"
+        )
+    await sandbox.files.write_file(
+        f"{home_dir.rstrip('/')}/{file_name}",
+        token.encode("ascii"),
+        mode=600,
+        owner=linux_user,
+        group=linux_user,
+    )
+
+
 async def write_engine_env_file(
     sandbox: Any,
     *,
@@ -1396,7 +1472,6 @@ async def _provision_shared_conversation(
             sandbox,
             manager,
             session_id,
-            cwd=cwd,
             target_file=f"{home_dir.rstrip('/')}/.astrabox-mirror-target",
             owner=linux_user,
         )
@@ -1833,7 +1908,6 @@ async def claim_prepared_engine_sandbox(
             sandbox,
             manager,
             session_id,
-            cwd=cwd,
             **(
                 {
                     "target_file": f"{home_dir}/.astrabox-mirror-target",
@@ -2164,7 +2238,7 @@ async def provision_engine_sandbox(
     # because this is where an engine's per-session facts already travel.
     session_log = _session_log_declaration(template)
     mirror_env: dict[str, str] = (
-        transcript_mirror.mirror_env(manager, session_id, workspace_plan)
+        transcript_mirror.mirror_env(manager, session_id)
         if session_log is not None
         else {}
     )

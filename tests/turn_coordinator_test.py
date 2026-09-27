@@ -383,65 +383,6 @@ class TurnCoordinatorTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIs(parsed.tzinfo, timezone.utc)
                 self.assertEqual(parsed.isoformat(), expected)
 
-    async def test_interrupted_projection_settles_failed_with_partial_text(self):
-        journal = _FakeJournal()
-        snapshots = _FakeSnapshots()
-        sessions = _FakeSessions()
-        message_view = _FakeMessageView()
-        coordinator = TurnCoordinator(
-            session_events_repo=journal,
-            session_snapshots_repo=snapshots,
-            sessions_repo=sessions,
-            message_view=message_view,
-            runtime_manager=object(),
-        )
-
-        result = await coordinator._complete_recovery(
-            session_id="session-1",
-            turn_id="turn-1",
-            session={
-                "session_id": "session-1",
-                "user_id": "u1",
-                "session_kind": "agent_chat",
-                "engine_kind": "claude_code",
-            },
-            snapshot={
-                "conversation_state": "IDLE",
-                "last_turn_status": "FAILED",
-                "turn_recovery_phase": "TRANSCRIPT_PENDING",
-                "last_turn_id": "turn-1",
-                "last_turn_command_id": "cmd-1",
-            },
-            projection={
-                "done": True,
-                "interrupted": True,
-                "has_result": False,
-                "assistant_text": "1 - this is line 1\n2 - this is line 2",
-                "blocks": [{"type": "text", "text": "1 - this is line 1\n2 - this is line 2"}],
-            },
-        )
-
-        self.assertEqual(result["last_turn_status"], "FAILED")
-        self.assertEqual(journal.claimed[0]["event_type"], "turn.failed")
-        self.assertEqual(journal.claimed[0]["payload"]["reason"], "interrupted")
-        stored_message = project_session_messages(
-            events=journal.events,
-            frames=journal.frames,
-            user_id="u1",
-        )[-1]
-        self.assertEqual(stored_message["content"], "1 - this is line 1\n2 - this is line 2")
-        self.assertEqual(stored_message["blocks"][0]["type"], "text")
-        self.assertEqual(stored_message["blocks"][-1]["type"], "turn_failure")
-        self.assertEqual(stored_message["blocks"][-1]["error"], "Request interrupted by user")
-        self.assertEqual(
-            snapshots.applied[0]["updates"]["last_turn_status"],
-            "FAILED",
-        )
-        self.assertEqual(
-            sessions.updated,
-            [("session-1", {"interrupt_requested": False})],
-        )
-
     async def test_turn_local_sandbox_comes_from_dispatch_not_from_the_session(self):
         # The session's CURRENT box is not evidence about THIS turn: a re-boxed
         # session would have recovery probe a box that never carried it.

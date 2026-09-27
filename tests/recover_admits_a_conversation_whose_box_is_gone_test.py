@@ -1,15 +1,15 @@
 """A turn is in flight only while something is flying it.
 
-When the bound sandbox dies out of band the platform answers the next request
-with SANDBOX_GONE and the words "a replacement is being prepared — retry". The
-retry asks for recovery, and recovery read the snapshot, saw a conversation
+When the bound sandbox dies out of band the platform can answer the next
+message with SANDBOX_GONE, telling the caller to send a new message. That
+message asks for recovery, and recovery read the snapshot, saw a conversation
 still marked RUNNING, and refused: "session state is PROCESSING, recovery only
 applies to TERMINATED or READY sessions".
 
 Nothing was going to move that conversation on. The runtime that would have
 closed the turn went with the box, so PROCESSING described a dead process — and
-the platform was refusing, on those grounds, the very retry it had just asked
-for. Recovery is how a conversation reaches a runtime that can judge its own
+the platform was refusing, on those grounds, the very message it had just
+asked for. Recovery is how a conversation reaches a runtime that can judge its own
 turn; whether the turn continues stays that runtime's call, and this only stops
 the platform from blocking the door.
 """

@@ -24,6 +24,7 @@ from astrabox.common.utils.user_context import UserContext
 from astrabox.core.model import SessionState
 from astrabox.core.service.orchestrator.engine.base import EngineStreamDetached
 from astrabox.core.service.orchestrator.engine.input_delivery import (
+    InputAlreadySettled,
     confirm_engine_input_consumed,
     consumption_carrier,
 )
@@ -554,13 +555,19 @@ async def _run_bridge_command(
         delivery_command = None
         consumer_carrier: str | None = None
         if str(payload.get("input_id") or "").strip():
-            delivery_runtime = await worker._turn_service.deliver_pending_inputs(
-                user=user,
-                session=session,
-                session_id=session_id,
-                requested_command_id=command_id,
-                permission_mode=permission_mode,
-            )
+            try:
+                delivery_runtime = await worker._turn_service.deliver_pending_inputs(
+                    user=user,
+                    session=session,
+                    session_id=session_id,
+                    requested_command_id=command_id,
+                    permission_mode=permission_mode,
+                )
+            except InputAlreadySettled as settled:
+                # The request that accepted this turn could not deliver it and
+                # settled it with the refusal it returned. The turn has its
+                # outcome; this worker has nothing left to write.
+                raise _TurnFencedOut(state.effective_turn_id) from settled
             # The runtime that delivery just fed is the carrier of everything
             # this bridge streams: consumption receipts are signed with it,
             # and the pending projection judges older receipts against it —
@@ -1006,11 +1013,11 @@ async def _run_bridge_command(
                     state.last_terminal_reason = (
                         str(data.get("terminal_reason") or "").strip() or None
                     )
-                    if not state.saw_public_result_frame:
-                        public_result: dict[str, Any] = {}
-                        usage = data.get("usage")
-                        if isinstance(usage, dict):
-                            public_result["usage"] = dict(usage)
+                    public_result = bridge_frames.public_result_frame_data(
+                        data,
+                        state.public_result_card if state.saw_public_result_frame else None,
+                    )
+                    if public_result is not None:
                         await bridge_journal._append_frame(worker, state, _bridge_ctx,
                             bridge_journal._normalize_frame(
                                 worker,

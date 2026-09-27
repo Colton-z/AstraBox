@@ -91,7 +91,21 @@ async function expectCompletedToolCard(page: Page, marker: string): Promise<void
     if (!wasOpen) await header.click();
     const panel = card.locator('[data-slot="collapsible-content"]');
     await expect(panel).toBeVisible();
-    if ((await panel.innerText()).includes(marker)) {
+    // A file-change card shows the write as plain diff lines. A generic card
+    // shows its Parameters in a CodeBlock, which uses content-visibility:auto:
+    // a block below the viewport is not rendered and its text is absent from
+    // innerText until it is in view. So each block is read once it is in view.
+    await expect(panel).not.toHaveText('', { useInnerText: true });
+    const texts = [await panel.innerText()];
+    const blocks = panel.locator('[data-language]');
+    for (let block = 0; block < await blocks.count(); block += 1) {
+      const code = blocks.nth(block);
+      await code.scrollIntoViewIfNeeded();
+      await expect(code).toBeInViewport();
+      await expect(code).not.toHaveText('', { useInnerText: true });
+      texts.push(await code.innerText());
+    }
+    if (texts.join('\n').includes(marker)) {
       await expect(header.locator('[data-slot="badge"]').first()).toHaveText(/^(Done|已完成)$/);
       matched = true;
     }
@@ -105,6 +119,9 @@ async function expectOrdinaryReplyAndColdCards(page: Page, api: AstraApi, sessio
   const before = new Set(visibleMessages(await api.getMessages(session, 50)).map((message) => message.message_id));
   // Counted from what the reader can reach: a folded header holds its cards out
   // of the page entirely once the transcript has been rebuilt from history.
+  // The caller may have just reloaded, and the reveal opens only the headers
+  // already on the page.
+  await expect(page.getByTestId('assistant-turn-process').first()).toBeVisible({ timeout: 60_000 });
   await revealAssistantProcess(page);
   const count = await toolCards(page).count();
   expect(count, 'the conversation already contains rendered tool cards').toBeGreaterThan(0);
@@ -122,9 +139,11 @@ async function expectOrdinaryReplyAndColdCards(page: Page, api: AstraApi, sessio
   await revealAssistantProcess(page);
   await expect(toolCards(page), 'an ordinary reply must not reuse or fabricate a tool card').toHaveCount(count);
   await page.reload({ waitUntil: 'domcontentloaded' });
+  // The reveal opens the headers on the page when it runs, so the rebuilt
+  // transcript has to reach the latest answer before it does.
+  await expect(page.getByTestId('assistant-message').last()).toContainText(replyText, { timeout: 60_000 });
   await revealAssistantProcess(page);
   await expect(toolCards(page), 'the same completed cards survive database history reload').toHaveCount(count);
-  await expect(page.getByTestId('assistant-message').last()).toContainText(replyText);
   await expectCompletedToolCard(page, marker);
 }
 

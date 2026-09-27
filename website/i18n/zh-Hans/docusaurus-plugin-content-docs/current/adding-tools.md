@@ -38,6 +38,24 @@ MCP 服务；集中管理只会改变由谁维护它的定义。
 - 保存 Agent 不会重新配置正在执行的任务。AstraBox 在首次准备或重建 Session 运行实例时使用最新的扩展配置。
 - 网络规则和凭证与 MCP 定义是两项独立配置。沙箱必须能够访问远程服务器，受保护凭证也必须匹配准确的目标地址。
 
+## Agent 自身扩展可以访问的范围 {#what-extensions-may-reach}
+
+任何已登录用户都可以创建 Agent，因此 Agent 自己声明的扩展只能访问管理员提供的范围：
+
+- 在 `limited` Environment 中，Agent 的 Skill 和 Plugin 所在的 Git 主机会加入放行
+  主机；Environment 允许远程 MCP 服务时，Agent 的远程 MCP 服务也会加入。只有公网
+  地址，或 Environment 已列出的主机，才会被加入。
+- 私有、回环或链路本地地址属于部署自己的网络：平台和其他沙箱所在的 Docker 网桥，
+  以及云厂商的元数据服务。使用这类地址的主机，或解析到这类地址、无法解析的名称，
+  会在保存 Agent 时以 `AGENT_EGRESS_HOST_REFUSED`（403）拒绝，准备沙箱前还会再检查
+  一次。要开放内网主机，请由管理员把主机、IP 或 CIDR 加入 Environment 的放行主机。
+- 主机名在保存 Agent 时解析。沙箱每次连接时会重新解析，因此这项检查说明的是该名称
+  在保存那一刻指向的地址。
+- `unrestricted` Environment 本来就允许所有目标，Agent 的主机不会改变它。
+- Agent 自己的 MCP 定义不能设置 `provider` 或 `credential_target_url`，只有管理员的
+  MCP 目录分配可以设置。参见[使用 Vault 认证](credentials.md)。
+- 管理员在 MCP 和 Skill 目录中发布的扩展保留管理员配置的主机。
+
 ## 原生能力与浏览器能力
 
 浏览器和 Web 能力属于所选 Agent 程序，或属于它支持的扩展。AstraBox 没有一套带有独立工具名的平台级浏览器工具集。

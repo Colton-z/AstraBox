@@ -299,20 +299,18 @@ test('an environment whose engine this release no longer installs is marked in t
     (url) => url.pathname === recordPath,
   );
 
-  // One verdict per record page: `ConsoleRecordPage` is the only thing on this
-  // page that renders a StatusPill (ConsoleRecordPage.tsx:53-57).
-  const recordStatus = page.getByTestId('status-pill');
+  // The URL changes before the exiting list disappears. Read the verdict
+  // beside this record's heading, then capture text and tone in one render.
+  const recordStatus = page.getByRole('heading', { level: 1, name: environmentName, exact: true })
+    .locator('..').getByTestId('status-pill');
   await expect(
     recordStatus,
     'the Environment record must state exactly one status for the record',
   ).toHaveCount(1);
-  const runnableStatus = {
-    text: (await recordStatus.innerText()).trim(),
-    // The tone token rather than the class, so the comparison survives a
-    // restyling and does not rest on English copy alone
-    // (AstraConsole.tsx:73-82, 121-123).
-    tone: await recordStatus.getAttribute('data-tone'),
-  };
+  const runnableStatus = await recordStatus.evaluate((element) => ({
+    text: (element as HTMLElement).innerText.trim(),
+    tone: element.getAttribute('data-tone'),
+  }));
   expect(
     runnableStatus,
     'a runnable, enabled Environment reads as enabled, in the healthy tone',
@@ -421,10 +419,10 @@ test('an environment whose engine this release no longer installs is marked in t
     recordStatus,
     'the record must still state exactly one status',
   ).toHaveCount(1);
-  const orphanedStatus = {
-    text: (await recordStatus.innerText()).trim(),
-    tone: await recordStatus.getAttribute('data-tone'),
-  };
+  const orphanedStatus = await recordStatus.evaluate((element) => ({
+    text: (element as HTMLElement).innerText.trim(),
+    tone: element.getAttribute('data-tone'),
+  }));
   expect(
     orphanedStatus,
     'the record page must not read the same after its engine left as it did while the engine '

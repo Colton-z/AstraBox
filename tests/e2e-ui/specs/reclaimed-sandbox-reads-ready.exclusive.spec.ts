@@ -72,6 +72,7 @@ test('agent_chat reclaimed sandbox reads ready, not disconnected/expired (transp
       name: `__e2e_reclaimed_${runId}`,
       model,
       environment_name: environmentName,
+      prewarm_enabled: false,
     });
     agentId = String(agent.agent_id || '');
     expect(agentId, 'created agent must have an id').not.toEqual('');

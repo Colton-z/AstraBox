@@ -205,6 +205,31 @@ test('session-detail pending does not reorder the browser message tree before li
     ).toBeVisible({ timeout: RENDER_TIMEOUT_MS });
     await expect(pendingPanel, 'the composer pending panel should be visible below the transcript').toBeVisible();
 
+    // ── The pending Bash card sits visibly ABOVE the pending panel — not covered,
+    //    not pushed away. ───────────────────────────────────────────────────────
+    const expectPendingPlacement = async () => {
+      await expect
+        .poll(
+          async () => {
+            const [bashBox, panelBox] = await Promise.all([
+              bashPendingTool.boundingBox(),
+              pendingPanel.boundingBox(),
+            ]);
+            if (!bashBox || !panelBox) {
+              return false;
+            }
+            const gap = panelBox.y - (bashBox.y + bashBox.height);
+            return bashBox.y >= 0 && gap >= 0 && gap <= GAP_MAX_PX;
+          },
+          {
+            timeout: SPATIAL_TIMEOUT_MS,
+            message: 'the paused turn\'s Bash tool card should sit visibly above the pending panel, not covered or pushed away',
+          },
+        )
+        .toBe(true);
+    };
+    await expectPendingPlacement();
+
     // ── No raw tool-protocol markup leaks — live transcript AND durable messages. ─
     // The approved Write call is finished work, so it sits inside the turn's
     // process group, which starts closed; the pending Bash card and the panel
@@ -212,6 +237,12 @@ test('session-detail pending does not reorder the browser message tree before li
     // back on screen, and both the markup read and the order assertions below
     // are about what the reader sees there.
     await revealAssistantProcess(page);
+    // Opening earlier work scrolls its disclosure into view. Return through
+    // the reader's latest-message button before checking the pending position
+    // again; the first check above already proved automatic pending placement.
+    const latestMessages = page.getByRole('button', { name: /Scroll to latest messages|回到最新消息/ });
+    if (await latestMessages.isVisible()) await latestMessages.click();
+    await expectPendingPlacement();
     const transcriptText = await assistantTranscript.innerText();
     expect(
       transcriptText,
@@ -226,28 +257,6 @@ test('session-detail pending does not reorder the browser message tree before li
       durableAssistantText,
       'durable assistant messages should not persist raw tool-protocol markup during the pending resume',
     ).not.toMatch(RAW_TOOL_MARKUP);
-
-    // ── The pending Bash card sits visibly ABOVE the pending panel — not covered,
-    //    not pushed away. ───────────────────────────────────────────────────────
-    await expect
-      .poll(
-        async () => {
-          const [bashBox, panelBox] = await Promise.all([
-            bashPendingTool.boundingBox(),
-            pendingPanel.boundingBox(),
-          ]);
-          if (!bashBox || !panelBox) {
-            return false;
-          }
-          const gap = panelBox.y - (bashBox.y + bashBox.height);
-          return bashBox.y >= 0 && gap >= 0 && gap <= GAP_MAX_PX;
-        },
-        {
-          timeout: SPATIAL_TIMEOUT_MS,
-          message: 'the paused turn\'s Bash tool card should sit visibly above the pending panel, not covered or pushed away',
-        },
-      )
-      .toBe(true);
 
     // ── CORE: no reorder. The already-approved Write card must stay ABOVE the
     //    pending Bash card in the message tree (its target path is a unique,

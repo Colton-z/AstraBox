@@ -14,9 +14,7 @@ things this channel is answerable for:
 * every waiting request is failed with the terminal error, once, so a caller
   waiting on a reply learns instead of blocking forever;
 * the socket closing on its own is a failure, because for a resident service
-  it is the end of this attachment rather than an ordinary end of stream;
-* the URI it presents and the address it dials stay different, because the
-  backend binds loopback and checks the `Host` header against that bind.
+  it is the end of this attachment rather than an ordinary end of stream.
 """
 
 from __future__ import annotations
@@ -24,10 +22,8 @@ from __future__ import annotations
 import asyncio
 import json
 from typing import Any
-from unittest import mock
 
 import pytest
-import websockets
 
 from astrabox.core.service.orchestrator.runtime.hermes_backend_channel import (
     HermesBackendChannel,
@@ -106,72 +102,6 @@ class _Harness:
 async def _settle() -> None:
     for _ in range(4):
         await asyncio.sleep(0)
-
-
-@pytest.mark.asyncio
-async def test_the_uri_names_the_bind_and_the_dial_names_the_box() -> None:
-    """Where the socket goes and what it claims to be talking to differ.
-
-    Hermes binds loopback and refuses any upgrade whose `Host` names another
-    interface — its DNS-rebinding defence. Building one URL out of the box's
-    endpoint, which is what a first attempt did, made every upgrade `HTTP
-    403`. `websockets` builds `Host` from the URI and takes the connection
-    target from `host`/`port`, so this asserts that both reach it: a URI that
-    still names the box would be the same defect returning, and a missing
-    `host` would send the connection to a loopback address on this host.
-    """
-
-    captured: dict[str, Any] = {}
-
-    async def _fake_connect(uri: str, **kwargs: Any) -> Any:
-        captured["uri"] = uri
-        captured["kwargs"] = kwargs
-        return _FakeSocket()
-
-    channel = HermesBackendChannel(
-        url="ws://127.0.0.1:9119/api/ws?token=t",
-        dial=("10.42.0.7", 9118),
-        label="Hermes backend",
-        on_record=_ignore_record,
-        on_failure=_ignore_failure,
-    )
-    with mock.patch.object(websockets, "connect", _fake_connect):
-        await channel.connect()
-
-    await channel.detach()
-
-    assert captured["uri"] == "ws://127.0.0.1:9119/api/ws?token=t"
-    assert captured["kwargs"]["host"] == "10.42.0.7"
-    assert captured["kwargs"]["port"] == 9118
-    assert "headers" not in str(captured["kwargs"].get("additional_headers", "")), (
-        "the Host must come from the URI; a second one would go out as a "
-        "duplicate header"
-    )
-
-
-@pytest.mark.asyncio
-async def test_a_channel_without_a_dial_connects_to_its_uri() -> None:
-    """No dial means no override, so the library resolves the URI itself."""
-
-    captured: dict[str, Any] = {}
-
-    async def _fake_connect(uri: str, **kwargs: Any) -> Any:
-        captured["kwargs"] = kwargs
-        return _FakeSocket()
-
-    channel = HermesBackendChannel(
-        url="ws://box:9118/api/ws?token=t",
-        label="Hermes backend",
-        on_record=_ignore_record,
-        on_failure=_ignore_failure,
-    )
-    with mock.patch.object(websockets, "connect", _fake_connect):
-        await channel.connect()
-
-    await channel.detach()
-
-    assert "host" not in captured["kwargs"]
-    assert "port" not in captured["kwargs"]
 
 
 @pytest.mark.asyncio

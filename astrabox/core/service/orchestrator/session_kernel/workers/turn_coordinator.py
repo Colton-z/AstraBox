@@ -38,7 +38,6 @@ from astrabox.core.service.orchestrator.engine.input_delivery import (
 )
 from astrabox.core.service.orchestrator.session_kernel.conversation_recovery import (
     AI_SDK_FINISH_REASON_STOP,
-    USER_STOP_FAILURE_TEXT,
     find_recovery_finish_frame,
     journal_terminal_for_turn,
     normalize_turn_terminal_frame,
@@ -518,7 +517,6 @@ class TurnCoordinator:
                 "done": True,
                 "blocks": settled.blocks,
                 "assistant_text": settled.assistant_text,
-                "interrupted": bool(getattr(settled, "interrupted", False)),
                 "source_mirror_seq": source_mirror_seq,
             }
             return await self._complete_recovery(
@@ -763,22 +761,11 @@ class TurnCoordinator:
         ]
         assistant_text = str(projection.get("assistant_text") or "")
         source_mirror_seq = _coerce_int(projection.get("source_mirror_seq"))
-        interrupted = bool(projection.get("interrupted"))
 
         if not blocks and not assistant_text:
             return await self._settle_unrecoverable(
                 session_id, turn_id, session, snapshot,
                 reason="empty_projection",
-            )
-
-        if interrupted:
-            return await self._settle_interrupted_projection(
-                session_id,
-                turn_id,
-                session,
-                snapshot,
-                assistant_text=assistant_text,
-                blocks=blocks,
             )
 
         if not blocks and assistant_text:
@@ -1041,88 +1028,6 @@ class TurnCoordinator:
                 session_id, turn_id, len(blocks),
             )
             return result
-
-        latest = await self._snapshots.get_snapshot(session_id)
-        return latest if isinstance(latest, dict) else None
-
-    async def _settle_interrupted_projection(
-        self,
-        session_id: str,
-        turn_id: str,
-        session: dict[str, Any],
-        snapshot: dict[str, Any],
-        *,
-        assistant_text: str,
-        blocks: list[dict[str, Any]],
-    ) -> dict[str, Any] | None:
-        failure_text = USER_STOP_FAILURE_TEXT
-        terminal_authority = resolve_transcript_recovery_terminal_authority(
-            snapshot,
-            turn_id=turn_id,
-        )
-        if not terminal_authority.allowed:
-            logger.info(
-                "turn coordinator: skip interrupted settlement without authority "
-                "session=%s turn=%s reason=%s",
-                session_id,
-                turn_id,
-                terminal_authority.reason,
-            )
-            return None
-
-        failure_block: dict[str, Any] = {
-            "type": "turn_failure",
-            "error": failure_text,
-            "failure_phase": "post_dispatch",
-        }
-        merged_blocks = [dict(block) for block in blocks]
-        merged_blocks.append(failure_block)
-
-        settle_result = await self._terminal_state_machine.settle(
-            session_id=session_id,
-            session=session,
-            transition=TurnTerminalTransition(
-                authority=terminal_authority,
-                event=TurnTerminalEventSpec(
-                    mode=TURN_TERMINAL_EVENT_CLAIM,
-                    event_doc={
-                        "session_id": session_id,
-                        "channel": "conversation",
-                        "turn_id": turn_id,
-                        "event_type": "turn.failed",
-                        "causation_id": f"recover-interrupted:{session_id}:{turn_id}",
-                        "correlation_id": f"recover-interrupted:{session_id}:{turn_id}",
-                        "payload": {
-                            "reason": "interrupted",
-                            "error_text": failure_text,
-                            "assistant_text": assistant_text or None,
-                            "block_count": len(blocks),
-                            "blocks": blocks,
-                            "settled_by": "turn_coordinator",
-                        },
-                    },
-                ),
-                assistant=TurnTerminalAssistantSpec(
-                    content=assistant_text,
-                    blocks=merged_blocks,
-                    prefer_event_payload=False,
-                ),
-                snapshot=TurnTerminalSnapshotSpec(
-                    status="FAILED",
-                    error_text=failure_text,
-                    command_id=str(snapshot.get("last_turn_command_id") or "").strip() or None,
-                    delivery_state="RECEIVED",
-                    failure_phase="post_dispatch",
-                ),
-                side_effects=TurnTerminalSideEffects(clear_interrupt_request=True),
-            ),
-        )
-        if settle_result.applied and isinstance(settle_result.snapshot, dict):
-            logger.info(
-                "turn coordinator: settled interrupted projection session=%s turn=%s blocks=%d",
-                session_id, turn_id, len(blocks),
-            )
-            return settle_result.snapshot
 
         latest = await self._snapshots.get_snapshot(session_id)
         return latest if isinstance(latest, dict) else None

@@ -28,7 +28,7 @@ _EXPLICIT_ANCHOR = re.compile(r"\{#([a-z0-9-]+)\}")
 _MARKDOWN_LINK = re.compile(r"!?\[[^]]*\]\(([^)\s]+)(?:\s+[^)]*)?\)")
 
 _EXPECTED_SIDEBAR = (
-    ("Quick start", ("overview", "capabilities", "quickstart")),
+    ("Quick start", ("overview", "capabilities", "quickstart", "all-in-one")),
     (
         "Build Agent",
         (

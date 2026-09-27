@@ -286,6 +286,72 @@ class CollectionContractSuite:
         ]
         assert [d["score"] for d in ascending] == [10, 20, 30]
 
+    async def test_string_keyed_sort_orders_strings_by_code_point(self) -> None:
+        """A ``string_keyed`` sort is accepted everywhere and orders by code point.
+
+        ``string_keyed`` is the caller's statement that every sort key holds a
+        string; a backend may use it to order in its store. Whatever it does,
+        the order is the one the query matcher compares by, or a keyset page
+        (``{k: {"$gt": last}}``) resumes somewhere the order did not put it.
+        """
+        coll = await self.make_collection("conf_string_keyed_sort")
+        keys = ["b", "a b", "a-b", "ab", "A", "a", "Z", "é", "a_b", "aB"]
+        for index, key in enumerate(keys):
+            await coll.insert_one({"_id": f"d{index}", "k": key, "rid": f"r{index}"})
+
+        rows = [
+            d
+            async for d in coll.find({})
+            .sort([("k", 1), ("rid", 1)], string_keyed=True)
+            .limit(len(keys))
+        ]
+
+        assert [d["k"] for d in rows] == sorted(keys), (
+            "a string_keyed sort must order by code point, as the matcher compares; "
+            f"got {[d['k'] for d in rows]}"
+        )
+
+    async def test_keyset_pages_reach_every_row_once(self) -> None:
+        """Paging on ``(k, rid)`` with ``$gt`` after the last row read.
+
+        The page query is the shape every list uses: ``$or`` of "k after the
+        last k" and "same k, rid after the last rid", sorted on both keys with
+        a limit. Concatenated, the pages are the whole set in order, with each
+        row once, across ties on ``k`` and keys that differ only in case or
+        punctuation.
+        """
+        coll = await self.make_collection("conf_keyset_pages")
+        keys = ["echo", "Echo", "echo", "a b", "a-b", "ab", "b", "echo", "B", "é", "a"]
+        docs = [{"_id": f"d{index}", "k": key, "rid": f"r{index:02d}", "live": True} for index, key in enumerate(keys)]
+        docs.append({"_id": "gone", "k": "c", "rid": "r99", "live": False})
+        for doc in docs:
+            await coll.insert_one(doc)
+        expected = sorted(
+            ((d["k"], d["rid"]) for d in docs if d["live"]),
+        )
+
+        seen: list[tuple[str, str]] = []
+        after: tuple[str, str] | None = None
+        for _page in range(20):
+            query: dict[str, Any] = {"live": True}
+            if after is not None:
+                query["$or"] = [
+                    {"k": {"$gt": after[0]}},
+                    {"k": after[0], "rid": {"$gt": after[1]}},
+                ]
+            page = [
+                d
+                async for d in coll.find(query)
+                .sort([("k", 1), ("rid", 1)], string_keyed=True)
+                .limit(3)
+            ]
+            seen.extend((d["k"], d["rid"]) for d in page)
+            if len(page) < 3:
+                break
+            after = (page[-1]["k"], page[-1]["rid"])
+
+        assert seen == expected, f"pages {seen} != whole set {expected}"
+
     async def test_find_inclusion_projection(self) -> None:
         coll = await self.make_collection("conf_projection")
         await coll.insert_one({"_id": "p1", "keep": "yes", "drop": "no", "n": 1})

@@ -44,19 +44,30 @@ export function expectToolBlocks(transcript: ChildRunMessagePage, native: Native
     expect(results, 'a held tool must not acquire a synthetic result').toHaveLength(0);
   } else {
     expect(native.result?.isError, 'the real child command must have succeeded').toBe(false);
-    expect(JSON.stringify(native.result!.output), 'the native result independently proves the unknown receipt').toContain(receipt);
     expect(results, 'the result must attach to the same native tool call').toHaveLength(1);
     expect(results[0]!.is_error).not.toBe(true);
-    expect(JSON.stringify(results[0]!.content)).toContain(receipt);
+    if (codexRecordedNoOutput(native)) {
+      expect(native.recordedFunctionOutput, 'the rollout must hold this exact call output').toContain(receipt);
+      expect(JSON.stringify(results[0]!.content), 'the child tool result must recover the recorded output').toContain(receipt);
+    } else {
+      expect(JSON.stringify(native.result!.output), 'the native result independently proves the unknown receipt').toContain(receipt);
+      expect(JSON.stringify(results[0]!.content)).toContain(receipt);
+    }
     if (native.name === 'commandExecution') {
       const output = JSON.parse(String(results[0]!.content)) as Record<string, unknown>;
+      const recorded = native.completedCommand!.aggregated_output;
       expect(output).toMatchObject({
         id: native.id, type: 'commandExecution', status: native.completedCommand!.status,
         exitCode: native.completedCommand!.exit_code,
-        aggregatedOutput: native.completedCommand!.aggregated_output,
+        aggregatedOutput: recorded === '' ? native.recordedFunctionOutput : recorded,
       });
     }
   }
+}
+
+/** Codex's own record of this completed command holds no output. */
+function codexRecordedNoOutput(native: NativeChildTool): boolean {
+  return native.name === 'commandExecution' && native.completedCommand?.aggregated_output === '';
 }
 
 export async function expectChildToolCard(

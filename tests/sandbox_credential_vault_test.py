@@ -349,7 +349,10 @@ def test_vault_hosts_enter_network_policy_only_at_provider_boundary(
     )
     assert provider_policy is not None
     assert provider_policy.default_action == "deny"
+    # The cloud-metadata always-deny leads every provider policy, then the
+    # Environment allows, then the Vault binding host.
     assert [rule.target for rule in provider_policy.egress or []] == [
+        "169.254.0.0/16",
         "packages.example.com",
         "api.github.com",
     ]

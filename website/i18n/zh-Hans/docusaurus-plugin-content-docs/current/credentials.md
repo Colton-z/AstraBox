@@ -18,6 +18,13 @@ Agent 经常需要访问第三方服务——GitHub、Jira、数据库、自建�
 - 凭证在服务端加密存储
 - 凭证只提供给已分配的工作负载。Agent 预热也会使用已分配的 HTTP Basic 凭证，
   在 Session 创建前下载私有 Skill 和 Plugin。
+- 只有管理员可以把 Vault 分配给 Agent 或 Assistant。Agent 的作者可以决定它调用
+  哪些 MCP URL，但凭证只会附加到发往其绑定目标的请求上。Agent 自己的 MCP 服务
+  定义不能设置 `provider` 或 `credential_target_url`：这两个字段会选择平台的网关
+  凭证，或把凭证指向另一个 URL，只能由管理员的 MCP 目录分配设置。设置了其中任一
+  字段的定义会以 `AGENT_MCP_FIELD_RESERVED`（403）拒绝。
+- 仓库 Deploy Key 是部署级 Secret，不是 Vault 凭证。Agent 只能使用管理员列出的
+  Deploy Key，参见[访问 GitHub](working-with-repos.md#who-may-use-which-credentials)。
 
 ## 完整流程
 

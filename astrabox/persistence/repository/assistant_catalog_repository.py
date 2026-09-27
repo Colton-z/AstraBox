@@ -1,9 +1,9 @@
 """Repository for the assistant_catalog collection.
 
 Assistant identity + capability definition; cross-session immutable except for
-``display_name`` / ``icon`` / ``description`` / overrides. ``engine_kind`` is
-immutable once the corresponding ``assistant_workspace`` row materializes
-(enforced in ``AssistantService.update_assistant``).
+``display_name`` / ``icon`` / ``description`` / ``system`` / overrides.
+``engine_kind`` is immutable once the corresponding ``assistant_workspace`` row
+materializes (enforced in ``AssistantService.update_assistant``).
 """
 
 from __future__ import annotations
@@ -97,23 +97,64 @@ class AssistantCatalogRepository:
             fault_context={"vault_id": target},
         )
 
-    async def list_assistants(self, limit: int = 50) -> list[dict[str, Any]]:
+    async def list_owner_assistants(self, owner_id: str) -> list[dict[str, Any]]:
+        """Every live Assistant ``owner_id`` owns, the most recently edited first."""
+
+        collection = await get_async_collection(self._collection_name)
+
+        async def _list() -> list[dict[str, Any]]:
+            cursor = collection.find(
+                {"owner_id": str(owner_id or ""), "deleted": {"$ne": True}}
+            ).sort([("updated_at", -1), ("assistant_id", -1)])
+            return [doc async for doc in cursor]
+
+        return await run_mongo_with_retry("assistant_catalog.list_owner", _list)
+
+    async def list_owner_assistants_page(
+        self,
+        owner_id: str,
+        *,
+        after: tuple[str, str] | None,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        """One page of :meth:`list_owner_assistants`, after ``after``.
+
+        ``after`` is the ``(updated_at, assistant_id)`` of the last row already
+        read; a page shorter than ``limit`` is the last. Both keys are strings
+        on every row (``create_assistant`` stamps ``updated_at``), so the store
+        orders the page itself and reads only the page.
+        """
+
+        page_limit = max(1, min(int(limit or 50), 10_000))
+        query: dict[str, Any] = {"owner_id": str(owner_id or ""), "deleted": {"$ne": True}}
+        if after is not None:
+            updated_at, assistant_id = after
+            query["$or"] = [
+                {"updated_at": {"$lt": updated_at}},
+                {"updated_at": updated_at, "assistant_id": {"$lt": assistant_id}},
+            ]
         collection = await get_async_collection(self._collection_name)
 
         async def _list() -> list[dict[str, Any]]:
             cursor = (
-                collection.find({"deleted": {"$ne": True}})
-                .sort("updated_at", -1)
-                .limit(limit)
+                collection.find(query)
+                .sort([("updated_at", -1), ("assistant_id", -1)], string_keyed=True)
+                .limit(page_limit)
             )
             return [doc async for doc in cursor]
 
-        return await run_mongo_with_retry("assistant_catalog.list", _list)
+        return await run_mongo_with_retry("assistant_catalog.list_owner_page", _list)
 
     async def update_assistant(
         self, assistant_id: str, updates: dict[str, Any]
     ) -> bool:
-        updates = {**updates, "updated_at": utcnow_iso()}
+        """Write exactly ``updates``.
+
+        ``updated_at`` means the Assistant's definition changed. The platform
+        keeps its own state on this row too (the workspace id), so the write
+        does not stamp it: the authoring paths put ``updated_at`` in
+        ``updates`` when an authored field changed.
+        """
         collection = await get_async_collection(self._collection_name)
         result = await run_mongo_with_retry(
             "assistant_catalog.update",

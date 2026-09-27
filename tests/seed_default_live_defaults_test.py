@@ -162,6 +162,45 @@ async def test_seeded_rows_do_not_copy_deployment_defaults(
     )
 
 
+@pytest.mark.parametrize(
+    ("redis_url", "expected"),
+    [("redis://redis:6379/0", True), (None, False)],
+    ids=["deployment-can-prewarm", "deployment-cannot-prewarm"],
+)
+@pytest.mark.asyncio
+async def test_seeded_agents_take_the_deployments_prewarm_default(
+    monkeypatch: pytest.MonkeyPatch, redis_url: str | None, expected: bool
+) -> None:
+    """The first-run Agents start ready wherever the deployment can prewarm.
+
+    The seed writes the repository directly, bypassing the create path, so it
+    must store the same create-time value: a missing key is read as off by the
+    capacity sweep, which would leave the Agents a new user meets first cold.
+    """
+    if redis_url is None:
+        monkeypatch.delenv("ASTRABOX_AGENT_PREWARM_REDIS_URL", raising=False)
+    else:
+        monkeypatch.setenv("ASTRABOX_AGENT_PREWARM_REDIS_URL", redis_url)
+    agents = _SeedAgentRepository()
+    provider = SimpleNamespace(
+        runtime_defaults=lambda: SimpleNamespace(runtime_image="deployment-image")
+    )
+    monkeypatch.setattr(repository_module, "AgentRepository", lambda: agents)
+    monkeypatch.setattr(
+        repository_module, "EnvironmentRepository", _SeedEnvironmentRepository
+    )
+    monkeypatch.setattr(
+        sandbox_module, "default_sandbox_backend", lambda: "deployment-backend"
+    )
+    monkeypatch.setattr(sandbox_module, "sandbox_for_name", lambda _name: provider)
+    monkeypatch.setattr(app_module, "_seed_default_model", lambda: "deployment-model")
+
+    await app_module._seed_default_agent_if_empty()
+
+    assert [row["name"] for row in agents.rows] == ["Claude Code", "Investment Research"]
+    assert [row["prewarm_enabled"] for row in agents.rows] == [expected, expected]
+
+
 @pytest.mark.asyncio
 async def test_an_explicit_agent_org_remains_the_catalog_pin() -> None:
     provider = _CapturingExtensionProvider()

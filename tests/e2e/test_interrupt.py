@@ -88,6 +88,29 @@ def _assert_sendable(e2e_client: httpx.Client, sid: str) -> None:
     )
 
 
+def _assert_turn_records_the_stop(e2e_client: httpx.Client, sid: str, turn_id: str) -> None:
+    """The stopped turn's message carries the outcome of a user stop.
+
+    A user stop completes the turn with a result whose ``finish_reason`` is
+    ``cancelled``, on every path: the engine's own cancelled terminal on a
+    running turn, and the platform's settle on a parked one. It is the fact a
+    reloaded page reads to say the response stopped early.
+    """
+    resp = e2e_client.get(f"/api/v1/sessions/{sid}/messages", params={"limit": "50"})
+    assert resp.status_code == 200, f"GET messages -> {resp.status_code}: {resp.text[:300]}"
+    messages = (data(resp) or {}).get("messages") or []
+    results = [
+        block
+        for message in messages
+        if message.get("turn_id") == turn_id and message.get("role") == "assistant"
+        for block in message.get("blocks") or []
+        if block.get("type") == "result"
+    ]
+    assert [block.get("finish_reason") for block in results] == ["cancelled"], (
+        f"the stopped turn {turn_id} does not record a cancelled result: {results}"
+    )
+
+
 def _post_turn_until_streaming(
     e2e_client: httpx.Client, sid: str, content: str, *, read_budget_s: float = 30.0
 ) -> tuple[bool, bool]:
@@ -233,6 +256,7 @@ def test_interrupt_streaming_turn_settles_and_session_stays_usable(e2e_client: h
             f"user interrupt left a turn error: {settled.get('last_turn_error')!r}"
         )
         interrupted_turn_id = settled["last_turn_id"]
+        _assert_turn_records_the_stop(e2e_client, sid, interrupted_turn_id)
 
         # The gate remains closed: a normal tool finish cannot unblock this turn.
         _assert_sendable(e2e_client, sid)
@@ -316,6 +340,10 @@ def test_interrupt_clears_pending_interaction_and_settles(e2e_client: httpx.Clie
         assert not settled.get("pending_interaction"), (
             "interrupt left the pending interaction uncleared"
         )
+        assert settled.get("last_turn_status") == "COMPLETED", (
+            f"user interrupt of a parked turn was recorded as a failed turn: {settled}"
+        )
+        _assert_turn_records_the_stop(e2e_client, sid, str(pi.get("turn_id") or ""))
 
         # Load-bearing: the denied Write had no side effect. The turn is fully settled,
         # so the uniquely-named file must never have been created.

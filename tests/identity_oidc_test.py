@@ -29,6 +29,7 @@ import astrabox.identity.oidc as identity_oidc
 import astrabox.providers.identity_oidc as oidc
 from astrabox.common.utils.errors import APIError
 from astrabox.identity.oidc import IdentityPrincipal
+from astrabox.identity.session_signing import reset_session_signing_cache
 
 _SESSION_SECRET = "unit-test-session-secret-0123456789abcdef"
 _REAL_ASYNC_CLIENT = httpx.AsyncClient
@@ -49,6 +50,7 @@ _OIDC_ENV_VARS = (
     "ASTRABOX_OIDC_REDIRECT_URL",
     "ASTRABOX_AUTH_SESSION_SECRET",
     "ASTRABOX_AUTH_SESSION_TTL_SECONDS",
+    "ASTRABOX_CASDOOR_ORGANIZATION",
 )
 
 
@@ -57,11 +59,13 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch):
     for name in _OIDC_ENV_VARS:
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("ASTRABOX_AUTH_SESSION_SECRET", _SESSION_SECRET)
-    oidc._cached_session_secret = None
+    reset_session_signing_cache()
     oidc._discovery_cache.clear()
+    identity_oidc._jwks_clients.clear()
     yield
-    oidc._cached_session_secret = None
+    reset_session_signing_cache()
     oidc._discovery_cache.clear()
+    identity_oidc._jwks_clients.clear()
 
 
 def _set_oidc_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -120,9 +124,10 @@ def test_oidc_api_client_requires_a_complete_long_lived_credential(
 
 def test_session_token_roundtrip():
     token = oidc.mint_session_token(
-        user_id="u-1", email="a@b.c", display_name="Ada", roles=["admin"]
+        user_id="u-1", email="a@b.c", display_name="Ada", roles=["admin"],
+        casdoor_organization="",
     )
-    claims = oidc.verify_session_token(token)
+    claims = oidc.verify_session_token(token, casdoor_organization="")
     assert claims["sub"] == "u-1"
     assert claims["email"] == "a@b.c"
     assert claims["roles"] == ["admin"]
@@ -131,7 +136,8 @@ def test_session_token_roundtrip():
 def test_session_token_rejects_tamper_and_expiry():
     with pytest.raises(jwt.PyJWTError):
         oidc.verify_session_token(
-            jwt.encode({"use": "session", "sub": "u"}, "wrong-secret-0123456789abcdef-pad", algorithm="HS256")
+            jwt.encode({"use": "session", "sub": "u"}, "wrong-secret-0123456789abcdef-pad", algorithm="HS256"),
+            casdoor_organization="",
         )
     expired = jwt.encode(
         {"use": "session", "sub": "u", "exp": int(time.time()) - 10},
@@ -139,14 +145,16 @@ def test_session_token_rejects_tamper_and_expiry():
         algorithm="HS256",
     )
     with pytest.raises(jwt.PyJWTError):
-        oidc.verify_session_token(expired)
+        oidc.verify_session_token(expired, casdoor_organization="")
 
 
 def test_flow_and_session_tokens_are_not_interchangeable():
     flow = oidc.mint_flow_token(state="s", code_verifier="v", next_url="/x")
     with pytest.raises(jwt.PyJWTError):
-        oidc.verify_session_token(flow)
-    session = oidc.mint_session_token(user_id="u", email=None, display_name=None, roles=[])
+        oidc.verify_session_token(flow, casdoor_organization="")
+    session = oidc.mint_session_token(
+        user_id="u", email=None, display_name=None, roles=[], casdoor_organization=""
+    )
     with pytest.raises(jwt.PyJWTError):
         oidc.verify_flow_token(session)
 
@@ -223,7 +231,8 @@ async def test_resolver_reads_cookie_and_oidc_bearer(
     )
     resolver = oidc.OidcSessionWebIdentityResolver()
     token = oidc.mint_session_token(
-        user_id="u-7", email=None, display_name="Nia", roles=["admin"]
+        user_id="u-7", email=None, display_name="Nia", roles=["admin"],
+        casdoor_organization="",
     )
     via_cookie = await resolver.resolve({"cookie": f"other=1; {oidc.SESSION_COOKIE}={token}"})
     assert via_cookie is not None and via_cookie.user_id == "u-7"
@@ -259,6 +268,7 @@ async def test_api_client_configuration_does_not_scope_browser_sessions(
         email=None,
         display_name="Browser Admin",
         roles=["admin"],
+        casdoor_organization="",
     )
 
     context = await resolver.resolve({"cookie": f"{oidc.SESSION_COOKIE}={token}"})
@@ -435,6 +445,7 @@ async def test_active_api_token_preserves_scopes_and_maps_admin(
                 "sub": "admin/astrabox-api",
                 "username": "astrabox-api",
                 "aud": ["astrabox-api"],
+                "client_id": "astrabox-api",
                 "scope": "astrabox:read astrabox:admin astrabox:read",
             },
         )
@@ -475,8 +486,8 @@ async def test_client_id_is_the_stable_identity_when_introspection_omits_sub(
             200,
             json={
                 "active": True,
-                "client_id": "nightly-backup",
-                "aud": ["nightly-backup"],
+                "client_id": "astrabox-api",
+                "aud": ["astrabox-api"],
                 "scope": "astrabox:read",
             },
         ),
@@ -485,8 +496,8 @@ async def test_client_id_is_the_stable_identity_when_introspection_omits_sub(
     context = await resolver.resolve({"authorization": "Bearer client-token"})
 
     assert context is not None
-    assert context.user_id == "oauth-client:nightly-backup"
-    assert context.display_name == "nightly-backup"
+    assert context.user_id == "oauth-client:astrabox-api"
+    assert context.display_name == "astrabox-api"
     assert context.api_scopes == ["astrabox:read"]
 
 
@@ -673,7 +684,7 @@ def test_callback_happy_path_sets_session_cookie(monkeypatch: pytest.MonkeyPatch
     assert response.headers["location"] == "/sessions"
     session_cookie = response.cookies.get(oidc.SESSION_COOKIE)
     assert session_cookie
-    claims = oidc.verify_session_token(session_cookie)
+    claims = oidc.verify_session_token(session_cookie, casdoor_organization="")
     assert claims["sub"] == "cas-user-1"
     assert claims["roles"] == ["admin"]
 
@@ -686,6 +697,415 @@ def test_callback_happy_path_sets_session_cookie(monkeypatch: pytest.MonkeyPatch
     # Logout clears it.
     out = client.post("/api/v1/auth/logout")
     assert out.status_code == 204
+
+
+# ── Casdoor organization ────────────────────────────────────────────────────
+#
+# Casdoor lets the users of its `built-in` organization, its global
+# administrators, sign in to every application, and names a user's organization
+# in the `owner` claim of the JWTs it issues. The claim shapes below are the
+# ones casbin/casdoor:3.128.0 issued on a real deployment: its introspection
+# and UserInfo answers carry no `owner`, and a client-credentials token has
+# `type` "application" and the owner `admin`.
+
+_ISSUER = "https://idp.example.com"
+
+
+def _casdoor_signing_key() -> Any:
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    return rsa.generate_private_key(public_exponent=65537, key_size=2048)
+
+
+def _casdoor_jwt(private_key: Any, **claims: Any) -> str:
+    return jwt.encode(
+        {"iss": _ISSUER, "exp": int(time.time()) + 300, **claims},
+        private_key,
+        algorithm="RS256",
+    )
+
+
+def _serve_casdoor_keys(monkeypatch: pytest.MonkeyPatch, private_key: Any) -> None:
+    class _SigningKey:
+        key = private_key.public_key()
+
+    class _JwkClient:
+        def __init__(self, url: str):
+            assert url == "https://idp.example.com/jwks"
+
+        def get_signing_key_from_jwt(self, token: str) -> Any:
+            return _SigningKey()
+
+    monkeypatch.setattr(jwt, "PyJWKClient", _JwkClient)
+
+
+def _casdoor_user(owner: str, groups: list[str] | None = None) -> dict[str, Any]:
+    return {
+        "owner": owner,
+        "name": "admin",
+        "sub": f"{owner}-admin-id",
+        "type": "normal-user",
+        "aud": ["astrabox-console"],
+        "azp": "astrabox-console",
+        "groups": groups or [],
+    }
+
+
+def _introspected(request: httpx.Request, *, sub: str, client_id: str) -> httpx.Response:
+    return httpx.Response(
+        200,
+        json={
+            "active": True,
+            "sub": sub,
+            "client_id": client_id,
+            "username": "admin",
+            "scope": "openid astrabox:read astrabox:admin",
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    ("owner", "accepted"), [("astrabox", True), ("built-in", False), ("partners", False)]
+)
+async def test_a_casdoor_api_token_counts_only_for_the_configured_organization(
+    monkeypatch: pytest.MonkeyPatch, owner: str, accepted: bool
+) -> None:
+    """Casdoor issues any signed-in user an API-scoped token for the console app."""
+
+    key = _casdoor_signing_key()
+    token = _casdoor_jwt(key, **_casdoor_user(owner))
+    resolver = _introspection_resolver(
+        monkeypatch,
+        lambda request: _introspected(
+            request, sub=f"{owner}-admin-id", client_id="astrabox-console"
+        ),
+    )
+    monkeypatch.setenv("ASTRABOX_CASDOOR_ORGANIZATION", "astrabox")
+    resolver = oidc.OidcSessionWebIdentityResolver()
+    _serve_casdoor_keys(monkeypatch, key)
+
+    if accepted:
+        context = await resolver.resolve({"authorization": f"Bearer {token}"})
+        assert context is not None
+        assert context.user_id == "astrabox-admin-id"
+        return
+    with pytest.raises(APIError) as caught:
+        await resolver.resolve({"authorization": f"Bearer {token}"})
+    assert caught.value.code == "IDENTITY_ORGANIZATION_REJECTED"
+    assert caught.value.status_code == 403
+    assert repr(owner) in caught.value.message
+
+
+def _console_token_resolver(
+    monkeypatch: pytest.MonkeyPatch, groups: list[str]
+) -> tuple[oidc.OidcSessionWebIdentityResolver, str]:
+    """A Casdoor user's own token, issued to the console's client, asking for
+    every AstraBox scope: Casdoor grants a user any scope requested there."""
+
+    key = _casdoor_signing_key()
+    token = _casdoor_jwt(
+        key, **_casdoor_user("astrabox", groups), scope="openid astrabox:read astrabox:admin"
+    )
+    _introspection_resolver(
+        monkeypatch,
+        lambda request: _introspected(
+            request, sub="astrabox-admin-id", client_id="astrabox-console"
+        ),
+    )
+    monkeypatch.setenv("ASTRABOX_CASDOOR_ORGANIZATION", "astrabox")
+    resolver = oidc.OidcSessionWebIdentityResolver()
+    _serve_casdoor_keys(monkeypatch, key)
+    return resolver, token
+
+
+@pytest.mark.parametrize(
+    ("groups", "roles"), [([], []), (["astrabox/astrabox-admin"], ["admin"])]
+)
+async def test_a_users_token_carries_the_users_role_not_the_scopes_it_asked_for(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    groups: list[str],
+    roles: list[str],
+) -> None:
+    resolver, token = _console_token_resolver(monkeypatch, groups)
+
+    with caplog.at_level("WARNING", logger="astrabox.identity.oidc"):
+        context = await resolver.resolve({"authorization": f"Bearer {token}"})
+
+    assert context is not None
+    assert context.roles == roles
+    # A browser identity: the role gates the admin surface, no scope list does.
+    assert context.api_scopes is None
+    assert "ignoring scopes astrabox:read astrabox:admin" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("groups", "path", "outcome"),
+    [
+        ([], "/api/v1/admin/system/overview", "ADMIN_ROLE_REQUIRED"),
+        ([], "/api/v1/agents", "reached"),
+        (["astrabox/astrabox-admin"], "/api/v1/admin/system/overview", "reached"),
+    ],
+    ids=["member-admin-route", "member-own-route", "administrator-admin-route"],
+)
+async def test_the_admin_surface_follows_the_users_groups_not_the_tokens_scopes(
+    monkeypatch: pytest.MonkeyPatch, groups: list[str], path: str, outcome: str
+) -> None:
+    from astrabox.web.identity_middleware import WebIdentityMiddleware
+
+    resolver, token = _console_token_resolver(monkeypatch, groups)
+    reached: list[str] = []
+    sent: list[dict[str, Any]] = []
+
+    async def app(scope: Any, receive: Any, send: Any) -> None:
+        reached.append(scope["path"])
+
+    async def send(message: dict[str, Any]) -> None:
+        sent.append(message)
+
+    async def receive() -> dict[str, Any]:  # pragma: no cover - not pulled
+        return {"type": "http.request"}
+
+    await WebIdentityMiddleware(app, resolver)(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": path,
+            "headers": [(b"authorization", f"Bearer {token}".encode())],
+        },
+        receive,
+        send,
+    )
+
+    if outcome == "reached":
+        assert reached == [path]
+        return
+    assert reached == []
+    assert sent[0]["status"] == 403
+    assert outcome.encode() in sent[1]["body"]
+
+
+async def test_a_token_issued_to_another_client_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Neither the user's own token nor the API client's: any other application
+    registered at the provider could otherwise act as a user here."""
+
+    resolver = _introspection_resolver(
+        monkeypatch,
+        lambda request: _introspected(request, sub="u-7", client_id="some-other-app"),
+    )
+
+    with pytest.raises(APIError) as caught:
+        await resolver.resolve({"authorization": "Bearer other-apps-token"})
+
+    assert caught.value.code == "IDENTITY_ORGANIZATION_REJECTED"
+    assert "'some-other-app'" in caught.value.message
+
+
+@pytest.mark.parametrize(("client", "accepted"), [("astrabox-api", True), ("other-app", False)])
+async def test_a_casdoor_client_token_counts_only_from_the_configured_api_client(
+    monkeypatch: pytest.MonkeyPatch, client: str, accepted: bool
+) -> None:
+    key = _casdoor_signing_key()
+    token = _casdoor_jwt(
+        key,
+        owner="admin",
+        name=client,
+        sub=f"admin/{client}",
+        type="application",
+        aud=[client],
+        azp=client,
+    )
+    _introspection_resolver(
+        monkeypatch,
+        lambda request: _introspected(request, sub=f"admin/{client}", client_id=client),
+    )
+    monkeypatch.setenv("ASTRABOX_CASDOOR_ORGANIZATION", "astrabox")
+    resolver = oidc.OidcSessionWebIdentityResolver()
+    _serve_casdoor_keys(monkeypatch, key)
+
+    if accepted:
+        context = await resolver.resolve({"authorization": f"Bearer {token}"})
+        assert context is not None
+        assert context.user_id == "admin/astrabox-api"
+        return
+    with pytest.raises(APIError) as caught:
+        await resolver.resolve({"authorization": f"Bearer {token}"})
+    assert caught.value.code == "IDENTITY_ORGANIZATION_REJECTED"
+
+
+async def test_a_userinfo_token_from_another_casdoor_organization_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    key = _casdoor_signing_key()
+    token = _casdoor_jwt(key, **_casdoor_user("built-in"))
+    _userinfo_resolver(
+        monkeypatch,
+        lambda request: httpx.Response(200, json={"sub": "built-in-admin-id", "name": "Admin"}),
+    )
+    monkeypatch.setenv("ASTRABOX_CASDOOR_ORGANIZATION", "astrabox")
+    resolver = oidc.OidcSessionWebIdentityResolver()
+    _serve_casdoor_keys(monkeypatch, key)
+
+    with pytest.raises(APIError) as caught:
+        await resolver.resolve({"authorization": f"Bearer {token}"})
+
+    assert caught.value.code == "IDENTITY_ORGANIZATION_REJECTED"
+
+
+def _casdoor_callback(
+    monkeypatch: pytest.MonkeyPatch, id_token_claims: dict[str, Any]
+) -> Any:
+    private_key = _casdoor_signing_key()
+    id_token = _casdoor_jwt(private_key, **id_token_claims)
+    public_key = private_key.public_key()
+
+    class _SigningKey:
+        key = public_key
+
+    class _JwkClient:
+        def __init__(self, url: str):
+            pass
+
+        def get_signing_key_from_jwt(self, token: str) -> Any:
+            return _SigningKey()
+
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(200, json={"id_token": id_token})
+    )
+
+    def _mock_async_client(**kwargs: Any) -> httpx.AsyncClient:
+        kwargs["transport"] = transport
+        return _REAL_ASYNC_CLIENT(**kwargs)
+
+    monkeypatch.setenv("ASTRABOX_CASDOOR_ORGANIZATION", "astrabox")
+    client = _client(monkeypatch)
+    monkeypatch.setattr(auth_routes, "PyJWKClient", _JwkClient)
+    monkeypatch.setattr(auth_routes.httpx, "AsyncClient", _mock_async_client)
+    client.cookies.set(
+        oidc.FLOW_COOKIE, oidc.mint_flow_token(state="st", code_verifier="v", next_url="/")
+    )
+    return client.get(
+        "/api/v1/auth/callback", params={"code": "c", "state": "st"}, follow_redirects=False
+    )
+
+
+def test_a_casdoor_login_from_another_organization_gets_no_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response = _casdoor_callback(
+        monkeypatch, {**_casdoor_user("built-in"), "aud": "astrabox-console"}
+    )
+
+    assert response.status_code == 403
+    assert response.json()["code"] == "IDENTITY_ORGANIZATION_REJECTED"
+    assert oidc.SESSION_COOKIE not in response.cookies
+
+
+def test_a_casdoor_login_from_the_configured_organization_gets_a_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response = _casdoor_callback(
+        monkeypatch, {**_casdoor_user("astrabox"), "aud": "astrabox-console"}
+    )
+
+    assert response.status_code == 302
+    cookie = response.cookies[oidc.SESSION_COOKIE]
+    session = oidc.verify_session_token(cookie, casdoor_organization="astrabox")
+    assert session["sub"] == "astrabox-admin-id"
+    assert session["casdoor_organization"] == "astrabox"
+
+    # The console's session probe, under the same setting, keeps it signed in.
+    client = _client(monkeypatch)
+    client.cookies.set(oidc.SESSION_COOKIE, cookie)
+    assert client.get("/api/v1/auth/session").json()["authenticated"] is True
+
+
+def _session_without_organization() -> str:
+    """A session in the shape sign-ins minted before they recorded the
+    organization: the same claims under the same key, with none named."""
+
+    now = int(time.time())
+    return jwt.encode(
+        {
+            "use": "session",
+            "sub": "built-in-admin-id",
+            "email": None,
+            "name": "Admin",
+            "roles": ["admin"],
+            "iat": now,
+            "exp": now + 7 * 24 * 3600,
+        },
+        _SESSION_SECRET,
+        algorithm="HS256",
+    )
+
+
+@pytest.mark.parametrize("organization", [None, "built-in"])
+async def test_a_session_not_issued_for_the_organization_must_sign_in_again(
+    monkeypatch: pytest.MonkeyPatch, organization: str | None
+) -> None:
+    """An unexpired session that never met the organization check would stay
+    valid for its whole lifetime; signing in again is what applies the check."""
+
+    _set_oidc_env(monkeypatch)
+    monkeypatch.setenv("ASTRABOX_CASDOOR_ORGANIZATION", "astrabox")
+    resolver = oidc.OidcSessionWebIdentityResolver()
+    if organization is None:
+        token = _session_without_organization()
+    else:
+        token = oidc.mint_session_token(
+            user_id="built-in-admin-id",
+            email=None,
+            display_name="Admin",
+            roles=["admin"],
+            casdoor_organization=organization,
+        )
+
+    with pytest.raises(APIError) as caught:
+        await resolver.resolve({"cookie": f"{oidc.SESSION_COOKIE}={token}"})
+
+    assert caught.value.status_code == 401
+    assert caught.value.code == "AUTH_REQUIRED"
+    assert "sign in again" in caught.value.message
+
+
+def test_the_session_probe_signs_out_a_session_without_the_organization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ASTRABOX_CASDOOR_ORGANIZATION", "astrabox")
+    client = _client(monkeypatch)
+    client.cookies.set(oidc.SESSION_COOKIE, _session_without_organization())
+
+    assert client.get("/api/v1/auth/session").json() == {"authenticated": False}
+
+
+def test_the_sso_overlay_accepts_the_accounts_its_seed_creates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The overlay's organization and the seed's must be the same one."""
+
+    import json
+
+    import yaml
+
+    root = Path(__file__).resolve().parents[1]
+    overlay = yaml.safe_load((root / "containers/compose.sso.yaml").read_text(encoding="utf-8"))
+    seed = json.loads((root / "containers/casdoor/init_data.json").read_text(encoding="utf-8"))
+    _set_oidc_env(monkeypatch)
+    monkeypatch.setenv(
+        "ASTRABOX_CASDOOR_ORGANIZATION",
+        overlay["services"]["server"]["environment"]["ASTRABOX_CASDOOR_ORGANIZATION"],
+    )
+    config = oidc.OidcProviderConfig.load()
+
+    console = next(app for app in seed["applications"] if app["name"] == "astrabox-console")
+    assert console["organization"] == config.casdoor_organization
+    for user in seed["users"]:
+        identity_oidc.require_casdoor_organization({"owner": user["owner"]}, config)
+    with pytest.raises(identity_oidc.OidcIdentityRejected):
+        identity_oidc.require_casdoor_organization({"owner": "built-in"}, config)
 
 
 # ── the serve guard ────────────────────────────────────────────────────────

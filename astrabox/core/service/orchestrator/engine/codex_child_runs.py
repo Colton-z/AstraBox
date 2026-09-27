@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -54,6 +55,67 @@ _MESSAGE_ITEM_ROLES = {"agentMessage": "assistant", "userMessage": "user"}
 
 class CodexProtocolError(RuntimeError):
     """Codex answered outside the shape its published protocol declares."""
+
+
+def enrich_stored_child_tool_results(
+    *, engine_ref: str, raw_scopes: list[dict[str, Any]], messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Fill empty command output from the same child's mirrored Codex rollout.
+
+    Codex 0.153.4 uses the tool call id for both CommandExecutionItem.id and
+    ResponseItem.FunctionCallOutput.call_id. The latter can hold output that
+    the former's aggregatedOutput omitted during unified exec startup.
+    """
+
+    matching: list[list[dict[str, Any]]] = []
+    for scope in raw_scopes:
+        if not str(scope.get("subpath") or "").startswith("codex/"):
+            continue
+        entries = scope.get("entries")
+        if not isinstance(entries, list):
+            raise CodexProtocolError("mirrored Codex rollout entries are malformed")
+        meta = next((entry.get("payload") for entry in entries
+                     if isinstance(entry, dict) and entry.get("type") == "session_meta"), None)
+        if isinstance(meta, dict) and meta.get("id") == engine_ref:
+            matching.append(entries)
+    if not matching:
+        return messages
+    if len(matching) != 1:
+        raise CodexProtocolError("Codex child has multiple mirrored rollouts")
+    outputs: dict[str, str] = {}
+    for entry in matching[0]:
+        if not isinstance(entry, dict) or entry.get("type") != "response_item":
+            continue
+        payload = entry.get("payload")
+        if not isinstance(payload, dict) or payload.get("type") != "function_call_output":
+            continue
+        call_id, output = payload.get("call_id"), payload.get("output")
+        if not isinstance(call_id, str) or not call_id or not isinstance(output, str):
+            continue
+        previous = outputs.setdefault(call_id, output)
+        if previous != output:
+            raise CodexProtocolError("Codex child has conflicting recorded tool outputs")
+    if not outputs:
+        return messages
+    enriched = deepcopy(messages)
+    for message in enriched:
+        for block in message.get("content", []):
+            if block.get("type") != "tool_result":
+                continue
+            call_id = block.get("tool_use_id")
+            if call_id not in outputs:
+                continue
+            try:
+                item = json.loads(block["content"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if (not isinstance(item, dict) or item.get("type") != "commandExecution"
+                    or item.get("id") != call_id
+                    or item.get("aggregatedOutput") not in (None, "")):
+                continue
+            item["aggregatedOutput"] = outputs[call_id]
+            block["content"] = json.dumps(item, ensure_ascii=False)
+    return enriched
 
 
 class CodexCall(Protocol):

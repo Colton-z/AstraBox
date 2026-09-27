@@ -63,6 +63,7 @@ test('Files panel creates, uploads, downloads, renames, and deletes', async ({
       name: `__e2e_file_journey_${runId}`,
       model,
       environment_name: environmentName,
+      prewarm_enabled: false,
     });
     agentId = String(agent.agent_id || '');
     const created = await api.startConversation(agentId);

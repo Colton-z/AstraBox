@@ -63,6 +63,19 @@ from astrabox.core.service.orchestrator.sandbox_runner import (
 )
 
 
+#: The token every host link in this module presents unless a test names
+#: another, and the one the runner's credential file holds.
+HOST_ACTIVATION_TOKEN = "host-activation-token"
+
+
+def _delivered_token_file(directory: Any, token: str) -> str:
+    """The platform's delivery of the runner credential, as a file."""
+
+    path = directory / ".astrabox-runner-token"
+    path.write_text(token, encoding="utf-8")
+    return str(path)
+
+
 async def _accept_persistent_event(_frame: dict[str, Any]) -> None:
     pass
 
@@ -111,6 +124,7 @@ async def test_child_store_reads_preserve_a_native_string_user_message() -> None
 class RunnerLink(_RunnerLink):
     def __init__(self, uri: str, **kwargs: Any) -> None:
         kwargs.setdefault("persistent_event_handler", _accept_persistent_event)
+        kwargs.setdefault("activation_token", HOST_ACTIVATION_TOKEN)
         super().__init__(uri, **kwargs)
 
 
@@ -398,7 +412,7 @@ def _native_message(message: Any) -> Any:
 
 
 @pytest.fixture
-async def stack():
+async def stack(tmp_path):
     sdk = QueueSdkSession()
 
     def factory(opening: dict[str, Any], link: HostLink) -> RunnerSession:
@@ -412,7 +426,12 @@ async def stack():
         sdk.consume_prompt = session.on_user_prompt_submit
         return session
 
-    server = RunnerWsServer(host="127.0.0.1", port=0, session_factory=factory)
+    server = RunnerWsServer(
+        host="127.0.0.1",
+        port=0,
+        session_factory=factory,
+        activation_token_file=_delivered_token_file(tmp_path, HOST_ACTIVATION_TOKEN),
+    )
     await server.start()
     link = RunnerLink(f"ws://127.0.0.1:{server.port}/")
     await link.__aenter__()
@@ -1124,6 +1143,7 @@ async def test_reattach_attaches_to_a_live_runner_session(
     server, sdk, client = stack
     engine_client, how = await claude_code_runtime._attach_runner_engine_client(
         f"ws://127.0.0.1:{server.port}/",
+        activation_token=HOST_ACTIVATION_TOKEN,
         session_id="sess-1",
         workspace_dir="/workspace",
         sdk_options={},
@@ -1198,7 +1218,7 @@ async def test_consumed_input_after_reattach_still_waits_for_its_stream_boundary
         await replacement.close()
 
 
-async def test_reattach_configures_a_fresh_runner_with_resume() -> None:
+async def test_reattach_configures_a_fresh_runner_with_resume(tmp_path) -> None:
     # A relaunched runner holds no session: attach is refused loudly and the
     # host opens one from scratch — the resume id rides in the spawn options
     # so the SDK restores the conversation. The opening frame is `prepare`
@@ -1222,11 +1242,17 @@ async def test_reattach_configures_a_fresh_runner_with_resume() -> None:
         sdk.consume_prompt = session.on_user_prompt_submit
         return session
 
-    server = RunnerWsServer(host="127.0.0.1", port=0, session_factory=factory)
+    server = RunnerWsServer(
+        host="127.0.0.1",
+        port=0,
+        session_factory=factory,
+        activation_token_file=_delivered_token_file(tmp_path, HOST_ACTIVATION_TOKEN),
+    )
     await server.start()
     try:
         engine_client, how = await _attach_runner_engine_client(
             f"ws://127.0.0.1:{server.port}/",
+            activation_token=HOST_ACTIVATION_TOKEN,
             session_id="sess-9",
             workspace_dir="/workspace",
             sdk_options={"resume": "claude-sess-42"},
@@ -1258,10 +1284,12 @@ async def test_attach_refuses_a_session_mismatch(stack) -> None:
     )
 
     server, _sdk, _client = stack
-    link = RunnerLink(f"ws://127.0.0.1:{server.port}/")
+    link = RunnerLink(
+        f"ws://127.0.0.1:{server.port}/", activation_token=HOST_ACTIVATION_TOKEN
+    )
     await link.__aenter__()
     try:
-        with pytest.raises(RunnerLinkError):
+        with pytest.raises(RunnerLinkError, match="attach session mismatch"):
             await link.attach("some-other-session", last_seen_seq=0)
     finally:
         await link.close()

@@ -476,6 +476,25 @@ def _assistant_binding_status_updates(
     session: dict[str, Any],
     resolution: RuntimeBindingResolution,
 ) -> dict[str, Any]:
+    """What the workspace binding says about one Assistant conversation.
+
+    The conversation's availability follows the workspace's, with one limit:
+    a conversation that ended for its own reason keeps that ending. The
+    binding projection persisted on the row records whether the workspace
+    could carry the conversation at the last reconciliation before the
+    conversation was terminated. A conversation terminated while the
+    workspace could not carry it was ended by the workspace, so the workspace
+    becoming ready again re-links it. One terminated while the workspace was
+    ready ended for its own reason, such as its setup failing or an operator
+    ending it; it stays terminated with its own error, because the workspace
+    becoming ready changes nothing about why it ended. Its recorded
+    projection is left as it was too: it is the evidence of that ending, and
+    a later outage overwriting it would make the conversation look ended by
+    the workspace.
+    """
+
+    if _clean(session.get("state")) == "TERMINATED" and _ended_while_workspace_ready(session):
+        return {}
     updates: dict[str, Any] = {
         "runtime_binding": resolution.as_projection(),
     }
@@ -494,3 +513,8 @@ def _assistant_binding_status_updates(
         ):
             updates["state"] = "READY"
     return updates
+
+
+def _ended_while_workspace_ready(session: dict[str, Any]) -> bool:
+    recorded = session.get("runtime_binding")
+    return isinstance(recorded, dict) and bool(recorded.get("can_dispatch"))

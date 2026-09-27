@@ -450,7 +450,7 @@ Controls how other applications can use the Agent:
 
 #### `idle_hibernate_seconds` / `prewarm_enabled`
 
-`idle_hibernate_seconds` controls how long an idle Agent waits before its sandbox is hibernated. `prewarm_enabled` asks AstraBox to keep a complete runtime ready for the Agent; the selected sandbox deployment must support prepared capacity.
+`idle_hibernate_seconds` controls how long an idle Agent waits before its sandbox is hibernated. `prewarm_enabled` asks AstraBox to keep a complete runtime ready for the Agent; the selected sandbox deployment must support prepared capacity. A document that omits `prewarm_enabled` leaves the choice to the deployment, which creates the Agent with prewarming on wherever it can prewarm and off where it cannot; an Agent that already exists keeps its stored value. Each Agent with prewarming on holds one idle prepared sandbox, so write `prewarm_enabled: false` for Agents that do not need a fast first conversation. See [Prewarming](../authoring-agents.md#prewarming) and [Plan capacity for prepared sandboxes](../deploy.md#plan-capacity-for-prepared-sandboxes).
 
 #### Display and state fields
 
@@ -1039,7 +1039,7 @@ astrabox schema agent --output json
 | `environment_name` | ✅ | Environment used by the Agent. |
 | `exposure_mode` | ❌ | Conversation/MCP exposure. |
 | `idle_hibernate_seconds` | ❌ | Idle time before hibernation. |
-| `prewarm_enabled` | ❌ | Keep a complete Agent runtime ready. |
+| `prewarm_enabled` | ❌ | Keep a complete Agent runtime ready. Omitted on create: on where the deployment can prewarm. |
 | `enabled` | ❌ | Whether the Agent can be used. |
 
 ---

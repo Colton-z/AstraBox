@@ -389,6 +389,16 @@ foreground turn to settle or interrupt it. Integrations that submit input and
 consume output separately can use `POST /sessions/{id}/turn-inputs`; whether
 input can join an active turn follows the selected Agent program.
 
+**Q: A message was refused. Can I send it again with the same `client_message_id`?**
+
+A: Not to get a different answer. A message has one outcome, and a refused
+message's turn is already over, so the same `client_message_id` returns the
+same refusal every time: for example `SANDBOX_GONE` when the Session's sandbox
+was lost, or `INPUT_NOT_DELIVERED` when a runtime could not be attached. Both
+report `error.retryable: false`. Send the text again as a new message with a new
+`client_message_id`; that message moves the Session to a new sandbox when its
+old one is gone.
+
 **Q: Can I still use a Session after interrupting?**
 
 A: Yes. After the active turn settles, send the next message to continue.

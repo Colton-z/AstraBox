@@ -7,15 +7,25 @@ implementation.
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Mapping
 
 import httpx
+import jwt
 
 _DEFAULT_SCOPES = "openid profile email"
 _DEFAULT_GROUPS_CLAIM = "groups"
 _DEFAULT_ADMIN_GROUP = "astrabox-admin"
+# The scope that makes a machine client an administrator. This file is copied
+# into the model gateway, which has no AstraBox package, so the scope and the
+# `admin` role are spelled here rather than imported (see roles_from_claims).
+_API_SCOPE_PREFIX = "astrabox:"
+_API_ADMIN_SCOPE = "astrabox:admin"
+
+logger = logging.getLogger(__name__)
 
 
 class OidcAccessTokenRejected(Exception):
@@ -24,6 +34,16 @@ class OidcAccessTokenRejected(Exception):
 
 class OidcProviderUnavailable(Exception):
     """The identity provider could not currently validate a token."""
+
+
+class OidcIdentityRejected(Exception):
+    """The provider vouched for an identity this deployment does not accept.
+
+    The token is valid and the provider answered; the account belongs to
+    another organization or client. Signing in with an account this deployment
+    accepts is the remedy, which neither a new token for the same account nor
+    waiting provides.
+    """
 
 
 class OidcProviderMisconfigured(Exception):
@@ -87,6 +107,7 @@ class OidcProviderConfig:
     redirect_url_override: str
     api_client_id: str
     api_client_secret: str
+    casdoor_organization: str
 
     @staticmethod
     def load() -> "OidcProviderConfig":
@@ -129,6 +150,7 @@ class OidcProviderConfig:
             redirect_url_override=_env("ASTRABOX_OIDC_REDIRECT_URL"),
             api_client_id=api_client_id,
             api_client_secret=api_client_secret,
+            casdoor_organization=_env("ASTRABOX_CASDOOR_ORGANIZATION"),
         )
 
     def to_internal(self, url: str) -> str:
@@ -192,6 +214,102 @@ def roles_from_claims(
     return []
 
 
+def require_casdoor_organization(
+    claims: Mapping[str, Any], config: OidcProviderConfig
+) -> None:
+    """Refuse a Casdoor user from any organization but the configured one.
+
+    Casdoor names a user's organization in the ``owner`` claim of the tokens it
+    issues, and lets the users of its ``built-in`` organization, its global
+    administrators, sign in to every application, this deployment's included.
+    Without a configured organization (another provider) nothing is checked.
+    """
+
+    expected = config.casdoor_organization
+    if not expected:
+        return
+    owner = str(claims.get("owner") or "").strip()
+    if owner != expected:
+        raise OidcIdentityRejected(
+            f"the account belongs to Casdoor organization {owner or '(none)'!r}; "
+            f"this deployment accepts only organization {expected!r} "
+            "(ASTRABOX_CASDOOR_ORGANIZATION)"
+        )
+
+
+_jwks_clients: dict[str, jwt.PyJWKClient] = {}
+
+
+async def _verified_casdoor_token_claims(
+    config: OidcProviderConfig, document: Mapping[str, Any], token: str
+) -> dict[str, Any]:
+    """The claims of a Casdoor JWT access token, after checking its signature.
+
+    UserInfo and introspection answers do not name the organization, and the
+    access token does: Casdoor issues the bundled applications' access tokens
+    as JWTs carrying the same user claims as the ID token.
+    """
+
+    jwks_uri = str(document.get("jwks_uri") or "").strip()
+    if not jwks_uri:
+        raise OidcProviderMisconfigured("OIDC discovery document has no jwks_uri")
+    url = config.to_internal(jwks_uri)
+    client = _jwks_clients.get(url)
+    if client is None:
+        client = _jwks_clients[url] = jwt.PyJWKClient(url)
+
+    def _decode() -> dict[str, Any]:
+        signing_key = client.get_signing_key_from_jwt(token)
+        return jwt.decode(
+            token,
+            signing_key.key,
+            algorithms=["RS256", "ES256"],
+            issuer=config.issuer,
+            options={"verify_aud": False},
+            leeway=30,
+        )
+
+    try:
+        return await asyncio.to_thread(_decode)
+    except jwt.PyJWKClientConnectionError as exc:
+        raise OidcProviderUnavailable("Casdoor signing keys could not be fetched") from exc
+    except jwt.PyJWTError as exc:
+        raise OidcProviderMisconfigured(
+            "ASTRABOX_CASDOOR_ORGANIZATION needs Casdoor access tokens in a JWT "
+            f"format that carries the owner claim, and this one could not be read: {exc}"
+        ) from exc
+
+
+async def _require_casdoor_access_token(
+    config: OidcProviderConfig,
+    document: Mapping[str, Any],
+    token: str,
+) -> dict[str, Any] | None:
+    """Refuse a bearer token from another organization or another client.
+
+    A client-credentials token names no user: Casdoor issues it with ``type``
+    ``application`` and the application's owner, which is ``admin`` for every
+    application. Such a token is accepted only from the configured API client,
+    the application the bundled seed registers in the configured organization.
+    """
+
+    if not config.casdoor_organization:
+        return None
+    claims = await _verified_casdoor_token_claims(config, document, token)
+    if str(claims.get("type") or "") == "application":
+        client_id = str(claims.get("azp") or "").strip()
+        if not config.api_client_id or client_id != config.api_client_id:
+            raise OidcIdentityRejected(
+                f"the access token was issued to OAuth client {client_id or '(none)'!r}; "
+                "this deployment accepts client tokens only from "
+                f"{config.api_client_id or 'a configured API client'!r} "
+                "(ASTRABOX_OIDC_API_CLIENT_ID)"
+            )
+        return claims
+    require_casdoor_organization(claims, config)
+    return claims
+
+
 def principal_from_claims(
     claims: Mapping[str, Any], config: OidcProviderConfig
 ) -> IdentityPrincipal:
@@ -229,7 +347,8 @@ async def principal_from_access_token(
         raise OidcAccessTokenRejected("OIDC access token is missing")
     document = await discover(config)
     if config.api_client_id:
-        return await _principal_from_introspection(config, document, token)
+        principal = await _principal_from_introspection(config, document, token)
+        return await _with_casdoor_checks(config, document, token, principal)
     userinfo_url = str(document.get("userinfo_endpoint") or "").strip()
     if not userinfo_url:
         raise OidcProviderUnavailable(
@@ -258,7 +377,28 @@ async def principal_from_access_token(
         raise OidcProviderUnavailable("OIDC UserInfo returned invalid JSON") from exc
     if not isinstance(claims, dict):
         raise OidcProviderUnavailable("OIDC UserInfo returned an invalid identity")
-    return principal_from_claims(claims, config)
+    principal = principal_from_claims(claims, config)
+    return await _with_casdoor_checks(config, document, token, principal)
+
+
+async def _with_casdoor_checks(
+    config: OidcProviderConfig,
+    document: Mapping[str, Any],
+    token: str,
+    principal: IdentityPrincipal,
+) -> IdentityPrincipal:
+    """Apply the Casdoor organization check, and read a user's groups from it.
+
+    Casdoor's introspection answer carries no groups, and its access token
+    carries the same groups as the ID token the browser signs in with, so a
+    user's token takes its role from the access token, as a browser sign-in
+    takes it from the ID token.
+    """
+
+    claims = await _require_casdoor_access_token(config, document, token)
+    if claims is None or principal.api_scopes is not None:
+        return principal
+    return replace(principal, roles=tuple(roles_from_claims(claims, config)))
 
 
 async def _principal_from_introspection(
@@ -309,36 +449,57 @@ async def _principal_from_introspection(
         raise OidcProviderMisconfigured(
             "OIDC token introspection returned a non-string scope field"
         )
-    principal_claims = claims
-    if not str(claims.get("sub") or "").strip():
-        client_id = str(claims.get("client_id") or "").strip()
-        if not client_id:
-            raise OidcProviderMisconfigured(
-                "OIDC token introspection returned neither sub nor client_id"
+    scopes = tuple(dict.fromkeys(scope_value.split()))
+    # Who the token was issued to decides what its scopes mean. A user can ask
+    # the console's client for any scope, and a provider may grant it (Casdoor
+    # does), so AstraBox API scopes count only on a token issued to the API
+    # client, whose secret the deployment holds. A token issued to the console
+    # client is the user's own, and carries the user's role from their groups
+    # and nothing more, as a browser sign-in does.
+    client_id = str(claims.get("client_id") or "").strip()
+    if client_id and client_id == config.api_client_id:
+        principal_claims = claims
+        if not str(claims.get("sub") or "").strip():
+            principal_claims = dict(claims)
+            principal_claims["sub"] = f"oauth-client:{client_id}"
+            if not str(principal_claims.get("username") or "").strip():
+                principal_claims["username"] = client_id
+        principal = principal_from_claims(principal_claims, config)
+        roles = principal.roles
+        if _API_ADMIN_SCOPE in scopes and "admin" not in roles:
+            roles = (*roles, "admin")
+        return replace(principal, roles=roles, api_scopes=scopes)
+    if client_id and client_id == config.client_id:
+        ignored = [scope for scope in scopes if scope.startswith(_API_SCOPE_PREFIX)]
+        if ignored:
+            logger.warning(
+                "OIDC access token for %s: ignoring scopes %s; a token issued to the "
+                "console client %r carries the user's role, and API scopes count only "
+                "on tokens issued to the API client %r",
+                str(claims.get("sub") or "(no subject)"),
+                " ".join(ignored),
+                config.client_id,
+                config.api_client_id,
             )
-        principal_claims = dict(claims)
-        principal_claims["sub"] = f"oauth-client:{client_id}"
-        if not str(principal_claims.get("username") or "").strip():
-            principal_claims["username"] = client_id
-    principal = principal_from_claims(principal_claims, config)
-    return IdentityPrincipal(
-        user_id=principal.user_id,
-        email=principal.email,
-        display_name=principal.display_name,
-        org_id=principal.org_id,
-        roles=principal.roles,
-        api_scopes=tuple(dict.fromkeys(scope_value.split())),
+        return principal_from_claims(claims, config)
+    raise OidcIdentityRejected(
+        f"the access token was issued to OAuth client {client_id or '(not named)'!r}; "
+        f"this deployment accepts tokens issued to the console client {config.client_id!r} "
+        f"(ASTRABOX_OIDC_CLIENT_ID) or the API client {config.api_client_id!r} "
+        "(ASTRABOX_OIDC_API_CLIENT_ID)"
     )
 
 
 __all__ = [
     "IdentityPrincipal",
     "OidcAccessTokenRejected",
+    "OidcIdentityRejected",
     "OidcProviderConfig",
     "OidcProviderMisconfigured",
     "OidcProviderUnavailable",
     "discover",
     "principal_from_access_token",
     "principal_from_claims",
+    "require_casdoor_organization",
     "roles_from_claims",
 ]

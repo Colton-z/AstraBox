@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { RefreshCw, Plus } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -6,9 +6,9 @@ import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { PageShell } from '@/components/shell';
 import {
-  listAssistants,
+  listAssistantsPage,
 } from '@/assistant/api';
-import type { AssistantRecord } from '@/assistant/types';
+import type { AssistantListPage, AssistantRecord } from '@/assistant/types';
 
 import {
   ConsolePageHeader,
@@ -19,7 +19,10 @@ import {
   ConsoleTableNote,
   ConsoleTableSkeleton,
   ConsoleErrorState,
+  ConsoleLoadMore,
   FilterChips,
+  usePagedList,
+  useSettled,
   StatusPill,
   NameCell,
   type ConsoleColumn,
@@ -34,65 +37,50 @@ import {
   assistantUpdatedAt,
   formatDateTime,
 } from './assistantConfig';
-import { keepsLastRead, useKeepCurrent, type ReloadContext } from '@/hooks/useKeepCurrent';
+import { useKeepCurrent } from '@/hooks/useKeepCurrent';
 
 type StateFilter = 'all' | 'ready' | 'dormant';
+type AssistantCounts = { total: number; ready: number };
 
+const rowsOf = (page: AssistantListPage) => page.assistants;
+const countsOf = (page: AssistantListPage): AssistantCounts | null =>
+  page.total == null ? null : { total: page.total, ready: page.ready ?? 0 };
+
+/**
+ * Assistants — a page at a time, the most recently edited first.
+ *
+ * The server pages the list, and search and the state chips narrow it there,
+ * so they reach every Assistant the reader owns rather than the rows loaded so
+ * far. The header and the chips count the whole list: the first page of every
+ * read carries those totals.
+ */
 export default function AssistantsListPage() {
   const { t } = useTranslation();
   const navigate = useNavigate();
 
-  const [assistants, setAssistants] = useState<AssistantRecord[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState<StateFilter>('all');
+  const query = useSettled(search);
 
-  // True after any successful read, an empty list included (see keepsLastRead).
-  const loaded = useRef(false);
-
-  const refresh = useCallback(async (context?: ReloadContext) => {
-    try {
-      setAssistants(await listAssistants());
-      setError('');
-      loaded.current = true;
-    } catch (e) {
-      if (keepsLastRead(e, context, loaded.current)) return;
-      setError((e as Error).message);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
+  const fetchPage = useCallback(
+    (cursor: string | null) => listAssistantsPage({ cursor, q: query, status }),
+    [query, status],
+  );
+  const list = usePagedList<AssistantListPage, AssistantRecord, AssistantCounts>({
+    fetchPage,
+    rowsOf,
+    countsOf,
+  });
+  const { rows: assistants, loading, error, reload: refresh } = list;
 
   // Follow while any workspace is materializing — it's the one transient state.
   useKeepCurrent(refresh, {
     follow: assistants.some((a) => assistantMaterializing(a.workspace_state)),
   });
 
-  const readyCount = useMemo(
-    () => assistants.filter((a) => String(a.workspace_state) === 'READY').length,
-    [assistants],
-  );
-  const dormantCount = assistants.length - readyCount;
-
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return assistants.filter((a) => {
-      const isReady = String(a.workspace_state) === 'READY';
-      if (status === 'ready' && !isReady) return false;
-      if (status === 'dormant' && isReady) return false;
-      if (!q) return true;
-      return (
-        assistantDisplayName(a).toLowerCase().includes(q) ||
-        String(a.environment_name || '').toLowerCase().includes(q) ||
-        String(a.engine_kind || '').toLowerCase().includes(q)
-      );
-    });
-  }, [assistants, search, status]);
+  const total = list.counts?.total ?? 0;
+  const readyCount = list.counts?.ready ?? 0;
+  const dormantCount = total - readyCount;
 
   // ---- URL helpers ----------------------------------------------------------
   const openCreate = () => navigate('/manage/assistants/new');
@@ -137,7 +125,7 @@ export default function AssistantsListPage() {
     <PageShell>
       <ConsolePageHeader
         title={t('manage:assistants.title')}
-        meta={t('manage:assistants.meta', { count: assistants.length, ready: readyCount })}
+        meta={t('manage:assistants.meta', { count: total, ready: readyCount })}
         description={t('manage:assistants.description')}
         actions={
           <>
@@ -164,7 +152,7 @@ export default function AssistantsListPage() {
             <ConsoleSearch
               value={search}
               onChange={setSearch}
-              total={assistants.length}
+              total={total}
               placeholder={t('manage:assistants.search_placeholder')}
             />
             <FilterChips
@@ -172,7 +160,7 @@ export default function AssistantsListPage() {
               value={status}
               onChange={setStatus}
               options={[
-                { value: 'all', label: t('common:all'), count: assistants.length },
+                { value: 'all', label: t('common:all'), count: total },
                 { value: 'ready', label: t('manage:assistants.filter_ready'), count: readyCount },
                 { value: 'dormant', label: t('manage:assistants.filter_dormant'), count: dormantCount },
               ]}
@@ -182,7 +170,7 @@ export default function AssistantsListPage() {
 
         <ConsoleTable
           columns={columns}
-          rows={loading || error ? [] : filtered}
+          rows={loading || error ? [] : assistants}
           rowKey={(a) => a.assistant_id}
           onRowClick={(a) => navigate(`/manage/assistants/${a.assistant_id}`)}
           empty={
@@ -194,7 +182,7 @@ export default function AssistantsListPage() {
                 detail={error}
                 onRetry={() => void refresh()}
               />
-            ) : assistants.length === 0 ? (
+            ) : total === 0 ? (
               <ConsoleEmptyState
                 title={t('manage:assistants.empty_title')}
                 hint={t('manage:assistants.empty_hint')}
@@ -210,6 +198,14 @@ export default function AssistantsListPage() {
             )
           }
         />
+        {!loading && !error && (
+          <ConsoleLoadMore
+            hasMore={list.hasMore}
+            loading={list.loadingMore}
+            error={list.moreError}
+            onLoadMore={() => void list.loadMore()}
+          />
+        )}
       </div>
     </PageShell>
   );

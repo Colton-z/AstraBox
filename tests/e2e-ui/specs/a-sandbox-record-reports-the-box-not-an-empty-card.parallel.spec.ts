@@ -198,8 +198,10 @@ test('the sandbox record pages report what the box answered, and never an empty 
   const diagnostics = card(page, 'Diagnostics');
   for (const { tab } of SCOPES) {
     await diagnostics.getByRole('tab', { name: tab, exact: true }).click();
-    // Base UI mounts only the selected panel, so this is the tab just clicked.
-    const panel = diagnostics.getByRole('tabpanel');
+    // The panel is found by its tab's name. Right after a switch, the panel
+    // just left can still be mounted beside the new one, so "the tabpanel"
+    // can be two.
+    const panel = diagnostics.getByRole('tabpanel', { name: tab, exact: true });
     const said = async () =>
       (await panel.locator('pre').count())
       + (await panel.getByText(`The sandbox backend does not provide a ${tab} report`).count())
@@ -233,7 +235,9 @@ test('the sandbox record pages report what the box answered, and never an empty 
     summaryAsked,
     `the panel fetches the ${summaryScope.wire} report on its own`,
   ).toBeGreaterThanOrEqual(1);
-  const refreshReport = diagnostics.getByRole('button', { name: 'Refresh' });
+  const refreshReport = diagnostics
+    .getByRole('tabpanel', { name: summaryScope.tab, exact: true })
+    .getByRole('button', { name: 'Refresh' });
   await refreshReport.click();
   await refreshReport.click();
   await expect

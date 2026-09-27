@@ -62,8 +62,10 @@ env \
   --listen "unix://${CODEX_SOCKET}" \
   >>"${LOG_DIR}/codex.log" 2>&1 &
 
-# forward.py proves a completed upgrade before binding the outward port, and
-# strips the extension offer the app-server refuses — both halves documented
+# forward.py proves a completed upgrade before binding the outward port,
+# strips the extension offer the app-server refuses, and admits only an
+# upgrade carrying the credential the platform wrote into this home — sibling
+# conversations share this box's network namespace. All three are documented
 # in that file. exec: the forwarder IS this conversation's published face.
 exec env \
   "ASTRABOX_CODEX_SOCKET=${CODEX_SOCKET}" \

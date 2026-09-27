@@ -28,15 +28,16 @@ from astrabox.common.utils.time_utils import utcnow_iso
 from astrabox.core.service.orchestrator.bootstrap_reconciler import (
     STARTUP_ALLOCATION_GRACE_SECONDS,
 )
+from astrabox.persistence.repository.keyset import KeysetCursor
 logger = get_logger(__name__)
 
 # Per-tick probe budget: bounds control-plane load when many sessions lapse at
 # once; the remainder is picked up by the following ticks.
 _DEAD_BINDING_SCAN_LIMIT = 50
 
-# Per-tick parking budget. Lower than the probe budget on purpose: each parking
-# holds a commit open for tens of seconds on the cluster, where a probe is one
-# cheap read.
+# Per-tick idle budget: the conversations one tick examines, and so the most it
+# can park. Lower than the probe budget on purpose: each parking holds a commit
+# open for tens of seconds on the cluster, where a probe is one cheap read.
 _IDLE_SWEEP_SCAN_LIMIT = 10
 
 # Conversation states in which no turn is running, so nothing is lost by freeing
@@ -69,6 +70,9 @@ class ExpirationWatcher:
         self._platform = platform_service
         self._task: asyncio.Task | None = None
         self._closed = False
+        # Where the idle sweep resumes. A conversation that is not idle yet, or
+        # whose environment does not park, stays a candidate.
+        self._idle_cursor = KeysetCursor("session_id")
 
     # ── Lifecycle ───────────────────────────────────────────────────────
 
@@ -152,6 +156,16 @@ class ExpirationWatcher:
             if self._closed:
                 raise
             logger.exception("expiration_watcher: startup-allocation sweep failed")
+        if self._closed:
+            return summary
+        try:
+            summary.update(
+                await self._platform._runtime_manager.retire_sandboxes_with_stale_network_wiring()
+            )
+        except Exception:
+            if self._closed:
+                raise
+            logger.exception("expiration_watcher: stale-wiring retirement failed")
         if self._closed:
             return summary
         try:
@@ -304,8 +318,11 @@ class ExpirationWatcher:
         """
         settings = self._settings()
         sessions_repo = self._platform._sessions_repo
-        candidates = await sessions_repo.list_idle_reclaim_candidates(
-            now_iso=utcnow_iso(),
+        now_iso = utcnow_iso()
+        candidates = await self._idle_cursor.page(
+            lambda after, size: sessions_repo.list_idle_reclaim_candidates(
+                now_iso=now_iso, after_session_id=after, limit=size
+            ),
             limit=_IDLE_SWEEP_SCAN_LIMIT,
         )
         if not candidates:

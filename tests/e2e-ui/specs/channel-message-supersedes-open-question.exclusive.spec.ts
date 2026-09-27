@@ -84,6 +84,7 @@ test('a newer channel message declines the open AskUserQuestion before its own t
     name: `__e2e_channel_supersede_${runId}`,
     model,
     environment_name: environmentName,
+    prewarm_enabled: false,
   });
   agentId = String(agent.agent_id || '').trim();
   const deployment = await platform.createDeployment(agentId, {

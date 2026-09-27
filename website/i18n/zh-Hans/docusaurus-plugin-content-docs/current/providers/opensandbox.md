@@ -61,7 +61,7 @@ scripts/compose.sh -f containers/compose.kubernetes.yaml up -d
 新建 Pod 和预热 Pod 使用相同软件。需要临时新增节点的集群还可能需要调大
 `ASTRABOX_SANDBOX_SERVER_KUBE_CREATE_TIMEOUT_SECONDS`，为节点启动和镜像拉取留出时间。
 
-## 连接已有 OpenSandbox 服务
+## 连接已有 OpenSandbox 服务 {#connect-an-existing-opensandbox-service}
 
 在 AstraBox 服务进程环境中设置 Lifecycle API 地址及其具名 API key：
 
@@ -79,6 +79,15 @@ Kubernetes 生命周期服务所需的环境文件接入方法。
 AstraBox 必须同时能访问 Lifecycle API 以及该 API 返回的沙箱地址。只要 OpenSandbox
 服务不局限在可信回环网络，就必须启用 API Key 认证。内置生命周期服务只在 AstraBox
 容器内监听，不需要再开放一个公网地址。
+
+连接已有服务时，持久工作区（`ASTRABOX_SANDBOX_WORKSPACE_VOLUME`）要求该服务使用
+Kubernetes 运行时。OpenSandbox 的 Docker 运行时挂载数据卷子路径时，绑定的是该数据卷
+Docker 挂载点下的目录；而工作区视图数据卷只有在容器按名称使用它时才会挂载到那里，因此
+每个沙箱都会得到空的 `/workspace`。内置生命周期服务改由 Docker 挂载子路径（见
+[Docker 版本要求](../deploy.md#docker-requirements)）；由上游 `opensandbox-server`
+启动的服务不会这样做。Lifecycle API 不报告服务使用哪种运行时（`/health` 和 `/version`
+都不包含运行时），因此 AstraBox 无法在启动时拒绝这种组合，而是在每个对话的沙箱创建或
+启动时失败：服务与 AstraBox 在同一主机时，报错为 `workspace ... is not a mergerfs view`。
 
 ## 准备沙箱镜像
 
@@ -205,12 +214,44 @@ Agent 需要不同运行时策略时，请使用不同部署。当前安装要�
 ## 安全发布沙箱服务
 
 AstraBox 可以直接连接 OpenSandbox 返回的地址，也可以让 Lifecycle API 转发 HTTP、
-SSE 和 WebSocket。项目维护的 Docker 部署使用转发方式，因为 AstraBox 在容器内运行，
-而发布的端口属于宿主机。
+SSE 和 WebSocket（`ASTRABOX_SANDBOX_ENDPOINT_VIA_SERVER_PROXY`）。项目维护的 Docker
+部署采用直接连接：它自带的 Lifecycle API 运行在 AstraBox 容器内，把沙箱端口发布在
+Docker bridge 网关上，AstraBox 在同一个容器内就能访问这些端口。只有 AstraBox 无法访问
+沙箱地址时才使用转发。转发会删除每个请求的 `Cookie` 和 `Authorization` 头并替换
+`Host`，因此 DeepSeek Harness 和 Hermes 引擎无法经由转发向各自的箱内服务认证。
 
 Kubernetes 部署可以直接路由到 Pod，也可以使用 OpenSandbox ingress 组件。向不可信
 网络开放沙箱服务前，请启用 OpenSandbox Secure Access，并为 AstraBox 和 ingress
 组件配置相同的签名密钥。AstraBox 会先检查 Session 鉴权，再签发短期访问地址。
+
+### 隔离沙箱 Pod 与集群中的其他 Pod {#sandbox-network-policy}
+
+沙箱 Pod 在所有网络接口上监听多个端口：沙箱内的控制服务（runner）、各 Agent 程序
+后端的转发服务、基础镜像的网页界面（其后是 JupyterLab 和 VNC 桌面）、execd，以及
+出站代理 sidecar 容器。OpenSandbox 不会创建 `NetworkPolicy`，按照 Kubernetes 的
+默认规则，集群中任何 Pod（包括另一个租户的沙箱）都能连接这些端口。请为沙箱所在的
+命名空间应用 `NetworkPolicy`，让沙箱 Pod 只接受来自平台的入站连接，拒绝其他 Pod。
+
+控制服务和 Codex 后端的转发服务还会拒绝未携带凭证的连接，这个凭证由部署自身的密钥
+派生，因此仅仅能访问这两个端口并不足以使用它们。其余端口则依靠这条策略阻止其他 Pod
+访问。
+
+AstraBox 提供了一份策略：
+[`containers/kubernetes/sandbox-ingress-networkpolicy.yaml`](https://github.com/colton-z/astrabox/blob/main/containers/kubernetes/sandbox-ingress-networkpolicy.yaml)。
+它按 `astrabox.managed-by: astrabox` 标签选择沙箱 Pod，只限制入站流量（沙箱自身的
+出站访问不受影响），并且默认放行 OpenSandbox ingress 网关所在的命名空间。应用它，
+再加上平台访问沙箱时使用的来源：
+
+- **网关 / Secure Access 模式：** 这份清单已经完整，平台的每个请求都经由 ingress
+  网关到达沙箱，而策略已经放行网关。
+- **直接路由到 Pod：** 为沙箱 Pod 看到的 Lifecycle API 地址添加一个 `ipBlock` 类型的
+  `from` 来源。这个地址取决于集群和 CNI（节点地址或 masquerade 地址；Lifecycle API
+  运行在集群外时则是它自己的容器网络），请针对你的集群确认，不要直接照抄某个值。
+  `scripts/k8s-testbed.sh` 在单节点测试环境中就是这样做的：放行它的 Docker bridge
+  网络和节点地址。
+
+这是纵深防御：它只在执行 `NetworkPolicy` 的 CNI 上生效（k3s 内置的控制器会执行；
+有些托管集群自带的 CNI 会忽略它），因此它是第二层防护，而不是沙箱唯一的访问控制。
 
 ## 检查部署
 

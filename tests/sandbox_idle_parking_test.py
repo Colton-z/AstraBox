@@ -97,12 +97,17 @@ class _FakeSessionsRepo:
         self.fresh: dict[str, Any] | None = None
 
     async def list_idle_reclaim_candidates(
-        self, *, now_iso: str, limit: int = 50
+        self, *, now_iso: str, after_session_id: str | None = None, limit: int = 50
     ) -> list[dict[str, Any]]:
-        return [dict(item) for item in self._candidates]
+        rows = sorted(self._candidates, key=lambda item: str(item.get("session_id") or ""))
+        return [
+            dict(item)
+            for item in rows
+            if after_session_id is None or str(item.get("session_id") or "") > after_session_id
+        ][:limit]
 
     async def list_dead_binding_probe_candidates(
-        self, *, now_iso: str, limit: int = 50
+        self, *, now_iso: str, after_session_id: str | None = None, limit: int = 50
     ) -> list[dict[str, Any]]:
         return []
 
@@ -149,6 +154,9 @@ class _FakeRuntimeManager:
         self.calls.append("evict")
 
     async def reconcile_startup_allocations(self, **_kwargs: Any) -> dict[str, int]:
+        return {}
+
+    async def retire_sandboxes_with_stale_network_wiring(self) -> dict[str, int]:
         return {}
 
     async def reap_abandoned_agent_boxes(self) -> dict[str, int]:

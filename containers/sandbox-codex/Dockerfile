@@ -50,7 +50,7 @@ USER root
 # back and why; its writable roots must stay identical to the shared file's.
 COPY --from=execd /execd /execd
 COPY --from=execd /bootstrap.sh /bootstrap.sh
-COPY containers/sandbox-codex/execd-isolation.toml \
+COPY --chmod=u=rwX,go=rX containers/sandbox-codex/execd-isolation.toml \
      /opt/astrabox/opensandbox/isolation.toml
 RUN set -eux; \
     apt-get update; \
@@ -95,9 +95,9 @@ RUN set -eux; \
       *) echo "codex reports '${installed}', not ${CODEX_VERSION}" >&2; exit 1 ;; \
     esac
 
-COPY containers/sandbox-codex/astrabox-codex-serve ${CODEX_PREFIX}/serve.sh
-COPY containers/sandbox-codex/astrabox-codex-forward ${CODEX_PREFIX}/forward.py
-COPY astrabox/core/service/orchestrator/runtime/astrabox-transcript-mirror \
+COPY --chmod=u=rwX,go=rX containers/sandbox-codex/astrabox-codex-serve ${CODEX_PREFIX}/serve.sh
+COPY --chmod=u=rwX,go=rX containers/sandbox-codex/astrabox-codex-forward ${CODEX_PREFIX}/forward.py
+COPY --chmod=u=rwX,go=rX astrabox/core/service/orchestrator/runtime/astrabox-transcript-mirror \
      ${CODEX_PREFIX}/mirror.py
 # Which files this image's engine keeps its conversations in. The mirror holds
 # no engine knowledge; naming them is how an image says what it writes.
@@ -108,11 +108,11 @@ ENV ASTRABOX_TRANSCRIPT_MIRROR_ROOT=/home/agent/.codex/sessions \
 # conversation's own instance under the Agent-shared tenancy); the shared-box
 # stack is triggered by the platform inside a conversation's isolated session
 # rather than supervised at boot — a session's processes die with it.
-COPY containers/sandbox-codex/astrabox-model-catalog.py \
+COPY --chmod=u=rwX,go=rX containers/sandbox-codex/astrabox-model-catalog.py \
      ${CODEX_PREFIX}/model-catalog.py
-COPY containers/sandbox-codex/astrabox-codex-serve-conversation \
+COPY --chmod=u=rwX,go=rX containers/sandbox-codex/astrabox-codex-serve-conversation \
      ${CODEX_PREFIX}/serve-conversation.sh
-COPY containers/sandbox-codex/supervisord.codex.conf \
+COPY --chmod=u=rwX,go=rX containers/sandbox-codex/supervisord.codex.conf \
      /opt/gem/supervisord/supervisord.codex.conf
 RUN set -eux; \
     chmod 0755 "${CODEX_PREFIX}/serve.sh" "${CODEX_PREFIX}/forward.py" \
@@ -159,7 +159,7 @@ RUN set -eux; \
 # The claude and hermes images always carried it; a shared placement on this
 # image died with `astrabox-provision-conversation: No such file or
 # directory` until it did too.
-COPY astrabox/core/service/orchestrator/runtime/provision-conversation \
+COPY --chmod=u=rwX,go=rX astrabox/core/service/orchestrator/runtime/provision-conversation \
      /usr/local/bin/astrabox-provision-conversation
 RUN chmod 0555 /usr/local/bin/astrabox-provision-conversation && \
     bash -n /usr/local/bin/astrabox-provision-conversation

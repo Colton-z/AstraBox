@@ -46,6 +46,8 @@
     "queue_waiting": "等待发送",
     "retry": "重试",
     "retry_queued": "重试排队消息",
+    "send_again": "重新发送",
+    "send_again_queued": "作为新消息再次发送",
     "retry_disabled": "当前会话不可重试",
     "remove_queued": "删除排队消息",
     "blocking": "阻塞中",
@@ -324,7 +326,7 @@
       },
       "prewarm_enabled": {
         "label": "提前准备沙箱",
-        "help": "在对话开始前准备好该 Agent 的镜像、Skill 和 Plugin；共享沙箱和每个对话独立使用沙箱时都适用。"
+        "help": "在对话开始前准备好该 Agent 的镜像、Skill 和 Plugin。开启期间会为该 Agent 保留一个空闲沙箱，直到关闭提前准备、停用该 Agent 或其运行环境；共享沙箱和每个对话独立使用沙箱时都适用。"
       },
       "enabled": {
         "label": "启用",

@@ -8,12 +8,6 @@ from astrabox.common.utils.time_utils import utcnow_iso as _utcnow_iso
 
 logger = get_logger(__name__)
 
-#: The ``turn_failure`` error text a turn carries when the user stopped it.
-#: Every settlement path that records a user stop writes this exact string, and
-#: readers that distinguish a stop from a real failure compare against it, so
-#: the two sides must name the same constant rather than two equal literals.
-USER_STOP_FAILURE_TEXT = "Request interrupted by user"
-
 TURN_RECOVERY_PHASE_TRANSCRIPT_PENDING = "TRANSCRIPT_PENDING"
 _VALID_TURN_RECOVERY_PHASES = frozenset({TURN_RECOVERY_PHASE_TRANSCRIPT_PENDING})
 _UNSET = object()
@@ -735,6 +729,54 @@ async def append_settle_terminal_frame(
     }
 
 
+async def append_user_stop_result_frame(
+    *,
+    session_events_repo: Any,
+    session_id: str,
+    turn_id: str,
+    command_id: str | None,
+) -> None:
+    """Record a user stop the way the live bridge records one.
+
+    A user stop completes the turn with a result whose ``finish_reason`` is
+    ``cancelled``. The live bridge writes that result from the engine's
+    cancelled terminal (``engine_turn.py``) as a ``data-result`` frame under
+    the id ``result:<turn>``. A stop the platform settles itself observes no
+    engine terminal, so it writes the same frame: open pages receive the stop
+    as a result card, and the durable message projects it as the ``result``
+    block every reader checks.
+
+    Like the terminal frame, it needs a command id to be addressable. A failure
+    here is logged and the settle continues: the turn still ends.
+    """
+
+    normalized_command_id = str(command_id or "").strip()
+    if not normalized_command_id:
+        return
+    try:
+        frame_seq = int(await session_events_repo.get_next_session_frame_seq(session_id))
+        await session_events_repo.append_frame(
+            {
+                "session_id": session_id,
+                "turn_id": turn_id,
+                "command_id": normalized_command_id,
+                "source_kind": "turn_recovery",
+                "frame_seq": frame_seq,
+                "payload": {
+                    "type": "data-result",
+                    "id": f"result:{turn_id}",
+                    "data": {"finish_reason": "cancelled"},
+                },
+                "created_at": _utcnow_iso(),
+            }
+        )
+    except Exception:
+        logger.warning(
+            "settle: could not persist the user-stop result session=%s turn=%s",
+            session_id, turn_id, exc_info=True,
+        )
+
+
 async def settle_parked_turn(
     *,
     session_events_repo: Any,
@@ -747,6 +789,7 @@ async def settle_parked_turn(
     failure_phase: str | None,
     error_text: str | None,
     causation: str,
+    user_stop: bool,
 ) -> int | None:
     """Settle a turn parked at an interaction that cannot be answered.
 
@@ -758,72 +801,18 @@ async def settle_parked_turn(
 
     This is a platform-side closure: no engine terminal was observed, so it
     cannot carry an engine terminal reason. Platform lifecycle failures use
-    ``failure_phase``; a user interrupt is already recorded by the preceding
-    ``turn.interrupt_requested`` event. A user stop still completes rather
-    than fails the turn.
+    ``failure_phase``. A ``user_stop`` completes the turn with a cancelled
+    result, the outcome every stop path records.
 
     Returns the settle event's seq (``None``-safe int).
     """
-    settle_event = await session_events_repo.append_event(
-        {
-            "session_id": session_id,
-            "channel": "conversation",
-            "turn_id": turn_id,
-            # The event follows the status, or the journal and the snapshot
-            # would disagree about the same turn. Two terminals are the whole
-            # vocabulary — it ended well or it did not — and the reason rides
-            # in the payload, mirroring the vendor's success/error result plus
-            # its separate terminal_reason.
-            "event_type": (
-                "turn.completed"
-                if str(status or "").strip() == "COMPLETED"
-                else "turn.failed"
-            ),
-            "causation_id": causation,
-            "correlation_id": causation,
-            "payload": {
-                "command_id": command_id,
-                "error_text": error_text,
-                "terminal_reason": None,
-                "failure_phase": failure_phase,
-            },
-        }
-    )
-    settle_seq = int(settle_event.get("event_seq") or 0)
-    # A settled turn ends on a terminal frame, cancellation included: the
-    # vendor still emits a result for an interrupted run, and the start-turn
-    # gate reads this frame as the proof the turn is over. Written before the
-    # snapshot that points at it. It needs a command id to be addressable, so
-    # a settle without one (a reclaim, which has no command) leaves the proof
-    # to the recovery lane rather than inventing an unaddressable frame.
-    terminal_frame = await append_settle_terminal_frame(
-        session_events_repo=session_events_repo,
-        session_id=session_id,
-        turn_id=turn_id,
-        command_id=command_id,
-    )
-    result = await session_snapshots_repo.apply_channel_update(
-        session_id,
-        channel="conversation",
-        event_seq=settle_seq,
-        updates=build_turn_terminal_snapshot_updates(
-            turn_id=turn_id,
-            status=status,
-            error_text=error_text,
-            command_id=command_id,
-            failure_phase=failure_phase,
-            terminal_reason=None,
-            terminal_frame=terminal_frame,
-        ),
-        expected_conversation_state="WAITING_FOR_INTERACTION",
-    )
-    deactivated = 0
-    try:
-        deactivated = await interaction_snapshots_repo.deactivate_active_for_turn(
-            session_id, turn_id
-        )
-    except Exception:
-        pass
+    # The frames go down before the terminal event. A history read is pinned
+    # to the newest message event and loads a turn's frames up to that pin
+    # when it reaches the turn's terminal, so a frame written after the
+    # terminal stays out of every read until some later event moves the pin:
+    # a page reloaded after the stop, or adopting history when the turn
+    # settles, would show the held call still running and no stop.
+
     # Close the turn's open tool cards on the frame stream. The parked
     # segment ended with the approval outstanding, so nothing ever wrote a
     # tool-output for the held call — and a settled turn whose tool card
@@ -893,6 +882,73 @@ async def settle_parked_turn(
             "session=%s turn=%s",
             session_id, turn_id, exc_info=True,
         )
+    if user_stop:
+        await append_user_stop_result_frame(
+            session_events_repo=session_events_repo,
+            session_id=session_id,
+            turn_id=turn_id,
+            command_id=command_id,
+        )
+    # A settled turn ends on a terminal frame, cancellation included: the
+    # vendor still emits a result for an interrupted run, and the start-turn
+    # gate reads this frame as the proof the turn is over. Written before the
+    # snapshot that points at it. It needs a command id to be addressable, so
+    # a settle without one (a reclaim, which has no command) leaves the proof
+    # to the recovery lane rather than inventing an unaddressable frame.
+    terminal_frame = await append_settle_terminal_frame(
+        session_events_repo=session_events_repo,
+        session_id=session_id,
+        turn_id=turn_id,
+        command_id=command_id,
+    )
+    settle_event = await session_events_repo.append_event(
+        {
+            "session_id": session_id,
+            "channel": "conversation",
+            "turn_id": turn_id,
+            # The event follows the status, or the journal and the snapshot
+            # would disagree about the same turn. Two terminals are the whole
+            # vocabulary — it ended well or it did not — and the reason rides
+            # in the payload, mirroring the vendor's success/error result plus
+            # its separate terminal_reason.
+            "event_type": (
+                "turn.completed"
+                if str(status or "").strip() == "COMPLETED"
+                else "turn.failed"
+            ),
+            "causation_id": causation,
+            "correlation_id": causation,
+            "payload": {
+                "command_id": command_id,
+                "error_text": error_text,
+                "terminal_reason": None,
+                "failure_phase": failure_phase,
+            },
+        }
+    )
+    settle_seq = int(settle_event.get("event_seq") or 0)
+    result = await session_snapshots_repo.apply_channel_update(
+        session_id,
+        channel="conversation",
+        event_seq=settle_seq,
+        updates=build_turn_terminal_snapshot_updates(
+            turn_id=turn_id,
+            status=status,
+            error_text=error_text,
+            command_id=command_id,
+            failure_phase=failure_phase,
+            terminal_reason=None,
+            terminal_frame=terminal_frame,
+        ),
+        expected_conversation_state="WAITING_FOR_INTERACTION",
+    )
+    deactivated = 0
+    try:
+        deactivated = await interaction_snapshots_repo.deactivate_active_for_turn(
+            session_id, turn_id
+        )
+    except Exception:
+        pass
     if isinstance(result, dict):
         logger.info(
             "parked-turn settle: waiting-interaction turn settled "

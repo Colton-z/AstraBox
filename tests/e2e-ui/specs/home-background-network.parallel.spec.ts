@@ -1,5 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
+import { AstraApi } from '../fixtures/astraApi';
 import { apiPath, appPath } from '../fixtures/env';
+import { onPassOnly } from '../fixtures/sessionCleanup';
 import { returnToTab } from '../fixtures/tabReturn';
 
 test.describe.configure({ mode: 'parallel' });
@@ -64,6 +66,11 @@ for (const subject of ['agents', 'assistants'] as const) {
       await context.setOffline(false);
       await expect.poll(() => answered).toBeGreaterThan(beforeReconnect);
       await expect(page.getByRole('alert')).toHaveCount(0);
+      // The reconnect read succeeded, so the page now holds its answer. The
+      // list is shared with the lane's other specs, which create and delete
+      // Agents, so the cards to keep are these, not the first load's.
+      await page.waitForTimeout(750);
+      const reconnected = await cards.allTextContents();
       for (const status of [502, 503, 504]) {
         gatewayStatus = status;
         fault = 'http';
@@ -71,7 +78,7 @@ for (const subject of ['agents', 'assistants'] as const) {
         await returnToTab(page, Date.now());
         await expect.poll(() => failed).toBeGreaterThan(beforeFailure);
         await page.waitForTimeout(750);
-        expect(await cards.allTextContents()).toEqual(before);
+        expect(await cards.allTextContents()).toEqual(reconnected);
         await expect(page.getByRole('alert')).toHaveCount(0);
       }
       fault = 'none';
@@ -98,7 +105,19 @@ for (const subject of ['agents', 'assistants'] as const) {
   });
 }
 
-test('management background gateway failures retain rows while explicit Refresh reports failure', async ({ page }) => {
+let ownAgentId = '';
+onPassOnly(async ({ request }) => {
+  if (ownAgentId) await new AstraApi(request).deleteAgent(ownAgentId);
+  ownAgentId = '';
+});
+
+test('management background gateway failures retain rows while explicit Refresh reports failure', async ({ page, request }) => {
+  // The row is a test-owned cold Agent that nothing else touches. The shared
+  // default Agent's row changes legitimately while parallel specs start
+  // conversations on it, and the comparisons below need a row whose only
+  // reason to differ is the fault under test.
+  const agentName = `__e2e_background_rows_${Date.now()}`;
+  ownAgentId = (await new AstraApi(request).createColdTestAgent(agentName)).agent_id;
   let broken = false;
   let failed = 0;
   let answered = 0;
@@ -113,7 +132,7 @@ test('management background gateway failures retain rows while explicit Refresh 
   });
   await page.addInitScript(() => localStorage.setItem('astrabox-lang', 'en'));
   await page.goto(appPath('/manage/agents'));
-  const row = page.getByRole('row').filter({ has: page.getByText('Investment Research', { exact: true }) });
+  const row = page.getByRole('row').filter({ has: page.getByText(agentName, { exact: true }) });
   await expect(row).toBeVisible();
   const baseline = await row.innerText();
   await watchAlerts(page);

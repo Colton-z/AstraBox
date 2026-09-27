@@ -124,49 +124,6 @@ def test_the_open_sandbox_backend_declares_it_can() -> None:
     assert OpenSandboxSandboxProvider.supports_pause is True
 
 
-# ── the box-facing callback base must be routable from a sandbox ──────────────
-
-
-def test_kubernetes_runtime_refuses_a_derived_bridge_callback_base(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # Unset + inside a container derives this server's own Docker-bridge IP, which
-    # is right for the quickstart and unroutable from a Pod. Measured cost of not
-    # catching it: the in-box transcript mirror times out 3x30s INSIDE the first
-    # turn, so a one-word answer took ~93s and read as a slow model.
-    monkeypatch.setenv("ASTRABOX_SANDBOX_SERVER_RUNTIME", "kubernetes")
-    monkeypatch.delenv("ASTRABOX_MCP_PROXY_BASE_URL", raising=False)
-
-    class _Settings:
-        mcp_proxy_base_url = "http://172.17.0.3:8000"
-
-    monkeypatch.setattr(
-        "astrabox.common.utils.settings.load_astrabox_settings", lambda: _Settings()
-    )
-    with pytest.raises(bootstrap_module.BootstrapConfigError) as caught:
-        bootstrap_module._assert_box_callback_base_is_reachable()
-    assert "Pod" in str(caught.value)
-    assert "172.17.0.3" in str(caught.value)
-
-
-def test_an_explicit_callback_base_is_never_second_guessed(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("ASTRABOX_SANDBOX_SERVER_RUNTIME", "kubernetes")
-    monkeypatch.setenv("ASTRABOX_MCP_PROXY_BASE_URL", "http://10.0.1.7:8088")
-    bootstrap_module._assert_box_callback_base_is_reachable()
-
-
-def test_the_docker_runtime_keeps_the_derived_bridge_address(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # On the docker runtime a sandbox IS a container on that bridge, so the derived
-    # address is the correct one and must not be refused.
-    monkeypatch.setenv("ASTRABOX_SANDBOX_SERVER_RUNTIME", "docker")
-    monkeypatch.delenv("ASTRABOX_MCP_PROXY_BASE_URL", raising=False)
-    bootstrap_module._assert_box_callback_base_is_reachable()
-
-
 # ── a team gateway can require an HTTPS sandbox-facing endpoint ─────────────
 
 

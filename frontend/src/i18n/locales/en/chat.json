@@ -212,7 +212,7 @@
     "empty_directory_hint": "Upload files, drag them here, or create a new folder",
     "delete_confirm": "Delete {{name}}? This takes effect on the remote workspace immediately.",
     "this_item": "this item",
-    "unavailable_sandbox_gone": "The workspace is being rebuilt — files will return in a moment."
+    "unavailable_sandbox_gone": "This conversation's sandbox is gone. Files are listed again after the next message moves the conversation to a new sandbox."
   },
   "interaction": {
     "response_timeout": "Submitting the answer timed out after 15 seconds. The outcome is not yet confirmed. Check the current session; submit again manually only if the question still needs an answer. Nothing will be sent again automatically.",

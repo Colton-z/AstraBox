@@ -299,6 +299,7 @@ test('backend restart rehydrates a resident warm conversation and a resident pen
       name: `__e2e_restart_rehydrate_${runId}`,
       model,
       environment_name: environmentName,
+      prewarm_enabled: false,
     });
     agentId = String(agent.agent_id || '');
     expect(agentId, 'created agent must have an id').not.toEqual('');

@@ -95,7 +95,8 @@ DSH_IMAGE_ENTRYPOINT = ("/opt/gem/run.sh",)
 DSH_RUNTIME_IMAGE_COMPONENT = "sandbox-deepseek-harness"
 
 #: The environment variables the harness's DeepSeek provider plugin reads its
-#: model access from. The harness chose these names.
+#: model access from. The harness chose these names. The generic gateway route
+#: the client declares for other models names the same credential variable.
 DSH_CREDENTIAL_ENV_VAR = "DEEPSEEK_API_KEY"
 DSH_BASE_URL_ENV_VAR = "DEEPSEEK_BASE_URL"
 
@@ -182,9 +183,9 @@ def _engine_sandbox_request(
         entrypoint=DSH_IMAGE_ENTRYPOINT,
         credential=ModelCredentialRequest(
             access=model_access,
-            # The gateway as-is: the harness's DeepSeek provider posts
-            # to {base}/chat/completions, which is exactly what the
-            # sidecar is told to admit.
+            # The gateway as-is: both harness model routes post to
+            # {base}/chat/completions, which is exactly what the sidecar
+            # is told to admit.
             request_paths=("chat/completions",),
             missing_code="ENGINE_CAPABILITY_UNAVAILABLE",
             missing_message=(
@@ -304,6 +305,7 @@ async def _publish_runtime(
     runtime_identity: dict[str, Any] | None = None,
     permission_mode: str | None = None,
     model: str | None = None,
+    gateway_base_url: str = "",
     session_create: dict[str, Any] | None = None,
     prepare_engine_input: Any = None,
     resident_output_sink: Any = None,
@@ -349,7 +351,11 @@ async def _publish_runtime(
         # choice reaches the harness. Asserted on every publish for the same
         # reason the preset is: a model changed on the Agent has to reach the
         # conversations that already exist.
-        await engine_client.select_model(model)
+        await engine_client.select_model(
+            model,
+            gateway_base_url=gateway_base_url,
+            gateway_key_env=DSH_CREDENTIAL_ENV_VAR,
+        )
     runtime = SessionRuntime(
         session_id=session_id,
         agent=None,
@@ -651,6 +657,7 @@ class DeepSeekHarnessEngineAdapter(EngineAdapter):
                     getattr(context.model_access, "model_name", "") or ""
                 ).strip()
                 or None,
+                gateway_base_url=base_url,
                 session_create=_session_create_options(template),
                 prepare_engine_input=context.prepare_engine_input,
             )

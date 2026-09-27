@@ -6,8 +6,8 @@ Get your first AstraBox Agent running in five steps: start AstraBox, select an E
 
 ## Prerequisites
 
-- A Linux host (or WSL 2) running Docker Engine with the Compose plugin, v2 or
-  later, and a user that can use the Docker socket
+- A Linux host (or WSL 2) running Docker Engine 26.0 or later with the Compose
+  plugin 2.17.0 or later, and a user that can use the Docker socket
 - An API key for a model service: Anthropic, DeepSeek, or another
   Anthropic-compatible or OpenAI-compatible service
 - `curl` and `jq`

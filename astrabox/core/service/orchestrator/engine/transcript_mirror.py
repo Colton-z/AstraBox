@@ -14,7 +14,9 @@ the same values on the way back.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import uuid
 from datetime import datetime, timedelta, timezone
 import posixpath
 from typing import TYPE_CHECKING, Any
@@ -44,9 +46,25 @@ TRANSCRIPT_PROJECT_KEY_ENV = "_ASTRABOX_TRANSCRIPT_PROJECT_KEY"
 TRANSCRIPT_MIRROR_TARGET_FILE_ENV = "ASTRABOX_TRANSCRIPT_MIRROR_TARGET_FILE"
 DEFERRED_MIRROR_TARGET_FILE = "/tmp/astrabox-transcript-mirror/target.json"
 
+#: Suffix of the directory, beside the engine's session root, that holds one
+#: restore record per restored log. Named on both sides of the box: here, and
+#: in `runtime/astrabox-transcript-mirror` (``restore_record_path``).
+RESTORE_RECORD_DIR_SUFFIX = ".astrabox-restored"
+
+
+def restore_record_path(root: str, subpath: str) -> str:
+    """Where the restore of ``subpath`` under ``root`` leaves its record.
+
+    Beside the session root rather than inside it, so no engine that scans its
+    own sessions directory meets a file it did not write.
+    """
+
+    digest = hashlib.sha256(subpath.encode("utf-8")).hexdigest()
+    return f"{root.rstrip('/')}{RESTORE_RECORD_DIR_SUFFIX}/{digest}.json"
+
 
 def _mirror_target_values(
-    manager: "EnginePlatform", session_id: str, *, cwd: str
+    manager: "EnginePlatform", session_id: str
 ) -> dict[str, str]:
     """The three values the in-box mirror needs, however they are delivered.
 
@@ -80,15 +98,18 @@ def _mirror_target_values(
     return {
         "base_url": base,
         "session_id": session_id,
-        # The store's own meaning for this field: a stable encoding of the
-        # working directory the transcript belongs to.
-        "project_key": str(cwd or "").strip() or SANDBOX_IMAGE_WORKSPACE_DIR,
+        # One value for every box a conversation runs in. The store scopes rows
+        # by (project_key, session_id, subpath) and a restore reads a log back
+        # by its subpath alone, so a key that followed the placement's working
+        # directory (an Agent's shared box names each conversation's own
+        # directory; a conversation's own box names the image's) split one log
+        # across scopes, and the restore merged them by per-scope sequence into
+        # interleaved lines.
+        "project_key": SANDBOX_IMAGE_WORKSPACE_DIR,
     }
 
 
-def mirror_env(
-    manager: "EnginePlatform", session_id: str, workspace_plan: Any
-) -> dict[str, str]:
+def mirror_env(manager: "EnginePlatform", session_id: str) -> dict[str, str]:
     """What the in-box mirror needs to reach the platform's transcript store.
 
     Given at box create, because that is where an engine's per-session facts
@@ -97,11 +118,7 @@ def mirror_env(
     is reclaimed, and nothing observes that until someone tries to resume it.
     """
 
-    values = _mirror_target_values(
-        manager,
-        session_id,
-        cwd=str(getattr(workspace_plan, "cwd", "") or "").strip(),
-    )
+    values = _mirror_target_values(manager, session_id)
     return {
         TRANSCRIPT_BASE_URL_ENV: values["base_url"],
         PLATFORM_SESSION_ID_ENV: values["session_id"],
@@ -121,9 +138,7 @@ def deferred_mirror_env() -> dict[str, str]:
     return {TRANSCRIPT_MIRROR_TARGET_FILE_ENV: DEFERRED_MIRROR_TARGET_FILE}
 
 
-def mirror_target_payload(
-    manager: "EnginePlatform", session_id: str, *, cwd: str
-) -> bytes:
+def mirror_target_payload(manager: "EnginePlatform", session_id: str) -> bytes:
     """The exact bytes a claim writes into the deferred target file.
 
     Exposed separately from :func:`bind_mirror_target` so a test of the
@@ -132,7 +147,7 @@ def mirror_target_payload(
     """
 
     return json.dumps(
-        _mirror_target_values(manager, session_id, cwd=cwd),
+        _mirror_target_values(manager, session_id),
         ensure_ascii=False,
         separators=(",", ":"),
     ).encode("utf-8")
@@ -189,7 +204,6 @@ async def bind_mirror_target(
     manager: "EnginePlatform",
     session_id: str,
     *,
-    cwd: str,
     target_file: str = DEFERRED_MIRROR_TARGET_FILE,
     owner: str | None = None,
 ) -> None:
@@ -203,7 +217,7 @@ async def bind_mirror_target(
     account = str(owner or "").strip() or SANDBOX_IMAGE_WORKLOAD_USER
     await sandbox.files.write_file(
         target_file,
-        mirror_target_payload(manager, session_id, cwd=cwd),
+        mirror_target_payload(manager, session_id),
         # The mirror runs as the account that owns the conversation — the
         # image's workload account on the box tenancy, the conversation's own
         # account under the Agent-shared tenancy — and at mode 600 the owner
@@ -235,6 +249,14 @@ async def restore_mirrored_logs(
     log rather than diffing it. Order is a different matter — a log's order is
     its meaning — and the read returns entries by committed sequence.
 
+    What is written already IS the store's content, so the box's mirror must not
+    send it again: before each log, a restore record names the log's restored
+    length and a fresh epoch. The mirror starts that log at that length and
+    names every later batch under the epoch, so its byte ranges, which count
+    this box's bytes, cannot be mistaken for a batch an earlier box sent.
+    Without it every replacement box re-sent the whole restored log as one new
+    batch, and the store held each earlier line once more per restore.
+
     Returns how many logs were written.
     """
 
@@ -259,8 +281,25 @@ async def restore_mirrored_logs(
             json.dumps(entry, ensure_ascii=False, separators=(",", ":")) + "\n"
             for entry in entries
         ).encode("utf-8")
+        account = owner or SANDBOX_IMAGE_WORKLOAD_USER
+        record_path = restore_record_path(root, subpath)
         await sandbox.files.create_directories(
-            [_write_entry(posixpath.dirname(path), owner=owner or SANDBOX_IMAGE_WORKLOAD_USER)]
+            [
+                _write_entry(posixpath.dirname(record_path), owner=account),
+                _write_entry(posixpath.dirname(path), owner=account),
+            ]
+        )
+        # Before the log: a mirror that finds the log must already find what
+        # of it the store holds.
+        await sandbox.files.write_file(
+            record_path,
+            json.dumps(
+                {"subpath": subpath, "bytes": len(body), "epoch": uuid.uuid4().hex},
+                separators=(",", ":"),
+            ).encode("utf-8"),
+            mode=600,
+            owner=account,
+            group=account,
         )
         # Owned by whoever the ENGINE runs as, which the caller names: the
         # conversation's own account on the shared tenancy, the image account
@@ -274,8 +313,8 @@ async def restore_mirrored_logs(
             path,
             body,
             mode=600,
-            owner=owner or SANDBOX_IMAGE_WORKLOAD_USER,
-            group=owner or SANDBOX_IMAGE_WORKLOAD_USER,
+            owner=account,
+            group=account,
         )
         written += 1
     return written

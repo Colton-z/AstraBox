@@ -231,6 +231,126 @@ def test_an_astrabox_credential_that_fails_its_checks_is_rejected(
         asyncio.run(module.user_api_key_auth(request, forged))
 
 
+_GATEWAY_ISSUER = "https://issuer.invalid"
+
+
+def _casdoor_gateway(
+    tmp_path: Path, monkeypatch: Any, claims: dict[str, Any], client_id: str
+) -> tuple[Any, str]:
+    """The adapter with the bundled overlay's settings, in front of a Casdoor
+    whose introspection names ``client_id`` and whose keys signed ``claims``."""
+
+    import time
+
+    import httpx
+    import jwt
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    monkeypatch.setenv("ASTRABOX_OIDC_API_CLIENT_ID", "astrabox-api")
+    monkeypatch.setenv("ASTRABOX_OIDC_API_CLIENT_SECRET", "api-secret")
+    monkeypatch.setenv("ASTRABOX_CASDOOR_ORGANIZATION", "astrabox")
+    module = _load_adapter(tmp_path, monkeypatch, identity="oidc")
+    oidc_copy = sys.modules["astrabox_oidc"]
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    token = jwt.encode(
+        {"iss": _GATEWAY_ISSUER, "exp": int(time.time()) + 300, **claims}, key, algorithm="RS256"
+    )
+    public_key = key.public_key()
+
+    class _SigningKey:
+        key = public_key
+
+    class _JwkClient:
+        def __init__(self, url: str) -> None:
+            assert url == f"{_GATEWAY_ISSUER}/jwks"
+
+        def get_signing_key_from_jwt(self, presented: str) -> Any:
+            return _SigningKey()
+
+    oidc_copy._discovery_cache[_GATEWAY_ISSUER] = {
+        "authorization_endpoint": f"{_GATEWAY_ISSUER}/login/oauth/authorize",
+        "token_endpoint": f"{_GATEWAY_ISSUER}/api/login/oauth/access_token",
+        "jwks_uri": f"{_GATEWAY_ISSUER}/jwks",
+        "introspection_endpoint": f"{_GATEWAY_ISSUER}/api/login/oauth/introspect",
+    }
+    oidc_copy._jwks_clients.clear()
+    monkeypatch.setattr(jwt, "PyJWKClient", _JwkClient)
+    introspection = {
+        "active": True,
+        "sub": claims["sub"],
+        "client_id": client_id,
+        "scope": claims["scope"],
+    }
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json=introspection))
+    real_client = httpx.AsyncClient
+
+    def _client(**kwargs: Any) -> Any:
+        kwargs["transport"] = transport
+        return real_client(**kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", _client)
+    return module, token
+
+
+def _casdoor_user(groups: list[str]) -> dict[str, Any]:
+    return {
+        "owner": "astrabox",
+        "name": "member",
+        "sub": "member-id",
+        "type": "normal-user",
+        "azp": "loader-test-client",
+        "groups": groups,
+        "scope": "openid astrabox:read astrabox:admin",
+    }
+
+
+@pytest.mark.parametrize(
+    ("name", "claims", "client_id", "role"),
+    [
+        ("member", _casdoor_user([]), "loader-test-client", _Roles.INTERNAL_USER_VIEW_ONLY),
+        (
+            "administrator",
+            _casdoor_user(["astrabox/astrabox-admin"]),
+            "loader-test-client",
+            _Roles.PROXY_ADMIN,
+        ),
+        (
+            "api-client",
+            {
+                "owner": "admin",
+                "name": "astrabox-api",
+                "sub": "admin/astrabox-api",
+                "type": "application",
+                "azp": "astrabox-api",
+                "scope": "astrabox:read astrabox:admin",
+            },
+            "astrabox-api",
+            _Roles.PROXY_ADMIN,
+        ),
+    ],
+    ids=["member", "administrator", "api-client"],
+)
+def test_the_gateway_gives_a_token_the_role_the_platform_gives_it(
+    tmp_path: Path,
+    monkeypatch: Any,
+    name: str,
+    claims: dict[str, Any],
+    client_id: str,
+    role: str,
+) -> None:
+    """A user's own token carries the user's groups, whatever scopes it asked
+    for; only the configured API client's astrabox:admin scope makes an
+    administrator. The API reads the same shared module (identity_oidc_test)."""
+
+    module, token = _casdoor_gateway(tmp_path, monkeypatch, claims, client_id)
+    request = SimpleNamespace(url=SimpleNamespace(path="/key/generate"))
+
+    result = asyncio.run(module.user_api_key_auth(request, token))
+
+    assert result.values["user_role"] == role, name
+
+
 def test_bundled_litellm_mcp_server_names_use_supported_characters() -> None:
     root = Path(__file__).parents[1]
     config = yaml.safe_load((root / "containers/litellm/config.yaml").read_text())

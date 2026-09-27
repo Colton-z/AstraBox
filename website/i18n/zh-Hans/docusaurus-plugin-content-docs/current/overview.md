@@ -11,6 +11,8 @@ AstraBox 是开源、自托管的 Agent 运行平台，可将已安装的 Agent 
 | **Session**     | Agent 的一次有状态运行，包含消息、Event 和当前状态 | "一项具体工作" |
 | **Event**       | Session 中产生的实时事件流          | "工作进度实时播报"  |
 
+除了面向团队和自动化的 Agent，AstraBox 还提供 [Assistant](assistants.md)：个人专属的长期云端工作区，所有对话共用这个工作区和 Agent 程序的状态。
+
 ## 工作流程
 
 1. **定义 Agent。** 指定模型、系统提示词（system prompt）和扩展。
@@ -23,7 +25,7 @@ AstraBox 是开源、自托管的 Agent 运行平台，可将已安装的 Agent 
 一次部署就带齐团队通常要自己拼装的几块：
 
 - **模型网关。** 默认内置 [LiteLLM](https://github.com/BerriAI/litellm) 网关。Agent 只选路由名；上游密钥、路由、预算和请求日志都留在服务端，后面可以接 Anthropic、OpenAI 兼容服务或本地模型。参见[连接模型服务](models.md)。
-- **团队登录。** 预集成 [Casdoor](https://github.com/casdoor/casdoor) 作为身份提供方，支持 OIDC、组织与角色，可用钉钉、企业微信、飞书、GitHub 等账号登录。加一个 Compose 覆盖文件即可开启，参见[设置团队登录](team-login.md)。
+- **团队登录。** 预集成 [Casdoor](https://github.com/casdoor/casdoor) 作为身份提供方，支持 OIDC、组织与角色；管理员在 Casdoor 中添加身份提供方后，可用 Google、Microsoft、Okta、GitHub、SAML、LDAP 等方式登录，也支持钉钉、飞书、企业微信。安装脚本设置一项即可开启，参见[设置团队登录](team-login.md)。
 - **隔离沙箱。** 基于 [OpenSandbox](https://github.com/opensandbox-group/OpenSandbox)，单台 Docker 主机或 Kubernetes 集群都能运行，并预留热容量，对话秒级拉起、秒级恢复。
 - **凭证不进沙箱。** Vault 凭证在沙箱的出站边界注入，Agent 只看得到占位符。参见[保护 Agent 使用的凭证](egress-credential-injection.md)。
 - **触发器与消息通道。** 定时任务、签名 Webhook 和消息平台可以在无人值守时启动 Agent。参见[让 Agent 自动运行](deployments.md)。

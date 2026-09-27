@@ -32,6 +32,9 @@ const RESEARCH_AGENT = String(
 ).trim();
 const PROBE_SECRET = 'astrabox-e2e-request-match-secret';
 const MODEL_PLACEHOLDER = 'astrabox-credential-held-by-egress-sidecar';
+// A workload claimed from a prepared Agent box carries its own inert bearer, so
+// the egress boundary can give each sibling in the box its own credential.
+const WORKLOAD_MODEL_PLACEHOLDER_PREFIX = 'astrabox-slot-credential-';
 const COLD_ENVIRONMENT_SETUP = [
   'set ASTRABOX_E2E_CREDENTIAL_COLD_ENVIRONMENT to a dedicated cold Environment name.',
   'Create it in Console > Manage > Environments with enabled=true, engine_kind=claude_code,',
@@ -149,18 +152,20 @@ function shellLiteral(value: string): string {
  * configured HTTPS origin while the credential must still be the inert value
  * OpenSandbox replaces at egress. GET /v1/models then proves the TLS request
  * reached the live gateway and the sidecar supplied the real credential.
+ * Each step gates the next, so the line claiming a placeholder is printed only
+ * after the credential was compared, and no request leaves with any other one.
  */
-function modelGatewayCommand(): string {
+function modelGatewayCommand(placeholder: string): string {
   return [
     'model_base="${ANTHROPIC_BASE_URL%/}"',
     `test "$model_base" = ${shellLiteral(MODEL_GATEWAY_URL)}`,
     'model_credential="${ANTHROPIC_AUTH_TOKEN:-${ANTHROPIC_API_KEY:-}}"',
-    `test "$model_credential" = ${shellLiteral(MODEL_PLACEHOLDER)}`,
+    `test "$model_credential" = ${shellLiteral(placeholder)}`,
     'if [ -n "${ANTHROPIC_AUTH_TOKEN:-}" ]; then model_header="Authorization: Bearer $model_credential"; else model_header="x-api-key: $model_credential"; fi',
     'model_status=$(curl -sS -o /dev/null -w \'%{http_code}\' -H "$model_header" "$model_base/v1/models")',
     'printf "MODEL_GATEWAY_SCHEME=https MODEL_CREDENTIAL=placeholder MODEL_STATUS=%s\\n" "$model_status"',
     'test "$model_status" = 200',
-  ].join('; ');
+  ].join(' && ');
 }
 
 function streamFrames(raw: string): Array<Record<string, unknown>> {
@@ -183,13 +188,14 @@ async function proveThroughTerminalAndAgent(
   page: Page,
   sessionId: string,
   secretName: string,
+  modelPlaceholder: string,
 ): Promise<void> {
   const requestCommand = probeCommand(secretName);
   const terminal = await api.runTerminalCommand(sessionId, requestCommand);
   expect(terminal).toContain('ALLOWED=204 METHOD_DENIED=401 PATH_DENIED=401');
   expect(terminal).not.toContain(PROBE_SECRET);
 
-  const command = `${requestCommand}; ${modelGatewayCommand()}`;
+  const command = `${requestCommand}; ${modelGatewayCommand(modelPlaceholder)}`;
   const raw = await api.streamPrompt(
     sessionId,
     `Use the Bash tool to run exactly this command, without changing it. ` +
@@ -344,7 +350,16 @@ async function runJourney(
     ).toBe(sandboxId);
   }
   await proveSecurityPosture(platform, sandboxId, credentialId);
-  await proveThroughTerminalAndAgent(api, page, resources.sessionId, secretName);
+  const identity = (await api.adminSessionDetail(resources.sessionId)).runtime_identity ?? {};
+  const workloadSlot = String(identity.credential_slot_id ?? '').trim();
+  if (prewarmed) {
+    expect(workloadSlot, 'a claimed prepared workload names the slot whose credential it carries')
+      .not.toEqual('');
+  }
+  const modelPlaceholder = workloadSlot
+    ? `${WORKLOAD_MODEL_PLACEHOLDER_PREFIX}${workloadSlot}`
+    : MODEL_PLACEHOLDER;
+  await proveThroughTerminalAndAgent(api, page, resources.sessionId, secretName, modelPlaceholder);
 }
 
 async function cleanup(

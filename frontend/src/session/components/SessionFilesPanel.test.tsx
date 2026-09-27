@@ -35,6 +35,7 @@ vi.mock('../hooks/useSessionFiles', () => ({
     mutating: false,
     loadedOnce: true,
     error: null,
+    sandboxGone: false,
     ensureDirectoryLoaded,
     refresh: async () => {},
     upload: async () => {},

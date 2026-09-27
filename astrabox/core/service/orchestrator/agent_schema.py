@@ -19,9 +19,12 @@ Design notes:
   JSON-serializable for the GET endpoint.
 - Validation here is intentionally thin: types / required / enum only. Deep
   normalization (plugin_repos, default_repo, mcp) stays in its existing owners.
-  The payload is never rewritten and defaults are never filled in. The
-  top-level wire shape and fixed nested objects are closed: undeclared input
-  fails loud instead of entering the Agent document's open storage shape.
+  The payload is never rewritten here and defaults are never filled in: the
+  one create-time default, ``prewarm_enabled``, is written by the create path
+  from :func:`agents_prewarm_by_default` and served on its field so the form
+  shows it. The top-level wire shape and fixed nested objects are closed:
+  undeclared input fails loud instead of entering the Agent document's open
+  storage shape.
 - ``model`` validates as a required free-text string. Self-hosted BYO-key has
   no authoritative model registry (a gateway can serve any id), so there is no
   code-derived model enum; the console offers a curated combobox with a
@@ -253,12 +256,33 @@ _DEFAULT_REPO_REQUEST_FIELDS = frozenset(str(field["key"]) for field in _DEFAULT
 _PLUGIN_REPO_REQUEST_FIELDS = frozenset(str(field["key"]) for field in _PLUGIN_REPO_ITEM_SCHEMA)
 
 
-def get_agent_schema() -> dict[str, Any]:
-    """Return the JSON-serializable schema consumed by the admin form."""
+def agents_prewarm_by_default(settings: Any) -> bool:
+    """Whether an Agent created without a prewarm choice keeps capacity ready.
+
+    Yes wherever the deployment can prewarm. Prepared capacity is held by the
+    OpenSandbox SDK's client-side pool, whose coordination store is
+    ``ASTRABOX_AGENT_PREWARM_REDIS_URL``; without it an Agent with prewarming
+    on can only record ``AGENT_PREWARM_CONFIG_INVALID``, so there the default
+    stays off rather than creating an Agent that is broken from the start.
+    """
+
+    return bool(str(getattr(settings, "agent_prewarm_redis_url", "") or "").strip())
+
+
+def get_agent_schema(settings: Any) -> dict[str, Any]:
+    """Return the JSON-serializable schema consumed by the admin form.
+
+    ``prewarm_enabled`` carries this deployment's create-time default, so the
+    create form starts from the value an Agent saved without touching it gets.
+    """
+    fields = [dict(f) for f in AGENT_FIELD_SCHEMA]
+    for field in fields:
+        if field["key"] == "prewarm_enabled":
+            field["default"] = agents_prewarm_by_default(settings)
     return {
         "version": AGENT_SCHEMA_VERSION,
         "groups": [dict(g) for g in AGENT_GROUPS],
-        "fields": [dict(f) for f in AGENT_FIELD_SCHEMA],
+        "fields": fields,
     }
 
 

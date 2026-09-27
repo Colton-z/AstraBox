@@ -23,7 +23,8 @@ bare ``docker run`` has the full multi-provider gateway. Wiring:
   an enterprise proxy); the embedded proxy is not started and the value is
   handed to sandboxes as-is, so it must be reachable FROM a sandbox.
 * ``ASTRABOX_LITELLM_SERVER_BASE_URL`` set — the platform uses this second
-  address only for server-side model discovery. It is useful when sandboxes
+  address for its own gateway requests: model discovery, key management,
+  conversation titles and process summaries. It is useful when sandboxes
   reach the external gateway through private DNS while the platform uses a
   loopback or service-network address.
 
@@ -146,6 +147,42 @@ class LiteLLMModelEndpointProvider(ModelEndpointProvider):
         return f"http://127.0.0.1:{EMBEDDED_LITELLM_PORT}"
 
     @staticmethod
+    def _server_credential() -> str:
+        """Return the credential the AstraBox server presents to the gateway.
+
+        ``ASTRABOX_LITELLM_API_KEY`` names a gateway that issues its own keys.
+        Otherwise the server holds ``LITELLM_MASTER_KEY``: the embedded
+        gateway generates it at startup, and an external gateway without its
+        own key needs it to provision the sandbox key.
+        """
+
+        return (
+            str(os.environ.get(LITELLM_API_KEY_ENV) or "").strip()
+            or str(os.environ.get(LITELLM_MASTER_KEY_ENV) or "").strip()
+        )
+
+    def server_endpoint(self, *, settings: Any = None) -> ModelEndpoint:
+        """Return the server-side gateway address and the server's credential.
+
+        Raises :class:`ModelEndpointConfigurationError` when neither
+        ``ASTRABOX_LITELLM_API_KEY`` nor ``LITELLM_MASTER_KEY`` is set.
+        """
+
+        _ = settings
+        credential = self._server_credential()
+        if not credential:
+            raise ModelEndpointConfigurationError(
+                "the AstraBox server has no credential for the LiteLLM gateway: "
+                f"set {LITELLM_MASTER_KEY_ENV}, or {LITELLM_API_KEY_ENV} for a "
+                "gateway that issues its own keys"
+            )
+        return ModelEndpoint(
+            base_url=self.server_side_base_url(),
+            api_key=credential,
+            credential_kind="bearer",
+        )
+
+    @staticmethod
     def _sandbox_inference_credential() -> str | None:
         """The credential a sandbox's model traffic carries.
 
@@ -209,11 +246,10 @@ class LiteLLMModelEndpointProvider(ModelEndpointProvider):
         )
         api_key = (
             str(access.get("api_key") or "").strip()
-            or str(os.environ.get(LITELLM_API_KEY_ENV) or "").strip()
             # Model discovery runs in the AstraBox service, never in a browser
             # or sandbox. The provider service credential authorizes this
             # read-only control-plane request.
-            or str(os.environ.get(LITELLM_MASTER_KEY_ENV) or "").strip()
+            or self._server_credential()
         )
         headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         try:

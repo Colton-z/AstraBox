@@ -52,17 +52,15 @@ const STOP_CONTROL = /^(Stop generating|Stopping|停止生成|停止中)$/i;
 // A FAILED turn renders its error INTO the transcript as an assistant message,
 // so "there is an assistant bubble" is satisfied by exactly a failure.
 const TURN_ERROR = /API Error|AGENT_RUNTIME_ERROR|SANDBOX_GONE|Traceback/i;
-// Tearing the turn down as an interrupt surfaces as a FAILED turn carrying this
-// exact backend string (frontend/src/session/turnFailureIntent.ts
-// USER_INTERRUPTED_TURN_ERROR), which TurnFailureCard renders verbatim. Its
-// absence is the user-visible half of "stop denied the permission, it did not
-// interrupt the turn"; the durable last_turn_status below stays the authority,
-// because this card only renders when the projection carries a turn_failure
-// block. The lookahead excludes the unrelated Claude wire literal "[Request
-// interrupted by user for tool use]", which is a legitimate transcript string
-// (normally replaced for display by utils/format DISPLAY_TEXT_REPLACEMENTS, but
-// not on every surface) — matching it would be a red about nothing.
-const INTERRUPTED_FAILURE = /Request interrupted by user(?! for tool use)/i;
+// The line a stopped turn carries (chat:process.stopped), in both locales. A
+// user stop completes the turn with a cancelled result on every path, and this
+// line is how the transcript says so, on the open page and after a reload.
+const STOP_LINE = /^(This response stopped early\.|本次回复提前结束。)$/;
+// A failed turn renders a TurnFailureCard (ResultCards.tsx), an ErrorNote with
+// role=alert, from its `turn_failure` block. A user stop completes the turn
+// instead, so no alert in the stopped turn's bubble is the user-visible half of
+// "stop denied the permission, it did not fail the turn"; the durable
+// last_turn_status below stays the authority.
 
 /** The canonical engine frame a durable `session_events` row stores under `payload`. */
 function framePayload(frame: Record<string, unknown>): Record<string, unknown> {
@@ -271,9 +269,13 @@ test('pending interaction stop denies native permission and settles turn', async
     ).toBeVisible({ timeout: 30_000 });
     await expect(assistantMessages.last()).not.toContainText(TURN_ERROR);
     await expect(
-      assistantMessages.filter({ hasText: INTERRUPTED_FAILURE }),
-      'stop must deny the permission, never surface to the user as an interrupted/failed turn',
+      assistantMessages.last().getByRole('alert'),
+      'stop must deny the permission, never surface to the user as a failed turn',
     ).toHaveCount(0);
+    await expect(
+      assistantMessages.last().getByText(STOP_LINE),
+      'the stopped turn must say it stopped on the open page',
+    ).toBeVisible({ timeout: 30_000 });
 
     // ── Durable settle: the denied turn ends. The terminal frame is written
     //    before the snapshot that points at it, so observing the proof makes
@@ -385,6 +387,19 @@ test('pending interaction stop denies native permission and settles turn', async
       frameTypes,
       'the denied turn still emits a terminal finish in the durable frames',
     ).toContain('finish');
+    const stoppedResults = stoppedBlocks.filter((block) => block.type === 'result');
+    expect(
+      stoppedResults.map((block) => (block as { finish_reason?: string }).finish_reason),
+      'the stopped turn records the outcome of a user stop: one cancelled result',
+    ).toEqual(['cancelled']);
+
+    // A reload reads only the durable record, so the stop line there proves
+    // the stop was recorded, not merely rendered from the live stream.
+    await openSessionView(page, sessionId);
+    await expect(
+      page.getByTestId('assistant-message').last().getByText(STOP_LINE),
+      'the reloaded page must still say the stopped turn stopped',
+    ).toBeVisible({ timeout: 45_000 });
   } finally {
     // The session is NOT deleted here. `trackSessions()` decides in an
     // afterEach, where the test's real status is known — see that fixture on

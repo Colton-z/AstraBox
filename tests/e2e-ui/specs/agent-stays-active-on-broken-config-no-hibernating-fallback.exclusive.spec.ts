@@ -157,6 +157,7 @@ test('agent stays ACTIVE on broken config with no HIBERNATING fallback; wake/hib
       name: agentName,
       model,
       environment_name: originalEnvironmentName,
+      prewarm_enabled: false,
     });
     agentId = String(agent.agent_id || '');
     expect(agentId, 'created agent must have an id').not.toEqual('');

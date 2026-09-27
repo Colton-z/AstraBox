@@ -21,22 +21,45 @@ import { expect, test } from '@playwright/test';
 import { AstraApi, type AgentRecord } from './astraApi';
 import { documentsByField } from './dbOracle';
 import { onPassOnly, trackSessions } from './sessionCleanup';
+import { startNativeMcpRelay, type NativeMcpRelay } from './nativeMcpRelay';
 import { aiStreamBodies } from './sseBodies';
 
 /** The image's own interpreter; the MCP Python SDK is installed for it. */
 export const NATIVE_MCP_PYTHON = '/usr/local/bin/python3.12';
 export const NATIVE_MCP_PORT = 5173;
 export type NativeMcpTool = 'hang' | 'large_output';
+const relayPorts: Record<NativeMcpTool, number> = JSON.parse(readFileSync(
+  join(__dirname, '../../e2e-contract/native-mcp-relay.json'), 'utf8',
+));
 
 export interface NativeMcpScene {
   /** Sessions kept on failure, deleted on pass (`trackSessions`). */
   sessions: string[];
   /** Throwaway Agents deleted on pass only. */
   agents: string[];
+  /** Test-owned Environments, disabled on pass: Environments have no DELETE route. */
+  environments: Array<Record<string, unknown>>;
   serverSession: string;
   clientSession: string;
   serverLog: string;
   serverUrl: string;
+  relayErrors: string[];
+}
+
+const directEndpointRelays = new WeakMap<NativeMcpScene, NativeMcpRelay>();
+
+/** The direct Pod URL is host-reachable, but sandbox ingress rejects peer Pods. */
+async function relayDirectEndpoint(
+  scene: NativeMcpScene, endpoint: URL, port: number, tool: NativeMcpTool,
+): Promise<URL> {
+  const host = new URL(process.env.ASTRABOX_E2E_BASE_URL || '').hostname;
+  const listenPort = relayPorts[tool];
+  if (!Number.isInteger(listenPort) || listenPort < 1024 || listenPort > 65535) {
+    throw new Error(`native MCP relay has no valid declared port for ${tool}`);
+  }
+  const relay = await startNativeMcpRelay(host, endpoint, port, scene.relayErrors, listenPort);
+  directEndpointRelays.set(scene, relay);
+  return relay.url;
 }
 
 export interface NativeMcpServerStart {
@@ -131,29 +154,43 @@ export async function serverLog(api: AstraApi, scene: NativeMcpScene): Promise<R
  */
 export function trackNativeMcpScene(evidenceName: string): NativeMcpScene {
   const scene: NativeMcpScene = {
-    sessions: trackSessions(), agents: [], serverSession: '', clientSession: '', serverLog: '', serverUrl: '',
+    sessions: trackSessions(), agents: [], environments: [], serverSession: '', clientSession: '', serverLog: '',
+    serverUrl: '', relayErrors: [],
   };
   onPassOnly(async ({ request }) => {
     const api = new AstraApi(request);
     for (const id of scene.agents) await api.deleteAgent(id);
+    for (const environment of scene.environments) {
+      await api.data('PUT', `/admin/environments/${encodeURIComponent(String(environment.name))}`, {
+        ...environment, enabled: false,
+      });
+    }
   });
   test.afterEach(async ({ page, request }, info) => {
-    if (!['failed', 'timedOut', 'interrupted'].includes(String(info.status))) return;
-    const api = new AstraApi(request);
-    const { sessions: _sessions, ...identity } = scene;
-    const evidence = await Promise.all([
-      observe(() => api.getSession(scene.clientSession)),
-      observe(() => api.listChildRuns(scene.clientSession)),
-      observe(() => api.getMessages(scene.clientSession)),
-      observe(() => documentsByField('transcript_entries', '$.platform_session_id', scene.clientSession)),
-      observe(() => serverLog(api, scene)),
-      observe(() => aiStreamBodies(page)),
-    ]);
-    await info.attach(evidenceName, {
-      body: JSON.stringify({ scene: identity, session: evidence[0], children: evidence[1], history: evidence[2],
-        native_store: evidence[3], server_log: evidence[4], browser_stream: evidence[5] }, null, 2),
-      contentType: 'application/json',
-    });
+    try {
+      if (!['failed', 'timedOut', 'interrupted'].includes(String(info.status))) return;
+      const api = new AstraApi(request);
+      const { sessions: _sessions, ...identity } = scene;
+      const evidence = await Promise.all([
+        observe(() => api.getSession(scene.clientSession)),
+        observe(() => api.listChildRuns(scene.clientSession)),
+        observe(() => api.getMessages(scene.clientSession)),
+        observe(() => documentsByField('transcript_entries', '$.platform_session_id', scene.clientSession)),
+        observe(() => serverLog(api, scene)),
+        observe(() => aiStreamBodies(page)),
+      ]);
+      await info.attach(evidenceName, {
+        body: JSON.stringify({ scene: identity, session: evidence[0], children: evidence[1], history: evidence[2],
+          native_store: evidence[3], server_log: evidence[4], browser_stream: evidence[5] }, null, 2),
+        contentType: 'application/json',
+      });
+    } finally {
+      const relay = directEndpointRelays.get(scene);
+      if (relay) {
+        directEndpointRelays.delete(scene);
+        await relay.close();
+      }
+    }
   });
   return scene;
 }
@@ -206,17 +243,25 @@ export async function startNativeMcpServer(
   expect(endpoint.port).toBe(port);
   expect(endpoint.url).toMatch(/^https?:\/\//);
   expect(endpoint.url).not.toContain('/api/v1/exposed-ports/');
-  const endpointUrl = new URL(endpoint.url);
+  const endpointUrl = process.env.ASTRABOX_E2E_ENDPOINT_KIND === 'direct'
+    ? await relayDirectEndpoint(scene, new URL(endpoint.url), port, options.tool)
+    : new URL(endpoint.url);
   endpointUrl.pathname = `${endpointUrl.pathname.replace(/\/$/, '')}/mcp`;
   scene.serverUrl = endpointUrl.toString();
   return started;
 }
 
 /**
- * Create the client Agent on the deployed MCP-enabled Environment, then open
- * its conversation. Only the schema-required identity fields, the version and the
- * given configuration are sent; `engine_options` is sent only when a case
- * supplies vendor env, so a case without one adds no inert knob.
+ * Create the client Agent on a test-owned copy of the deployed MCP-enabled
+ * Environment, then open its conversation. Only the schema-required identity
+ * fields, the version and the given configuration are sent; `engine_options`
+ * is sent only when a case supplies vendor env, so a case without one adds no
+ * inert knob.
+ *
+ * An Agent's own MCP server joins a limited Environment's egress only when the
+ * Environment names its host, and the listener's exposed address is on the
+ * deployment's own network. An administrator therefore names that exact host,
+ * in a copy of the deployed Environment so the shared one keeps its policy.
  */
 export async function configureNativeMcpClientAgent(
   api: AstraApi,
@@ -235,11 +280,28 @@ export async function configureNativeMcpClientAgent(
     enabled: true, engine_kind: 'claude_code',
     networking: { type: 'limited', allow_mcp_servers: true },
   });
+  const networking = object(environment!.networking);
+  const schema = await api.data<{ fields?: Array<Record<string, unknown>> }>('GET', '/admin/environment-schema');
+  const fields = new Set((schema.fields ?? []).map((field) => String(field.key)));
+  const clientEnvironmentName = `__e2e_mcp_${options.label}_${options.runId}`;
+  const clientEnvironment: Record<string, unknown> = {
+    ...Object.fromEntries(Object.entries(environment!).filter(([key]) => fields.has(key))),
+    name: clientEnvironmentName,
+    display_name: clientEnvironmentName,
+    enabled: true,
+    networking: {
+      ...networking,
+      allowed_hosts: [...(Array.isArray(networking.allowed_hosts) ? networking.allowed_hosts : []),
+        new URL(scene.serverUrl).hostname],
+    },
+  };
+  await api.data('PUT', `/admin/environments/${encodeURIComponent(clientEnvironmentName)}`, clientEnvironment);
+  scene.environments.push(clientEnvironment);
   const base = await api.defaultAgent();
   const clientAgent = await api.createAgent({
     name: `__e2e_mcp_${options.label}_${options.runId}`,
     model: await api.configuredAgentModel(base.name, environmentName),
-    environment_name: environmentName,
+    environment_name: clientEnvironmentName,
     prewarm_enabled: false,
   });
   scene.agents.push(clientAgent.agent_id);

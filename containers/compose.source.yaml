@@ -25,4 +25,5 @@ services:
       - ../astrabox/providers/litellm_shared_auth.py:/opt/astrabox/litellm/astrabox_litellm_auth.py:ro
       - ./litellm/custom_auth.py:/opt/astrabox/litellm/custom_auth.py:ro
       - ./litellm/langfuse_session_hook.py:/opt/astrabox/litellm/langfuse_session_hook.py:ro
+      - ./litellm/langfuse_tracing.py:/opt/astrabox/litellm/langfuse_tracing.py:ro
       - ./litellm/stream_normalization_hook.py:/opt/astrabox/litellm/stream_normalization_hook.py:ro

@@ -12,10 +12,17 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import json
+from types import SimpleNamespace
 from unittest import mock
+from unittest.mock import AsyncMock
 from typing import Any
 
 import pytest
+import websockets
+from websockets.datastructures import Headers
+from websockets.exceptions import InvalidStatus
+from websockets.http11 import Response
 
 from astrabox.common.utils.errors import APIError
 from astrabox.core.service.orchestrator.assistant.assistant_workspace_service import (
@@ -27,11 +34,22 @@ from astrabox.core.service.orchestrator.engine.hermes_client import (
     HermesTuiWireEvent,
 )
 from astrabox.core.service.orchestrator.engine import hermes_gateway
+from astrabox.core.service.orchestrator.engine import hermes
+from astrabox.core.service.orchestrator.engine.hermes import (
+    HERMES_BACKEND_TOKEN_HEADER,
+    hermes_backend_headers,
+    hermes_backend_ws_url,
+)
 from astrabox.core.service.orchestrator.engine.hermes_gateway import (
     HermesGatewayHandle,
     gateway_handle_for_sandbox,
     reset_gateway_registry,
     resolve_gateway_handle,
+    wait_until_backend_idle,
+)
+from astrabox.core.service.orchestrator.runtime.hermes_backend_channel import (
+    BackendNotListening,
+    _classify_connect_failure,
 )
 
 
@@ -97,12 +115,10 @@ class _FakeTuiProcess:
         wire: "_FakeGatewayWire",
         url: str,
         headers: dict[str, str] | None = None,
-        dial: tuple[str, int] | None = None,
     ) -> None:
         self._wire = wire
         self.url = url
         self.headers = dict(headers or {})
-        self.dial = dial
         self.queue: asyncio.Queue[HermesTuiWireEvent | BaseException] = asyncio.Queue()
         self._connected = False
         self._fatal: BaseException | None = None
@@ -115,12 +131,20 @@ class _FakeTuiProcess:
     def fatal(self) -> BaseException | None:
         return self._fatal
 
+    @property
+    def backend_not_listening(self) -> bool:
+        # The real process reads its channel's classification of the failure.
+        return isinstance(self._fatal, BackendNotListening)
+
     async def current_output_offset(self) -> int:
         return 0
 
     async def connect(self, *, require_gateway_ready: bool) -> None:
         if self._wire.refuse_connect is not None:
-            raise self._wire.refuse_connect
+            self._fatal = _classify_connect_failure(
+                self._wire.refuse_connect, label="Hermes backend", url=self.url
+            )
+            raise self._fatal
         self._wire.connects.append((self.url, bool(require_gateway_ready)))
         self._connected = True
         self._wire.attachments.append(self)
@@ -156,8 +180,7 @@ async def _resolve(
     profile_key: str = "user-1:assistant-1",
 ) -> HermesGatewayHandle:
     return await resolve_gateway_handle(
-        url="ws://127.0.0.1:9119/api/ws?token=t",
-        dial=("10.42.0.7", 9118),
+        url="ws://10.42.0.7:9118/api/ws?token=t",
         headers={"x-route": "sb-1"},
         sandbox_id="sb-1",
         profile_key=profile_key,
@@ -166,29 +189,58 @@ async def _resolve(
     )
 
 
-@pytest.mark.asyncio
-async def test_the_attachment_dials_the_box_and_addresses_the_bind() -> None:
-    """The two addresses must not collapse into one.
+@pytest.mark.parametrize(
+    ("origin", "url"),
+    [
+        # Kubernetes, direct: the relay at the Pod address.
+        ("http://10.42.0.7:9118", "ws://10.42.0.7:9118/api/ws"),
+        # OpenSandbox on Docker: execd's proxy route on the mapped execd port.
+        (
+            "http://172.17.0.1:22180/proxy/9118",
+            "ws://172.17.0.1:22180/proxy/9118/api/ws",
+        ),
+        # Ingress gateway, uri mode behind TLS: the gateway routes on the path.
+        (
+            "https://sandboxes.example.com/sb-1/9118",
+            "wss://sandboxes.example.com/sb-1/9118/api/ws",
+        ),
+        # Ingress gateway, wildcard mode: the gateway routes on the authority.
+        (
+            "http://sb-1-9118.sandboxes.example.com:30888",
+            "ws://sb-1-9118.sandboxes.example.com:30888/api/ws",
+        ),
+    ],
+)
+def test_the_backend_socket_is_the_endpoint_the_sandbox_backend_returned(
+    origin: str, url: str
+) -> None:
+    """Whatever routes the connection reads the address it issued.
 
-    Hermes binds loopback and refuses an upgrade whose `Host` names anything
-    else — its DNS-rebinding defence. A first attempt built one URL out of the
-    box's endpoint and every upgrade came back `HTTP 403`. So the handle has to
-    carry both: the URL names the interface the backend bound to, which is what
-    the `Host` header is built from, and the dial names where the forwarder
-    publishes it.
+    An ingress gateway routes on the path in uri mode and on the authority in
+    wildcard mode, and a TLS endpoint needs a TLS socket, so the scheme,
+    authority and path all stay as issued; only the socket route is appended.
+    Hermes' own `Host` requirement is met by the relay in the image
+    (`hermes_host_relay_test.py`), not here.
     """
 
-    wire = _FakeGatewayWire()
-    handle = await _resolve(wire)
+    assert hermes_backend_ws_url(origin) == url
 
-    process = wire.attachments[-1]
-    assert process.url.startswith("ws://127.0.0.1:9119/"), (
-        "the URL must address the backend's own bind, not the box"
+
+def test_the_credential_is_added_to_the_endpoints_own_headers() -> None:
+    headers = hermes_backend_headers(
+        {"X-Route": "sb-1", HERMES_BACKEND_TOKEN_HEADER.lower(): "stale"}, "a/b+c"
     )
-    assert process.dial == ("10.42.0.7", 9118), (
-        "the connection must go to the box's published forwarder"
-    )
-    await handle.shutdown()
+
+    # One credential header whatever the case of an existing one: the relay
+    # refuses to choose between two.
+    assert headers == {"X-Route": "sb-1", HERMES_BACKEND_TOKEN_HEADER: "a/b+c"}
+
+
+@pytest.mark.parametrize("origin", ["", "10.42.0.7:9118", "ftp://box/9118"])
+def test_an_endpoint_that_is_not_an_http_origin_is_refused(origin: str) -> None:
+    with pytest.raises(APIError) as refused:
+        hermes_backend_ws_url(origin)
+    assert refused.value.code == "HERMES_GATEWAY_START_FAILED"
 
 
 # ── attaching to the box's resident backend ──────────────────────────────
@@ -324,6 +376,227 @@ async def test_an_attachment_that_cannot_connect_fails_loudly() -> None:
             await _resolve(wire)
 
     assert excinfo.value.code == "HERMES_GATEWAY_START_FAILED"
+
+
+class _ReadySocket:
+    """A backend socket that announces itself the way Hermes does on accept."""
+
+    def __init__(self) -> None:
+        self._frames: asyncio.Queue[str] = asyncio.Queue()
+        self._frames.put_nowait(
+            '{"jsonrpc":"2.0","method":"event","params":{"type":"gateway.ready"}}'
+        )
+
+    async def send(self, _message: str) -> None:
+        return None
+
+    async def close(self) -> None:
+        return None
+
+    def __aiter__(self) -> "_ReadySocket":
+        return self
+
+    async def __anext__(self) -> str:
+        return await self._frames.get()
+
+
+def _refused(status: int, body: bytes = b"") -> InvalidStatus:
+    return InvalidStatus(Response(status, "", Headers(), body))
+
+
+async def _resolve_through_the_real_attachment() -> HermesGatewayHandle:
+    return await resolve_gateway_handle(
+        url=hermes_backend_ws_url("http://10.42.0.7:9118"),
+        headers=hermes_backend_headers({}, "secret-token"),
+        sandbox_id="sb-1",
+        profile_key="user-1:assistant-1",
+        spawn_fingerprint="fp-a",
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [401, 403])
+async def test_a_refused_upgrade_fails_at_once_with_its_status(status: int) -> None:
+    """A credential or Host the backend refuses is an answer, not a delay.
+
+    Hermes refuses such an upgrade before accepting it, so the client sees an
+    HTTP status. Retrying for the whole startup budget asked the same question
+    two minutes running and then reported "not listening", which hid the one
+    fact that named the cause. This drives the real attachment and channel.
+    """
+
+    attempts: list[str] = []
+
+    async def _refuse(uri: str, **_kwargs: Any) -> Any:
+        attempts.append(uri)
+        raise _refused(status, b"refused by the bind")
+
+    with mock.patch.object(websockets, "connect", _refuse):
+        with pytest.raises(APIError) as excinfo:
+            await _resolve_through_the_real_attachment()
+
+    assert len(attempts) == 1, "a refusal must not be retried"
+    assert excinfo.value.code == "HERMES_GATEWAY_START_FAILED"
+    assert f"HTTP {status}" in excinfo.value.message
+    assert "Host 10.42.0.7:9118" in excinfo.value.message
+    assert "refused by the bind" in excinfo.value.message
+    assert "secret-token" not in excinfo.value.message
+
+
+@pytest.mark.asyncio
+async def test_the_upgrade_request_line_carries_no_credential() -> None:
+    """The credential rides in a header, never in the request line.
+
+    Every proxy between this host and the box records the request line: the
+    OpenSandbox ingress gateway and execd's ``/proxy/<port>`` route both log
+    the request URI. A credential in the query would be written to those
+    logs. This drives the adapter's real connection path against a socket
+    that records the bytes of the upgrade it receives.
+    """
+
+    heads: list[bytes] = []
+
+    async def _record(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        heads.append(await reader.readuntil(b"\r\n\r\n"))
+        writer.write(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
+        await writer.drain()
+        writer.close()
+
+    server = await asyncio.start_server(_record, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    identity = {
+        "linux_user": "asst_abcdefghijklmnop",
+        "home_dir": "/home/conversations/asst_abcdefghijklmnop",
+        "workspace_dir": "/workspace",
+        "workspace_source_dir": "/home/conversations/asst_abcdefghijklmnop/workspace",
+        "sandbox_tenancy": "agent",
+    }
+    sandbox = SimpleNamespace(
+        sandbox_id="sb-1",
+        get_endpoint=AsyncMock(
+            return_value={
+                "endpoint": f"http://127.0.0.1:{port}/proxy/9118",
+                "headers": {"X-Route": "sb-1"},
+            }
+        ),
+    )
+    try:
+        with pytest.raises(APIError) as refused:
+            await hermes.HermesEngineAdapter()._resident_backend(
+                sandbox,
+                identity=identity,
+                profile_ref={"profile_key": "user-1:assistant-1"},
+                spawn_fingerprint="fp-a",
+            )
+    finally:
+        server.close()
+        await server.wait_closed()
+
+    token = hermes._hermes_backend_token(identity)
+    assert len(heads) == 1
+    request_line, *fields = heads[0].rstrip(b"\r\n").decode("latin-1").split("\r\n")
+    assert request_line == "GET /proxy/9118/api/ws HTTP/1.1"
+    assert f"{HERMES_BACKEND_TOKEN_HEADER}: {token}" in fields
+    assert "X-Route: sb-1" in fields
+    assert token not in refused.value.message
+
+
+@pytest.mark.asyncio
+async def test_nothing_listening_yet_is_waited_for_through_the_real_attachment() -> None:
+    """The waits that are real: a proxy with no upstream, then a refused connect.
+
+    Behind OpenSandbox's endpoint face an unpublished forwarder answers as an
+    unreachable upstream; addressed directly, as a refused TCP connection.
+    Both end once the backend is up, which is what the budget is for.
+    """
+
+    attempts: list[str] = []
+    failures: list[BaseException] = [
+        _refused(502),
+        ConnectionRefusedError("[Errno 111] Connection refused"),
+    ]
+
+    async def _starting(uri: str, **_kwargs: Any) -> Any:
+        attempts.append(uri)
+        if failures:
+            raise failures.pop(0)
+        return _ReadySocket()
+
+    with (
+        mock.patch.object(websockets, "connect", _starting),
+        mock.patch.object(hermes_gateway, "_ATTACH_RETRY_SECONDS", 0.0),
+    ):
+        handle = await _resolve_through_the_real_attachment()
+
+    assert handle.is_live is True
+    assert len(attempts) == 3
+    await handle.shutdown()
+
+
+class _ScriptedBackend:
+    """A backend whose `session.active_list`/`delegation.status` answers are scripted."""
+
+    sandbox_id = "sb-1"
+    profile_key = "user-1:assistant-1"
+
+    def __init__(self, polls: list[tuple[list[dict[str, Any]], list[dict[str, Any]]]]) -> None:
+        self._polls = list(polls)
+        self.requests: list[str] = []
+
+    async def request(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        self.requests.append(method)
+        sessions, delegations = self._polls[0]
+        if method == "session.active_list":
+            return {"sessions": sessions}
+        if method == "delegation.status":
+            if len(self._polls) > 1:
+                self._polls.pop(0)
+            return {"active": delegations}
+        raise AssertionError(f"unexpected RPC {method}")
+
+
+@pytest.mark.asyncio
+async def test_a_restart_waits_while_any_session_or_delegation_is_running() -> None:
+    """Working, parked on a question, being built, or a background delegation:
+    each is work a restart would end, and the wait lasts until none remains."""
+
+    backend = _ScriptedBackend(
+        [
+            ([{"id": "a", "status": "working"}, {"id": "b", "status": "idle"}], []),
+            ([{"id": "a", "status": "waiting"}], []),
+            ([{"id": "c", "status": "starting"}], []),
+            ([{"id": "a", "status": "idle"}], [{"subagent_id": "sa-1"}]),
+            ([{"id": "a", "status": "idle"}, {"id": "c", "status": "idle"}], []),
+        ]
+    )
+
+    await wait_until_backend_idle(backend, budget_seconds=60, poll_seconds=0)  # type: ignore[arg-type]
+
+    assert backend.requests.count("session.active_list") == 5
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_session_status_counts_as_running() -> None:
+    backend = _ScriptedBackend([([{"id": "a", "status": "compacting"}], [])])
+
+    with pytest.raises(APIError) as excinfo:
+        await wait_until_backend_idle(backend, budget_seconds=0, poll_seconds=0)  # type: ignore[arg-type]
+
+    assert excinfo.value.code == "HERMES_GATEWAY_START_FAILED"
+    assert "a:compacting" in excinfo.value.message
+
+
+@pytest.mark.asyncio
+async def test_work_outlasting_the_budget_fails_and_names_it() -> None:
+    """The restart does not happen, and the error says what it waited for."""
+
+    backend = _ScriptedBackend([([{"id": "a", "status": "working"}], [{"subagent_id": "sa-1"}])])
+
+    with pytest.raises(APIError) as excinfo:
+        await wait_until_backend_idle(backend, budget_seconds=0, poll_seconds=0)  # type: ignore[arg-type]
+
+    assert "a:working" in excinfo.value.message
+    assert "delegation:sa-1" in excinfo.value.message
 
 
 # ── event pump fan-out and replay ────────────────────────────────────────
@@ -764,3 +1037,81 @@ async def test_recording_a_gateway_requires_the_sandbox_and_pty() -> None:
             spawn_fingerprint="fp-a",
             expected_pty_session_id=None,
         )
+
+
+# ── the backend credential is keyed by the deployment secret ──────────────
+#
+# The token that opens a box's Hermes backend must not be computable from the
+# box's identity alone: on Kubernetes a sandbox Pod has no ingress
+# NetworkPolicy, so any pod in the cluster can reach port 9118, and a token a
+# co-tenant could recompute would let it drive another Assistant's backend.
+
+
+def _hermes_identity() -> dict[str, str]:
+    user = "asst_abcdefghijklmnop"
+    return {"linux_user": user, "home_dir": f"/home/conversations/{user}"}
+
+
+def test_the_backend_token_is_not_the_public_hash_of_the_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The old formula — sha256 over the identity — must not reproduce it.
+
+    That formula is exactly what a co-tenant can compute, so a token equal to
+    it is forgeable. The test pins the identity and the secret and shows the
+    token is not that hash.
+    """
+    import hashlib
+
+    monkeypatch.setenv("ASTRABOX_TRANSCRIPT_SIGNING_KEY", "a-deployment-secret")
+    identity = _hermes_identity()
+    public_hash = hashlib.sha256(
+        "|".join(
+            ("astrabox-hermes-backend", identity["linux_user"], identity["home_dir"])
+        ).encode("utf-8")
+    ).hexdigest()
+
+    assert hermes._hermes_backend_token(identity) != public_hash
+
+
+def test_the_backend_token_changes_with_the_deployment_secret(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two deployments with different secrets derive different tokens for one box.
+
+    A token a co-tenant recomputes from the identity would be identical across
+    deployments; keying it by the secret makes it deployment-specific, and
+    forgeable only by whoever holds the secret.
+    """
+    identity = _hermes_identity()
+    monkeypatch.setenv("ASTRABOX_TRANSCRIPT_SIGNING_KEY", "secret-one")
+    first = hermes._hermes_backend_token(identity)
+    monkeypatch.setenv("ASTRABOX_TRANSCRIPT_SIGNING_KEY", "secret-two")
+    second = hermes._hermes_backend_token(identity)
+
+    assert first != second
+    # Stable within one deployment: a supervisord restart of the backend must
+    # keep the credential the host already holds.
+    assert second == hermes._hermes_backend_token(identity)
+
+
+def test_the_backend_token_is_the_platform_derivation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """It is HMAC under the deployment master key, not an ad-hoc secret store."""
+    from astrabox.core.service.orchestrator.platform_secret import (
+        derive_platform_key,
+        platform_secret_root,
+    )
+
+    monkeypatch.setenv("ASTRABOX_TRANSCRIPT_SIGNING_KEY", "a-deployment-secret")
+    identity = _hermes_identity()
+    expected = derive_platform_key(
+        platform_secret_root(),
+        domain="astrabox-hermes-backend-ws",
+        subject=json.dumps(
+            [identity["linux_user"], identity["home_dir"]], separators=(",", ":")
+        ),
+    ).hex()
+
+    assert hermes._hermes_backend_token(identity) == expected

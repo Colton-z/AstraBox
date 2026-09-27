@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "astrabox"
-version = "0.1.0"
+version = "0.1.1"
 description = "AstraBox Community — an open, self-hosted agent runtime that streams a sandboxed coding agent to your frontend over the AI-SDK Data-Stream-Protocol."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -97,10 +97,11 @@ otel = [
 # lazily and reports a missing install as an actionable error. This is also what
 # keeps the CI unit lane installable with `.[dev]` alone.
 #
-# Exact-pinned because this module rebinds two upstream module constants
-# (port_allocator.DOCKER_PUBLISH_HOST, metadata.DEFAULT_STORE_DIR) that have no
-# configuration field behind them. Both rebinds verify themselves and fail loud,
-# but one reproducible server release must be what development, CI, and images run.
+# Exact-pinned because this module rebinds upstream module attributes
+# (docker_service.allocate_port_bindings, metadata.DEFAULT_STORE_DIR and Docker
+# service methods) that have no configuration field behind them. Every rebind
+# verifies itself and fails loud, but one reproducible server release must be
+# what development, CI, and images run.
 sandbox-server = ["opensandbox-server==0.2.3"]
 dev = [
   "pytest==9.1.1",

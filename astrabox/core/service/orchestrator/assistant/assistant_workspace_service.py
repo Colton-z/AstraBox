@@ -70,16 +70,23 @@ def _assistant_profile_ready_marker(
     user_id: str,
     assistant_id: str,
     sandbox_id: str,
+    configuration_revision: str,
 ) -> tuple[str, dict[str, Any]]:
     normalized_user_id = str(user_id or "").strip()
     normalized_assistant_id = str(assistant_id or "").strip()
     normalized_sandbox_id = str(sandbox_id or "").strip()
-    if not normalized_user_id or not normalized_assistant_id or not normalized_sandbox_id:
+    normalized_revision = str(configuration_revision or "").strip()
+    if (
+        not normalized_user_id
+        or not normalized_assistant_id
+        or not normalized_sandbox_id
+        or not normalized_revision
+    ):
         raise APIError(
             code="ASSISTANT_PROFILE_MARKER_INVALID",
             message=(
-                "assistant profile marker requires user_id, "
-                "assistant_id and sandbox_id"
+                "assistant profile marker requires user_id, assistant_id, "
+                "sandbox_id and the configuration revision it was prepared from"
             ),
             status_code=500,
         )
@@ -94,6 +101,11 @@ def _assistant_profile_ready_marker(
         "assistant_id": normalized_assistant_id,
         "profile_key": profile_key,
         "sandbox_id": normalized_sandbox_id,
+        # What the profile in that box was prepared from. A conversation that
+        # finds a different revision prepares it again rather than reusing it:
+        # the Agent program reads its profile once, at start, so a reused one
+        # keeps answering from the definition the owner replaced.
+        "configuration_revision": normalized_revision,
         "control_transport": "opensandbox_execd_pty",
         "ready_at": utcnow_iso(),
     }
@@ -105,6 +117,7 @@ def get_assistant_profile_ready_marker(
     user_id: str,
     assistant_id: str,
     sandbox_id: str,
+    configuration_revision: str | None,
 ) -> dict[str, Any] | None:
     if not isinstance(workspace, dict):
         return None
@@ -126,6 +139,9 @@ def get_assistant_profile_ready_marker(
             and str(marker.get("user_id") or "").strip() == normalized_user_id
             and str(marker.get("assistant_id") or "").strip() == normalized_assistant_id
             and str(marker.get("sandbox_id") or "").strip() == normalized_sandbox_id
+            and bool(str(configuration_revision or "").strip())
+            and str(marker.get("configuration_revision") or "").strip()
+            == str(configuration_revision or "").strip()
         ):
             return marker
         return None
@@ -144,9 +160,9 @@ class AssistantWorkspaceService:
         return await self._workspace_repo.has_assistant_workspace(assistant_id)
 
     async def list_user_workspaces(
-        self, *, user_id: str
+        self, *, user_id: str, assistant_ids: list[str]
     ) -> list[dict[str, Any]]:
-        return await self._workspace_repo.list_user_workspaces(user_id)
+        return await self._workspace_repo.list_user_workspaces(user_id, assistant_ids)
 
     async def list_workspaces_by_sandbox_id(
         self, sandbox_id: str
@@ -157,10 +173,12 @@ class AssistantWorkspaceService:
         self,
         *,
         now_iso: str,
+        after_assistant_id: str | None = None,
         limit: int = 50,
     ) -> list[dict[str, Any]]:
         return await self._workspace_repo.list_dead_binding_probe_candidates(
             now_iso=now_iso,
+            after_assistant_id=after_assistant_id,
             limit=limit,
         )
 
@@ -421,6 +439,7 @@ class AssistantWorkspaceService:
         provisioning_session_id: str,
         provisioning_sandbox_generation: str | None,
         sandbox_id: str,
+        configuration_revision: str,
         expires_at: str | None = None,
         runtime_identity: dict[str, Any] | None = None,
     ) -> bool:
@@ -435,6 +454,7 @@ class AssistantWorkspaceService:
             user_id=user_id,
             assistant_id=assistant_id,
             sandbox_id=normalized_sandbox_id,
+            configuration_revision=configuration_revision,
         )
         marked = await self._workspace_repo.mark_ready(
             user_id,
@@ -493,11 +513,13 @@ class AssistantWorkspaceService:
         user_id: str,
         assistant_id: str,
         sandbox_id: str,
+        configuration_revision: str,
     ) -> bool:
         marker_key, marker = _assistant_profile_ready_marker(
             user_id=user_id,
             assistant_id=assistant_id,
             sandbox_id=sandbox_id,
+            configuration_revision=configuration_revision,
         )
         return await self._workspace_repo.compare_and_update_workspace(
             str(user_id).strip(),

@@ -154,11 +154,16 @@ class AssistantWorkspaceRepository:
         self,
         *,
         now_iso: str,
+        after_assistant_id: str | None = None,
         limit: int = 50,
     ) -> list[dict[str, Any]]:
-        """Return workspace sandboxes whose durable lease is absent or stale."""
+        """One page of the workspace sandboxes whose durable lease is absent or stale.
+
+        Rows come in ``assistant_id`` order after ``after_assistant_id``: a
+        probe that cannot settle a binding leaves its row in the set.
+        """
         page_limit = max(1, min(int(limit or 50), 500))
-        query = {
+        query: dict[str, Any] = {
             "deleted": {"$ne": True},
             "current_sandbox_id": {"$gt": ""},
             "$or": [
@@ -167,14 +172,13 @@ class AssistantWorkspaceRepository:
                 {"current_sandbox_expires_at": {"$lte": now_iso}},
             ],
         }
+        after = str(after_assistant_id or "").strip()
+        if after:
+            query["assistant_id"] = {"$gt": after}
         collection = await get_async_collection(self._collection_name)
 
         async def _list() -> list[dict[str, Any]]:
-            cursor = (
-                collection.find(query)
-                .sort("current_sandbox_expires_at", 1)
-                .limit(page_limit)
-            )
+            cursor = collection.find(query).sort("assistant_id", 1).limit(page_limit)
             return [doc async for doc in cursor]
 
         return await run_mongo_with_retry(
@@ -415,22 +419,24 @@ class AssistantWorkspaceRepository:
         return await run_mongo_with_retry("assistant_workspace.list_all", _list)
 
     async def list_user_workspaces(
-        self, user_id: str, limit: int = 100
+        self, user_id: str, assistant_ids: list[str]
     ) -> list[dict[str, Any]]:
+        """``user_id``'s workspaces of the given Assistants, one read for a list page."""
+
+        ids = sorted({str(item) for item in assistant_ids if str(item or "").strip()})
+        if not ids:
+            return []
         collection = await get_async_collection(self._collection_name)
 
         async def _list() -> list[dict[str, Any]]:
-            cursor = (
-                collection.find(
-                    {
-                        "$or": [
-                            {"created_by_user_id": user_id},
-                            {"user_id": user_id},
-                        ]
-                    }
-                )
-                .sort("updated_at", -1)
-                .limit(limit)
+            cursor = collection.find(
+                {
+                    "assistant_id": {"$in": ids},
+                    "$or": [
+                        {"created_by_user_id": user_id},
+                        {"user_id": user_id},
+                    ],
+                }
             )
             return [doc async for doc in cursor]
 

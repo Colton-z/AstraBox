@@ -137,14 +137,19 @@ class _FakeSessionsRepo:
         ]
 
     async def list_dead_binding_probe_candidates(
-        self, *, now_iso: str, limit: int = 50
+        self, *, now_iso: str, after_session_id: str | None = None, limit: int = 50
     ) -> list[dict[str, Any]]:
-        return [dict(item) for item in self._candidates]
+        rows = sorted(self._candidates, key=lambda item: str(item.get("session_id") or ""))
+        return [
+            dict(item)
+            for item in rows
+            if after_session_id is None or str(item.get("session_id") or "") > after_session_id
+        ][:limit]
 
 
 class _NoAgentOwners:
     async def list_dead_binding_probe_candidates(
-        self, *, now_iso: str, limit: int = 50
+        self, *, now_iso: str, after_agent_id: str | None = None, limit: int = 50
     ) -> list[dict[str, Any]]:
         return []
 
@@ -156,7 +161,7 @@ class _NoAgentOwners:
 
 class _NoAssistantWorkspaceOwners:
     async def list_dead_binding_probe_candidates(
-        self, *, now_iso: str, limit: int = 50
+        self, *, now_iso: str, after_assistant_id: str | None = None, limit: int = 50
     ) -> list[dict[str, Any]]:
         return []
 

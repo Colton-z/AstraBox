@@ -476,7 +476,9 @@ def _deployment_with_a_workspace_volume(
     async def backing(_assignment: str, mounts: Any) -> storage_seam.StorageMountPlan:
         return storage_seam.StorageMountPlan("backing-volume", mounts)
 
-    async def routed(_assignment: str, plan: Any) -> storage_seam.StorageMountPlan:
+    async def routed(
+        _assignment: str, plan: Any, **_kwargs: Any
+    ) -> storage_seam.StorageMountPlan:
         return storage_seam.StorageMountPlan("routed-volume", plan.mounts)
 
     monkeypatch.setattr(medium, "provision_mounts", backing, raising=False)

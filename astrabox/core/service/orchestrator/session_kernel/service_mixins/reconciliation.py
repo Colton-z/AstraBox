@@ -172,6 +172,7 @@ class ReconciliationOrchestrationMixin:
                 failure_phase="sandbox_reclaimed",
                 error_text="sandbox unavailable while awaiting interaction",
                 causation=f"reclaim-settle:{session_id}:{turn_id}",
+                user_stop=False,
             )
             if interaction_id:
                 await self._sessions_repo.clear_pending_interaction(
@@ -697,7 +698,14 @@ class ReconciliationOrchestrationMixin:
         # control-plane evidence that the box is absent; when the turn
         # also has no engine anchor, no worker can still write it. Settle that
         # state immediately instead of waiting for the age threshold.
-        if not no_anchor_dead and bool(session.get("runtime_unavailable")):
+        # A delivery in progress on this server is the exception: it may be
+        # replacing the box, which marks the conversation unavailable until the
+        # replacement is ready, and its outcome is the turn's.
+        if (
+            not no_anchor_dead
+            and bool(session.get("runtime_unavailable"))
+            and not self._turn_service.input_delivery_in_progress(session_id)
+        ):
             no_anchor_dead = (
                 _normalize_current_turn_engine_anchor(
                     snapshot.get("current_turn_engine_anchor")
@@ -836,6 +844,61 @@ class ReconciliationOrchestrationMixin:
             return result
         return None
 
+    async def _settle_turn_not_received(
+        self,
+        *,
+        session_id: str,
+        turn_id: str,
+        command_id: str,
+        conversation_state: str,
+        error_text: str,
+        refusal: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        """Fail a turn whose input never reached the engine.
+
+        ``failure_phase == "pre_dispatch"`` is what closes the input's FIFO row
+        (``journal_input_rows``) and what later deliveries of the command read
+        as its outcome (``settled_input_outcome``). ``refusal`` is the refusal
+        the caller was answered with, recorded so those deliveries answer the
+        same. The snapshot write is a compare-and-set on ``conversation_state``;
+        ``None`` means another writer settled the turn first.
+        """
+
+        payload: dict[str, Any] = {
+            "command_id": command_id,
+            "final_state": "FAILED",
+            "assistant_text": None,
+            "error_text": error_text,
+            "failure_phase": "pre_dispatch",
+        }
+        if refusal is not None:
+            payload["refusal"] = refusal
+        failed_event = await self._session_events_repo.append_event(
+            {
+                "session_id": session_id,
+                "channel": "conversation",
+                "turn_id": turn_id,
+                "event_type": "turn.failed",
+                "causation_id": command_id,
+                "correlation_id": command_id,
+                "payload": payload,
+            }
+        )
+        return await self._session_snapshots_repo.apply_channel_update(
+            session_id,
+            channel="conversation",
+            event_seq=int(failed_event.get("event_seq") or 0),
+            updates=build_turn_terminal_snapshot_updates(
+                turn_id=turn_id,
+                status="FAILED",
+                error_text=error_text,
+                command_id=command_id,
+                delivery_state="NOT_RECEIVED",
+                failure_phase="pre_dispatch",
+            ),
+            expected_conversation_state=conversation_state,
+        )
+
     async def _adjudicate_not_received(
         self,
         *,
@@ -875,37 +938,12 @@ class ReconciliationOrchestrationMixin:
             }
         )
         if _accepted_command_id:
-            _stale_error = "turn failed before dispatch"
-            failed_event = await self._session_events_repo.append_event(
-                {
-                    "session_id": session_id,
-                    "channel": "conversation",
-                    "turn_id": turn_id,
-                    "event_type": "turn.failed",
-                    "causation_id": _accepted_command_id,
-                    "correlation_id": _accepted_command_id,
-                    "payload": {
-                        "command_id": _accepted_command_id,
-                        "final_state": "FAILED",
-                        "assistant_text": None,
-                        "error_text": _stale_error,
-                        "failure_phase": "pre_dispatch",
-                    },
-                }
-            )
-            result = await self._session_snapshots_repo.apply_channel_update(
-                session_id,
-                channel="conversation",
-                event_seq=int(failed_event.get("event_seq") or 0),
-                updates=build_turn_terminal_snapshot_updates(
-                    turn_id=turn_id,
-                    status="FAILED",
-                    error_text=_stale_error,
-                    command_id=_accepted_command_id,
-                    delivery_state="NOT_RECEIVED",
-                    failure_phase="pre_dispatch",
-                ),
-                expected_conversation_state=conversation_state,
+            result = await self._settle_turn_not_received(
+                session_id=session_id,
+                turn_id=turn_id,
+                command_id=_accepted_command_id,
+                conversation_state=conversation_state,
+                error_text="turn failed before dispatch",
             )
             if isinstance(result, dict):
                 logger.info(

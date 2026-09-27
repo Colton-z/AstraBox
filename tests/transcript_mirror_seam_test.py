@@ -248,16 +248,10 @@ def test_the_box_is_created_knowing_where_to_send_its_transcript(
 ) -> None:
     """Every name the mirror reads is filled here — one box, two sides."""
 
-    from types import SimpleNamespace
-
     from astrabox.core.service.orchestrator.engine import transcript_mirror
 
     monkeypatch.setenv("ASTRABOX_TRANSCRIPT_CAPABILITY_REQUIRED", "false")
-    env = transcript_mirror.mirror_env(
-        _manager("http://backend.test/"),
-        "sess-1",
-        SimpleNamespace(cwd="/workspace"),
-    )
+    env = transcript_mirror.mirror_env(_manager("http://backend.test/"), "sess-1")
     assert env[transcript_mirror.TRANSCRIPT_BASE_URL_ENV] == "http://backend.test"
     assert env[transcript_mirror.PLATFORM_SESSION_ID_ENV] == "sess-1"
     assert env[transcript_mirror.TRANSCRIPT_PROJECT_KEY_ENV] == "/workspace"
@@ -281,15 +275,11 @@ def test_a_deployment_with_no_reachable_backend_is_refused(
     needed was never written down.
     """
 
-    from types import SimpleNamespace
-
     from astrabox.common.utils.errors import APIError
     from astrabox.core.service.orchestrator.engine import transcript_mirror
 
     with pytest.raises(APIError) as caught:
-        transcript_mirror.mirror_env(
-            _manager("   "), "sess-1", SimpleNamespace(cwd="/workspace")
-        )
+        transcript_mirror.mirror_env(_manager("   "), "sess-1")
     assert caught.value.code == "AGENT_RUNTIME_ERROR"
     assert "mirror" in str(caught.value.message)
 
@@ -329,6 +319,10 @@ def _fake_repository(monkeypatch: pytest.MonkeyPatch, scopes: list, entries: dic
     monkeypatch.setattr(repo_mod, "TranscriptEntryRepository", _Repo)
 
 
+def _log_writes(sandbox: Any) -> list[dict[str, Any]]:
+    return [w for w in sandbox.files.written if w["path"].endswith(".jsonl")]
+
+
 async def _restore(monkeypatch: pytest.MonkeyPatch, scopes: list, entries: dict) -> Any:
     from astrabox.core.service.orchestrator.engine import transcript_mirror
 
@@ -359,11 +353,12 @@ async def test_each_rollout_returns_to_the_path_its_scope_names(
         {main: [{"type": "session_meta"}, {"type": "response_item"}], sub: [{"type": "x"}]},
     )
     assert written == 2
-    assert [w["path"] for w in sandbox.files.written] == [
+    logs = [w["path"] for w in sandbox.files.written if w["path"].endswith(".jsonl")]
+    assert logs == [
         f"{_ROOT}/2026/08/18/rollout-a-0000.jsonl",
         f"{_ROOT}/2026/08/18/rollout-b-1111.jsonl",
     ]
-    assert sandbox.files.dirs == [f"{_ROOT}/2026/08/18"] * 2
+    assert f"{_ROOT}/2026/08/18" in sandbox.files.dirs
 
 
 @pytest.mark.asyncio
@@ -381,7 +376,7 @@ async def test_the_restored_file_is_one_json_object_per_line_in_order(
     given = [{"type": "session_meta"}, {"type": "response_item", "payload": {"n": 1}},
              {"type": "event_msg", "payload": {"t": "ü"}}]
     sandbox, _ = await _restore(monkeypatch, [{"subpath": scope}], {scope: given})
-    body = sandbox.files.written[0]["data"].decode("utf-8")
+    body = _log_writes(sandbox)[0]["data"].decode("utf-8")
     assert body.endswith("\n")
     assert [json.loads(line) for line in body.splitlines()] == given
 
@@ -402,8 +397,10 @@ async def test_a_rollout_is_owned_by_the_account_that_appends_to_it(
 
     scope = "codex/a.jsonl"
     sandbox, _ = await _restore(monkeypatch, [{"subpath": scope}], {scope: [{"n": 1}]})
-    assert sandbox.files.written[0]["owner"] == SANDBOX_IMAGE_WORKLOAD_USER
-    assert sandbox.files.written[0]["group"] == SANDBOX_IMAGE_WORKLOAD_USER
+    # The mirror reads the restore record as the same account.
+    for write in sandbox.files.written:
+        assert write["owner"] == SANDBOX_IMAGE_WORKLOAD_USER
+        assert write["group"] == SANDBOX_IMAGE_WORKLOAD_USER
 
 
 @pytest.mark.asyncio
@@ -418,7 +415,7 @@ async def test_another_engines_scope_in_the_same_session_is_left_alone(
         {"codex/a.jsonl": [{"n": 1}]},
     )
     assert written == 1
-    assert sandbox.files.written[0]["path"].endswith("/a.jsonl")
+    assert [w["path"] for w in _log_writes(sandbox)] == [f"{_ROOT}/a.jsonl"]
 
 
 @pytest.mark.asyncio
@@ -438,6 +435,108 @@ async def test_a_session_with_nothing_mirrored_restores_nothing(
     sandbox, written = await _restore(monkeypatch, [], {})
     assert written == 0
     assert sandbox.files.written == []
+
+
+@pytest.mark.asyncio
+async def test_a_restored_log_is_not_sent_to_the_store_again(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The box's mirror starts where the restored log ends.
+
+    The restored bytes ARE the store's content. Without the record the mirror
+    found a log with no position and sent all of it as a new batch, so every
+    replacement box added another copy of every earlier line, and the DeepSeek
+    Harness refused the log (a second header where an event must be) on the
+    second replacement. The record is written before the log, and the mirror
+    here reads the host's own record and body, not an imitation of them.
+    """
+
+    home, state = tmp_path / "codex", tmp_path / "state"
+    module = _load(monkeypatch, home, state)
+    state.mkdir(parents=True, exist_ok=True)
+    scope = "codex/2026/08/18/rollout-x-tid.jsonl"
+    restored = [{"type": "session_meta"}, {"type": "response_item", "payload": {"n": 1}}]
+    from astrabox.core.service.orchestrator.engine import transcript_mirror
+
+    _fake_repository(monkeypatch, [{"subpath": scope}], {scope: restored})
+    sandbox = _CapturingSandbox()
+    await transcript_mirror.restore_mirrored_logs(
+        sandbox, "sess-1", namespace="codex/", root=str(home / "sessions")
+    )
+    record, log = sandbox.files.written
+    assert record["path"] == transcript_mirror.restore_record_path(
+        str(home / "sessions"), scope
+    ), "the record goes first, where the mirror looks for it"
+    for write in (record, log):
+        target = Path(write["path"])
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(write["data"])
+    path = Path(log["path"])
+    _append_lines(path, {"type": "event_msg", "payload": {"after": "restore"}})
+
+    sender = _RecordingSender()
+    mirror = _mirror_for(module, path, home)
+    assert mirror.pump(sender) == 1
+    ((_, entries, append_id),) = sender.batches
+    assert entries == [{"type": "event_msg", "payload": {"after": "restore"}}]
+    epoch = json.loads(record["data"])["epoch"]
+    size = len(log["data"])
+    assert append_id == f"{scope}@{epoch}:{size}-{path.stat().st_size}"
+
+    # A restarted mirror in the same box keeps its place and its epoch.
+    revived = _mirror_for(module, path, home)
+    assert (revived.offset, revived.epoch) == (path.stat().st_size, epoch)
+
+
+@pytest.mark.asyncio
+async def test_every_box_of_a_conversation_writes_one_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The key the mirror appends under does not follow the placement.
+
+    A restore reads a log back by its subpath across every scope of the
+    conversation and orders rows by per-scope sequence. When an Agent's shared
+    box named each conversation's own directory and a conversation's own box
+    named the image's, one log became two scopes and the restore interleaved
+    them line by line.
+    """
+
+    from astrabox.core.service.orchestrator.engine import transcript_mirror
+
+    monkeypatch.setenv("ASTRABOX_TRANSCRIPT_CAPABILITY_REQUIRED", "false")
+    cold = transcript_mirror.mirror_env(_manager("http://backend.test"), "sess-1")
+    claimed = json.loads(
+        transcript_mirror.mirror_target_payload(_manager("http://backend.test"), "sess-1")
+    )
+    assert cold[transcript_mirror.TRANSCRIPT_PROJECT_KEY_ENV] == claimed["project_key"]
+
+
+def test_the_host_and_the_mirror_name_the_same_restore_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from astrabox.core.service.orchestrator.engine import transcript_mirror
+
+    home, state = tmp_path / "codex", tmp_path / "state"
+    module = _load(monkeypatch, home, state)
+    scope = "codex/2026/08/18/rollout-x-tid.jsonl"
+    assert str(module.restore_record_path(scope)) == transcript_mirror.restore_record_path(
+        str(home / "sessions"), scope
+    )
+
+
+def test_an_unreadable_restore_record_is_refused_not_ignored(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home, state = tmp_path / "codex", tmp_path / "state"
+    module = _load(monkeypatch, home, state)
+    state.mkdir(parents=True, exist_ok=True)
+    path = _rollout(home)
+    subpath = module.SUBPATH_PREFIX + str(path.relative_to(home / "sessions"))
+    record = module.restore_record_path(subpath)
+    record.parent.mkdir(parents=True, exist_ok=True)
+    record.write_text("{not json", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="restore record"):
+        _mirror_for(module, path, home)
 
 
 # ── the declaration and the image that serves it ─────────────────────────────

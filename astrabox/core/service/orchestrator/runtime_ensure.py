@@ -201,6 +201,7 @@ class RuntimeEnsure:
                 sandbox_id=sandbox_id,
                 existing_terminal_cwd=str(session.get("terminal_cwd") or "").strip() or None,
                 engine_kind=engine_kind,
+                resume_engine_session_key=engine_session_key,
             )
         return self._runtime_manager.plan_runtime_attach(
             agent_id=str(session.get("agent_id") or ""),
@@ -228,6 +229,48 @@ class RuntimeEnsure:
         if not callable(assess):
             return False
         return bool(await assess(sandbox_id))
+
+    async def bound_sandbox_confirmed_gone(self, session: dict[str, Any]) -> bool:
+        """Converge the owners of this conversation's box when it is confirmed gone.
+
+        Asked before a turn is admitted, and only when no live runtime in this
+        process holds the box: a live engine link is its own evidence. The
+        answer is the same data-plane assessment the attach path makes (a
+        control-plane not-found, a box that refuses connection, or an execd that
+        does not answer). An assessment that cannot be made is not evidence, so
+        it answers False and the delivery attach judges the box as before.
+        """
+
+        session_id = str(session.get("session_id") or "").strip()
+        sandbox_id = str(session.get("sandbox_id") or "").strip()
+        if not session_id or not sandbox_id:
+            return False
+        if self._runtime_manager.get_runtime(session_id, sandbox_id=sandbox_id) is not None:
+            return False
+        try:
+            gone = await self._sandbox_data_plane_dead(session, sandbox_id)
+        except Exception as exc:
+            logger.warning(
+                "turn admission could not assess the bound sandbox session=%s "
+                "sandbox=%s: %s",
+                session_id,
+                sandbox_id,
+                exc,
+            )
+            return False
+        if not gone:
+            return False
+        logger.warning(
+            "turn admission found the bound sandbox gone session=%s sandbox=%s",
+            session_id,
+            sandbox_id,
+        )
+        await self._sandbox_lifecycle_service.converge_dead_sandbox_owners(
+            sandbox_id,
+            last_error=f"sandbox {sandbox_id!r} is gone",
+            reason="turn_admission:SANDBOX_GONE",
+        )
+        return True
 
     async def _attach_runtime_for_turn(
         self,
@@ -716,6 +759,9 @@ class RuntimeEnsure:
                 f"rebuilt Session runtime write-back did not match session={session_id}"
             )
         session.update(write_back)
+        await self._runtime_manager.adopt_bound_startup_allocation(
+            session_id, sandbox_id=new_sandbox_id
+        )
         await self._sandbox_lifecycle_service.project_session_runtime_ready(
             session,
             reason=f"agent_chat_reborrow_ready:{new_sandbox_id}",

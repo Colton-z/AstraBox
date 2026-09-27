@@ -32,6 +32,8 @@ import type {
   AgentAccess,
   AgentAccessPolicy,
   AgentConfig,
+  AgentListPage,
+  ListPageQuery,
   AgentPreparedRuntimeStatus,
   AgentExtensionCatalog,
   AgentDeployment,
@@ -87,12 +89,18 @@ export class ApiError extends Error {
   readonly status: number;
   /** The envelope's error code (or `HTTP_<status>` when it carried none). */
   readonly code: string;
+  /**
+   * The envelope's `error.retryable`: whether the same request, sent again,
+   * can succeed. `null` when the response carried no envelope to say.
+   */
+  readonly retryable: boolean | null;
 
-  constructor(code: string, message: string, status: number) {
+  constructor(code: string, message: string, status: number, retryable: boolean | null = null) {
     super(`${code}: ${message}`);
     this.name = 'ApiError';
     this.code = code;
     this.status = status;
+    this.retryable = retryable;
   }
 }
 
@@ -534,10 +542,12 @@ async function send<R extends { response: Response }>(
     if (response.status === 401 && rawCode === 'AUTH_REQUIRED') {
       redirectToSignIn();
     }
+    const retryable = payload?.error?.retryable;
     throw new ApiError(
       normalizedPayload?.code ?? code,
       appendStructuredApiErrorEvidence(message, payload as ApiResponse<unknown> | null),
       response.status,
+      typeof retryable === 'boolean' ? retryable : null,
     );
   }
 
@@ -629,6 +639,33 @@ export async function getCurrentUser(): Promise<UserInfo> {
 
 export async function listAgents(): Promise<AgentConfig[]> {
   return expectList<AgentConfig>(await send((wire) => client.GET('/api/v1/agents', wire)), '/agents');
+}
+
+/** One page of the Agent list, narrowed and counted by the server. */
+export async function listAgentsPage(query: ListPageQuery = {}): Promise<AgentListPage> {
+  return expectPage<AgentListPage>(
+    await send((wire) => client.GET('/api/v1/agents', {
+      ...wire,
+      params: { query: listPageQuery(query) },
+    })),
+    '/agents',
+    'agents',
+  );
+}
+
+/**
+ * The query of a paged list read (`page=1`, the list routes' page mode). The
+ * Agent and Assistant list routes read these from the raw request, so this is
+ * the `undeclaredQuery` assertion for both.
+ */
+export function listPageQuery(query: ListPageQuery): never {
+  return undeclaredQuery({
+    page: 1,
+    limit: query.limit ?? 50,
+    cursor: query.cursor,
+    q: query.q?.trim(),
+    status: query.status === 'all' ? undefined : query.status,
+  });
 }
 
 /** Admin-only credential groups plus the active delivery summary. */

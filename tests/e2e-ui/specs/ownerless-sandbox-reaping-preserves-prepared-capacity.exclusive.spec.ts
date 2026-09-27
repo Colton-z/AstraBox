@@ -88,7 +88,7 @@ async def main():
     pool = await provider.describe_client_pool(given['poolName'])
     assert given['idle'] in pool.idle_sandbox_ids, 'supplier has not published the protected idle box'
     summary = await RemoteAgentRuntimeManager().reap_ownerless_sandboxes(
-        backend=given['backend'], grace_seconds=0, limit=100,
+        backend=given['backend'], grace_seconds=0, page_size=100,
     )
     probes = {}
     for name in ('orphan', 'shared', 'idle'):
@@ -199,7 +199,7 @@ async def main():
         inventory = await adapter.list_sandboxes(page=1, page_size=100)
         assert not inventory.has_next_page, 'test inventory exceeds the reaper page'
         assert sandbox_id in {item.sandbox_id for item in inventory.items}, 'sweep cannot see the candidate'
-        summary = await manager.reap_ownerless_sandboxes(backend=given['backend'], grace_seconds=0, limit=100)
+        summary = await manager.reap_ownerless_sandboxes(backend=given['backend'], grace_seconds=0, page_size=100)
         probe = (await adapter.probe(sandbox_id)).probe_status
         assert probe == 'OK', 'the real reaper destroyed a Session-owned in-flight SDK claim'
         assert (await session_repo.get_session(given['claimSessionId']))['startup_allocation'] == allocation
@@ -219,7 +219,7 @@ async def main():
     assert cleanup.destruction is not None and cleanup.destruction.outcome == 'RETAINED'
     assert not (await session_repo.get_session(given['claimSessionId'])).get('startup_allocation')
     assert (await provider.probe(claim.sandbox_id)).probe_status == 'OK', 'rollback destroyed Agent-owned compute'
-    released = await manager.reap_ownerless_sandboxes(backend=given['backend'], grace_seconds=0, limit=100)
+    released = await manager.reap_ownerless_sandboxes(backend=given['backend'], grace_seconds=0, page_size=100)
     assert (await provider.probe(claim.sandbox_id)).probe_status == 'NOT_FOUND', 'released empty candidate remains orphaned'
     print('E2E_POOL_HANDOFF_RESULT=' + json.dumps({'adoptions': adoption_evidence, 'released': released}))
 

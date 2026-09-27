@@ -20,7 +20,7 @@ Environment 控制沙箱可以访问哪些目标：
 | 模式 | 行为 |
 | --- | --- |
 | `受限` | 允许平台必需的连接、关联 Credential Vault 授权的目标和你添加的主机。只有启用 **允许远程 MCP 服务** 后，才能访问 Agent 声明的远程 MCP 地址。 |
-| `不受限` | 允许访问所有出站目标。 |
+| `不受限` | 允许访问部署自身沙箱网络以外的所有出站目标。在 Docker 主机上，这个网络是 Docker 默认 bridge：其他沙箱，以及发布沙箱端口的 bridge 网关（[详情](deploy.md#sandbox-network-boundary)）。 |
 
 ## 防火墙配置
 
@@ -30,7 +30,8 @@ Environment 控制沙箱可以访问哪些目标：
 
 > Environment 的网络白名单控制沙箱可以访问哪些目标，不会分配固定的公网源
 > IP。额外允许的主机可以是精确主机、`*.example.com` 形式的最左侧通配符、IP
-> 地址或 CIDR；不要填写协议、端口或路径。
+> 地址或 CIDR；不要填写协议、端口或路径。位于部署沙箱网络
+> （`ASTRABOX_SANDBOX_EGRESS_DENY_CIDRS`）内的条目不会生效：这些拒绝规则先于所有允许规则执行。
 
 ## FAQ
 

@@ -112,6 +112,7 @@ test('evicting the session runtime recreates the resident sidecar transport on t
       name: `__e2e_transport_recreate_${runId}`,
       model,
       environment_name: environmentName,
+      prewarm_enabled: false,
     });
     agentId = String(agent.agent_id || '');
     expect(agentId, 'created agent must have an id').not.toEqual('');

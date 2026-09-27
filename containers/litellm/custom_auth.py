@@ -46,6 +46,7 @@ from astrabox_litellm_auth import (
 )  # noqa: E402
 from astrabox_oidc import (
     OidcAccessTokenRejected,
+    OidcIdentityRejected,
     OidcProviderConfig,
     OidcProviderUnavailable,
     principal_from_access_token,
@@ -178,6 +179,8 @@ async def user_api_key_auth(request: Request, api_key: str) -> UserAPIKeyAuth:
         principal = await principal_from_access_token(_oidc_config, credential)
     except OidcAccessTokenRejected as exc:
         raise _auth_error("OIDC access token is invalid or expired") from exc
+    except OidcIdentityRejected as exc:
+        raise _auth_error(f"OIDC access token refused: {exc}", 403) from exc
     except OidcProviderUnavailable as exc:
         raise _auth_error("OIDC provider is unavailable", 503) from exc
 

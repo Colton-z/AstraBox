@@ -15,7 +15,7 @@ import type { Locator, Page } from '@playwright/test';
 
 import { AstraApi } from '../fixtures/astraApi';
 import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
-import { appPath, parseTimeoutEnv } from '../fixtures/env';
+import { apiPath, appPath, parseTimeoutEnv } from '../fixtures/env';
 
 interface ExposedPortUrl {
   url: string;
@@ -224,10 +224,15 @@ test('expose-port uses the OpenSandbox HTTP and WebSocket data plane', async ({ 
         `nohup python3 /tmp/astrabox_expose_e2e.py ${PORT} >/tmp/astrabox_expose_e2e.log 2>&1 & sleep 2`,
     );
 
+    const reserved = await request.get(apiPath(`/exposed-ports/${sessionId}/8080/url`));
+    expect(reserved.status()).toBe(400);
+    expect(await reserved.text()).toContain('EXPOSE_PORT_RESERVED');
+
     const result = await api.data<ExposedPortUrl>('GET', `/exposed-ports/${sessionId}/${PORT}/url`);
     expect(result.port).toBe(PORT);
     expect(result.url).toMatch(/^https?:\/\//);
     expect(result.url).not.toContain('/api/v1/exposed-ports/');
+    expect(new URL(result.url).searchParams.has('api_key')).toBe(false);
     exposedUrl = result.url.replace(/\/+$/, '');
     expectEndpointShape(new URL(exposedUrl), ENDPOINT_KIND, PORT);
 

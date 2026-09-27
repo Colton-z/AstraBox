@@ -57,11 +57,14 @@ from astrabox.core.service.orchestrator.engine.codex_client import (
 )
 from astrabox.core.service.orchestrator.engine.codex_link import (
     CODEX_APP_SERVER_PORT,
+    CODEX_FORWARD_TOKEN_FILE_NAME,
     CodexAppServerLink,
 )
 from astrabox.core.service.orchestrator.engine.provisioning import (
     EngineSandboxRequest,
     ModelCredentialRequest,
+    deliver_in_box_service_token,
+    in_box_service_token,
 )
 from astrabox.core.service.orchestrator.engine.registry import register_engine_adapter
 from astrabox.core.service.orchestrator.runtime.config_resolver import (
@@ -277,6 +280,16 @@ def _conversation_app_server_port(
     return runner_port_for_uid(int(uid))
 
 
+def _forward_token(sandbox_id: str, runtime_identity: dict[str, Any] | None) -> str:
+    """The credential this seat's forwarder demands on every upgrade."""
+
+    return in_box_service_token(
+        purpose="codex-forward",
+        sandbox_id=sandbox_id,
+        runtime_identity=runtime_identity,
+    )
+
+
 def _engine_sandbox_request(model_access: Any, catalog: str | None) -> EngineSandboxRequest:
     """What a codex box must be, for the cold create and the prepared box alike.
 
@@ -435,6 +448,18 @@ async def _publish_runtime(
 
 class CodexEngineAdapter(EngineAdapter):
     """EngineAdapter for the Codex CLI's app-server."""
+
+    def enrich_stored_child_tool_results(
+        self, *, engine_ref: str, raw_scopes: list[dict[str, Any]],
+        messages: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        from astrabox.core.service.orchestrator.engine.codex_child_runs import (
+            enrich_stored_child_tool_results,
+        )
+
+        return enrich_stored_child_tool_results(
+            engine_ref=engine_ref, raw_scopes=raw_scopes, messages=messages,
+        )
 
     def child_run_is_active(self, child_run: dict[str, Any]) -> bool:
         from astrabox.core.service.orchestrator.engine.child_runs import (
@@ -608,11 +633,21 @@ class CodexEngineAdapter(EngineAdapter):
         handshake per CONNECTION, so the probe socket opened here leaves the
         server exactly as a boot with no probe would.
 
-        Allocation, credential delivery and cleanup are already complete. A
-        shared placement's image-owned service was proven by the platform; a
-        whole box additionally receives a real app-server handshake here.
+        Allocation, credential delivery and cleanup are already complete. The
+        one thing written here is the forwarder's own credential, because the
+        forwarder admits nothing until it has one and a claim does not write it
+        again. A shared placement's image-owned service was proven by the
+        platform; a whole box additionally receives a real app-server
+        handshake here, through that same credential check.
         """
 
+        token = _forward_token(context.sandbox_id, context.runtime_identity)
+        await deliver_in_box_service_token(
+            context.sandbox,
+            context.runtime_identity,
+            file_name=CODEX_FORWARD_TOKEN_FILE_NAME,
+            token=token,
+        )
         if context.placement == "shared_slot":
             return {}
 
@@ -628,7 +663,9 @@ class CodexEngineAdapter(EngineAdapter):
         catalog = _model_catalog(template)
         link = None
         try:
-            link = await CodexAppServerLink.connect(context.sandbox)
+            link = await CodexAppServerLink.connect(
+                context.sandbox, forward_token=token
+            )
             server_info = link.server_info or {}
             await link.close()
         except BaseException:
@@ -704,8 +741,17 @@ class CodexEngineAdapter(EngineAdapter):
         sandbox = context.sandbox
         link: CodexAppServerLink | None = None
         try:
+            token = _forward_token(context.sandbox_id, context.runtime_identity)
+            if context.prepared_manifest is None and context.attach_mode is None:
+                await deliver_in_box_service_token(
+                    sandbox,
+                    context.runtime_identity,
+                    file_name=CODEX_FORWARD_TOKEN_FILE_NAME,
+                    token=token,
+                )
             link = await CodexAppServerLink.connect(
                 sandbox,
+                forward_token=token,
                 port=_conversation_app_server_port(context.runtime_identity),
             )
             return await _publish_runtime(

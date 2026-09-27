@@ -56,6 +56,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import functools
+import operator
 import re
 import uuid
 from pathlib import PurePath
@@ -252,6 +253,14 @@ def _project(doc: dict[str, Any], projection: dict[str, Any] | None) -> dict[str
 # read_path returns the query.MISSING sentinel for absent paths; import-bind it
 # without re-importing the symbol name into the projection logic above.
 from .query import MISSING as _MISSING_SENTINEL  # noqa: E402
+
+#: The range operators a string-keyed sort key's condition may be narrowed by in SQL.
+_RANGE_OPERATORS = {
+    "$gt": operator.gt,
+    "$gte": operator.ge,
+    "$lt": operator.lt,
+    "$lte": operator.le,
+}
 
 #: Keys whose top-level string equality may be pushed into SQL. Identifier
 #: shape only: a dot means a nested path (different match semantics), and
@@ -525,6 +534,12 @@ class AsyncCollection:
         Missing sorts before present, as Mongo orders it: a rank column carries
         that, because SQL's own NULL placement differs by dialect and by
         direction.
+
+        The caller declared every sort key a string (``string_keyed``), so a
+        range on one of them (the keyset condition a page resumes after) is
+        also narrowed in SQL, and a page reads its own rows rather than every
+        row before it. Strings are ordered and compared by code point, the
+        order the matcher and MongoDB use.
         """
         await ensure_created(self._db_url)
         stmt = select(DocumentRow.doc).where(DocumentRow.collection == self._name)
@@ -551,12 +566,15 @@ class AsyncCollection:
                     )
                 )
             )
-        or_clause = self._or_pushdown(query)
+        sort_keys = frozenset(key for key, _direction in sort)
+        for condition in self._sort_key_ranges(query, sort_keys):
+            stmt = stmt.where(condition)
+        or_clause = self._or_pushdown(query, sort_keys=sort_keys)
         if or_clause is not None:
             stmt = stmt.where(or_clause)
         order: list[Any] = []
         for key, direction in sort:
-            value = self._json_string_value(key)
+            value = self._json_ordered_string(key)
             present = case((value.is_(None), 0), else_=1)
             order.extend(
                 [present.asc(), value.asc()]
@@ -652,7 +670,12 @@ class AsyncCollection:
             found.append((key, list(members)))
         return found
 
-    def _or_pushdown(self, query: dict[str, Any] | None) -> Any | None:
+    def _or_pushdown(
+        self,
+        query: dict[str, Any] | None,
+        *,
+        sort_keys: frozenset[str] = frozenset(),
+    ) -> Any | None:
         """A top-level ``$or`` narrowed to the disjunction of its arms.
 
         A document matching the ``$or`` satisfies at least one arm, so the
@@ -669,6 +692,11 @@ class AsyncCollection:
         one collection, each naming a state, together selecting thirty-four
         rows out of four thousand — and, before this, reading all four thousand
         every few seconds.
+
+        ``sort_keys`` are keys the caller declared strings for this read (see
+        :meth:`_sort_key_ranges`); a range on one of them counts as a pushable
+        condition of its arm. That is what narrows a keyset page's
+        ``$or: [{k: {$gt: v}}, {k: v, id: {$gt: w}}]`` in SQL.
         """
 
         if not query:
@@ -700,10 +728,34 @@ class AsyncCollection:
                 )
                 for key, members in self._string_in_pushdowns(arm)
             )
+            conditions.extend(self._sort_key_ranges(arm, sort_keys))
             if not conditions:
                 return None
             clauses.append(and_(*conditions))
         return or_(*clauses)
+
+    def _sort_key_ranges(
+        self, query: dict[str, Any] | None, sort_keys: frozenset[str]
+    ) -> list[Any]:
+        """SQL conditions for the string ranges ``query`` puts on ``sort_keys``.
+
+        Only for keys the caller declared strings (a ``string_keyed`` sort):
+        on a string, SQL's code-point comparison and the matcher agree, so the
+        condition narrows without dropping a row the matcher would keep. A key
+        of any other type fails the matcher's range test anyway.
+        """
+
+        if not query or not sort_keys:
+            return []
+        conditions: list[Any] = []
+        for key, value in query.items():
+            if key not in sort_keys or not isinstance(value, dict) or not value:
+                continue
+            if not all(op in _RANGE_OPERATORS and isinstance(operand, str) for op, operand in value.items()):
+                continue
+            column = self._json_ordered_string(key)
+            conditions.extend(_RANGE_OPERATORS[op](column, operand) for op, operand in value.items())
+        return conditions
 
     @staticmethod
     def _apply_sort(
@@ -1423,6 +1475,19 @@ class AsyncCollection:
         """SQL expression for a top-level JSON string value."""
         if self._is_postgresql:
             return DocumentRow.doc[key].as_string()
+        return func.json_extract(DocumentRow.doc, f"$.{key}")
+
+    def _json_ordered_string(self, key: str) -> Any:
+        """:meth:`_json_string_value`, ordered and compared by code point.
+
+        SQLite compares text bytewise already. PostgreSQL orders text by the
+        database's collation, and a locale collation such as ``en_US.utf8``
+        ignores punctuation and case at its first level, so it disagrees with
+        the matcher and with MongoDB about which string comes first; ``"C"`` is
+        byte order, which for UTF-8 is code-point order.
+        """
+        if self._is_postgresql:
+            return DocumentRow.doc[key].as_string().collate("C")
         return func.json_extract(DocumentRow.doc, f"$.{key}")
 
     def _json_value_type(self, key: str) -> Any:

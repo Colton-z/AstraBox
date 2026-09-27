@@ -60,7 +60,7 @@ RUN set -eux; \
 
 COPY --from=execd /execd /execd
 COPY --from=execd /bootstrap.sh /bootstrap.sh
-COPY containers/sandbox-claude-code/execd-isolation.toml /opt/astrabox/opensandbox/isolation.toml
+COPY --chmod=u=rwX,go=rX containers/sandbox-claude-code/execd-isolation.toml /opt/astrabox/opensandbox/isolation.toml
 RUN set -eux; \
     mkdir -p /opt/astrabox/opensandbox; \
     ln /execd /opt/astrabox/opensandbox/execd; \
@@ -129,11 +129,11 @@ RUN set -eux; \
 # OpenSandbox command transport triggers this fixed platform capability when a
 # session claims the box. It must already exist in a prewarmed image; the claim
 # path supplies only the conversation-specific environment and data.
-COPY astrabox/core/service/orchestrator/runtime/provision-conversation /usr/local/bin/astrabox-provision-conversation
+COPY --chmod=u=rwX,go=rX astrabox/core/service/orchestrator/runtime/provision-conversation /usr/local/bin/astrabox-provision-conversation
 RUN chmod 0555 /usr/local/bin/astrabox-provision-conversation && \
     bash -n /usr/local/bin/astrabox-provision-conversation
 
-COPY astrabox/core/service/orchestrator/runtime/astrabox-assistant-workspace-storage /usr/local/bin/astrabox-assistant-workspace-storage
+COPY --chmod=u=rwX,go=rX astrabox/core/service/orchestrator/runtime/astrabox-assistant-workspace-storage /usr/local/bin/astrabox-assistant-workspace-storage
 RUN chmod 0555 /usr/local/bin/astrabox-assistant-workspace-storage && \
     bash -n /usr/local/bin/astrabox-assistant-workspace-storage
 
@@ -203,20 +203,20 @@ RUN set -eux; \
 # the contract and keeps the :8080 server alive. Self-contained: stdlib +
 # claude_agent_sdk only. Build context is the repo ROOT (e.g.
 # `docker build -f containers/sandbox-claude-code/Dockerfile .`).
-COPY astrabox/core/service/orchestrator/sandbox_runner.py /opt/astrabox/sandbox_runner.py
+COPY --chmod=u=rwX,go=rX astrabox/core/service/orchestrator/sandbox_runner.py /opt/astrabox/sandbox_runner.py
 RUN /usr/local/bin/python3.12 -c "import ast; ast.parse(open('/opt/astrabox/sandbox_runner.py').read()); print('runner parse ok')"
 
 # The image and the host revive path invoke the same launcher. It waits for the
 # AIO base to create the fixed account, then drops the whole runner process to
 # that account before the SDK can spawn a CLI child.
-COPY containers/sandbox-claude-code/start-runner.sh /opt/astrabox/start-runner.sh
+COPY --chmod=u=rwX,go=rX containers/sandbox-claude-code/start-runner.sh /opt/astrabox/start-runner.sh
 RUN chmod 0755 /opt/astrabox/start-runner.sh && sh -n /opt/astrabox/start-runner.sh
 
 # The boot contract: start the runner, then exec the base's init. This is the
 # image's ENTRYPOINT as far as the platform is concerned — the create path
 # passes it explicitly (`sandbox_image.AIO_IMAGE_ENTRYPOINT`), so the two move
 # together.
-COPY containers/sandbox-claude-code/boot.sh /opt/astrabox/boot.sh
+COPY --chmod=u=rwX,go=rX containers/sandbox-claude-code/boot.sh /opt/astrabox/boot.sh
 RUN chmod 0755 /opt/astrabox/boot.sh && sh -n /opt/astrabox/boot.sh
 
 

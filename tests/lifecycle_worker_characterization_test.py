@@ -647,6 +647,7 @@ class RunStartupCommandGuardTests(unittest.IsolatedAsyncioTestCase):
                     workspace_plan=SimpleNamespace(
                         sandbox_id="sandbox-new",
                         session_kind="agent_chat",
+                        resume_engine_session_key="native-old",
                     ),
                 )
                 worker = _make_worker(
@@ -675,6 +676,12 @@ class RunStartupCommandGuardTests(unittest.IsolatedAsyncioTestCase):
                 )
 
                 self.assertEqual(result["status"], "ready")
+                # The attach rejoins the conversation the plan names; an attach
+                # without it opens a new, empty native conversation.
+                self.assertEqual(
+                    runtime_manager.ensure_runtime.await_args.kwargs["engine_session_key"],
+                    "native-old",
+                )
                 updates = worker._update_session_with_settle_retry.await_args.kwargs[
                     "updates"
                 ]
@@ -777,6 +784,7 @@ class StartupAbortOwnershipTests(unittest.IsolatedAsyncioTestCase):
             workspace_plan=SimpleNamespace(
                 sandbox_id="shared-sandbox",
                 session_kind="assistant_chat",
+                resume_engine_session_key=None,
             ),
         )
         runtime_subjects.cleanup_failed_startup_runtime.return_value = (

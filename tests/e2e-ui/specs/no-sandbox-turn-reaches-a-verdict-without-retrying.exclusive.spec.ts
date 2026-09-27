@@ -25,13 +25,15 @@
 import { test, expect } from '@playwright/test';
 
 import { AstraApi } from '../fixtures/astraApi';
-import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
+import { trackSessions } from '../fixtures/sessionCleanup';
 import { parseTimeoutEnv } from '../fixtures/env';
+import { finishNoSandboxFault } from '../fixtures/noSandboxFault';
 import {
   sessionEvents,
   patchSessionDoc,
   patchSnapshotDoc,
-  restoreDoc,
+  restoreSessionSandboxPointer,
+  sessionDoc,
   snapshotDoc,
 } from '../fixtures/dbOracle';
 
@@ -43,14 +45,24 @@ const QUIET_OBSERVATION_MS = parseTimeoutEnv('ASTRABOX_E2E_NO_SANDBOX_QUIET_MS',
 // A heartbeat old enough that the turn is reclaimable rather than live.
 const STALE_HEARTBEAT_AT = '2020-01-01T00:00:00+00:00';
 
-// The fault is restored only on a pass; a failure keeps the scene, and the
-// report tail names the session so the oracle DB still holds the evidence.
+// A failed assertion keeps the fault for diagnosis. An unrelated fail-fast can
+// interrupt this case while its injected pointer is missing. Save the scene,
+// then restore only that address so normal ownership cleanup can dispose it.
 let sessionId = '';
 let sessionBefore: Record<string, unknown>[] = [];
 let snapshotBefore: Record<string, unknown>[] = [];
-onPassOnly(async () => {
-  if (sessionBefore[0]) restoreDoc('sessions', { '$.session_id': sessionId }, sessionBefore[0]);
-  if (snapshotBefore[0]) restoreDoc('snapshots', { '$.session_id': sessionId }, snapshotBefore[0]);
+test.afterEach(async ({}, info) => {
+  await finishNoSandboxFault({
+    status: String(info.status), original: sessionBefore[0],
+    capture: () => ({
+      session: sessionDoc(sessionId), snapshot: snapshotDoc(sessionId),
+      journal: sessionEvents(sessionId), original_snapshot: snapshotBefore[0],
+    }),
+    attach: (body) => info.attach('no-sandbox-fault-before-repair', {
+      body, contentType: 'application/json',
+    }),
+    restore: restoreSessionSandboxPointer,
+  });
 });
 const sessions = trackSessions();
 

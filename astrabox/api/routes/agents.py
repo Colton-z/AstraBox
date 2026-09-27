@@ -7,12 +7,14 @@ from typing import Any, Literal
 from fastapi import Body, Header, Request
 from pydantic import BaseModel, ConfigDict, Field
 
+from astrabox.api.routes._shared import list_page_limit
 from astrabox.api.routes.conversation_models import (
     StartConversationRequest,
     conversation_idempotency_key,
 )
 from astrabox.api.routes.response_envelope import ApiEnvelope
 from astrabox.common.utils.api_response import success_response
+from astrabox.common.utils.settings import load_astrabox_settings
 from astrabox.common.utils.user_context import get_current_user_context
 from astrabox.core.service.orchestrator.service_registry import (
     get_agent_service,
@@ -78,6 +80,24 @@ class AgentRecord(BaseModel):
     can_manage: bool | None = None
 
 
+class AgentListPage(BaseModel):
+    """One page of the Agents the caller may see, by name regardless of case.
+
+    ``next_cursor`` is the value to pass back as ``cursor``; it is ``null`` on
+    the last page, which ``has_more`` reports independently. ``total`` and
+    ``enabled`` count every Agent the caller may see, whatever ``q`` and
+    ``status`` narrowed, and come with the first page only.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    agents: list[AgentRecord]
+    has_more: bool
+    next_cursor: str | None = None
+    total: int | None = None
+    enabled: int | None = None
+
+
 class AgentAccess(BaseModel):
     """The Agent authorization settings returned by ``_agent_access_view``.
 
@@ -100,6 +120,8 @@ class AgentFormField(BaseModel):
     presentation and validation members (``group``, ``required``, ``enum``,
     ``path``, ``complex``, ``advanced``) appear per field. ``item_schema``
     describes the sub-fields of a nested object with this same grammar.
+    ``default`` is the value a create stores when the field is omitted; only
+    ``prewarm_enabled`` carries one, and its value follows the deployment.
     """
 
     model_config = ConfigDict(extra="allow")
@@ -112,6 +134,7 @@ class AgentFormField(BaseModel):
     path: str | None = None
     complex: bool | None = None
     advanced: bool | None = None
+    default: Any = None
     item_schema: list["AgentFormField"] | None = None
 
 
@@ -211,11 +234,25 @@ def register_agent_routes(app: Any) -> None:
 
     @app.get(
         "/api/v1/agents",
-        response_model=ApiEnvelope[list[AgentRecord]],
+        # Two shapes, like GET /api/v1/sessions: `page=1` answers one page
+        # (limit, cursor, q, status) for the console's Agent list; without it
+        # the answer is every Agent the caller may see, for pickers and
+        # scripts that want the whole list.
+        response_model=ApiEnvelope[AgentListPage] | ApiEnvelope[list[AgentRecord]],
         response_model_exclude_unset=True,
     )
     async def list_agents(request: Request):
         user = await _resolve_user(request)
+        params = request.query_params
+        if str(params.get("page") or "").strip() == "1":
+            page = await _service.list_agents_page(
+                user,
+                limit=list_page_limit(params.get("limit")),
+                cursor=params.get("cursor"),
+                query=str(params.get("q") or ""),
+                status=str(params.get("status") or "all").strip() or "all",
+            )
+            return success_response(page)
         result = await _service.list_agents(user)
         return success_response(result)
 
@@ -227,7 +264,7 @@ def register_agent_routes(app: Any) -> None:
     async def get_agent_configuration_schema(request: Request):
         """Agent form structure for any signed-in Agent author."""
         await _resolve_user(request)
-        return success_response(get_agent_schema())
+        return success_response(get_agent_schema(load_astrabox_settings()))
 
     @app.get(
         "/api/v1/agent-configuration/environments",

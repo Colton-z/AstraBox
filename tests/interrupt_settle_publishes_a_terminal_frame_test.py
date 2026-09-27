@@ -22,6 +22,7 @@ import pytest
 from astrabox.core.service.orchestrator.session_kernel.workers.turn.worker import (
     TurnWorker,
 )
+from astrabox.core.service.orchestrator.session_message_view import project_session_messages
 
 
 def _worker(*, frames: list[dict] | None = None) -> tuple[TurnWorker, dict]:
@@ -73,6 +74,39 @@ async def test_the_settle_publishes_a_terminal_frame_for_attached_clients() -> N
         "type": "finish",
         "finish_reason": "stop",
     }
+
+
+@pytest.mark.asyncio
+async def test_a_stop_before_the_first_token_leaves_a_message_that_says_it_stopped() -> None:
+    """A user stop is a completed turn with a cancelled result, on every path.
+
+    This turn produced nothing before the stop, so without the result the
+    reloaded page has no message for it at all, and nothing says the stop
+    took. The message is read the way the page reads it: projected from the
+    turn's events and frames.
+    """
+
+    worker, _ = _worker()
+
+    await worker._settle_pre_first_token_interrupt(
+        session_id="session-1",
+        turn_id="turn-1",
+        command_id="command-1",
+        snapshot={"current_turn_id": "turn-1", "conversation_state": "PROCESSING"},
+    )
+
+    repo = worker._session_events_repo
+    events = [{**call.args[0], "event_seq": 41} for call in repo.append_event.await_args_list]
+    frames = [
+        {**call.args[0], "frame_seq": index}
+        for index, call in enumerate(repo.append_frame.await_args_list)
+    ]
+    assert [frame["payload"]["type"] for frame in frames] == ["data-result", "finish"]
+    [message] = project_session_messages(events=events, frames=frames)
+    assert message["turn_id"] == "turn-1"
+    assert [block.get("finish_reason") for block in message["blocks"] if block["type"] == "result"] == [
+        "cancelled"
+    ]
 
 
 @pytest.mark.asyncio

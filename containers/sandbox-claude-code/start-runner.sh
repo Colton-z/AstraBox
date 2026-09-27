@@ -42,4 +42,5 @@ exec runuser -u "$ASTRABOX_WORKLOAD_USER" -- env \
     LOGNAME="$ASTRABOX_WORKLOAD_USER" \
     PWD="$WORKSPACE" \
     ASTRABOX_RUNNER_PORT="$ASTRABOX_RUNNER_PORT" \
+    ASTRABOX_RUNNER_TOKEN_FILE="$workload_home/.astrabox-runner-token" \
     /usr/local/bin/python3.12 "$ASTRABOX_INBOX_SERVER"

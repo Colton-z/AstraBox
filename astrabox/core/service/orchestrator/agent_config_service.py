@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, is_dataclass
@@ -21,6 +23,7 @@ from astrabox.core.service.orchestrator.agent_access import (
     agent_admins,
     agent_allowed_user_ids,
     agent_created_by,
+    assert_may_author,
     can_manage_agent,
     can_view_agent,
     normalize_visibility,
@@ -32,7 +35,12 @@ from astrabox.core.service.orchestrator.schema_validation import (
 )
 from astrabox.core.service.orchestrator.agent_schema import (
     AGENT_PRIVATE_STORED_FIELDS,
+    agents_prewarm_by_default,
     validate_agent_payload,
+)
+from astrabox.core.service.orchestrator.author_boundary import (
+    refuse_reserved_mcp_fields,
+    validate_author_declarations,
 )
 from astrabox.core.service.orchestrator.environment_schema import (
     normalize_environment_payload,
@@ -79,6 +87,17 @@ _VERSIONED_HARNESS_FIELDS = (
     "diff_panel",
     "prewarm_enabled",
 )
+
+def _authored_change(existing: dict[str, Any], updates: dict[str, Any]) -> bool:
+    """Whether a write changes any of the authored fields it carries.
+
+    ``updated_at`` and ``updated_by`` record who changed a definition and
+    when. Saving a form unchanged, or the runtime writing its own state to the
+    same row, changes no definition and must not move them.
+    """
+
+    return any(existing.get(key) != value for key, value in updates.items())
+
 
 class AgentConfigService:
     """Store Agent configuration and resolve it into runtime views.
@@ -231,22 +250,51 @@ class AgentConfigService:
         )
         model_override = assistant.get("model_config_override") or {}
         model = str(model_override.get("model_name") or "").strip() or None
+        mcp_servers = self._normalize_mcp_servers(assistant.get("mcp_config_override"))
+        refuse_reserved_mcp_fields(mcp_servers, owner=f"assistant '{assistant_id}'")
         view = AgentView(
             agent_id=None,
             name=str(assistant.get("display_name") or assistant_id),
             model=model,
             model_config=self._synthesize_model_config(model, env),
-            system=None,
-            mcp_servers=self._normalize_mcp_servers(assistant.get("mcp_config_override")),
+            system=str(assistant.get("system") or "").strip() or None,
+            mcp_servers=mcp_servers,
             skills=self._normalize_skills(assistant.get("skill_manifest_override")),
             plugin_repos=normalize_plugin_repos(assistant.get("plugin_repos_override")),
             credential_vault_ids=self._normalize_credential_vault_ids(
                 assistant.get("credential_vault_ids")
             ),
             environment_name=env_name,
+            assistant_revision=self._assistant_revision(assistant, env),
         )
         self._overlay_environment_runtime(view, env)
         return view
+
+    @staticmethod
+    def _assistant_revision(assistant: dict[str, Any], env: dict[str, Any]) -> str:
+        """The identity of what an Assistant's runtime is prepared from.
+
+        Every stored field of the Assistant except its bookkeeping, plus the
+        Environment's revision. It says only that the definition moved; which
+        change matters to the Agent program's profile is the adapter's call
+        when it prepares that profile again.
+        """
+
+        definition = {
+            key: value
+            for key, value in assistant.items()
+            if key not in {"_id", "created_at", "updated_at", "deleted"}
+        }
+        payload = json.dumps(
+            {
+                "assistant": definition,
+                "environment_updated_at": str(env.get("updated_at") or ""),
+            },
+            sort_keys=True,
+            ensure_ascii=False,
+            default=str,
+        )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     async def _build_agent_view(
         self, item: dict[str, Any], env_cache: dict[str, dict[str, Any]],
@@ -268,17 +316,23 @@ class AgentConfigService:
             else {}
         )
         agent_ref = f"agent '{item.get('agent_id') or item.get('name')}'"
+        own_mcp_servers = self._normalize_mcp_servers(item.get("mcp_servers")) or {}
+        # Only a catalog assignment below may carry `provider` or
+        # `credential_target_url`. Saving refuses them on the Agent's own
+        # servers; this refuses a definition saved before that check.
+        refuse_reserved_mcp_fields(own_mcp_servers, owner=agent_ref)
         resolved_mcp_servers = self._merge_mcp_servers(
             [
-                ("the Agent's own mcp_servers", self._normalize_mcp_servers(item.get("mcp_servers")) or {}),
+                ("the Agent's own mcp_servers", own_mcp_servers),
                 *await self._resolve_assigned_mcp_servers(item),
             ],
             ref=agent_ref,
         )
+        catalog_skills = self._normalize_skills(extension_catalog.get("skills"))
         resolved_skills = self._dedupe_strings(
             [
                 *self._normalize_skills(item.get("skills")),
-                *self._normalize_skills(extension_catalog.get("skills")),
+                *catalog_skills,
             ]
         )
         view = AgentView(
@@ -293,6 +347,7 @@ class AgentConfigService:
             engine_options=item.get("engine_options"),
             default_repo=self._normalize_default_repo(item.get("default_repo")),
             plugin_repos=normalize_plugin_repos(item.get("plugin_repos")),
+            catalog_skills=tuple(catalog_skills),
             credential_vault_ids=self._normalize_credential_vault_ids(
                 item.get("credential_vault_ids")
             ),
@@ -447,10 +502,9 @@ class AgentConfigService:
         """Write named access fields through the dedicated policy operation."""
 
         agent = await self._must_manage_agent_access(user, agent_id)
-        updates = {
-            **sanitize_access_control_payload(payload),
-            "updated_by": user.user_id,
-        }
+        updates = sanitize_access_control_payload(payload)
+        if _authored_change(agent, updates):
+            updates.update(updated_at=utcnow_iso(), updated_by=user.user_id)
         applied = await self._agent_repo.compare_and_update_agent(
             str(agent["agent_id"]),
             expected={},
@@ -578,7 +632,7 @@ class AgentConfigService:
         environment_name: str,
         engine_options: Any,
         configuration_inputs: dict[str, Any],
-    ) -> None:
+    ) -> dict[str, Any]:
         """Write-side gate for the Agent's Environment and engine inputs.
 
         The bag's keys mean nothing to the platform; the environment's engine
@@ -623,19 +677,31 @@ class AgentConfigService:
                 f"engine '{engine_kind}' does not consume Agent configuration "
                 f"fields: {', '.join(unsupported)}"
             )
+        return env
 
     async def create_agent_config(
         self, user: UserContext, payload: dict[str, Any]
     ) -> dict[str, Any]:
         """Create one Agent, mint ``agent_id``, and start ``version`` at 1."""
+        from astrabox.common.utils.settings import load_astrabox_settings
+
+        assert_may_author(
+            user.roles, admin_only=load_astrabox_settings().authoring_admin_only
+        )
         name = str(payload.get("name") or "").strip()
         if not name:
             raise APIError(code="INVALID_REQUEST", message="name is required", status_code=400)
         editable = validate_agent_payload({**payload, "name": name})
+        if editable.get("prewarm_enabled") is None:
+            # Written, not assumed on read: the capacity sweep selects Agents
+            # whose stored value is true, so an absent key would stay cold.
+            editable["prewarm_enabled"] = agents_prewarm_by_default(
+                load_astrabox_settings()
+            )
         plugin_repos = editable.get("plugin_repos")
         if plugin_repos is not None:
             editable["plugin_repos"] = normalize_plugin_repos(plugin_repos)
-        await self._validate_engine_configuration(
+        env = await self._validate_engine_configuration(
             environment_name=str(editable.get("environment_name") or ""),
             engine_options=editable.get("engine_options"),
             configuration_inputs={
@@ -643,6 +709,14 @@ class AgentConfigService:
                 "skills": editable.get("skills"),
                 "plugin_repos": editable.get("plugin_repos"),
             },
+        )
+        await validate_author_declarations(
+            owner=f"Agent {name!r}",
+            networking=env.get("networking"),
+            skills=editable.get("skills"),
+            plugin_repos=editable.get("plugin_repos"),
+            mcp_servers=editable.get("mcp_servers"),
+            default_repo=editable.get("default_repo"),
         )
 
         agent_id = str(uuid.uuid4())
@@ -714,16 +788,28 @@ class AgentConfigService:
             updates["plugin_repos"] = normalize_plugin_repos(
                 updates["plugin_repos"]
             )
-        await self._validate_engine_configuration(
+        effective = {
+            field: updates[field] if field in updates else existing.get(field)
+            for field in ("mcp_servers", "skills", "plugin_repos", "default_repo")
+        }
+        env = await self._validate_engine_configuration(
             environment_name=effective_environment,
             engine_options=effective_bag,
             configuration_inputs={
-                field: updates[field] if field in updates else existing.get(field)
+                field: effective[field]
                 for field in ("mcp_servers", "skills", "plugin_repos")
             },
         )
-        updates["updated_by"] = me
-
+        # The whole effective definition, not only the changed fields: moving
+        # an Agent to a stricter Environment must meet that Environment too.
+        await validate_author_declarations(
+            owner=f"Agent {name!r}",
+            networking=env.get("networking"),
+            skills=effective["skills"],
+            plugin_repos=effective["plugin_repos"],
+            mcp_servers=effective["mcp_servers"],
+            default_repo=effective["default_repo"],
+        )
         stored_version = self._coerce_positive_int(existing.get("version")) or 1
         supplied_version = payload.get("version")
         if supplied_version is not None:
@@ -744,6 +830,8 @@ class AgentConfigService:
         changed = self._harness_changed(existing, updates)
         if changed:
             updates["version"] = stored_version + 1
+        if _authored_change(existing, updates):
+            updates.update(updated_at=utcnow_iso(), updated_by=me)
 
         applied = await self._agent_repo.compare_and_update_agent(
             target,
@@ -803,11 +891,15 @@ class AgentConfigService:
         except EngineKindNotRegistered:
             rendered["engine_available"] = False
             rendered["supported_session_kinds"] = []
+            rendered["permission_modes"] = []
             return rendered
         rendered["engine_available"] = True
         rendered["supported_session_kinds"] = sorted(
             capabilities.supported_session_kinds
         )
+        # The modes a form may offer for this Environment's program, in the
+        # program's own vocabulary; empty means the program has none to choose.
+        rendered["permission_modes"] = list(capabilities.permission_modes)
         return rendered
 
     async def list_agent_environment_options(self) -> list[dict[str, Any]]:

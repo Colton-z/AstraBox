@@ -106,7 +106,18 @@ async def test_agent_startup_resolves_to_the_same_create_action() -> None:
     lifecycle.acquire_workspace_for_session.assert_not_awaited()
 
 
-async def test_assistant_startup_waits_on_the_owner_and_reuses_its_ready_binding() -> None:
+@pytest.mark.parametrize(
+    ("revision", "action"),
+    [
+        # The profile in the box was prepared from this Assistant as it is.
+        ("rev-1", "use_ready_binding"),
+        # The Assistant changed since: attach prepares the profile again.
+        ("rev-2", "attach_runtime"),
+    ],
+)
+async def test_assistant_startup_waits_on_the_owner_and_reuses_its_ready_binding(
+    revision: str, action: str
+) -> None:
     session = _assistant_session()
     provisioning = {
         "session_id": "bootstrap-1",
@@ -133,6 +144,7 @@ async def test_assistant_startup_waits_on_the_owner_and_reuses_its_ready_binding
                 "user_id": "user-1",
                 "assistant_id": "assistant-1",
                 "sandbox_id": "sandbox-2",
+                "configuration_revision": "rev-1",
             }
         },
     }
@@ -161,12 +173,12 @@ async def test_assistant_startup_waits_on_the_owner_and_reuses_its_ready_binding
     target = await coordinator.acquire_startup(
         session_id="session-1",
         sandbox_generation=None,
-        template=object(),
+        template=SimpleNamespace(assistant_revision=revision),
         resume_engine_session_key=None,
         on_progress=_record_progress,
     )
 
-    assert target.action == "use_ready_binding"
+    assert target.action == action
     assert target.workspace_plan is plan
     assert target.binding_expires_at == "2026-08-18T00:00:00+00:00"
     assert progress == ["mounting_nas"]
@@ -178,6 +190,62 @@ async def test_assistant_startup_waits_on_the_owner_and_reuses_its_ready_binding
         "provisioning_session_id": "session-1",
         "provisioning_sandbox_generation": "generation-1",
     }
+
+
+@pytest.mark.parametrize(
+    ("owns_materialization", "planner"),
+    [
+        # The conversation's own box died, so this startup provisions the
+        # Assistant's replacement box and starts the engine in it.
+        (True, "plan_assistant_runtime_start"),
+        # Another conversation already provisioned the replacement; this one
+        # attaches to it.
+        (False, "plan_assistant_runtime_attach"),
+    ],
+)
+async def test_assistant_conversation_startup_rejoins_its_native_conversation(
+    owns_materialization: bool, planner: str
+) -> None:
+    # A replacement box has the profile's SessionDB restored, and only the
+    # conversation's own key resumes what it holds; a plan without it made
+    # Hermes open a new, empty native conversation on every replacement.
+    session = _assistant_session()
+    sessions = _Sessions([session])
+    if owns_materialization:
+        workspace = {
+            "state": "MATERIALIZING",
+            "engine_kind": "assistant",
+            "provisioning_session_id": "session-1",
+            "provisioning_sandbox_generation": "generation-1",
+        }
+    else:
+        workspace = {
+            "state": "READY",
+            "engine_kind": "assistant",
+            "current_sandbox_id": "sandbox-2",
+            "current_sandbox_expires_at": "2026-08-18T00:00:00+00:00",
+        }
+    runtime_manager = Mock()
+    coordinator = RuntimeSubjectCoordinator(
+        runtime_manager=runtime_manager,
+        sessions_repo=sessions,
+        assistant_workspace_service=_WorkspaceService([workspace]),
+        assistant_lifecycle_getter=lambda: AsyncMock(),
+        ready_timeout_seconds=1,
+        ready_poll_seconds=0.001,
+    )
+
+    await coordinator.acquire_startup(
+        session_id="session-1",
+        sandbox_generation=None,
+        template=SimpleNamespace(assistant_revision="rev-1"),
+        resume_engine_session_key="20260923_212052_4f4713",
+        on_progress=None,
+    )
+
+    call = getattr(runtime_manager, planner)
+    call.assert_called_once()
+    assert call.call_args.kwargs["resume_engine_session_key"] == "20260923_212052_4f4713"
 
 
 async def test_assistant_startup_fails_loud_when_owner_recovery_cannot_advance() -> None:

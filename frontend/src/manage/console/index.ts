@@ -21,7 +21,8 @@ export {
   ConsoleErrorState,
   ConsoleRecordLoading,
 } from './ConsoleEmptyState';
-export { ConsoleSearch, NameCell, ConsoleToolbar } from './ConsoleControls';
+export { ConsoleSearch, NameCell, ConsoleToolbar, ConsoleLoadMore } from './ConsoleControls';
+export { usePagedList, useSettled, type CursorPage } from './usePagedList';
 export type {
   DrawerSectionSpec,
   DrawerFieldSpec,

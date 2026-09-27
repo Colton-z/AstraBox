@@ -239,6 +239,11 @@ for _code, _status, _category, _retryable, _owner in (
     # itself is what tells it to do.
     ("TOKEN_EXPIRED", 401, "auth", False, "client"),
     ("FORBIDDEN", 403, "auth", False, "client"),
+    # An identity without the administrator role on the admin surface. The role
+    # comes from the identity provider's groups (or, for the configured API
+    # client, from its astrabox:admin scope), so the remedy is an administrator
+    # granting it there; the same credential is refused every time.
+    ("ADMIN_ROLE_REQUIRED", 403, "auth", False, "client"),
     # The last row of the auth family that is not the caller's to fix. The token
     # is good and the provider answered, so a 4xx would send the caller to renew
     # a credential that is already valid; 502 says an upstream answer was not
@@ -246,6 +251,13 @@ for _code, _status, _category, _retryable, _owner in (
     # waiting — someone edits the provider's scope or claim mapping, which is
     # this deployment's configuration and so `platform`.
     ("IDENTITY_PROVIDER_MISCONFIGURED", 502, "auth", False, "platform"),
+    # The provider vouched for the account, and the account is not one this
+    # deployment accepts: a Casdoor user of another organization, such as
+    # Casdoor's own `built-in` administrators, or a client token from another
+    # application. 403 rather than 401, because a fresh token for the same
+    # account is refused the same way; `client` because the remedy is to sign
+    # in with an account of the configured organization.
+    ("IDENTITY_ORGANIZATION_REJECTED", 403, "auth", False, "client"),
     # An MCP client key that is valid and too narrow. 403 rather than 401
     # because the credential is not the problem — a 401 sends the holder to
     # replace something that works. `client` because issuing a wider key is
@@ -259,6 +271,11 @@ for _code, _status, _category, _retryable, _owner in (
     ("MCP_TOKEN_NOT_FOUND", 404, "request", False, "client"),
     ("SESSION_NOT_FOUND", 404, "request", False, "session"),
     ("SESSION_BUSY", 409, "state", True, "session"),
+    # A message whose turn ended before the message reached the Agent program:
+    # its delivery could not attach a runtime, or the turn was settled before
+    # delivery. The turn is over, so the same message sent again under its
+    # client_message_id answers this again; a new message starts a new turn.
+    ("INPUT_NOT_DELIVERED", 409, "state", False, "session"),
     # Same class of 409 as the row above — the resource's current state refuses
     # the operation — so it carries the same category rather than an auth one:
     # the caller is permitted, the Vault is simply still held. Not retryable,
@@ -393,6 +410,18 @@ for _code, _status, _category, _retryable, _owner in (
         "runtime",
     ),
     ("SANDBOX_CLEANUP_UNCONFIRMED", 502, "runtime.sandbox", True, "runtime"),
+    # The sandbox a conversation is bound to does not exist any more: the
+    # control plane does not know it, it is not running, its network wiring is
+    # stale, or it does not answer. The runtime owns it. Not retryable, because
+    # the same request sent again does not succeed on any path that raises it.
+    # A message refused with it (409) was already accepted, and sending it
+    # again under the same client_message_id replays that command instead of
+    # starting a turn. A file operation or engine control that meets the dead
+    # box (404) keeps meeting it. A new message is what moves the conversation
+    # to a new sandbox: its admission replaces the box.
+    ("SANDBOX_GONE", 404, "runtime.sandbox", False, "runtime"),
+    # Port 8080 is the sandbox's control API, not an application preview.
+    ("EXPOSE_PORT_RESERVED", 400, "request", False, "client"),
     ("AGENT_RUNTIME_GENERATION_CONFLICT", 409, "state", True, "platform"),
     # The platform wrote this durable record and cannot safely guess which
     # sandbox resource it names when the stored shape is invalid.
@@ -453,6 +482,26 @@ for _code, _status, _category, _retryable, _owner in (
         False,
         "template",
     ),
+    # An Agent's or Assistant's own Skill, Plugin or MCP host would open the
+    # deployment's own network (private, loopback, link-local, unresolvable) to
+    # a limited Environment that does not name it. Raised when the definition
+    # is saved and again when a sandbox policy is built from it. Only a changed
+    # host or an administrator's Environment edit changes the answer.
+    (
+        "AGENT_EGRESS_HOST_REFUSED",
+        403,
+        "configuration.environment",
+        False,
+        "template",
+    ),
+    # An author's own MCP definition sets `provider` or
+    # `credential_target_url`, which choose the credential the egress sidecar
+    # attaches; only a catalog assignment writes them.
+    ("AGENT_MCP_FIELD_RESERVED", 403, "configuration.agent", False, "template"),
+    # A repository names a deploy-key secret the administrator did not list in
+    # ASTRABOX_DEPLOY_KEY_SECRET_NAMES. The author picks a listed key, or an
+    # administrator lists this one.
+    ("AGENT_DEPLOY_KEY_NOT_ALLOWED", 403, "configuration.agent", False, "template"),
     # A deployment configured a storage medium that cannot hold an exclusive
     # write claim for a workspace that needs one. Nobody's request is wrong, so
     # no 4xx: an operator changes the provider or the medium. Raised where the

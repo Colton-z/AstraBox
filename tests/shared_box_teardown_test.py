@@ -112,12 +112,11 @@ class _Occupants:
         assert sandbox_id == BOX
         return [{"session_id": sid, "sandbox_id": BOX} for sid in self._bound]
 
-    async def list_startup_allocation_candidates(
-        self, *, limit: int
+    async def list_startup_allocations_on_sandbox(
+        self, sandbox_id: str
     ) -> list[dict[str, Any]]:
-        # Asked for explicitly: the repository's default page is ordered oldest
-        # first, which is the one page a joiner would not be on.
-        assert limit >= 500, f"the occupancy question must ask for a full page, got {limit}"
+        # The box-scoped query: every startup allocated onto this box.
+        assert sandbox_id == BOX
         return [
             {"session_id": sid, "startup_allocation": {"sandbox_id": BOX}}
             for sid in self._starting
@@ -695,7 +694,11 @@ async def test_the_reaper_gives_back_an_abandoned_box_and_keeps_a_lived_in_one(
             self.occupied = occupied
             self.cleared: list[str] = []
 
-        async def list_agents_with_resident_boxes(self, *, limit: int = 200):
+        async def list_agents_with_resident_boxes(
+            self, *, after_agent_id: str | None = None, limit: int = 200
+        ):
+            if after_agent_id is not None:
+                return []
             return [{"agent_id": "a1", "sandbox_id": BOX, "_prepared_slot": None,
                      "box_admissions": []}]
 

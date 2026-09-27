@@ -656,12 +656,16 @@ class AgentPlatformService:
         An Assistant has no Agent record to declare them, and a Session whose
         Agent was deleted must still render; both resolve to nothing declared
         rather than to an error, because a missing declaration is the same
-        answer as a declaration of `false`.
+        answer as a declaration of `false`. Reading the declaration starts
+        nothing, so a disabled Environment does not stop the Session rendering
+        either; what it refuses is new work.
         """
 
         agent_id = str(session.get("agent_id") or "").strip()
         agent = (
-            await self._agent_config.resolve_agent_harness(agent_id)
+            await self._agent_config.resolve_agent_harness(
+                agent_id, require_enabled_environment=False
+            )
             if agent_id
             else None
         )

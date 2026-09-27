@@ -140,7 +140,7 @@ function Contained({ posture }: { posture: AdminSandboxSecurity }) {
           <ul className="console-val mt-0.5 space-y-0.5">
             {posture.egress_rules.map((rule) => (
               <li key={`${rule.action}:${rule.target}`} className="text-11">
-                <span className={rule.action === 'allow' ? 'text-mint-fg' : 'text-destructive'}>
+                <span className={rule.action === 'allow' ? 'text-mint-fg' : 'text-crimson-fg'}>
                   {rule.action}
                 </span>{' '}
                 {rule.target}

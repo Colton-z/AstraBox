@@ -52,6 +52,8 @@ fi
 client_secret="$(read_hex_secret "${CASDOOR_OIDC_CLIENT_SECRET_FILE:-}" CASDOOR_OIDC_CLIENT_SECRET_FILE)"
 api_client_secret="$(read_hex_secret "${CASDOOR_OIDC_API_CLIENT_SECRET_FILE:-}" CASDOOR_OIDC_API_CLIENT_SECRET_FILE)"
 admin_password="$(read_hex_secret "${CASDOOR_ADMIN_PASSWORD_FILE:-}" CASDOOR_ADMIN_PASSWORD_FILE)"
+# Checked here, so a missing or malformed file stops the container at once.
+read_hex_secret "${CASDOOR_BUILTIN_ADMIN_PASSWORD_FILE:-}" CASDOOR_BUILTIN_ADMIN_PASSWORD_FILE >/dev/null
 client_id="${CASDOOR_OIDC_CLIENT_ID:-}"
 case "$client_id" in
   ''|*[!A-Za-z0-9._-]*)
@@ -96,5 +98,17 @@ sed \
   -e "s|__ASTRABOX_CONSOLE_ORIGIN__|$(escape_sed_replacement "$console_origin")|g" \
   "$template" >"$init_data"
 chmod 0600 "$init_data"
+
+# Casdoor gives its own administrator, built-in/admin, the password 123 when it
+# creates its database; the seed above cannot change an existing account, so
+# the check runs against Casdoor's API once the server answers, at every start.
+# The container reports healthy only after it (compose.sso.yaml), and AstraBox
+# waits for a healthy Casdoor. The check runs detached from this process, which
+# becomes the server: the init process Compose starts for this container
+# (`init: true`) is its parent and collects it when it ends.
+checked=/run/astrabox-casdoor/built-in-admin-checked
+rm -f "$checked"
+(/bin/sh /conf/astrabox-secure-builtin-admin.sh http://127.0.0.1:8000 \
+  "$CASDOOR_BUILTIN_ADMIN_PASSWORD_FILE" "$checked" &)
 
 exec /server

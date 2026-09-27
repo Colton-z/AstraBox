@@ -1426,7 +1426,7 @@
       },
       "AgentFormField": {
         "additionalProperties": true,
-        "description": "One field of the Agent authoring form, as ``agent_schema`` declares it.\n\n``key`` and ``type`` are the two members every entry carries; the optional\npresentation and validation members (``group``, ``required``, ``enum``,\n``path``, ``complex``, ``advanced``) appear per field. ``item_schema``\ndescribes the sub-fields of a nested object with this same grammar.",
+        "description": "One field of the Agent authoring form, as ``agent_schema`` declares it.\n\n``key`` and ``type`` are the two members every entry carries; the optional\npresentation and validation members (``group``, ``required``, ``enum``,\n``path``, ``complex``, ``advanced``) appear per field. ``item_schema``\ndescribes the sub-fields of a nested object with this same grammar.\n``default`` is the value a create stores when the field is omitted; only\n``prewarm_enabled`` carries one, and its value follows the deployment.",
         "properties": {
           "advanced": {
             "anyOf": [
@@ -1449,6 +1449,9 @@
               }
             ],
             "title": "Complex"
+          },
+          "default": {
+            "title": "Default"
           },
           "enum": {
             "anyOf": [
@@ -1571,6 +1574,62 @@
           "fields"
         ],
         "title": "AgentFormSchema",
+        "type": "object"
+      },
+      "AgentListPage": {
+        "additionalProperties": false,
+        "description": "One page of the Agents the caller may see, by name regardless of case.\n\n``next_cursor`` is the value to pass back as ``cursor``; it is ``null`` on\nthe last page, which ``has_more`` reports independently. ``total`` and\n``enabled`` count every Agent the caller may see, whatever ``q`` and\n``status`` narrowed, and come with the first page only.",
+        "properties": {
+          "agents": {
+            "items": {
+              "$ref": "#/components/schemas/AgentRecord"
+            },
+            "title": "Agents",
+            "type": "array"
+          },
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled"
+          },
+          "has_more": {
+            "title": "Has More",
+            "type": "boolean"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total"
+          }
+        },
+        "required": [
+          "agents",
+          "has_more"
+        ],
+        "title": "AgentListPage",
         "type": "object"
       },
       "AgentMCPServerAssignment": {
@@ -2578,6 +2637,28 @@
         "title": "ApiEnvelope[AgentFormSchema]",
         "type": "object"
       },
+      "ApiEnvelope_AgentListPage_": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/AgentListPage"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[AgentListPage]",
+        "type": "object"
+      },
       "ApiEnvelope_AgentMCPServerAssignment_": {
         "properties": {
           "code": {
@@ -2664,6 +2745,28 @@
           "data"
         ],
         "title": "ApiEnvelope[AssistantDeletion]",
+        "type": "object"
+      },
+      "ApiEnvelope_AssistantListPage_": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/AssistantListPage"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[AssistantListPage]",
         "type": "object"
       },
       "ApiEnvelope_AssistantWorkspaceDestruction_": {
@@ -4272,6 +4375,17 @@
             ],
             "title": "Skill Manifest Override"
           },
+          "system": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "System"
+          },
           "updated_at": {
             "anyOf": [
               {
@@ -4326,6 +4440,62 @@
           }
         },
         "title": "AssistantDeletion",
+        "type": "object"
+      },
+      "AssistantListPage": {
+        "additionalProperties": false,
+        "description": "One page of the caller's Assistants, the most recently edited first.\n\n``next_cursor`` is the value to pass back as ``cursor``; it is ``null`` on\nthe last page, which ``has_more`` reports independently. ``total`` and\n``ready`` count every Assistant the caller owns, whatever ``q`` and\n``status`` narrowed, and come with the first page only.",
+        "properties": {
+          "assistants": {
+            "items": {
+              "$ref": "#/components/schemas/Assistant"
+            },
+            "title": "Assistants",
+            "type": "array"
+          },
+          "has_more": {
+            "title": "Has More",
+            "type": "boolean"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "ready": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ready"
+          },
+          "total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total"
+          }
+        },
+        "required": [
+          "assistants",
+          "has_more"
+        ],
+        "title": "AssistantListPage",
         "type": "object"
       },
       "AssistantWorkspace": {
@@ -8471,7 +8641,7 @@
   "info": {
     "summary": "Self-hosted agent runtime that runs installed Agent programs in isolated sandboxes and streams responses over the AI SDK Data Stream Protocol (SSE).",
     "title": "AstraBox",
-    "version": "0.1.0"
+    "version": "0.1.1"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -10608,7 +10778,15 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiEnvelope_list_AgentRecord__"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiEnvelope_AgentListPage_"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ApiEnvelope_list_AgentRecord__"
+                    }
+                  ],
+                  "title": "Response List Agents Api V1 Agents Get"
                 }
               }
             },
@@ -11280,7 +11458,15 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiEnvelope_list_Assistant__"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiEnvelope_AssistantListPage_"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ApiEnvelope_list_Assistant__"
+                    }
+                  ],
+                  "title": "Response List Assistants Api V1 Assistants Get"
                 }
               }
             },

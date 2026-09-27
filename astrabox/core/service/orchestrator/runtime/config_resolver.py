@@ -154,6 +154,13 @@ def resolve_network_policy(
     them. Vault binding hosts never enter either list: the provider receives the
     separate credential plan and admits only the destinations that assignment
     authorizes.
+
+    Hosts that come from the Agent's or Assistant's own Skills, Plugins and MCP
+    servers, rather than from a catalog assignment, are admitted only within
+    what an administrator made available (see ``author_boundary``). This runs
+    again here, not only when the fields were saved, because the Environment
+    may have changed since. Host names were resolved when the fields were
+    saved; here only literal IPs are judged, so this adds no lookup to startup.
     """
 
     try:
@@ -184,6 +191,34 @@ def resolve_network_policy(
             ),
             status_code=409,
         )
+
+    from astrabox.core.service.orchestrator.author_boundary import (
+        author_egress_hosts,
+        check_author_egress_hosts,
+    )
+    from astrabox.core.service.orchestrator.runtime.mcp_servers import (
+        template_mcp_servers,
+    )
+
+    # A catalog-resolved MCP server is the one carrying `provider`; the view
+    # builder refuses that field on an author's own server.
+    catalog_skills = set(getattr(template, "catalog_skills", ()) or ())
+    check_author_egress_hosts(
+        networking,
+        author_egress_hosts(
+            skills=[
+                skill for skill in (template.skills or []) if skill not in catalog_skills
+            ],
+            plugin_repos=getattr(template, "plugin_repos", None),
+            mcp_servers={
+                name: config
+                for name, config in template_mcp_servers(
+                    getattr(template, "mcp_servers", None)
+                ).items()
+                if not (isinstance(config, dict) and config.get("provider"))
+            },
+        ),
+    )
 
     candidates: list[str] = [*networking.allowed_hosts]
     from astrabox.core.service.orchestrator.runtime.conversation_identity import (

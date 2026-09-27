@@ -174,7 +174,13 @@ test('GET ai-stream replays terminal tail from browser cursor after session is r
       browserStreams.length,
       'the console should have opened the session output channel (GET ai-stream?follow=session)',
     ).toBeGreaterThan(0);
-    const cursorSeqs = browserStreams.flatMap((body) => resumeCursorSeqsBeforeTerminal(body.text));
+    // Only the body that delivered the terminal says where it fell. The session
+    // stream closes after a reply's terminal and the console reopens from its
+    // cursor, so a later body holds only frames appended after the turn (the
+    // automatic title's data-session-changed) and has no terminal to stop at.
+    const cursorSeqs = browserStreams
+      .filter((body) => carriesTerminalFrame(body.text))
+      .flatMap((body) => resumeCursorSeqsBeforeTerminal(body.text));
     const replayAfterSeq = cursorSeqs.length ? Math.max(...cursorSeqs) : Number.NaN;
     expect(
       Number.isFinite(replayAfterSeq) && replayAfterSeq >= 0,

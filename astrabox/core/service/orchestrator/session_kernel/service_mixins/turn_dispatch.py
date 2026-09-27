@@ -28,7 +28,10 @@ from astrabox.core.service.orchestrator.engine.base import (
     bound_engine_client_manifest,
 )
 from astrabox.core.service.orchestrator.engine.input_delivery import (
+    InputDeliveryRefused,
     input_answered_in_frames,
+    refusal_record,
+    settled_input_outcome,
 )
 from astrabox.core.service.orchestrator.engine.interaction_contract import (
     validate_interaction_response,
@@ -186,6 +189,17 @@ class TurnDispatchStreamingMixin:
             reconcile_conversation=False,
             internal_wiring=True,
         )
+        # A message sent again under the client_message_id of one whose turn
+        # already ended before delivery gets that outcome back, before anything
+        # below starts recovering a runtime for a turn that will not run.
+        if str(client_message_id or "").strip():
+            settled = await settled_input_outcome(
+                self._session_events_repo,
+                session_id,
+                self._input_command_id(session_id, str(client_message_id)),
+            )
+            if settled is not None:
+                raise settled
         # Reconcile before recovery, not after it: a dead pre-write turn
         # (PROCESSING + no anchor + no lease) must be cleaned up so that
         # frontend retries can start a fresh turn. Recovery derives its
@@ -210,15 +224,15 @@ class TurnDispatchStreamingMixin:
         #      reclaim/terminate or by a SANDBOX_GONE turn that hit a killed sandbox.
         #   2. a lapsed stored lease (expires_at <= now): recovery checks supplier
         #      liveness before choosing attachment or replacement.
-        # Neither keys on a terminal session state: reclaim/expiry keep the
+        #   3. an Assistant conversation whose box is confirmed gone
+        #      (_bound_subject_sandbox_gone).
+        # None keys on a terminal session state: reclaim/expiry keep the
         # conversation wakeable (state READY). DELETED stays final (handled by the
         # delete guard below).
-        if (
-            str(session.get("state") or "") != SessionState.DELETED.value
-            and (
-                bool(session.get("runtime_unavailable"))
-                or self._bound_runtime_lease_expired(session)
-            )
+        if str(session.get("state") or "") != SessionState.DELETED.value and (
+            bool(session.get("runtime_unavailable"))
+            or self._bound_runtime_lease_expired(session)
+            or await self._bound_subject_sandbox_gone(session)
         ):
             await self.recover_session(user, session_id)
             # recover_session recreates the sandbox asynchronously (it spawns
@@ -251,6 +265,28 @@ class TurnDispatchStreamingMixin:
             permission_mode=permission_mode,
             client_message_id=client_message_id,
         )
+
+    async def _bound_subject_sandbox_gone(self, session: dict[str, Any]) -> bool:
+        """Whether a subject-owned box this conversation names is confirmed gone.
+
+        An Agent conversation that finds its box gone while its input is being
+        delivered borrows a replacement inside that delivery. An Assistant's box
+        is its workspace's, and only the workspace's startup authority replaces
+        it: that authority re-materializes the box for every conversation of
+        the Assistant and resets this conversation to CREATING, which it may do
+        only while no turn is accepted. So an Assistant conversation learns a
+        lost box here, before admission, and the recovery below replaces it and
+        this message is answered on the replacement. Learnt during delivery
+        instead, the message was refused as SANDBOX_GONE and the user had to
+        send it again.
+        """
+
+        if (
+            self._runtime_subjects.recovery_action_for(session)
+            != "restart_session_on_subject"
+        ):
+            return False
+        return await self._turn_service.bound_sandbox_confirmed_gone(session)
 
     async def stream_ai_stream(
         self,
@@ -577,6 +613,15 @@ class TurnDispatchStreamingMixin:
                 session_id, command_id=command_id, turn_id=turn_id
             )
         delivery_status = "delivered"
+
+        async def _settle_refused_turn(refused: InputDeliveryRefused) -> None:
+            await self._settle_refused_start_turn(
+                session_id=session_id,
+                turn_id=turn_id,
+                command_id=command_id,
+                refused=refused,
+            )
+
         try:
             await self._turn_service.deliver_pending_inputs(
                 user=user,
@@ -584,6 +629,9 @@ class TurnDispatchStreamingMixin:
                 session_id=session_id,
                 requested_command_id=command_id,
                 permission_mode=permission_mode,
+                on_refused=(
+                    _settle_refused_turn if command_type == "StartTurn" else None
+                ),
             )
         except EngineStreamDetached as exc:
             # Admission is durable; a missing transport receipt cannot reject
@@ -605,6 +653,47 @@ class TurnDispatchStreamingMixin:
             "input_id": input_id,
             "status": delivery_status,
         }
+
+    async def _settle_refused_start_turn(
+        self,
+        *,
+        session_id: str,
+        turn_id: str,
+        command_id: str,
+        refused: InputDeliveryRefused,
+    ) -> None:
+        """Make a delivery refusal this message's only outcome.
+
+        The request that accepted the turn is answered with ``refused``; the
+        turn is failed before that answer leaves, with the refusal recorded, so
+        its worker stands down instead of delivering the input later and the
+        same message sent again is answered the same way. Nothing is written
+        when the turn is not this conversation's current one: whoever
+        settled it wrote its outcome.
+        """
+
+        snapshot = await self._session_snapshots_repo.get_snapshot(session_id)
+        conversation_state = str((snapshot or {}).get("conversation_state") or "").strip()
+        if (
+            str((snapshot or {}).get("current_turn_id") or "").strip() != turn_id
+            or conversation_state not in _ACTIVE_CONVERSATION_SNAPSHOT_STATES
+        ):
+            return
+        settled = await self._settle_turn_not_received(
+            session_id=session_id,
+            turn_id=turn_id,
+            command_id=command_id,
+            conversation_state=conversation_state,
+            error_text=refused.message,
+            refusal=refusal_record(refused),
+        )
+        logger.warning(
+            "delivery refused and turn settled session=%s turn=%s code=%s settled=%s",
+            session_id,
+            turn_id,
+            refused.code,
+            isinstance(settled, dict),
+        )
 
     def _spawn_accepted_turn_producer(
         self,
@@ -1191,6 +1280,7 @@ class TurnDispatchStreamingMixin:
                     f"input superseded it ({reason})"
                 ),
                 causation=f"supersede-abandon:{session_id}:{turn_id}",
+                user_stop=False,
             )
         await self._sessions_repo.clear_pending_interaction(
             session_id,
@@ -1594,6 +1684,12 @@ class TurnDispatchStreamingMixin:
         The user message is derived from the already-durable command event.
         This snapshot write makes the in-progress state visible immediately;
         the worker's same-watermark write remains idempotent.
+
+        A new turn takes the slot with no engine anchor. The slot can be held
+        by a response the engine started on its own (PlatformResidentOutputSink
+        anchors it on the response id), and the new turn's bridge seeds its
+        anchor from this snapshot: inheriting that anchor makes the turn refuse
+        its own dispatch as a conflicting engine turn.
         """
         prev_snapshot = await self._session_snapshots_repo.get_snapshot(session_id)
         snapshot_updates: dict[str, Any] = build_turn_active_snapshot_updates(
@@ -1601,6 +1697,7 @@ class TurnDispatchStreamingMixin:
             turn_id=turn_id,
             worker_command_id=command_id,
             current_turn_remote_anchor=None,
+            current_turn_engine_anchor=None,
             delivery_state="PENDING",
         )
         if command_id:

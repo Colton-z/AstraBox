@@ -28,6 +28,16 @@
 #   ASTRABOX_INSTALL_MODEL_API_KEY   the model service's API key
 #   ASTRABOX_INSTALL_MODEL_NAME      the model ID the seeded Agents use
 #   ASTRABOX_INSTALL_MODEL_BASE_URL  base URL of an *-compatible service
+#   ASTRABOX_INSTALL_TEAM_LOGIN      casdoor or none. casdoor runs the bundled
+#                                    Casdoor login service with the console
+#                                    (containers/compose.sso.yaml). Setting it
+#                                    answers the team-login question.
+#   ASTRABOX_CONSOLE_ORIGIN          with team login: the console's public URL,
+#                                    such as https://astrabox.example.com
+#   ASTRABOX_OIDC_ISSUER             with team login: Casdoor's public URL, such
+#                                    as https://login.example.com. Set both for
+#                                    browsers on other computers; set neither
+#                                    to sign in on this host only.
 #
 # Docs: https://www.astrabox.ai/docs/deploy
 set -euo pipefail
@@ -37,7 +47,7 @@ readonly DOCS_URL="https://www.astrabox.ai/docs/deploy"
 readonly MODELS_DOCS_URL="https://www.astrabox.ai/docs/models"
 readonly TEAM_LOGIN_DOCS_URL="https://www.astrabox.ai/docs/team-login"
 
-# The same seven files, in the same format and modes, that
+# The same eight files, in the same format and modes, that
 # scripts/ensure_local_database_secrets.py creates for a checkout. The Compose
 # file reads the database ones as service secrets; the others belong to the
 # team-login overlays.
@@ -49,6 +59,7 @@ readonly SECRET_NAMES=(
   oidc_client_secret
   oidc_api_client_secret
   casdoor_admin_password
+  casdoor_builtin_admin_password
 )
 readonly DATABASE_SECRET_NAMES=(
   postgres_admin_password
@@ -79,6 +90,25 @@ readonly MODEL_KEYS=(
   OPENAI_COMPATIBLE_BASE_URL
 )
 
+# Compose reads COMPOSE_FILE from the settings file in containers/, so the
+# installer and every later `docker compose` command there run the same files.
+# Team login is the one choice that adds a file: the SSO overlay, which runs
+# Casdoor and switches the console to OIDC login.
+readonly TEAM_LOGIN_COMPOSE_FILE="compose.yaml:compose.sso.yaml"
+# Docker Engine 26.0 speaks Engine API 1.45, the first that mounts a
+# sub-directory of a named volume (VolumeOptions.Subpath); persistent
+# workspaces reach each sandbox that way. The server refuses an older daemon at
+# startup with the same pair (astrabox/deploy/sandbox_server.py).
+readonly MIN_DOCKER_ENGINE="26.0"
+readonly MIN_DOCKER_API="1.45"
+# Compose 2.17.0 introduced `restart: true` under depends_on, which
+# containers/compose.yaml uses for the sandbox edges.
+readonly MIN_COMPOSE="2.17.0"
+
+# The console's callback path, as the bundled Casdoor registers it
+# (containers/casdoor/init_data.json) and the server serves it.
+readonly OIDC_CALLBACK_PATH="/api/v1/auth/callback"
+
 readonly READY_TIMEOUT_SECONDS=600
 
 # Progress goes to stderr: several steps run inside command substitutions.
@@ -95,6 +125,42 @@ die() {
 
 require_command() {
   command -v "$1" >/dev/null 2>&1 || die "$1 is required but was not found." "${@:2}"
+}
+
+# Succeeds when dotted version $1 is at least $2. Each part is compared as a
+# number; a suffix such as "-desktop.1" or "-rc.1" is ignored.
+version_at_least() {
+  local found="${1#v}" required="${2#v}" index have want
+  local -a found_parts required_parts
+  IFS=. read -r -a found_parts <<<"${found%%[-+ ]*}"
+  IFS=. read -r -a required_parts <<<"$required"
+  for index in 0 1 2; do
+    have="${found_parts[index]:-0}"
+    want="${required_parts[index]:-0}"
+    [[ "$have" =~ ^[0-9]+$ ]] || return 1
+    ((10#$have > 10#$want)) && return 0
+    ((10#$have < 10#$want)) && return 1
+  done
+  return 0
+}
+
+check_docker_versions() {
+  local compose_version
+  compose_version="$(docker compose version --short 2>/dev/null)" \
+    || die "The Docker Compose plugin is required: 'docker compose version' failed." \
+      "Install it: https://docs.docker.com/compose/install/linux/"
+  compose_version="${compose_version#v}"
+  version_at_least "$compose_version" "$MIN_COMPOSE" \
+    || die "Docker Compose $MIN_COMPOSE or later is required; found $compose_version." \
+      "Upgrade the Compose plugin: https://docs.docker.com/compose/install/linux/"
+
+  local engine api
+  engine="$(docker version --format '{{.Server.Version}}' 2>/dev/null)" \
+    && api="$(docker version --format '{{.Server.APIVersion}}' 2>/dev/null)" \
+    || die "Cannot read the Docker Engine version: 'docker version' failed."
+  version_at_least "$api" "$MIN_DOCKER_API" \
+    || die "Docker Engine $MIN_DOCKER_ENGINE (API $MIN_DOCKER_API) or later is required; found Docker Engine $engine (API $api)." \
+      "Upgrade Docker: https://docs.docker.com/engine/install/"
 }
 
 check_host() {
@@ -114,15 +180,6 @@ check_host() {
     *) die "AstraBox images are published for amd64 and arm64; this host is $arch." ;;
   esac
 
-  local compose_version compose_major
-  compose_version="$(docker compose version --short 2>/dev/null)" \
-    || die "The Docker Compose plugin is required: 'docker compose version' failed." \
-      "Install it: https://docs.docker.com/compose/install/linux/"
-  compose_version="${compose_version#v}"
-  compose_major="${compose_version%%.*}"
-  [[ "$compose_major" =~ ^[0-9]+$ ]] && [ "$compose_major" -ge 2 ] \
-    || die "Docker Compose v2 or later is required; found $compose_version."
-
   local info_error
   if ! info_error="$(docker info --format '{{.ServerVersion}}' 2>&1 >/dev/null)"; then
     case "$info_error" in
@@ -135,6 +192,7 @@ check_host() {
         die "The Docker daemon is not answering." "$info_error" ;;
     esac
   fi
+  check_docker_versions
 
   # The server container drives this daemon through the mounted socket to
   # create sandboxes, so the stack needs the daemon the socket path names.
@@ -285,7 +343,7 @@ ensure_secrets() {
   if [ "$missing_database_secret" = 1 ] && docker volume inspect "$postgres_volume" >/dev/null 2>&1; then
     die "Database passwords are missing from $directory, but the PostgreSQL volume '$postgres_volume' exists." \
       "Restore the directory from your backup, or set ASTRABOX_POSTGRES_VOLUME in the" \
-      "installation's containers/.env to a new volume name for a separate deployment." \
+      "installation's containers/.env to a new volume name to start with an empty database." \
       "See $DOCS_URL"
   fi
   mkdir -p "$directory"
@@ -322,12 +380,17 @@ prompt() {
   printf '%s' "${answer:-$default}"
 }
 
+# The default answer is yes unless the second argument is n.
 confirm() {
-  local question="$1" answer
-  printf '%s [Y/n]: ' "$question" >&2
+  local question="$1" default="${2:-y}" answer
+  if [ "$default" = n ]; then
+    printf '%s [y/N]: ' "$question" >&2
+  else
+    printf '%s [Y/n]: ' "$question" >&2
+  fi
   IFS= read -r answer <&3 || die "No answer was read from the terminal."
-  case "$answer" in
-    "" | [Yy]*) return 0 ;;
+  case "${answer:-$default}" in
+    [Yy]*) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -467,6 +530,146 @@ configure_model() {
   write_model_settings "$env_file"
 }
 
+# ── team login ──────────────────────────────────────────────────────────────
+
+# Prints casdoor or none: what the settings file's COMPOSE_FILE runs now.
+current_team_login() {
+  local env_file="$1" compose_file
+  compose_file="$(env_get "$env_file" COMPOSE_FILE)"
+  case "$compose_file" in
+    "") printf 'none' ;;
+    "$TEAM_LOGIN_COMPOSE_FILE") printf 'casdoor' ;;
+    *) die "COMPOSE_FILE in $env_file is '$compose_file'." \
+      "The installer sets it to choose team login; remove the line and re-run." ;;
+  esac
+}
+
+# An origin is the part of a URL before the path. Casdoor registers the
+# console's callback under the console's origin, and the server compares the
+# ID Token's issuer with Casdoor's character for character.
+valid_origin() {
+  [[ "$1" =~ ^https?://[A-Za-z0-9.-]+(:[0-9]+)?$ ]]
+}
+
+origin_host() {
+  local host="${1#*://}"
+  printf '%s' "${host%%:*}"
+}
+
+# The browser reaches Casdoor at the issuer and returns to the console's
+# callback, so both are the addresses a browser on another computer uses.
+# Without them, both are this host's loopback ports.
+#
+# Everything is checked before anything is written, so a refused run leaves
+# the settings file as it was.
+configure_public_urls() {
+  local env_file="$1" name console issuer host allowed
+  for name in ASTRABOX_CONSOLE_ORIGIN ASTRABOX_OIDC_ISSUER; do
+    [ -z "${!name:-}" ] || valid_origin "${!name}" \
+      || die "$name must be a scheme and a host name or IPv4 address, with an optional port" \
+        "and no path or trailing slash, such as https://astrabox.example.com; got '${!name}'."
+  done
+  console="${ASTRABOX_CONSOLE_ORIGIN:-$(env_get "$env_file" ASTRABOX_CONSOLE_ORIGIN)}"
+  issuer="${ASTRABOX_OIDC_ISSUER:-$(env_get "$env_file" ASTRABOX_OIDC_ISSUER)}"
+  [ -n "$console" ] || [ -n "$issuer" ] || return 0
+  [ -n "$console" ] && [ -n "$issuer" ] \
+    || die "Team login for other computers needs both public URLs:" \
+      "ASTRABOX_CONSOLE_ORIGIN (the console) and ASTRABOX_OIDC_ISSUER (Casdoor)." \
+      "See $TEAM_LOGIN_DOCS_URL"
+  # The server answers only the Host names this lists: the public one for
+  # browsers, and loopback for this installer's readiness check and the CLI.
+  host="$(origin_host "$console")"
+  allowed="$(env_get "$env_file" ASTRABOX_ALLOWED_HOSTS)"
+  if [ -n "$allowed" ] && [[ ",$allowed," != *",$host,"* || ",$allowed," != *",127.0.0.1,"* ]]; then
+    die "ASTRABOX_ALLOWED_HOSTS in $env_file is '$allowed'." \
+      "It must list $host, the console's public host, and 127.0.0.1." \
+      "Correct it, or remove the line for the installer to write it."
+  fi
+  env_set "$env_file" ASTRABOX_CONSOLE_ORIGIN "$console"
+  env_set "$env_file" ASTRABOX_OIDC_ISSUER "$issuer"
+  # Behind a proxy the server cannot tell the public scheme from the request,
+  # and the callback it names to Casdoor must be the one Casdoor registered.
+  env_set "$env_file" ASTRABOX_OIDC_REDIRECT_URL "$console$OIDC_CALLBACK_PATH"
+  [ -n "$allowed" ] || env_set "$env_file" ASTRABOX_ALLOWED_HOSTS "$host,localhost,127.0.0.1,[::1]"
+}
+
+configure_team_login() {
+  local env_file="$1" current choice name
+  current="$(current_team_login "$env_file")"
+  if [ -n "${ASTRABOX_INSTALL_TEAM_LOGIN:-}" ]; then
+    choice="$ASTRABOX_INSTALL_TEAM_LOGIN"
+  elif [ "$have_tty" = 1 ]; then
+    cat >&2 <<'EOF'
+
+Team login runs the bundled Casdoor login service with AstraBox, and people
+sign in to the console. Without it the console has no login and stays on this
+host's loopback address.
+EOF
+    choice=none
+    if [ "$current" = casdoor ]; then
+      if confirm "Keep team login on?"; then choice=casdoor; fi
+    elif confirm "Turn on team login?" n; then
+      choice=casdoor
+    fi
+  else
+    choice="$current"
+  fi
+  case "$choice" in
+    casdoor)
+      # The installer comes from the main branch and the bundle from a
+      # release; a release older than the overlay's has none to run.
+      [ -f "$install_dir/containers/compose.sso.yaml" ] \
+        || die "The AstraBox $(tr -d '\r\n' <"$install_dir/VERSION") bundle has no team-login overlay" \
+          "(containers/compose.sso.yaml). Install a later release with ASTRABOX_VERSION."
+      configure_public_urls "$env_file"
+      env_set "$env_file" COMPOSE_FILE "$TEAM_LOGIN_COMPOSE_FILE" ;;
+    none)
+      for name in ASTRABOX_CONSOLE_ORIGIN ASTRABOX_OIDC_ISSUER; do
+        [ -z "${!name:-}" ] \
+          || die "$name takes effect only with team login (ASTRABOX_INSTALL_TEAM_LOGIN=casdoor)."
+      done
+      # Browsers on other computers would reach a console without login.
+      [ -z "$(env_get "$env_file" ASTRABOX_CONSOLE_ORIGIN)" ] \
+        || die "This installation serves browsers on other computers (ASTRABOX_CONSOLE_ORIGIN in $env_file)." \
+          "Turning team login off would serve them the console without login. First remove" \
+          "ASTRABOX_CONSOLE_ORIGIN, ASTRABOX_OIDC_ISSUER, ASTRABOX_OIDC_REDIRECT_URL and" \
+          "ASTRABOX_ALLOWED_HOSTS from it, and stop publishing the console through your proxy."
+      env_unset "$env_file" COMPOSE_FILE ;;
+    *) die "Unknown team login '$choice'." "Use casdoor or none." ;;
+  esac
+}
+
+show_team_login() {
+  local env_file="$1" port="$2" secret_dir="$3" casdoor_port console issuer
+  casdoor_port="$(env_get "$env_file" ASTRABOX_CASDOOR_HOST_PORT)"
+  casdoor_port="${casdoor_port:-8087}"
+  console="$(env_get "$env_file" ASTRABOX_CONSOLE_ORIGIN)"
+  issuer="$(env_get "$env_file" ASTRABOX_OIDC_ISSUER)"
+  cat <<EOF
+  Team login is on. Sign in as admin with the password in
+    $secret_dir/casdoor_admin_password
+  Casdoor, the login service, listens on http://127.0.0.1:$casdoor_port.
+EOF
+  if [ -n "$console" ]; then
+    cat <<EOF
+  Browsers open $console and sign in at $issuer.
+  Route both to the loopback ports through your HTTPS proxy, publishing only
+  Casdoor's sign-in paths: $TEAM_LOGIN_DOCS_URL
+EOF
+  else
+    cat <<EOF
+  Both listen on loopback only; from another computer, tunnel to both:
+    ssh -L $port:127.0.0.1:$port -L $casdoor_port:127.0.0.1:$casdoor_port <this-host>
+EOF
+  fi
+  cat <<EOF
+
+  Casdoor's own administrator, built-in/admin, manages every organization in
+  Casdoor, at http://127.0.0.1:$casdoor_port/login; its password is in
+    $secret_dir/casdoor_builtin_admin_password
+EOF
+}
+
 # ── stack ───────────────────────────────────────────────────────────────────
 
 compose() {
@@ -506,6 +709,13 @@ show_failure_evidence() {
   printf '\n--- server log (last 60 lines) ---\n' >&2
   compose logs --no-color --tail 60 server 2>&1 \
     | grep -Eiv 'api_key|auth_token|secret|password' >&2 || true
+  # The server waits for a healthy Casdoor, so a Casdoor that cannot start
+  # leaves the server log empty.
+  if [ "$(current_team_login "$install_dir/containers/.env")" = casdoor ]; then
+    printf '\n--- casdoor log (last 60 lines) ---\n' >&2
+    compose logs --no-color --tail 60 casdoor 2>&1 \
+      | grep -Eiv 'secret|password' >&2 || true
+  fi
 }
 
 wait_until_ready() {
@@ -608,6 +818,7 @@ main() {
   ensure_secrets "$secret_dir" "${postgres_volume:-astrabox-postgres}"
 
   configure_model "$env_file"
+  configure_team_login "$env_file"
 
   compose config --quiet || die "Docker Compose rejected the configuration in $install_dir/containers."
   step "Pulling the AstraBox $version images"
@@ -623,14 +834,18 @@ main() {
   wait_until_ready "$base_url"
   pull_agent_image
 
-  cat <<EOF
-
-AstraBox $version is running: $base_url
-
+  printf '\nAstraBox %s is running: %s\n\n' "$version" "$base_url"
+  if [ "$(current_team_login "$env_file")" = casdoor ]; then
+    show_team_login "$env_file" "${port:-8088}" "$secret_dir"
+  else
+    cat <<EOF
   Open it in a browser on this host. It listens on loopback only and has no
   login; from another computer, tunnel to it:
     ssh -L ${port:-8088}:127.0.0.1:${port:-8088} <this-host>
   Configure team login before exposing it: $TEAM_LOGIN_DOCS_URL
+EOF
+  fi
+  cat <<EOF
 
   Settings:  $env_file
   Secrets:   $secret_dir

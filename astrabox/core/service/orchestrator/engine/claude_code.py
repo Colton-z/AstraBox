@@ -296,12 +296,18 @@ class ClaudeCodeEngineAdapter(EngineAdapter):
 
         import shlex
 
+        from astrabox.core.service.orchestrator.engine.runner_link import (
+            RUNNER_TOKEN_FILE_NAME,
+        )
+
         spool = f"{home}/.astrabox-spool"
         log = f"{home}/.astrabox-runner.log"
+        token_file = f"{home}/{RUNNER_TOKEN_FILE_NAME}"
         return (
             f"mkdir -p {shlex.quote(spool)} && "
             f"cd -- {shlex.quote(workspace)} && "
             f"ASTRABOX_RUNNER_SPOOL_DIR={shlex.quote(spool)} "
+            f"ASTRABOX_RUNNER_TOKEN_FILE={shlex.quote(token_file)} "
             f"TMPDIR={shlex.quote(spool)} "
             f"ASTRABOX_RUNNER_PORT={port} setsid "
             f"/usr/local/bin/python3.12 /opt/astrabox/sandbox_runner.py "

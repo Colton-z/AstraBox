@@ -4,9 +4,9 @@
 #   scripts/build-release-bundle.sh OUTPUT_DIR
 #
 # Writes OUTPUT_DIR/astrabox-deploy-<version>.tar.gz and its .sha256 file. The
-# archive holds the Compose stack exactly as containers/ lays it out, so the
-# relative paths inside containers/compose.yaml resolve the same way in an
-# installation as in a checkout; it holds no source, because an installation
+# archive holds each file at its repository path, so the relative paths inside
+# the Compose files resolve the same way in an installation as in a checkout;
+# it holds no source, because an installation
 # pulls the published images. The version is pyproject.toml's, the value the
 # release workflow checks the tag against and tags every image with.
 set -euo pipefail
@@ -21,16 +21,23 @@ readonly version
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.+-][0-9A-Za-z.+-]+)?$ ]] \
   || { printf 'pyproject.toml has no usable version: %q\n' "$version" >&2; exit 65; }
 
-# The licence files and every file containers/compose.yaml mounts by a
-# relative path. tests/release_bundle_test.py fails when compose.yaml mounts a
-# file this list lacks.
+# The licence files, the two Compose files scripts/install.sh runs (the stack
+# and the team-login overlay), and every file either mounts by a relative path.
+# tests/release_bundle_test.py fails when one of them mounts a file this list
+# lacks.
 readonly bundle_files=(
   LICENSE
   NOTICE
   containers/compose.yaml
   containers/postgres/init-databases.sh
-  containers/coredns/sandbox-edge.Corefile
   containers/sandbox-edge/default.conf.template
+  containers/sandbox-edge/dns-edge.nginx.conf
+  containers/compose.sso.yaml
+  containers/casdoor/app.conf
+  containers/casdoor/entrypoint.sh
+  containers/casdoor/secure-builtin-admin.sh
+  containers/casdoor/init_data.json
+  website/static/img/astrabox-mark.svg
 )
 
 readonly name="astrabox-deploy-$version"

@@ -16,7 +16,6 @@ uses the winner's value.
 
 from __future__ import annotations
 
-import dataclasses
 import contextlib
 import shlex
 import asyncio
@@ -209,7 +208,6 @@ class SharedSandboxBinding:
     workspace_dir: str
     workspace_source_dir: str
     prepared_slot_id: str | None = None
-    activation_token: str | None = dataclasses.field(default=None, repr=False)
     runtime_generation: str | None = None
     runner_port: int | None = None
     claim_manifest_path: str | None = None

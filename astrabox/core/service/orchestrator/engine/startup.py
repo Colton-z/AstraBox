@@ -548,7 +548,7 @@ async def attach_platform_runtime(
         vault_enabled=vault_enabled,
     )
     credential_slot_id = str(identity.get("credential_slot_id") or "").strip()
-    credential, _network_policy, vault_write = resolve_model_credential_delivery(
+    credential, network_policy, vault_write = resolve_model_credential_delivery(
         template=template,
         backend_adapter=backend_adapter,
         credential=request.credential,
@@ -575,6 +575,15 @@ async def attach_platform_runtime(
         template=template,
     )
     try:
+        # The box may predate what the template now reaches (an MCP server
+        # added to a long-lived Assistant box); its policy must admit that
+        # before the vault is refreshed, since the sidecar refuses a binding
+        # for a host it does not allow.
+        await backend_adapter.admit_runtime_egress(
+            sandbox,
+            network_policy=network_policy,
+            vault_write=vault_write,
+        )
         if vault_write is not None and not vault_write.is_empty:
             await backend_adapter.apply_credential_vault(
                 sandbox,

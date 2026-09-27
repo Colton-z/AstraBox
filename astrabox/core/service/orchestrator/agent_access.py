@@ -83,6 +83,24 @@ def is_platform_admin(viewer_roles: Sequence[str]) -> bool:
     return any(_norm(role) == PLATFORM_ADMIN_ROLE for role in viewer_roles or ())
 
 
+def assert_may_author(viewer_roles: Sequence[str], *, admin_only: bool) -> None:
+    """Refuse to create an Agent or Assistant when authoring is reserved.
+
+    ``admin_only`` is the deployment's ``ASTRABOX_AUTHORING_ADMIN_ONLY``. With it
+    set, creation needs the platform ``admin`` role, for a deployment whose
+    users should only use the Agents an administrator published. What an author
+    may reach is bounded either way (``author_boundary``); this decides who
+    authors at all. Managing an existing Agent stays governed by
+    :func:`can_manage_agent`.
+    """
+    if admin_only and not is_platform_admin(viewer_roles):
+        raise APIError(
+            code="FORBIDDEN",
+            message="only administrators may create Agents and Assistants on this deployment",
+            status_code=403,
+        )
+
+
 def can_manage_agent(
     template_doc: dict[str, Any],
     viewer_user_id: str,

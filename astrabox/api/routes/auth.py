@@ -9,8 +9,8 @@ audience, issuer) before minting the session cookie the
 authenticates every subsequent request with.
 
 No password and no IdP access token is ever stored: the session cookie carries
-only identity claims (sub/email/name/roles) under the deployment's own
-signing key.
+only identity claims (sub/email/name/roles and the checked Casdoor
+organization) under the deployment's own signing key.
 """
 
 from __future__ import annotations
@@ -28,6 +28,8 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response
 from jwt import PyJWKClient
 
 from astrabox.common.logger.logger_factory import get_logger
+from astrabox.common.utils.errors import APIError
+from astrabox.identity.oidc import OidcIdentityRejected, require_casdoor_organization
 from astrabox.providers.identity_oidc import (
     FLOW_COOKIE,
     SESSION_COOKIE,
@@ -75,6 +77,16 @@ def _auth_error(status: int, message: str) -> JSONResponse:
         status_code=status,
         content={"success": False, "code": "AUTH_FLOW_FAILED", "message": message},
     )
+
+
+def _identity_rejected(exc: OidcIdentityRejected) -> JSONResponse:
+    logger.warning("oidc login refused: %s", exc)
+    error = APIError(
+        code="IDENTITY_ORGANIZATION_REJECTED",
+        message=f"sign-in refused: {exc}",
+        status_code=403,
+    )
+    return JSONResponse(status_code=403, content=error.to_response_payload())
 
 
 def register_auth_routes(app: FastAPI) -> None:
@@ -179,6 +191,11 @@ def register_auth_routes(app: FastAPI) -> None:
             logger.warning("oidc id_token verification failed: %s", exc)
             return _auth_error(401, f"id_token verification failed: {exc}")
 
+        try:
+            require_casdoor_organization(claims, config)
+        except OidcIdentityRejected as exc:
+            return _identity_rejected(exc)
+
         user_id = str(claims.get("sub") or "").strip()
         if not user_id:
             return _auth_error(401, "id_token carries no subject")
@@ -195,6 +212,11 @@ def register_auth_routes(app: FastAPI) -> None:
             email=str(claims.get("email") or "").strip() or None,
             display_name=display_name,
             roles=roles_from_claims(claims, config),
+            casdoor_organization=(
+                str(claims.get("owner") or "").strip()
+                if config.casdoor_organization
+                else ""
+            ),
         )
         response = RedirectResponse(_safe_next(str(flow.get("next") or "/")), status_code=302)
         response.set_cookie(
@@ -222,7 +244,9 @@ def register_auth_routes(app: FastAPI) -> None:
         if not token:
             return JSONResponse({"authenticated": False})
         try:
-            claims = verify_session_token(token)
+            claims = verify_session_token(
+                token, casdoor_organization=config.casdoor_organization
+            )
         except jwt.PyJWTError:
             return JSONResponse({"authenticated": False})
         return JSONResponse(

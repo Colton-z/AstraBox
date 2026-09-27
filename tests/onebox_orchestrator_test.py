@@ -22,22 +22,31 @@ container or a real sandbox server.
 
 from __future__ import annotations
 
+import fnmatch
+import ipaddress
+import logging
 import os
 import signal
 import subprocess
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Iterator
 
 import pytest
+import yaml
 
+from astrabox.common.utils.settings import AstraBoxRuntimeSettings
 from astrabox.deploy import onebox
+
+#: The sandbox reach mode AstraBox reads; the entry point must not set it.
+RELAY_ENV = "ASTRABOX_SANDBOX_ENDPOINT_VIA_SERVER_PROXY"
 
 _ALL_ENV = (
     onebox.BACKEND_ENV,
     onebox.BASE_URL_ENV,
-    onebox.SERVER_PROXY_ENV,
+    RELAY_ENV,
     onebox.START_TIMEOUT_ENV,
     onebox.MODEL_PROVIDER_ENV,
     onebox.LITELLM_MASTER_KEY_ENV,
@@ -48,6 +57,8 @@ _ALL_ENV = (
     onebox.SANDBOX_EDGE_SERVICE_ENV,
     onebox.SANDBOX_DNS_EDGE_SERVICE_ENV,
     onebox.SANDBOX_EDGE_CALLBACK_PORT_ENV,
+    onebox.SANDBOX_EDGE_NETWORK_ENV,
+    onebox.EGRESS_DENY_CIDRS_ENV,
     onebox.MCP_PROXY_BASE_URL_ENV,
     onebox.ANTHROPIC_API_KEY_ENV,
     onebox.ANTHROPIC_AUTH_TOKEN_ENV,
@@ -67,6 +78,8 @@ _ALL_ENV = (
     onebox.CHANNEL_GATEWAY_PORT_ENV,
     onebox.CHANNEL_GATEWAY_MANIFEST_ENV,
     "DEEPSEEK_API_KEY",
+    onebox.TITLE_MODEL_NAME_ENV,
+    onebox.TITLE_MODEL_BASE_URL_ENV,
     "ASTRABOX_LITELLM_BASE_URL",
     "ASTRABOX_LITELLM_API_KEY",
     "ASTRABOX_STATE_DIR",
@@ -357,21 +370,14 @@ def test_backend_wiring_points_at_the_launchers_own_base_url(
     assert onebox.os.environ[onebox.BASE_URL_ENV] == base_url
 
 
-def test_backend_wiring_turns_on_the_relay_by_default(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_backend_wiring_reaches_sandboxes_directly() -> None:
+    # The bundled server shares this process's network namespace, so its relay
+    # could only dial the published address AstraBox can dial itself, and the
+    # relay drops the Cookie and rewrites the Host that the DeepSeek Harness
+    # and Hermes in-box services authenticate with.
     onebox._export_backend_wiring()
-    assert onebox.os.environ[onebox.SERVER_PROXY_ENV] == "true"
-
-
-def test_backend_wiring_keeps_an_explicit_reach_mode(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # Running the supervisor on a host rather than in a container is a real
-    # posture in which the direct route works; an operator who said so keeps it.
-    monkeypatch.setenv(onebox.SERVER_PROXY_ENV, "false")
-    onebox._export_backend_wiring()
-    assert onebox.os.environ[onebox.SERVER_PROXY_ENV] == "false"
+    assert RELAY_ENV not in onebox.os.environ
+    assert AstraBoxRuntimeSettings().sandbox_endpoint_via_server_proxy is False
 
 
 # ---------------------------------------------------------------------------
@@ -410,6 +416,53 @@ def test_a_dying_server_takes_astrabox_down_with_it(
     assert app.process.poll() is not None, "astrabox must not be left serving without a backend"
 
 
+def test_astrabox_killed_by_a_signal_reports_the_signal_not_a_wrapped_status(
+    child_reaper: list[onebox._Child],
+) -> None:
+    # A crash must stay a failure, and read as one: Popen reports SIGKILL as
+    # -9, which sys.exit would turn into 247. The container reports 137, the
+    # status a shell and tini give a SIGKILL.
+    server = _python_child("import time; time.sleep(120)")
+    app = onebox._Child(
+        "astrabox",
+        (sys.executable, "-c", "import os, signal; os.kill(os.getpid(), signal.SIGKILL)"),
+        prefix_output=False,
+    )
+    child_reaper.extend([server, app])
+    assert onebox._supervise(app, [server]) == 128 + signal.SIGKILL
+    assert server.process.poll() is not None
+
+
+def test_a_moved_sandbox_edge_restarts_the_container(
+    child_reaper: list[onebox._Child], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Every sandbox is given the edge addresses read at startup; an edge Docker
+    # restarted at another address would leave all of them timing out, so the
+    # container ends (status 1) and its restart policy reads them again.
+    monkeypatch.setattr(onebox, "_EDGE_WATCH_INTERVAL_SECONDS", 0.0)
+    addresses = {"sandbox-edge": "172.17.0.10"}
+    monkeypatch.setattr(onebox, "_detect_edge_ip", lambda service, owner: addresses[service])
+    server = _python_child("import time; time.sleep(120)")
+    app = onebox._Child(
+        "astrabox", (sys.executable, "-c", "import time; time.sleep(120)"), prefix_output=False
+    )
+    child_reaper.extend([server, app])
+    watch = onebox._edge_address_watch({"sandbox-edge": "172.17.0.10"})
+    assert watch() is None
+    addresses["sandbox-edge"] = "172.17.0.4"
+    assert onebox._supervise(app, [server], watch=watch) == 1
+    assert app.process.poll() is not None
+    assert server.process.poll() is not None
+
+
+def test_an_edge_that_is_not_running_is_read_again(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _not_running(service: str, owner: object) -> str:
+        raise onebox.OneBoxError(f"{service} has no running container")
+
+    monkeypatch.setattr(onebox, "_detect_edge_ip", _not_running)
+    assert onebox._edge_address_watch({"sandbox-dns-edge": "172.17.0.9"})() is None
+
+
 @pytest.fixture
 def restore_signal_handlers() -> Iterator[None]:
     """Put the interpreter's SIGTERM/SIGINT handlers back afterwards.
@@ -426,46 +479,197 @@ def restore_signal_handlers() -> Iterator[None]:
             signal.signal(number, handler)
 
 
-def test_a_signal_reaches_both_children(
+def _signal_recorder(
+    log: Path, name: str, signals: dict[str, int], *, ready_file: Path | None = None
+) -> str:
+    """A child script that appends ``name:SIGNAL`` to ``log`` and exits.
+
+    Each handler also appends ``name:exit`` after a short pause, so the log
+    shows whether the next child was signalled before this one had finished.
+    The child announces that its handlers are installed on its pumped output,
+    or, unpumped like AstraBox, by creating ``ready_file``: a child signalled
+    before that point takes the default action and records nothing.
+    """
+    handlers = "".join(
+        f"signal.signal(signal.{number}, lambda *a: finish({number!r}, {code}))\n"
+        for number, code in signals.items()
+    )
+    announce = (
+        f"pathlib.Path({str(ready_file)!r}).write_text('ready')\n"
+        if ready_file is not None
+        else "print('ready', flush=True)\n"
+    )
+    return (
+        "import os, pathlib, signal, sys, time\n"
+        "def record(line):\n"
+        f"    fd = os.open({str(log)!r}, os.O_WRONLY | os.O_APPEND | os.O_CREAT)\n"
+        "    os.write(fd, (line + '\\n').encode())\n"
+        "    os.close(fd)\n"
+        "def finish(number, code):\n"
+        f"    record({name!r} + ':' + number[3:])\n"
+        "    time.sleep(0.3)\n"
+        f"    record({name!r} + ':exit')\n"
+        "    sys.exit(code)\n"
+        f"{handlers}{announce}"
+        "time.sleep(120)\n"
+    )
+
+
+def test_a_signal_stops_astrabox_first_then_the_sidecars_then_the_foundation_in_order(
     child_reaper: list[onebox._Child], restore_signal_handlers: None, tmp_path: Path
 ) -> None:
     # SIGTERM must arrive at AstraBox for its lifespan shutdown hook to run at
-    # all; a supervisor that absorbed the signal would make every deploy a hard
-    # kill after the grace period.
-    #
-    # BOTH children have to be waited for, and they are waited for differently.
-    # The signal is only forwarded once, and a child that has not yet reached its
-    # `signal.signal(...)` call takes the DEFAULT SIGTERM action and dies without
-    # the exit code this test reads — an interpreter still starting up under a
-    # loaded machine is exactly that case. The server announces itself on the
-    # output this _Child pumps; the AstraBox child is deliberately unpumped (as
-    # `_spawn_astrabox` leaves it), so nothing of its stdout is observable from
-    # here and it announces itself by touching a file instead.
+    # all, and it must arrive while the services that hook calls are still up.
+    # The database outlives every client: PostgreSQL gets SIGINT (fast
+    # shutdown; SIGTERM would wait for clients) only after the sidecars have
+    # exited, and the pool store goes last.
+    log = tmp_path / "shutdown.log"
     ready_file = tmp_path / "astrabox-handler-installed"
-    script = (
-        "import signal, sys, time\n"
-        "signal.signal(signal.SIGTERM, lambda *a: sys.exit(11))\n"
-        "print('ready', flush=True)\n"
-        "time.sleep(120)\n"
+    app = onebox._Child(
+        "astrabox",
+        (
+            sys.executable,
+            "-c",
+            _signal_recorder(log, "astrabox", {"SIGTERM": 0}, ready_file=ready_file),
+        ),
+        prefix_output=False,
     )
-    app_script = (
-        "import pathlib, signal, sys, time\n"
-        "signal.signal(signal.SIGTERM, lambda *a: sys.exit(11))\n"
-        f"pathlib.Path({str(ready_file)!r}).write_text('ready')\n"
-        "time.sleep(120)\n"
+    server = _python_child(_signal_recorder(log, "sandbox-server", {"SIGTERM": 0}))
+    postgres = onebox._start_foundation(
+        onebox.FoundationService(
+            "postgres",
+            (
+                sys.executable,
+                "-c",
+                _signal_recorder(log, "postgres", {"SIGINT": 0, "SIGTERM": 9}),
+            ),
+            ready=lambda: True,
+            stop_signal=signal.SIGINT,
+        )
     )
-    server = _python_child(script)
-    app = onebox._Child("astrabox", (sys.executable, "-c", app_script), prefix_output=False)
-    child_reaper.extend([server, app])
-    _await_line(server, "ready")
+    valkey = onebox._start_foundation(
+        onebox.FoundationService(
+            "valkey",
+            (sys.executable, "-c", _signal_recorder(log, "valkey", {"SIGTERM": 0})),
+            ready=lambda: True,
+        )
+    )
+    child_reaper.extend([app, server, postgres, valkey])
+    for child in (server, postgres, valkey):
+        _await_line(child, "ready")
     _await_file(ready_file)
-    onebox._forward_signals((app, server))
+    onebox._forward_signals(app)
 
-    import os as _os
+    os.kill(os.getpid(), signal.SIGTERM)
+    assert onebox._supervise(app, [server], [postgres, valkey]) == 0
 
-    _os.kill(_os.getpid(), signal.SIGTERM)
-    assert server.process.wait(timeout=30) == 11
-    assert app.process.wait(timeout=30) == 11
+    assert log.read_text(encoding="utf-8").splitlines() == [
+        "astrabox:TERM",
+        "astrabox:exit",
+        "sandbox-server:TERM",
+        "sandbox-server:exit",
+        "postgres:INT",
+        "postgres:exit",
+        "valkey:TERM",
+        "valkey:exit",
+    ]
+
+
+def test_a_dying_foundation_service_takes_the_container_down_in_order(
+    child_reaper: list[onebox._Child], tmp_path: Path
+) -> None:
+    # A database that exits is a broken container even when it exited cleanly;
+    # no restart in place. Its clients stop first, the other foundation last.
+    log = tmp_path / "shutdown.log"
+    ready_file = tmp_path / "astrabox-handler-installed"
+    app = onebox._Child(
+        "astrabox",
+        (
+            sys.executable,
+            "-c",
+            _signal_recorder(log, "astrabox", {"SIGTERM": 0}, ready_file=ready_file),
+        ),
+        prefix_output=False,
+    )
+    server = _python_child(_signal_recorder(log, "sandbox-server", {"SIGTERM": 0}))
+    valkey = onebox._start_foundation(
+        onebox.FoundationService(
+            "valkey",
+            (sys.executable, "-c", _signal_recorder(log, "valkey", {"SIGTERM": 0})),
+            ready=lambda: True,
+        )
+    )
+    child_reaper.extend([app, server, valkey])
+    for child in (server, valkey):
+        _await_line(child, "ready")
+    _await_file(ready_file)
+    postgres = onebox._start_foundation(
+        onebox.FoundationService(
+            "postgres",
+            (sys.executable, "-c", "print('database files are gone', flush=True)"),
+            ready=lambda: True,
+            stop_signal=signal.SIGINT,
+        )
+    )
+    child_reaper.append(postgres)
+
+    assert onebox._supervise(app, [server], [postgres, valkey]) == 1
+    assert log.read_text(encoding="utf-8").splitlines() == [
+        "astrabox:TERM",
+        "astrabox:exit",
+        "sandbox-server:TERM",
+        "sandbox-server:exit",
+        "valkey:TERM",
+        "valkey:exit",
+    ]
+
+
+def test_a_foundation_never_takes_the_exec_path_and_outlives_astrabox(
+    monkeypatch: pytest.MonkeyPatch,
+    child_reaper: list[onebox._Child],
+    restore_signal_handlers: None,
+    tmp_path: Path,
+) -> None:
+    # An operator's own lifecycle server leaves nothing else to supervise, which
+    # alone would exec AstraBox. A foundation service rules that out: exec would
+    # orphan the database and drop the data-volume lock the caller holds.
+    monkeypatch.setenv(onebox.BASE_URL_ENV, "http://opensandbox.internal:8080")
+    monkeypatch.setattr(onebox.os, "execvp", lambda *a: pytest.fail("exec'd astrabox"))
+    log = tmp_path / "shutdown.log"
+    started: list[str] = []
+
+    def _fake_astrabox(argv: Any) -> onebox._Child:
+        started.append("astrabox")
+        assert log.exists(), "astrabox started before the foundation was ready"
+        app = onebox._Child(
+            "astrabox", (sys.executable, "-c", "raise SystemExit(0)"), prefix_output=False
+        )
+        child_reaper.append(app)
+        return app
+
+    monkeypatch.setattr(onebox, "_spawn_astrabox", _fake_astrabox)
+    script = _signal_recorder(log, "postgres", {"SIGINT": 0, "SIGTERM": 9}).replace(
+        "print('ready', flush=True)\n",
+        f"pathlib.Path({str(log)!r}).touch()\nprint('ready', flush=True)\n",
+    )
+    service = onebox.FoundationService(
+        "postgres",
+        (sys.executable, "-c", script),
+        ready=log.exists,
+        stop_signal=signal.SIGINT,
+    )
+    real_start = onebox._start_foundation
+
+    def _tracked_start(value: onebox.FoundationService) -> onebox._Child:
+        child = real_start(value)
+        child_reaper.append(child)
+        return child
+
+    monkeypatch.setattr(onebox, "_start_foundation", _tracked_start)
+
+    assert onebox.main(["astrabox", "serve"], foundation=[service]) == 0
+    assert started == ["astrabox"]
+    assert log.read_text(encoding="utf-8").splitlines() == ["postgres:INT", "postgres:exit"]
 
 
 def _await_file(path: Path, *, timeout: float = 30.0) -> None:
@@ -545,6 +749,33 @@ def test_pumped_third_party_output_is_redacted_before_stdout_and_tail(
         assert secret not in stdout
     assert "opaque [redacted]" in tail
     assert "Received API Key = [redacted]" in tail
+
+
+def test_the_relayed_deepseek_harness_launch_token_is_redacted(
+    child_reaper: list[onebox._Child],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """With sandbox endpoints relayed through the lifecycle server, the DeepSeek
+    Harness adapter's token exchange is a request line in that server's access
+    log. The line below is what opensandbox-server 0.2.3, started as onebox
+    starts it, printed for that request, colour codes included. The token here
+    is synthetic; the request shape matches the harness exchange."""
+
+    token = "onebox-log-redaction-fixture-token-0000000000"
+    line = (
+        "\x1b[32mINFO\x1b[0m:     2026-09-23 10:05:55+0000 [-] uvicorn.access: "
+        '127.0.0.1:54544 - "GET /sandboxes/0d4c2b1e-relay-probe/proxy/44780/'
+        f'?token={token} HTTP/1.1" 404'
+    )
+    child = _python_child(f"import time\nprint({line!r}, flush=True)\ntime.sleep(120)\n")
+    child_reaper.append(child)
+    _await_line(child, "uvicorn.access")
+
+    tail = child.output_tail()
+    stdout = capsys.readouterr().out
+    assert token not in tail
+    assert token not in stdout
+    assert "/proxy/44780/?token=[redacted] HTTP/1.1\" 404" in tail
 
 
 def test_output_tail_is_bounded(child_reaper: list[onebox._Child]) -> None:
@@ -733,6 +964,78 @@ def test_deepseek_provider_credential_needs_no_anthropic_default_model(
     assert onebox.ANTHROPIC_MODEL_ENV not in os.environ
 
 
+def _bundled_route_for(requested: str) -> dict[str, str]:
+    """The bundled gateway route LiteLLM would serve ``requested`` from."""
+
+    config = yaml.safe_load(
+        (Path(__file__).resolve().parents[1] / "containers" / "litellm" / "config.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    for route in config["model_list"]:
+        if fnmatch.fnmatchcase(requested, route["model_name"]):
+            return dict(route["litellm_params"])
+    raise AssertionError(f"the bundled gateway serves no route for {requested!r}")
+
+
+@pytest.mark.parametrize("model", ["deepseek-flash", "anthropic/deepseek-v4-pro"])
+def test_deepseek_labels_use_the_native_adapter_route(
+    monkeypatch: pytest.MonkeyPatch, model: str
+) -> None:
+    """DeepSeek labels must reach the one adapter that disables its thinking.
+
+    The Anthropic and OpenAI wire routes drop ``reasoning_effort: "none"``;
+    LiteLLM's native DeepSeek adapter maps it to ``thinking: disabled``.
+    """
+    monkeypatch.setenv(onebox.ANTHROPIC_AUTH_TOKEN_ENV, "deepseek-token")
+    monkeypatch.setenv(onebox.ANTHROPIC_BASE_URL_ENV, "https://api.deepseek.com/anthropic")
+    monkeypatch.setenv(onebox.ANTHROPIC_MODEL_ENV, model)
+
+    onebox.ensure_litellm_provider_wiring()
+
+    upstream = model.removeprefix("anthropic/")
+    title_route = os.environ[onebox.TITLE_MODEL_NAME_ENV]
+    assert title_route == f"deepseek/{upstream}"
+    served_by = _bundled_route_for(title_route)
+    assert served_by["model"] == "deepseek/*"
+    assert served_by["api_key"] == "os.environ/DEEPSEEK_API_KEY"
+    assert os.environ[onebox.ANTHROPIC_MODEL_ENV] == f"anthropic/{upstream}"
+
+
+@pytest.mark.parametrize(
+    ("setting", "value"),
+    [
+        (onebox.TITLE_MODEL_NAME_ENV, "operator-label-route"),
+        (onebox.TITLE_MODEL_BASE_URL_ENV, "https://labels.example.test/v1"),
+    ],
+)
+def test_deepseek_keeps_the_operators_title_settings(
+    monkeypatch: pytest.MonkeyPatch, setting: str, value: str
+) -> None:
+    monkeypatch.setenv(onebox.ANTHROPIC_AUTH_TOKEN_ENV, "deepseek-token")
+    monkeypatch.setenv(onebox.ANTHROPIC_BASE_URL_ENV, "https://api.deepseek.com/anthropic")
+    monkeypatch.setenv(onebox.ANTHROPIC_MODEL_ENV, "deepseek-flash")
+    monkeypatch.setenv(setting, value)
+
+    onebox.ensure_litellm_provider_wiring()
+
+    assert os.environ.get(onebox.TITLE_MODEL_NAME_ENV) == (
+        value if setting == onebox.TITLE_MODEL_NAME_ENV else None
+    )
+
+
+def test_other_upstreams_keep_the_deployment_default_title_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(onebox.ANTHROPIC_AUTH_TOKEN_ENV, "upstream-token")
+    monkeypatch.setenv(onebox.ANTHROPIC_BASE_URL_ENV, "https://models.example.test")
+    monkeypatch.setenv(onebox.ANTHROPIC_MODEL_ENV, "provider-model-v2")
+
+    onebox.ensure_litellm_provider_wiring()
+
+    assert onebox.TITLE_MODEL_NAME_ENV not in os.environ
+
+
 def test_embedded_gateway_keeps_an_explicit_default_route_and_api_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -756,13 +1059,24 @@ def test_default_protected_embedded_gateway_needs_private_dns(
     assert onebox.needs_gateway_dns() is False
 
 
-def test_private_gateway_dns_is_pinned_to_this_container(
+def test_private_gateway_dns_never_points_sandboxes_at_this_container(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(onebox, "_detect_own_container_ip", lambda: "172.17.0.2")
-    onebox.ensure_gateway_dns_wiring()
-    assert os.environ[onebox.GATEWAY_DNS_ADDRESS_ENV] == "172.17.0.2"
-    assert os.environ[onebox.EGRESS_DNS_UPSTREAM_ENV] == "172.17.0.2:5353"
+    # Sandboxes may reach the address the gateway name resolves to; this
+    # server's own address would open every port it listens on to them.
+    monkeypatch.delenv(onebox.GATEWAY_DNS_ADDRESS_ENV, raising=False)
+    with pytest.raises(onebox.OneBoxError, match=onebox.GATEWAY_DNS_ADDRESS_ENV):
+        onebox.ensure_gateway_dns_wiring()
+    assert onebox.GATEWAY_DNS_ADDRESS_ENV not in os.environ
+    assert onebox.EGRESS_DNS_UPSTREAM_ENV not in os.environ
+
+
+def test_private_gateway_dns_follows_the_given_address(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(onebox.GATEWAY_DNS_ADDRESS_ENV, "172.17.0.23")
+    assert onebox.ensure_gateway_dns_wiring() == "172.17.0.23"
+    assert os.environ[onebox.EGRESS_DNS_UPSTREAM_ENV] == "172.17.0.23:5353"
 
 
 def test_compose_sandbox_edge_becomes_the_only_local_callback_host(
@@ -771,8 +1085,8 @@ def test_compose_sandbox_edge_becomes_the_only_local_callback_host(
     monkeypatch.setenv(onebox.SANDBOX_EDGE_SERVICE_ENV, "sandbox-edge")
     monkeypatch.setattr(
         onebox,
-        "_detect_compose_service_ip",
-        lambda service: "172.17.0.23" if service == "sandbox-edge" else "",
+        "_detect_edge_ip",
+        lambda service, owner: "172.17.0.23" if service == "sandbox-edge" else "",
     )
 
     assert onebox.ensure_sandbox_edge_wiring() == "172.17.0.23"
@@ -788,8 +1102,8 @@ def test_compose_sandbox_edge_keeps_explicit_operator_addresses(
     monkeypatch.setenv(onebox.MCP_PROXY_BASE_URL_ENV, "https://callbacks.example.test")
     monkeypatch.setattr(
         onebox,
-        "_detect_compose_service_ip",
-        lambda _service: pytest.fail("explicit addresses must not inspect Docker"),
+        "_detect_edge_ip",
+        lambda _service, _owner: pytest.fail("explicit addresses must not inspect Docker"),
     )
 
     assert onebox.ensure_sandbox_edge_wiring() == "198.51.100.8"
@@ -802,8 +1116,8 @@ def test_compose_dns_edge_becomes_the_only_sandbox_dns_upstream(
     monkeypatch.setenv(onebox.SANDBOX_DNS_EDGE_SERVICE_ENV, "sandbox-dns-edge")
     monkeypatch.setattr(
         onebox,
-        "_detect_compose_service_ip",
-        lambda service: "172.17.0.24" if service == "sandbox-dns-edge" else "",
+        "_detect_edge_ip",
+        lambda service, owner: "172.17.0.24" if service == "sandbox-dns-edge" else "",
     )
 
     assert onebox.ensure_sandbox_dns_edge_wiring() == "172.17.0.24"
@@ -817,12 +1131,250 @@ def test_compose_dns_edge_keeps_an_explicit_operator_upstream(
     monkeypatch.setenv(onebox.EGRESS_DNS_UPSTREAM_ENV, "192.0.2.53:5353")
     monkeypatch.setattr(
         onebox,
-        "_detect_compose_service_ip",
-        lambda _service: "172.17.0.24",
+        "_detect_edge_ip",
+        lambda _service, _owner: "172.17.0.24",
     )
 
     assert onebox.ensure_sandbox_dns_edge_wiring() == "172.17.0.24"
     assert os.environ[onebox.EGRESS_DNS_UPSTREAM_ENV] == "192.0.2.53:5353"
+
+
+
+class _FakeContainer:
+    def __init__(self, name: str, networks: dict[str, str], labels: dict[str, str]) -> None:
+        self.name = name
+        self.attrs: dict[str, Any] = {
+            "Config": {"Labels": labels},
+            "NetworkSettings": {
+                "Networks": {net: {"IPAddress": ip} for net, ip in networks.items()}
+            },
+        }
+
+
+class _FakeNetwork:
+    def __init__(self, name: str, labels: dict[str, str]) -> None:
+        self.name = name
+        self.labels = labels
+        self.connected: list[str] = []
+
+    def connect(self, container: _FakeContainer) -> None:
+        self.connected.append(container.name)
+        container.attrs["NetworkSettings"]["Networks"][self.name] = {"IPAddress": "10.9.0.9"}
+
+
+def _labelled(labels: dict[str, str], wanted: list[str]) -> bool:
+    """Docker's label filter: every ``key=value`` given must be on the resource."""
+    return all(labels.get(key) == value for key, _, value in (item.partition("=") for item in wanted))
+
+
+_COMPOSE = {
+    "server": {"com.docker.compose.project": "proj"},
+    "network": {
+        "com.docker.compose.project": "proj",
+        "com.docker.compose.network": "sandbox-edges",
+    },
+    "edge": lambda service: {
+        "com.docker.compose.project": "proj",
+        "com.docker.compose.service": service,
+    },
+}
+
+
+class _FakeDocker:
+    """The slice of docker-py onebox uses: labels, networks, the bridge IPAM."""
+
+    def __init__(
+        self,
+        *,
+        server_networks: tuple[str, ...],
+        edge_networks: dict[str, tuple[str, ...]],
+        bridge_subnets: tuple[str, ...] = ("172.17.0.0/16",),
+        labels: dict[str, Any] = _COMPOSE,
+    ) -> None:
+        self.private = _FakeNetwork("proj_sandbox-edges", labels["network"])
+        self.server = _FakeContainer(
+            "server", {net: "10.9.0.2" for net in server_networks}, labels["server"]
+        )
+        self.edges = {
+            service: _FakeContainer(
+                service,
+                {"bridge": "172.17.0.23", **{net: "10.9.0.3" for net in nets}},
+                labels["edge"](service),
+            )
+            for service, nets in edge_networks.items()
+        }
+        bridge = SimpleNamespace(
+            attrs={"IPAM": {"Config": [{"Subnet": subnet} for subnet in bridge_subnets]}}
+        )
+        self.containers = SimpleNamespace(
+            get=lambda _hostname: self.server, list=self._list_containers
+        )
+        self.networks = SimpleNamespace(
+            list=self._list_networks,
+            get=lambda name: bridge if name == "bridge" else pytest.fail(name),
+        )
+
+    def _list_containers(self, *, filters: dict[str, Any]) -> list[_FakeContainer]:
+        assert filters["status"] == "running"
+        return [
+            edge
+            for edge in self.edges.values()
+            if _labelled(edge.attrs["Config"]["Labels"], filters["label"])
+        ]
+
+    def _list_networks(self, *, filters: dict[str, Any]) -> list[_FakeNetwork]:
+        return [self.private] if _labelled(self.private.labels, filters["label"]) else []
+
+    def close(self) -> None:
+        pass
+
+
+def _install_fake_docker(monkeypatch: pytest.MonkeyPatch, client: _FakeDocker) -> None:
+    monkeypatch.setitem(sys.modules, "docker", SimpleNamespace(from_env=lambda: client))
+
+
+def test_sandbox_edges_are_connected_to_the_private_server_network(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No server port is published on the bridge, so this is the edges' only path."""
+    monkeypatch.setenv(onebox.SANDBOX_EDGE_SERVICE_ENV, "sandbox-edge")
+    monkeypatch.setenv(onebox.SANDBOX_DNS_EDGE_SERVICE_ENV, "sandbox-dns-edge")
+    monkeypatch.setenv(onebox.SANDBOX_EDGE_NETWORK_ENV, "sandbox-edges")
+    client = _FakeDocker(
+        server_networks=("proj_platform", "proj_sandbox-edges"),
+        edge_networks={"sandbox-edge": (), "sandbox-dns-edge": ("proj_sandbox-edges",)},
+    )
+    _install_fake_docker(monkeypatch, client)
+
+    assert onebox.ensure_sandbox_edge_network() == "proj_sandbox-edges"
+    assert client.private.connected == ["sandbox-edge"]
+    # A server restart finds both edges already attached and changes nothing.
+    assert onebox.ensure_sandbox_edge_network() == "proj_sandbox-edges"
+    assert client.private.connected == ["sandbox-edge"]
+
+
+_INSTALLATION = "astrabox.all-in-one.install=abc123"
+_ALL_IN_ONE = {
+    "server": {},
+    "network": {"astrabox.all-in-one.install": "abc123", "astrabox.all-in-one.role": "sandbox-edges"},
+    "edge": lambda role: {"astrabox.all-in-one.install": "abc123", "astrabox.all-in-one.role": role},
+}
+
+
+def test_the_all_in_one_edges_take_the_compose_path_under_their_installation_labels(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The image's server has no Compose project; its edges are found by their owner's labels."""
+    monkeypatch.setenv(onebox.SANDBOX_EDGE_SERVICE_ENV, "sandbox-edge")
+    monkeypatch.setenv(onebox.SANDBOX_DNS_EDGE_SERVICE_ENV, "sandbox-dns-edge")
+    monkeypatch.setenv(onebox.SANDBOX_EDGE_NETWORK_ENV, "sandbox-edges")
+    client = _FakeDocker(
+        server_networks=("proj_sandbox-edges",),
+        edge_networks={"sandbox-edge": (), "sandbox-dns-edge": ()},
+        labels=_ALL_IN_ONE,
+    )
+    _install_fake_docker(monkeypatch, client)
+    owner = onebox.EdgeOwner(
+        labels=(_INSTALLATION,),
+        service_key="astrabox.all-in-one.role",
+        network_key="astrabox.all-in-one.role",
+        description="all-in-one installation abc123",
+    )
+
+    assert onebox.ensure_sandbox_edge_network(owner) == "proj_sandbox-edges"
+    assert client.private.connected == ["sandbox-edge", "sandbox-dns-edge"]
+    assert onebox.ensure_sandbox_edge_wiring(owner) == "172.17.0.23"
+    assert os.environ[onebox.MCP_PROXY_BASE_URL_ENV] == "http://172.17.0.23:8000"
+    # Compose's own discovery finds nothing here: the server carries no project.
+    with pytest.raises(onebox.OneBoxError, match="com.docker.compose.project"):
+        onebox.ensure_sandbox_edge_network()
+
+
+def test_another_installations_edges_are_not_taken_for_this_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(onebox.SANDBOX_EDGE_SERVICE_ENV, "sandbox-edge")
+    monkeypatch.setenv(onebox.SANDBOX_EDGE_NETWORK_ENV, "sandbox-edges")
+    client = _FakeDocker(
+        server_networks=("proj_sandbox-edges",),
+        edge_networks={"sandbox-edge": ()},
+        labels=_ALL_IN_ONE,
+    )
+    _install_fake_docker(monkeypatch, client)
+    other = onebox.EdgeOwner(
+        labels=("astrabox.all-in-one.install=def456",),
+        service_key="astrabox.all-in-one.role",
+        network_key="astrabox.all-in-one.role",
+        description="all-in-one installation def456",
+    )
+
+    with pytest.raises(onebox.OneBoxError, match="found 0"):
+        onebox.ensure_sandbox_edge_network(other)
+    assert client.private.connected == []
+
+
+def test_sandbox_edge_network_is_required_once_an_edge_is_named(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(onebox.SANDBOX_EDGE_SERVICE_ENV, "sandbox-edge")
+    with pytest.raises(onebox.OneBoxError, match=onebox.SANDBOX_EDGE_NETWORK_ENV):
+        onebox.ensure_sandbox_edge_network()
+
+
+def test_sandbox_edge_network_refuses_a_server_that_is_not_on_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(onebox.SANDBOX_EDGE_SERVICE_ENV, "sandbox-edge")
+    monkeypatch.setenv(onebox.SANDBOX_EDGE_NETWORK_ENV, "sandbox-edges")
+    client = _FakeDocker(
+        server_networks=("proj_platform",), edge_networks={"sandbox-edge": ()}
+    )
+    _install_fake_docker(monkeypatch, client)
+
+    with pytest.raises(onebox.OneBoxError, match="not attached"):
+        onebox.ensure_sandbox_edge_network()
+    assert client.private.connected == []
+
+
+def test_bridge_isolation_denies_the_whole_bridge_except_the_sandbox_edge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every other bridge address (gateway, sibling sandboxes, DNS edge) is denied."""
+    client = _FakeDocker(server_networks=(), edge_networks={})
+    _install_fake_docker(monkeypatch, client)
+
+    value = onebox.ensure_sandbox_bridge_isolation("172.17.0.23")
+
+    assert os.environ[onebox.EGRESS_DENY_CIDRS_ENV] == value
+    denied = [ipaddress.ip_network(item) for item in value.split(",")]
+    assert sum(network.num_addresses for network in denied) == 2**16 - 1
+    assert not any(ipaddress.ip_address("172.17.0.23") in net for net in denied)
+    for address in ("172.17.0.1", "172.17.0.2", "172.17.0.22", "172.17.0.24", "172.17.255.255"):
+        assert any(ipaddress.ip_address(address) in net for net in denied), address
+
+
+def test_bridge_isolation_keeps_an_explicit_operator_list(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(onebox.EGRESS_DENY_CIDRS_ENV, "10.96.0.0/12")
+    monkeypatch.setitem(
+        sys.modules,
+        "docker",
+        SimpleNamespace(from_env=lambda: pytest.fail("an explicit list must not inspect Docker")),
+    )
+
+    assert onebox.ensure_sandbox_bridge_isolation("172.17.0.23") == "10.96.0.0/12"
+
+
+def test_bridge_isolation_refuses_a_callback_base_every_sandbox_is_denied(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A callback base on the bridge gateway would time out every MCP call."""
+    monkeypatch.setenv(onebox.MCP_PROXY_BASE_URL_ENV, "http://172.17.0.1:18200")
+    _install_fake_docker(monkeypatch, _FakeDocker(server_networks=(), edge_networks={}))
+
+    with pytest.raises(onebox.OneBoxError, match="172.17.0.1"):
+        onebox.ensure_sandbox_bridge_isolation("172.17.0.23")
 
 
 def test_private_gateway_dns_uses_compose_candidate_only_when_started(
@@ -844,7 +1396,6 @@ def test_private_gateway_dns_keeps_the_published_bridge_address(
 ) -> None:
     monkeypatch.setenv(onebox.GATEWAY_DNS_ADDRESS_ENV, "172.17.0.1")
     monkeypatch.setenv(onebox.EGRESS_DNS_UPSTREAM_ENV, "172.17.0.1:1053")
-    monkeypatch.setattr(onebox, "_detect_own_container_ip", lambda: "172.29.0.4")
 
     assert onebox.ensure_gateway_dns_wiring() == "172.17.0.1"
     assert os.environ[onebox.EGRESS_DNS_UPSTREAM_ENV] == "172.17.0.1:1053"
@@ -896,7 +1447,13 @@ def test_a_plugin_provider_disables_the_embedded_gateway(monkeypatch: pytest.Mon
 
 def test_embedded_gateway_matches_the_declared_model_seam_default() -> None:
     from astrabox.common.utils.settings import AstraBoxRuntimeSettings
+    from astrabox.providers import load_entry_point_providers
     from astrabox.seams.model import default_model_endpoint_name
+
+    # The default is declared by the provider that registers at startup, from
+    # its `astrabox.providers.model` entry point. Without loading it here the
+    # registry holds whatever earlier tests in this process happened to import.
+    load_entry_point_providers()
 
     assert AstraBoxRuntimeSettings.model_fields["model_endpoint_provider"].default == ""
     assert default_model_endpoint_name() == onebox.LITELLM_PROVIDER

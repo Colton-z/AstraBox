@@ -249,6 +249,17 @@ ensure_snapshot_runtime() {
     || die "k3s is not using ${target_socket}; OpenSandbox snapshot commits would inspect the wrong daemon"
 }
 
+controller_state_evidence() {
+  printf '%s\n' "--- pods in ${OSB_NAMESPACE} ---"
+  kubectl get pods -n "$OSB_NAMESPACE" -o wide 2>&1 || true
+  printf '%s\n' "--- container states in ${OSB_NAMESPACE} ---"
+  kubectl get pods -n "$OSB_NAMESPACE" -o jsonpath='{range .items[*]}{.metadata.name}{" "}{range .status.containerStatuses[*]}{.name}{"="}{.state}{" "}{end}{"\n"}{end}' 2>&1 || true
+  printf '%s\n' "--- recent events in ${OSB_NAMESPACE} ---"
+  kubectl get events -n "$OSB_NAMESPACE" --sort-by=.lastTimestamp 2>&1 | tail -n 40 || true
+  printf '%s\n' "--- node conditions ---"
+  kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{" "}{range .status.conditions[*]}{.type}{"="}{.status}{" "}{end}{"\n"}{end}' 2>&1 || true
+}
+
 install_controller() {
   local tmp tgz output ip snapshot_registry
   tmp="$(mktemp -d)"
@@ -279,6 +290,10 @@ install_controller() {
       --wait --timeout 6m 2>&1)"; then
     printf '%s\n' "$output" >&2
     rm -rf "$tmp"
+    # Helm's own message for a wait that ran out is "context deadline
+    # exceeded", which names no pod and no reason, and a failed activation
+    # terminates the worker. The cluster's answer is printed before it goes.
+    controller_state_evidence >&2
     die "helm could not install the controller"
   fi
   printf '%s\n' "$output" | grep -viE 'coalesce|^warning' || true
@@ -294,6 +309,67 @@ ensure_sandbox_namespace() {
     log "creating sandbox namespace ${OSB_SANDBOX_NAMESPACE}"
     kubectl create namespace "$OSB_SANDBOX_NAMESPACE"
   fi
+  ensure_sandbox_ingress_policy
+}
+
+ensure_sandbox_ingress_policy() {
+  # Deny cross-pod ingress to sandbox Pods (containers/kubernetes/
+  # sandbox-ingress-networkpolicy.yaml explains why and its limits). The
+  # shipped manifest allows only the ingress-gateway namespace; this testbed
+  # reaches sandbox Pod IPs directly from the bundled lifecycle server, which
+  # runs in a Docker container on this host, so it also allows the Docker
+  # bridge networks (RFC1918 172.16/12) and this host's node address. A sandbox
+  # on another node sees this host's traffic arrive over the flannel VXLAN
+  # overlay from this host's flannel.1 address, so on a multi-node cluster that
+  # address is allowed too. Co-tenant Pods keep their own Pod IP as source and
+  # match none of these, so they are refused — which the
+  # e2e_k8s_sandbox_ingress check proves against a Pod in another namespace.
+  local manifest="${TESTBED_REPO_ROOT}/containers/kubernetes/sandbox-ingress-networkpolicy.yaml"
+  [ -f "$manifest" ] || die "sandbox ingress NetworkPolicy manifest missing: $manifest"
+  kubectl label namespace "$OSB_NAMESPACE" \
+    "kubernetes.io/metadata.name=${OSB_NAMESPACE}" --overwrite >/dev/null 2>&1 || true
+  local platform_ip overlay_ip node_count
+  platform_ip="$(this_host_node_ip)" \
+    || die "this host is not a cluster node, so the platform's source address is unknown"
+  overlay_ip=""
+  node_count="$(kubectl get nodes --no-headers | wc -l)"
+  if [ "$node_count" -gt 1 ]; then
+    # `ip` exits non-zero for a missing device; the check below reports that.
+    overlay_ip="$({ ip -4 -o addr show dev flannel.1 2>/dev/null || true; } | awk '{print $4}' | cut -d/ -f1)"
+    [ -n "$overlay_ip" ] \
+      || die "a ${node_count}-node cluster with no flannel.1 address on this host: sandboxes on other nodes would refuse the platform"
+  fi
+  sandbox_ingress_policy "$manifest" "$platform_ip" "$overlay_ip" \
+    | kubectl -n "$OSB_SANDBOX_NAMESPACE" apply -f - >/dev/null \
+    || die "could not apply the sandbox ingress NetworkPolicy"
+  log "applied sandbox ingress NetworkPolicy in ${OSB_SANDBOX_NAMESPACE} (platform ${platform_ip}${overlay_ip:+, overlay ${overlay_ip}})"
+}
+
+# The shipped policy plus this testbed's platform sources: the Docker bridge
+# networks, this host's node address, and, when given, its overlay address.
+sandbox_ingress_policy() {
+  local manifest="$1" platform_ip="$2" overlay_ip="${3:-}" cidr
+  sed '/^#/d' "$manifest"
+  for cidr in 172.16.0.0/12 "${platform_ip}/32" ${overlay_ip:+"${overlay_ip}/32"}; do
+    cat <<YAML
+        - ipBlock:
+            cidr: ${cidr}
+YAML
+  done
+}
+
+# The InternalIP of the cluster node this script runs on. The first node in the
+# API's list is another node once a second worker joins.
+this_host_node_ip() {
+  local nodes addr
+  nodes="$(kubectl get nodes -o jsonpath='{range .items[*]}{.status.addresses[?(@.type=="InternalIP")].address}{"\n"}{end}')"
+  for addr in $(hostname -I); do
+    if printf '%s\n' "$nodes" | grep -qxF "$addr"; then
+      printf '%s\n' "$addr"
+      return 0
+    fi
+  done
+  return 1
 }
 
 validate_e2e_https_gateway_url() {

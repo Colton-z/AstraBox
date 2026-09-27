@@ -14,6 +14,7 @@ from typing import Any
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.user_context import UserContext
+from astrabox.persistence.repository.keyset import InvalidListCursor
 from astrabox.core.model import (
     AgentState,
     SessionState,
@@ -185,12 +186,19 @@ class SessionReadRenderingMixin:
         limit: int = 50,
         cursor: str | None = None,
     ) -> dict[str, Any]:
-        page = await self._sessions_repo.list_user_sessions_page(
-            user.user_id,
-            limit=limit,
-            cursor=cursor,
-            projection=_SESSION_LIST_ROW_PROJECTION,
-        )
+        try:
+            page = await self._sessions_repo.list_user_sessions_page(
+                user.user_id,
+                limit=limit,
+                cursor=cursor,
+                projection=_SESSION_LIST_ROW_PROJECTION,
+            )
+        except InvalidListCursor as exc:
+            raise APIError(
+                code="INVALID_REQUEST",
+                message="cursor is not one this list returned",
+                status_code=400,
+            ) from exc
         rows = list(page.get("sessions") or [])
         rendered = await self._render_session_rows(rows)
         return {

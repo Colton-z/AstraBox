@@ -17,7 +17,6 @@ by ``client_pool`` and prepared through ``runtime_preparation``.
 
 from __future__ import annotations
 
-import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -177,9 +176,6 @@ async def prepare_box_for_agent(
             EnginePreparationContext(
                 template=template,
                 slot_id=slot_id,
-                # A whole-box unit has no runner barrier, so the token is not
-                # persisted as though a later consumer could verify it.
-                activation_token=secrets.token_hex(32),
                 placement=PLACEMENT_CONVERSATION_BOX,
                 sandbox=provisioned.sandbox,
                 sandbox_id=sandbox_id,

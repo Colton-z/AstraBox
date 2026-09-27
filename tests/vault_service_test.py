@@ -30,6 +30,7 @@ from astrabox.core.service.orchestrator.vault_service import (
     MAX_CREDENTIALS_PER_VAULT,
     VaultService,
 )
+from astrabox.providers import register_builtin_providers
 from astrabox.providers.secret_store import LocalEncryptedSecretStore
 
 _USER = UserContext(user_id="test-user")
@@ -88,6 +89,10 @@ class VaultServiceTest(unittest.TestCase):
         self.service = VaultService()
 
     def test_http_basic_is_write_only_and_rotates_without_changing_destination(self) -> None:
+        # An http_basic credential needs an egress-capable sandbox backend; the
+        # built-in OpenSandbox backend is one, installed at platform startup.
+        register_builtin_providers()
+
         async def scenario() -> None:
             vault = await self.service.create_vault(_USER, display_name="private Git")
             vault_id = vault["vault_id"]

@@ -37,8 +37,11 @@ class _Repo:
     def __init__(self, rows: list[dict[str, Any]]) -> None:
         self.rows = rows
 
-    async def list_prewarm_enabled_agents(self, *, limit: int = 200):
-        return list(self.rows)
+    async def list_prewarm_enabled_agents(
+        self, *, after_agent_id: str | None = None, limit: int = 200
+    ):
+        ordered = sorted(self.rows, key=lambda row: row["agent_id"])
+        return [row for row in ordered if after_agent_id is None or row["agent_id"] > after_agent_id][:limit]
 
 
 class _AgentService:

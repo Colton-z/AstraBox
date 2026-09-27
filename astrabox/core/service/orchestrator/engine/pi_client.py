@@ -254,6 +254,10 @@ class PiEngineClient:
         #: Kept across a parked interaction so the continuation resumes the
         #: same stream state instead of reopening blocks that never closed.
         self._translator: PiTurnTranslator | None = None
+        #: The turn's stream ended at a dialog and has not been re-entered.
+        self._parked = False
+        #: The relay's number for each written input.
+        self._submission_numbers: dict[str, int] = {}
         self._child_resources = PiChildResources()
         self._streaming = False
         self._child_transcript = (
@@ -573,7 +577,9 @@ class PiEngineClient:
                     payload["streamingBehavior"] = "followUp"
                 extension_command = activate and await self._is_extension_command(process, command.content)
                 if self._relay is not None:
-                    self._relay.platform_input_submitted()
+                    self._submission_numbers[command_id] = (
+                        self._relay.platform_input_submitted()
+                    )
                 try:
                     if extension_command:
                         await self._submit_extension_command(process, command, payload)
@@ -616,6 +622,10 @@ class PiEngineClient:
             if self._active_command_id == command.command_id:
                 return self._active_receipt
             raise RuntimeError("pi already has an active turn")
+        if not consumption_confirmed and self._relay is not None:
+            self._relay.platform_turn_begins(
+                self._submission_numbers.get(command.command_id)
+            )
         if command.command_id not in self._commands:
             if consumption_confirmed:
                 self._commands[command.command_id] = command
@@ -675,6 +685,7 @@ class PiEngineClient:
         translator = self._translator
         if translator is None:
             raise RuntimeError("pi turn has no translator; begin_delivery first")
+        self._parked = False
 
         for consumed in self._unreported_consumption_emissions():
             yield consumed
@@ -721,6 +732,12 @@ class PiEngineClient:
                     )
                     # Parked: pi is blocked on the answer, and the translator
                     # stays alive so the continuation resumes this same turn.
+                    # A stop already sent means the platform settles the parked
+                    # turn itself, so it is released as a stop at a park is.
+                    if self._abort_request is not None:
+                        self._abandon_parked_turn()
+                    else:
+                        self._parked = True
                     return
                 # Fire-and-forget. Waiting on one would park the turn for a
                 # reply pi never reads.
@@ -902,7 +919,28 @@ class PiEngineClient:
         if self._abort_request is None:
             self._abort_request = asyncio.create_task(self._request(process, {"type": "abort"}))
         await asyncio.shield(self._abort_request)
+        if self._parked:
+            # The stream left at a dialog, so no consumer will read the aborted
+            # run's end or settle this turn: the platform settles it itself.
+            # Its state is released here, as the terminal would have released
+            # it, or the next message finds "pi already has an active turn".
+            self._abandon_parked_turn()
         return True
+
+    def _abandon_parked_turn(self) -> None:
+        self._parked = False
+        self._active_receipt = None
+        self._extension_command_id = None
+        self._extension_acknowledged = False
+        self._extension_agent_started = False
+        self._extension_terminal = None
+        self._abort_request = None
+        self._translator = None
+        self._streaming = False
+        self._active_command_id = None
+        for command_id in tuple(self._consumed_command_ids):
+            self._commands.pop(command_id, None)
+        self._consumed_command_ids.clear()
 
     # ── capabilities / teardown ──────────────────────────────────────────
     async def get_capabilities(self) -> EngineCapabilityManifest:

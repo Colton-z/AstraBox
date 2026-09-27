@@ -174,6 +174,10 @@ def create_agent_variant_session(
         "model": profile["model"],
         "environment_name": environment_name or profile["environment_name"],
         "engine_options": {**canonical_options, **engine_options},
+        # Cold on purpose: these cases exercise a conversation's own start, and
+        # the warm path has its own tests. Stated, not left to the deployment's
+        # create-time default.
+        "prewarm_enabled": False,
     }
     system = canonical.get("system")
     if isinstance(system, str) and system.strip():
@@ -577,9 +581,10 @@ def running_sandbox_image(*, endpoint: str) -> str:
     then reports the literal ``"unknown"``, which is a true statement about
     what it knows and useless as proof of what is running.
 
-    The Pod is the one place the answer is not derived. The endpoint the
-    platform hands out is that Pod's IP, so it addresses the box directly and
-    works the same for a cold-created box and a borrowed one.
+    The Pod is the one place the answer is not derived. A direct endpoint is
+    that Pod's IP, so it addresses the box directly and works the same for a
+    cold-created box and a borrowed one; an ingress gateway endpoint is
+    resolved to the Pod the gateway serves.
 
     ``""`` when no Pod serves that address. Waiting belongs to the caller,
     which is the only side that can re-ask the platform WHERE the box is: an
@@ -594,7 +599,8 @@ def running_sandbox_image(*, endpoint: str) -> str:
         "proving a sandbox image needs Kubernetes access; set "
         "ASTRABOX_E2E_KUBECONFIG and ASTRABOX_E2E_KUBE_NAMESPACE"
     )
-    host = urlparse(endpoint).hostname or ""
+    parsed = urlparse(endpoint)
+    host = parsed.hostname or ""
     assert host, f"sandbox endpoint {endpoint!r} names no host to resolve"
 
     # `-o json` and pair the two fields inside one Pod object. A multi-field
@@ -618,7 +624,36 @@ def running_sandbox_image(*, endpoint: str) -> str:
         for container in (item.get("spec") or {}).get("containers") or []:
             if container.get("name") == "sandbox":
                 seen[pod_ip] = str(container.get("image") or "").strip()
-    return seen.get(host, "")
+    if host in seen:
+        return seen[host]
+    # An OpenSandbox ingress gateway endpoint in uri mode is
+    # `<gateway>/<sandbox id>/<port>`, so its host is the gateway and no Pod
+    # has it. The gateway forwards to the first address the sandbox's
+    # BatchSandbox records in `sandbox.opensandbox.io/endpoints`; resolving the
+    # same record finds the Pod the gateway serves.
+    route = [segment for segment in parsed.path.split("/") if segment]
+    if len(route) < 2 or not route[1].isdigit():
+        return ""
+    return seen.get(_gateway_route_pod_address(route[0], kubeconfig, namespace), "")
+
+
+def _gateway_route_pod_address(sandbox_id: str, kubeconfig: str, namespace: str) -> str:
+    """The Pod address the ingress gateway routes ``sandbox_id`` to, or ``""``."""
+
+    result = subprocess.run(
+        ["kubectl", "--kubeconfig", kubeconfig, "--namespace", namespace,
+         "get", "batchsandboxes.sandbox.opensandbox.io", sandbox_id, "-o", "json"],
+        capture_output=True, text=True, timeout=30, check=False,
+    )
+    if result.returncode != 0 and "NotFound" in result.stderr:
+        return ""
+    assert result.returncode == 0, (
+        f"cannot read BatchSandbox {sandbox_id!r} to resolve its gateway route: "
+        f"{result.stderr[-300:]}"
+    )
+    annotations = (json.loads(result.stdout).get("metadata") or {}).get("annotations") or {}
+    addresses = json.loads(annotations.get("sandbox.opensandbox.io/endpoints") or "[]")
+    return str(addresses[0]).strip() if addresses else ""
 #: What OpenSandbox reports for a sandbox whose workload carries no pod template
 #: of its own. Every box lent from a pool is one, so this is the vendor's way of
 #: saying "this sandbox cannot name its image", not an image called "unknown".

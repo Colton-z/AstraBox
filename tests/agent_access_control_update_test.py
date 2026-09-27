@@ -52,9 +52,15 @@ class _User:
 
 class _FakeEnvironmentRepo:
     # engine_options acceptance is judged by the environment's engine, so the
-    # closed-contract probes need the payload's environment to resolve.
+    # closed-contract probes need the payload's environment to resolve. It is
+    # unrestricted so the example hosts in these payloads reach no resolver;
+    # what a limited Environment admits is author_boundary_test's subject.
     async def get_any_by_name(self, name: str) -> dict[str, Any] | None:
-        return {"name": name, "engine_kind": "claude_code"}
+        return {
+            "name": name,
+            "engine_kind": "claude_code",
+            "networking": {"type": "unrestricted"},
+        }
 
 
 def _service(agent: dict[str, Any]) -> tuple[AgentConfigService, _FakeAgentRepo]:

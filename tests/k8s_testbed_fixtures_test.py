@@ -23,10 +23,13 @@ render_e2e_fixture_manifests
 _INSTALL_HARNESS = r"""
 set -uo pipefail
 . "$SCRIPT"
+hostname() { printf '10.0.0.8\n'; }
 kubectl() {
   printf 'kubectl %s\n' "$*" >> "$CALLS"
   case " $* " in
     *" apply -f - "*) cat >/dev/null ;;
+    *" get nodes -o jsonpath="*) printf '10.0.0.8\n' ;;
+    *" get nodes --no-headers "*) printf 'node-a Ready\n' ;;
   esac
 }
 curl() {
@@ -182,9 +185,13 @@ def test_fixtures_subcommand_owns_genesis_and_update_through_apply(
         printf 'kubectl %s\n' "$*" >> "$CALLS"
         case " $* " in
           *" apply -f - "*) cat >/dev/null ;;
+          *" get nodes -o jsonpath="*) printf '10.0.0.8\n' ;;
+          *" get nodes --no-headers "*) printf 'node-a Ready\n' ;;
         esac
         """,
     )
+    # The sandbox ingress policy names this host's node by its address.
+    _write_executable(fake_bin / "hostname", "#!/usr/bin/env bash\nprintf '10.0.0.8\\n'\n")
     _write_executable(
         fake_bin / "curl",
         """

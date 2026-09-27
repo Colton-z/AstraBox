@@ -212,7 +212,7 @@
     "empty_directory_hint": "可以上传文件、拖拽到这里，或新建一个文件夹",
     "delete_confirm": "确认删除 {{name}} 吗？此操作会立即作用到远程工作区。",
     "this_item": "当前项目",
-    "unavailable_sandbox_gone": "工作区正在重建,文件稍后恢复。"
+    "unavailable_sandbox_gone": "这个对话的沙箱已不存在。发送下一条消息后，对话会换到新沙箱，文件随之重新列出。"
   },
   "interaction": {
     "response_timeout": "提交回答超时（15 秒），结果状态尚未确认。请查看当前会话状态；仅在问题仍待回答时手动提交，系统不会自动重复提交。",

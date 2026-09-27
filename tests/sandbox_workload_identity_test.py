@@ -48,6 +48,7 @@ from astrabox.core.service.orchestrator.engine.registry import (
     registered_engine_adapters,
 )
 from astrabox.providers import register_builtin_providers
+from astrabox.core.service.orchestrator.engine.runner_link import RUNNER_TOKEN_FILE_NAME
 from astrabox.core.service.orchestrator.engine.runtime_profiles import (
     SANDBOX_IMAGE_WORKLOAD_HOME,
     SANDBOX_IMAGE_WORKLOAD_USER,
@@ -128,7 +129,7 @@ def test_the_image_configures_execd_to_host_conversation_homes() -> None:
     )
     dockerfile = _DOCKERFILE.read_text()
     assert (
-        "COPY containers/sandbox-claude-code/execd-isolation.toml "
+        "COPY --chmod=u=rwX,go=rX containers/sandbox-claude-code/execd-isolation.toml "
         "/opt/astrabox/opensandbox/isolation.toml"
     ) in dockerfile
     assert _dockerfile_env("EXECD_ISOLATION_CONFIG") == (
@@ -152,7 +153,7 @@ def test_agent_images_pin_the_official_execd_release() -> None:
 def test_every_agent_image_bakes_the_conversation_bootstrap() -> None:
     """Claiming a prewarmed box may trigger a capability, never install it."""
     expected_copy = (
-        "COPY astrabox/core/service/orchestrator/runtime/provision-conversation "
+        "COPY --chmod=u=rwX,go=rX astrabox/core/service/orchestrator/runtime/provision-conversation "
         f"{AGENT_RUNTIME_CONVERSATION_BOOTSTRAP_SCRIPT}"
     )
     assert AGENT_RUNTIME_CONVERSATION_BOOTSTRAP_SCRIPT.startswith("/usr/local/bin/")
@@ -237,11 +238,11 @@ def test_hermes_bakes_fixed_profile_tools_and_claim_only_writes_profile_data() -
     dockerfile = _HERMES_DOCKERFILE.read_text()
     copies = {
         "hermes-profile-setup": "/usr/local/bin/astrabox-hermes-profile-setup",
-        "hermes-skill-repo-cache": "/usr/local/bin/astrabox-hermes-skill-repo-cache",
+        "provision-assistant-profile": "/usr/local/bin/astrabox-provision-assistant-profile",
     }
     for asset, target in copies.items():
         assert (
-            "COPY astrabox/core/service/orchestrator/runtime/"
+            "COPY --chmod=u=rwX,go=rX astrabox/core/service/orchestrator/runtime/"
             f"{asset} {target}"
         ) in dockerfile
         assert f"chmod 0555 {target}" in dockerfile
@@ -253,7 +254,6 @@ def test_hermes_bakes_fixed_profile_tools_and_claim_only_writes_profile_data() -
     for installer in (
         "_install_hermes_config_merge_script",
         "_install_hermes_profile_setup_script",
-        "_install_hermes_skill_repo_cache_script",
     ):
         assert installer not in hermes_source
     assert "_install_hermes_profile_env_file" in hermes_source
@@ -335,6 +335,9 @@ def test_hermes_profile_setup_refuses_to_replace_an_existing_visible_root(
 
 
 def test_hermes_profile_declares_the_alias_capabilities_baked_into_its_image() -> None:
+    # The assistant adapter declares these; it registers when the platform's
+    # in-tree installer imports it, as it does at startup.
+    register_builtin_providers()
     required = set(
         composed_runtime_profile(
             "assistant", "agent", session_kind="assistant_chat"
@@ -343,6 +346,7 @@ def test_hermes_profile_declares_the_alias_capabilities_baked_into_its_image() -
 
     assert "/usr/local/bin/astrabox-provision-conversation" in required
     assert "/usr/local/bin/astrabox-hermes-profile-setup" in required
+    assert "/usr/local/bin/astrabox-provision-assistant-profile" in required
     assert {"ln", "readlink"} <= required
 
 
@@ -350,7 +354,7 @@ def test_every_agent_image_bakes_the_shared_workspace_storage_helper() -> None:
     """A shared box must own its mount capability before any workspace claims it."""
     helper = "/usr/local/bin/astrabox-assistant-workspace-storage"
     expected_copy = (
-        "COPY astrabox/core/service/orchestrator/runtime/"
+        "COPY --chmod=u=rwX,go=rX astrabox/core/service/orchestrator/runtime/"
         f"astrabox-assistant-workspace-storage {helper}"
     )
     for dockerfile in (_DOCKERFILE, _HERMES_DOCKERFILE):
@@ -544,7 +548,7 @@ def test_image_boot_and_recovery_share_one_workload_runner_launcher() -> None:
     boot = _DOCKERFILE.with_name("boot.sh").read_text()
 
     assert (
-        "COPY containers/sandbox-claude-code/start-runner.sh "
+        "COPY --chmod=u=rwX,go=rX containers/sandbox-claude-code/start-runner.sh "
         "/opt/astrabox/start-runner.sh"
     ) in dockerfile
     assert '"$ASTRABOX_RUNNER_LAUNCHER" >>"$ASTRABOX_INBOX_LOG" 2>&1 &' in boot
@@ -617,6 +621,9 @@ printf '%s\n' "$@" >"$RUNUSER_ARGS"
         "LOGNAME=agent",
         f"PWD={workspace}",
         "ASTRABOX_RUNNER_PORT=8123",
+        # The file the platform delivers the runner's credential into; the
+        # runner refuses every prepare until it exists.
+        f"ASTRABOX_RUNNER_TOKEN_FILE=/home/agent/{RUNNER_TOKEN_FILE_NAME}",
         "/usr/local/bin/python3.12",
         str(server),
     ]
@@ -888,3 +895,104 @@ def test_a_shared_identity_delivers_the_allocated_uid_and_gid_to_bootstrap() -> 
     assert '--uid "$requested_uid" --gid "$requested_gid"' in (
         _CONVERSATION_IDENTITY_BOOTSTRAP_FUNCTIONS
     )
+
+
+def test_assistant_replacements_keep_the_same_numeric_profile_owner() -> None:
+    from astrabox.core.service.orchestrator.runtime.conversation_identity import (
+        CONVERSATION_UID_BASE,
+        plan_assistant_profile_identity,
+    )
+
+    register_builtin_providers()
+    first, replacement = (
+        plan_assistant_profile_identity(
+            engine_kind="assistant",
+            user_id="owner-1",
+            assistant_id="assistant-1",
+            sandbox_id=box,
+        )
+        for box in ("first-box", "replacement-box")
+    )
+    assert first["sandbox_id"] != replacement["sandbox_id"]
+    assert first["uid"] == replacement["uid"] == CONVERSATION_UID_BASE
+    assert first["gid"] == replacement["gid"] == CONVERSATION_UID_BASE
+    assert first["home_dir"] == replacement["home_dir"]
+    assert _build_conversation_bootstrap_env(replacement)["CONV_UID"] == str(
+        CONVERSATION_UID_BASE
+    )
+
+
+async def test_assistant_workspace_requests_ownership_before_bootstrap_verification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import astrabox.core.service.orchestrator.runtime.conversation_identity as identities
+
+    register_builtin_providers()
+    seen: list[tuple[dict[str, object], bool]] = []
+
+    async def provision(
+        sandbox: object, identity: dict[str, object], *, assistant_profile: bool = False
+    ) -> dict[str, object]:
+        seen.append((identity, assistant_profile))
+        return identity
+
+    monkeypatch.setattr(
+        identities, "provision_conversation_identity_with_bootstrap_script", provision
+    )
+    workspace = workspace_from_subject_kind(
+        "assistant_runtime", user_id="owner-1", assistant_id="assistant-1",
+        engine_kind="assistant",
+    )
+    await workspace.mount_and_provision(
+        SimpleNamespace(), SimpleNamespace(sandbox_id="new-box"),
+        template=SimpleNamespace(), session_id="bootstrap-1", user_id="owner-1",
+    )
+    assert len(seen) == 1
+    identity, assistant_profile = seen[0]
+    assert assistant_profile is True
+    assert identity["uid"] == identity["gid"] == identities.CONVERSATION_UID_BASE
+
+
+@pytest.mark.parametrize(
+    ("existing_owner", "expected_code", "expected_changes"),
+    [("0:0", 0, 3), ("2000:2000", 0, 0), ("2001:2001", 42, 0)],
+)
+def test_assistant_ownership_initializes_only_private_roots_and_refuses_a_foreign_owner(
+    existing_owner: str, expected_code: int, expected_changes: int,
+) -> None:
+    # Run the shipped operation with a synthetic stat/chown boundary. A real
+    # mounted-volume replay separately proves the resulting workload can write.
+    source = (_RUNTIME_ASSET_DIR / "provision-assistant-profile").read_text()
+    body = source.split("prepare_assistant_profile_roots() {", 1)[1]
+    body = body.split("\n}\n", 1)[0]
+    harness = "set -eu\nprepare_assistant_profile_roots() {" + body + "\n}\n" + r'''
+user=asst_owned
+home=/home/conversations/asst_owned
+workspace=$home/workspace
+config=$home/.hermes
+requested_uid=2000
+requested_gid=2000
+mkdir() { :; }
+chmod() { :; }
+stat() {
+  case "$2" in %u) printf '%s\n' "${EXISTING_OWNER%:*}" ;;
+    %g) printf '%s\n' "${EXISTING_OWNER#*:}" ;; *) exit 91 ;; esac
+}
+chown() { printf 'OWN %s %s\n' "$1" "$2"; test "$#" = 2; }
+prepare_assistant_profile_roots
+'''
+    result = subprocess.run(
+        ["bash", "-c", harness],
+        env={"PATH": "/usr/bin:/bin", "EXISTING_OWNER": existing_owner},
+        text=True, capture_output=True, timeout=5, check=False,
+    )
+    assert result.returncode == expected_code, result.stderr
+    changes = result.stdout.splitlines()
+    assert len(changes) == expected_changes
+    if expected_changes:
+        assert changes == [
+            f"OWN 2000:2000 /home/conversations/asst_owned{suffix}"
+            for suffix in ("", "/workspace", "/.hermes")
+        ]
+    if expected_code:
+        assert "ASSISTANT_PROFILE_OWNER_MISMATCH" in result.stderr

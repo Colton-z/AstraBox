@@ -34,7 +34,7 @@ Agent 在 Session 中执行任务。AstraBox 让 Agent 随时可用，创建或�
 | `environment_name` | string | 是 | 提供 Agent 程序、沙箱、网络策略和模型连接的运行环境 |
 | `exposure_mode` | string | 否 | Agent 的使用入口：`chat_only`、`mcp_only` 或 `both` |
 | `idle_hibernate_seconds` | integer | 否 | Session 运行实例空闲多久后执行运行环境设置的暂停或回收方式 |
-| `prewarm_enabled` | boolean | 否 | AstraBox 是否为这个 Agent 保持准备完成的运行时 |
+| `prewarm_enabled` | boolean | 否 | AstraBox 是否为这个 Agent 保持准备完成的运行时。创建时省略则由部署决定：能够预热的部署为 `true`，否则为 `false`；参见[预热](#prewarming) |
 | `enabled` | boolean | 否 | Agent 是否可以启动新 Session |
 | `visibility` | string | — | Agent 鉴权模式：`public`、`private` 或 `allowlist`，通过 Agent access 接口管理 |
 | `admins` | array | — | 可以管理 Agent 的账户，通过 Agent access 接口管理 |
@@ -42,7 +42,7 @@ Agent 在 Session 中执行任务。AstraBox 让 Agent 随时可用，创建或�
 | `version` | integer | — | 用于乐观并发控制的序号，从 1 开始；用于准备 Agent 运行实例的设置发生变化时递增 |
 | `state` | string | — | Agent 生命周期状态 |
 | `created_at` | string | — | 创建时间，ISO 8601 格式 |
-| `updated_at` | string | — | 最后更新时间 |
+| `updated_at` | string | — | Agent 的设置、访问权限或凭证绑定最后一次变更的时间。平台记在 Agent 上的运行时状态不会改变它，保存未改动的设置也不会。 |
 
 ### model
 
@@ -90,11 +90,24 @@ Session 身份、通信设置和已分配的模型凭证由平台管理。
 
 打开「管理台 > Agent」，点击「创建 Agent」，填写名称、运行环境和模型。系统提示词和所有扩展都可以不配置；根据这个 Agent 要完成的任务选择即可。完成后点击「创建」。
 
-开启预热后，AstraBox 会在下一个 Session 使用前准备运行实例。Agent 配置、所选 Skill
-与 Plugin，以及 Agent 程序启动会在可领取前完成。Agent 页面中的**预热状态**会显示
-是否已有就绪资源，或准备是否失败。
-
 ![在 AstraBox 控制台创建 Agent](./img/agent-create-console-zh.png)
+
+#### 预热 {#prewarming}
+
+预热会在下一个 Session 使用前准备运行实例。Agent 配置、所选 Skill 与 Plugin，以及
+Agent 程序启动会在可领取前完成，新对话领取的是已经运行的沙箱，而不是从头启动一个。
+Agent 页面中的**预热状态**会显示是否已有就绪资源，或准备是否失败。
+
+在能够预热的部署上，新建 Agent 默认开启预热。能够预热指设置了
+`ASTRABOX_AGENT_PREWARM_REDIS_URL`，所有随附的 Compose 部署都会设置它；未设置时新建
+Agent 默认关闭预热，因为这种部署无法协调准备资源。这个值在创建 Agent 时写入 Agent，
+创建表单也从这个值开始显示；之后修改部署不会改变已有 Agent 的设置。
+
+预热会占用资源：每个开启预热的 Agent 都会保留一个空闲的已准备沙箱，只要预热保持开启、
+Agent 及其运行环境处于启用状态就一直保留；对话领取之后会再准备一个补上。各种部署下
+每个沙箱的占用见[为已准备沙箱规划容量](deploy.md#plan-capacity-for-prepared-sandboxes)。
+要为某个 Agent 关闭预热，关闭「提前准备沙箱」开关（创建时在高级设置中，创建后在 Agent
+页面的「运行设置」中），或在创建、更新时传入 `"prewarm_enabled": false`。
 
 ### 查看
 
@@ -160,8 +173,10 @@ Agent 采用乐观并发控制（OCC）机制：
 A：
 需要开放全部互联网访问时使用 `networking.type: unrestricted`。`limited` 只允许
 列出的地址，以及 AstraBox 能确定的模型地址、平台回调地址和 Plugin 仓库地址；只有
-`allow_mcp_servers` 为 true 时才允许 Agent 声明的远程 MCP。Credential Vault 分配保持
-Environment 记录原样，并把 binding 地址加入沙箱的有效策略。
+`allow_mcp_servers` 为 true 时才允许 Agent 声明的远程 MCP。Agent 自己的 Skill、Plugin
+和 MCP 服务所在的主机，只有是公网地址或已被列出时才会放行，参见
+[Agent 自身扩展可以访问的范围](adding-tools.md#what-extensions-may-reach)。Credential
+Vault 分配保持 Environment 记录原样，并把 binding 地址加入沙箱的有效策略。
 
 **Q：更新 Agent 后，正在运行的 Session 会受影响吗？**
 

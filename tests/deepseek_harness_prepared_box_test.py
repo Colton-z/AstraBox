@@ -113,7 +113,6 @@ def _preparation_context(
     return EnginePreparationContext(
         template=selected,
         slot_id=slot_id,
-        activation_token="token-ignored",
         placement=pb.PLACEMENT_CONVERSATION_BOX,
         sandbox=sandbox or SimpleNamespace(sandbox_id="box-9"),
         sandbox_id="box-9",
@@ -596,10 +595,8 @@ def test_activation_adopts_binds_and_publishes_in_order(
     async def _mark(*, agent_id: str, slot_id: str, session_id: str) -> None:
         events.append(f"mark:{slot_id}:{session_id}")
 
-    async def _target(
-        sandbox: Any, manager_arg: Any, session_id: str, *, cwd: str
-    ) -> None:
-        events.append(f"mirror-target:{session_id}:{cwd}")
+    async def _target(sandbox: Any, manager_arg: Any, session_id: str) -> None:
+        events.append(f"mirror-target:{session_id}")
 
     async def _connect(sandbox: Any, *, port: int = 44780, launch_url_path: str) -> Any:
         # Box-tenancy paths keep dialing the image's fixed forwarder port.
@@ -669,7 +666,7 @@ def test_activation_adopts_binds_and_publishes_in_order(
         "mark:slot-abc:session-1",
         "mint:session-1:user-1",
         f"vault:{workload_credential_name('slot-abc')}",
-        "mirror-target:session-1:/workspace",
+        "mirror-target:session-1",
         "link-connect",
         "publish",
     ]

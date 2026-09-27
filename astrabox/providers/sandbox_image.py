@@ -29,8 +29,14 @@ AGENT_IMAGE_COMPONENT = "sandbox-claude-code"
 # The boot environment every AstraBox sandbox carries, whatever engine runs in
 # it and whichever rung of the ladder produced the box. ``IS_SANDBOX`` is what
 # makes a box self-describing in a diagnostic report — it is the deployment fact
-# a reader needs before any session fact means anything — and ``DISABLE_BROWSER``
-# keeps the AIO base image from starting a browser no agent loop uses.
+# a reader needs before any session fact means anything. The ``DISABLE_*`` flags
+# turn off the AIO base image's interactive services no agent loop uses —
+# JupyterLab, code-server, the VNC desktop, the in-box browser and its MCP hub,
+# and the Node REPLs — so they neither run nor answer on :8080; gem.sh reads
+# these vendor switches at boot to keep each service's process from starting.
+# The :8080 services that remain (nginx and the file/shell API backend that
+# also answers the gateway's auth check and serves previews) are gated by the
+# per-box ``SANDBOX_API_KEY`` (astrabox/providers/open_sandbox/aio_auth.py).
 #
 # Composed by the platform into the create spec rather than added by a provider,
 # because the seam defines ``env`` as the boot environment written verbatim: a
@@ -42,6 +48,11 @@ AGENT_IMAGE_COMPONENT = "sandbox-claude-code"
 SANDBOX_SELF_DESCRIPTION = {
     "IS_SANDBOX": "1",
     "DISABLE_BROWSER": "true",
+    "DISABLE_MCP_BROWSER": "true",
+    "DISABLE_JUPYTER": "true",
+    "DISABLE_CODE_SERVER": "true",
+    "DISABLE_VNC": "true",
+    "DISABLE_NODEJS_REPL": "true",
     "BROWSER_DOWNLOAD_DIR": "/tmp/astrabox-browser-downloads",
 }
 

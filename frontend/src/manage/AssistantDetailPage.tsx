@@ -130,7 +130,11 @@ export default function AssistantDetailPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [assistantId, record]);
 
-  const sections = useMemo(() => buildAssistantEditSections(), [t]);
+  const hasPermissionMode = Boolean(record?.permission_mode_default);
+  const sections = useMemo(
+    () => buildAssistantEditSections(hasPermissionMode),
+    [hasPermissionMode, t],
+  );
   const baseline = useMemo(
     () => (record ? buildAssistantEditDraft(record) : null),
     [record],
@@ -155,7 +159,9 @@ export default function AssistantDetailPage() {
         display_name: draft.display_name.trim(),
         description: draft.description.trim() || null,
         icon: draft.icon.trim() || null,
-        permission_mode_default: draft.permission_mode_default,
+        // A program without permission modes refuses any value, the default too.
+        ...(hasPermissionMode ? { permission_mode_default: draft.permission_mode_default } : {}),
+        system: draft.system.trim() || null,
       });
       await load();
       setSavedSection(index);

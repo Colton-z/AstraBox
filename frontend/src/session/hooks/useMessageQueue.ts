@@ -1,6 +1,7 @@
 import { useCallback, useMemo } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
 import type { OutboxItem } from '../../types';
+import { createClientMessageId } from '../utils/chatHelpers';
 import type { QueuedMessageItem } from '../../utils/messages';
 import type { TurnInputImage } from '../composerAttachments';
 
@@ -24,6 +25,7 @@ export function useMessageQueue({
       content: item.text,
       status: item.status === 'accepted' ? 'queued' : item.status,
       ...(item.failure_reason ? { error: item.failure_reason } : {}),
+      ...(item.resend_as_new ? { resendAsNew: true } : {}),
       source: item.status === 'failed'
         ? 'authoritative-delivery-failed'
         : item.command_id
@@ -43,7 +45,9 @@ export function useMessageQueue({
     const item = outbox.find((candidate) => candidate.client_message_id === id);
     if (!item || (!item.text && !item.images?.length)) return;
     setOutbox((current) => current.filter((candidate) => candidate !== item));
-    sendClientMessageNow(id, item.text, item.images);
+    // A refusal that ended the message answers its client_message_id the same
+    // way every time, so sending it again is a new message.
+    sendClientMessageNow(item.resend_as_new ? createClientMessageId() : id, item.text, item.images);
   }, [outbox, sendClientMessageNow, setOutbox]);
 
   return {

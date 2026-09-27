@@ -9,9 +9,10 @@ that something had gone wrong.
 The vendor SDK keeps the two apart and does it without a third status:
 `SDKResultMessage` has exactly `success` and `error`, an interrupted run
 returns SUCCESS, but this platform-side closure did not observe that result.
-It therefore settles COMPLETED with no error and no engine terminal reason;
-the preceding interrupt event records why the platform closed it. The held
-tool call closes the way a denial closes rather than the way a crash does.
+It therefore settles COMPLETED with no error and no engine terminal reason,
+and records the stop as a cancelled result, the outcome every stop path
+leaves. The held tool call closes the way a denial closes rather than the way
+a crash does.
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from typing import Any
 from astrabox.core.service.orchestrator.session_kernel.conversation_recovery import (
     settle_parked_turn,
 )
+from astrabox.core.service.orchestrator.session_message_view import project_session_messages
 
 _SID = "session-1"
 _TURN = "turn-1"
@@ -110,6 +112,7 @@ async def _settle(**overrides: Any) -> tuple[_FakeJournal, _FakeSnapshots, _Fake
         "failure_phase": None,
         "error_text": None,
         "causation": f"interrupt-settle:{_SID}:{_TURN}",
+        "user_stop": True,
     }
     kwargs.update(overrides)
     await settle_parked_turn(
@@ -151,6 +154,27 @@ class ParkedTurnSettleOutcomeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("tool-output-denied", _payload_types(frames))
         self.assertNotIn("tool-output-error", _payload_types(frames))
 
+    async def test_a_user_stop_leaves_the_cancelled_result_every_stop_leaves(self) -> None:
+        """The message a reloaded page reads carries the stop: a result whose
+        finish_reason is cancelled, as the live bridge writes it from an
+        engine's cancelled terminal."""
+        journal, _, frames = await _settle()
+
+        results = [f for f in frames.appended if (f.get("payload") or {}).get("type") == "data-result"]
+        self.assertEqual(
+            [f["payload"] for f in results],
+            [{"type": "data-result", "id": f"result:{_TURN}", "data": {"finish_reason": "cancelled"}}],
+        )
+        [message] = project_session_messages(
+            events=[{**event, "session_id": _SID} for event in journal.appended],
+            frames=[
+                {"session_id": _SID, "turn_id": _TURN, "frame_seq": seq, **frame}
+                for seq, frame in enumerate(frames.frames + frames.appended)
+            ],
+        )
+        result_blocks = [block for block in message["blocks"] if block["type"] == "result"]
+        self.assertEqual([block.get("finish_reason") for block in result_blocks], ["cancelled"])
+
     async def test_a_lost_sandbox_is_still_a_failure(self) -> None:
         journal, snapshots, frames = await _settle(
             command_id=None,
@@ -158,6 +182,7 @@ class ParkedTurnSettleOutcomeTests(unittest.IsolatedAsyncioTestCase):
             failure_phase="sandbox_reclaimed",
             error_text="sandbox reclaimed while awaiting interaction",
             causation=f"reclaim-settle:{_SID}:{_TURN}",
+            user_stop=False,
         )
         self.assertEqual(snapshots.updates["last_turn_status"], "FAILED")
         self.assertIn("reclaimed", snapshots.updates["last_turn_error"])
@@ -167,6 +192,7 @@ class ParkedTurnSettleOutcomeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(snapshots.updates["last_turn_terminal_reason"])
         self.assertEqual([e["event_type"] for e in journal.appended], ["turn.failed"])
         self.assertIn("tool-output-error", _payload_types(frames))
+        self.assertNotIn("data-result", _payload_types(frames))
 
     async def test_a_settle_without_a_command_invents_no_terminal_frame(self) -> None:
         # A terminal frame is addressed by (turn, command). With no command
@@ -177,6 +203,7 @@ class ParkedTurnSettleOutcomeTests(unittest.IsolatedAsyncioTestCase):
             status="FAILED",
             failure_phase="sandbox_reclaimed",
             error_text="gone",
+            user_stop=False,
         )
         self.assertNotIn("finish", _payload_types(frames))
         self.assertIsNone(snapshots.updates["last_turn_terminal_frame"])

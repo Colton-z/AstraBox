@@ -290,6 +290,43 @@ def _with_explicit_nulls(
     return args, kwargs
 
 
+class _FindCursor:
+    """A pymongo find cursor that takes the collection seam's ``sort`` signature.
+
+    The seam's ``sort`` accepts ``string_keyed``: the caller's statement that
+    every sort key holds a string, which lets the SQL store order the read in
+    SQL and stop at the page instead of sorting every match in Python. MongoDB
+    orders every find on the server, so the statement changes nothing here;
+    taking it keeps one call for every backend. Everything else is the pymongo
+    cursor's own.
+    """
+
+    def __init__(self, cursor: Any) -> None:
+        self._cursor = cursor
+
+    def sort(self, key_or_list: Any, direction: Any = None, *, string_keyed: bool = False) -> "_FindCursor":
+        _ = string_keyed
+        if direction is None:
+            self._cursor.sort(key_or_list)
+        else:
+            self._cursor.sort(key_or_list, direction)
+        return self
+
+    def skip(self, count: int) -> "_FindCursor":
+        self._cursor.skip(count)
+        return self
+
+    def limit(self, count: int) -> "_FindCursor":
+        self._cursor.limit(count)
+        return self
+
+    def __aiter__(self) -> Any:
+        return self._cursor.__aiter__()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._cursor, name)
+
+
 class _RetryingCollectionProxy:
     """Async Mongo collection proxy with automatic transient-error retry."""
 
@@ -333,7 +370,8 @@ class _RetryingCollectionProxy:
 
             def _translated(*args: Any, **kwargs: Any) -> Any:
                 args, kwargs = _with_explicit_nulls(args, kwargs)
-                return getattr(self._collection, name)(*args, **kwargs)
+                result = getattr(self._collection, name)(*args, **kwargs)
+                return _FindCursor(result) if name == "find" else result
 
             return _translated
 

@@ -127,13 +127,15 @@ class PlatformMCPService:
         # Both expose_port and publish_html_preview route through here.
         if tool_name in _ACCEPTED_TOOLS:
             port = arguments.get("port")
-            if port is None and "path" in arguments:
-                # No in-box nginx to serve a bare path; a path-only call
-                # implies the agent's dev server is on the default port.
-                port = 8080
+            if type(port) is not int or not 1 <= port <= 65535:
+                return self._error(
+                    request_id,
+                    -32602,
+                    "port is required: start your web server on a port of its own and pass that port",
+                )
             result = await self._expose_port_service.expose_port(
                 deployment_id=server["deployment_id"],
-                port=int(port or 8080),
+                port=port,
                 title=str(arguments.get("title") or "").strip() or None,
             )
             return self._tool_result(request_id, result)

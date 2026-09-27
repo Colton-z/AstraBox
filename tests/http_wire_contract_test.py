@@ -31,7 +31,7 @@ _OPENAPI_SNAPSHOT_PATH = _DATA_DIR / "openapi_snapshot.json"
 #: independently (see ``test_openapi_schema_matches_frozen_hash`` /
 #: ``test_openapi_schema_matches_committed_snapshot_file``) so tampering with
 #: just the file, or just this constant, still fails loud.
-_OPENAPI_SHA256 = "469f190abb0bec1c3d4db9044d3427826d0a7a55611a76c70897ab1e4fe65344"
+_OPENAPI_SHA256 = "59fcde8fa0184f2b2ea09133781717503799742b4455b8c203b83be967f54c36"
 
 #: The frozen ROUTE TABLE of the current tree. One row per route OBJECT (not
 #: per HTTP method) — ``methods`` carries every verb registered on that one

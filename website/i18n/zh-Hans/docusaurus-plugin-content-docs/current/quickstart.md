@@ -4,8 +4,8 @@
 
 ## 前置条件
 
-- 一台 Linux 主机（或 WSL 2），安装 Docker Engine 与 Compose 插件 v2 或更高版本，
-  并且当前用户可以使用 Docker socket
+- 一台 Linux 主机（或 WSL 2），安装 Docker Engine 26.0 或更高版本与 Compose 插件
+  2.17.0 或更高版本，并且当前用户可以使用 Docker socket
 - 一个模型服务的 API Key：Anthropic、DeepSeek，或其他 Anthropic 兼容、OpenAI 兼容的服务
 - `curl` 与 `jq`
 - Web 浏览器

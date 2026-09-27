@@ -54,6 +54,9 @@ export CLIENT_SECRET="client-secret"
 
 <Note>Client Secret 是长期凭证。请将它保存在密钥管理系统中，不要写入代码或日志。</Note>
 
+使用 AstraBox 随附的 Casdoor 时，请使用它的 API Client `astrabox-api`，其密钥生成在部署密钥目录的
+`oidc_api_client_secret` 中。AstraBox 只接受这个 Client 的令牌（`ASTRABOX_OIDC_API_CLIENT_ID`）。
+
 ### 置换 Access Token
 
 调用身份提供商的 Token Endpoint，使用 Client Credential 置换 Access Token。使用
@@ -115,6 +118,18 @@ curl --fail --silent --show-error \
   "$SERVICE_URL/api/v1/admin/environments" \
   -H "Authorization: Bearer $ACCESS_TOKEN"
 ```
+
+### 用户令牌能做什么 {#user-tokens-and-machine-tokens}
+
+AstraBox 按身份提供商把 Access Token 签发给了哪个 OAuth Client 来区分两类令牌，这个 Client 由令牌内省结果给出：
+
+| 签发给 | 身份 | 角色与权限 |
+|---|---|---|
+| API Client，`ASTRABOX_OIDC_API_CLIENT_ID` | 机器身份 | 由 `astrabox:*` 权限范围决定可调用的路由；`astrabox:admin` 还会使其成为管理员 |
+| 控制台 Client，`ASTRABOX_OIDC_CLIENT_ID` | 登录的用户本人 | 用户自己的角色，来自其用户组，与通过浏览器登录时相同；令牌申请的权限范围不授予任何权限 |
+| 其他任何 Client | 被拒绝，错误码 `IDENTITY_ORGANIZATION_REJECTED` | 无 |
+
+用户可以向控制台 Client 申请任何权限范围，而 Casdoor 会按申请授予，因此用户令牌上的权限范围不能决定谁是管理员。AstraBox 会忽略这些权限范围并记录日志。不在 `astrabox-admin` 组中的用户调用管理路由时会被拒绝，错误码为 `ADMIN_ROLE_REQUIRED`；模型网关对同一令牌给出相同的角色。
 
 ### 兼容其他认证方式
 

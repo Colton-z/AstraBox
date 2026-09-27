@@ -115,7 +115,6 @@ class EngineSettledProjection:
     assistant_text: str = ""
     completed: bool = False
     has_result: bool = False
-    interrupted: bool = False
 
 
 @dataclass(frozen=True)
@@ -370,7 +369,6 @@ class EnginePreparationContext:
 
     template: Any
     slot_id: str
-    activation_token: str
     placement: str
     sandbox: Any
     sandbox_id: str
@@ -690,6 +688,19 @@ class EngineStoredChildTranscript(Protocol):
         raw_scopes: list[dict[str, Any]],
         raw_messages: list[dict[str, Any]],
     ) -> list[ChildResourceFact]: ...
+
+
+@runtime_checkable
+class EngineStoredChildToolResults(Protocol):
+    """Optional adapter read of missing child tool output from mirrored vendor records."""
+
+    def enrich_stored_child_tool_results(
+        self,
+        *,
+        engine_ref: str,
+        raw_scopes: list[dict[str, Any]],
+        messages: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]: ...
 
 
 @runtime_checkable

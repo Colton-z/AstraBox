@@ -33,6 +33,24 @@ export interface StartupSkillGate {
   close(keepFiles?: boolean): Promise<void>;
 }
 
+/** Keep this private Git listener's admission on a test-owned Environment. */
+export function startupSkillEnvironment(
+  source: Record<string, unknown>, fields: string[], name: string, descriptor: string,
+): Record<string, unknown> {
+  const networking = source.networking as Record<string, unknown>;
+  if (source.enabled !== true || source.engine_kind !== 'claude_code' || networking.type !== 'limited') {
+    throw new Error('startup Skill requires the deployed enabled, limited Claude Code Environment');
+  }
+  return {
+    ...Object.fromEntries(Object.entries(source).filter(([key]) => fields.includes(key))),
+    name, display_name: name, enabled: true,
+    networking: {
+      ...networking,
+      allowed_hosts: [...(networking.allowed_hosts as string[]), new URL(descriptor).hostname],
+    },
+  };
+}
+
 /**
  * Use a full commit so Git's dumb HTTP transport never needs a shallow clone.
  * Only an explicit release opens the first info/refs response. Other requests,

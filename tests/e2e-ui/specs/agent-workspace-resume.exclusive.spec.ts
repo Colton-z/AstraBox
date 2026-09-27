@@ -109,7 +109,11 @@ async function browserTurn(api: AstraApi, page: Page, sessionId: string, prompt:
   const reply = turn.filter((row) => row.role === 'assistant').map(messageText).join('\n');
   expect(reply.trim()).not.toBe('');
   await expect(page.getByTestId('user-message').filter({ hasText: prompt })).toHaveCount(1);
-  await expect(page.getByTestId('assistant-message').last().getByTestId('assistant-text')).not.toBeEmpty();
+  const textParts = page.getByTestId('assistant-message').last().getByTestId('assistant-text');
+  await expect(textParts).toContainText([/\S/]);
+  for (let index = 0; index < await textParts.count(); index += 1) {
+    await expect(textParts.nth(index)).not.toBeEmpty();
+  }
   await expect(page.getByTestId('assistant-message').last()).not.toHaveAttribute('data-streaming', 'true');
   return { completed, reply, turn };
 }
@@ -307,10 +311,35 @@ function workspaceResumeScenario(engineKind: string, crossHost: boolean) {
     expect(workspaceId, 'the conversation must own a durable workspace identity').not.toBe('');
     evidence.original = { sandboxId: oldSandbox, workspaceId, workspaceDir: original.runtime_identity?.workspace_dir };
 
+    // Codex reserves file edits for apply_patch. Running an existing program
+    // exercises real file output without asking it to violate that instruction.
+    const exercise = 'e2e-workspace-exercise.py';
+    if (profile.engine_kind === 'codex') {
+      await api.uploadFileText(sessionId, '.', exercise, `
+from pathlib import Path
+import sys
+
+marker = Path(${JSON.stringify(filename)})
+if sys.argv[1] == 'create':
+    with marker.open('xb') as target:
+        target.write(Path('/proc/sys/kernel/random/uuid').read_bytes())
+elif sys.argv[1] == 'read-append':
+    with marker.open('r+') as target:
+        print(target.read(), end='')
+        target.write(sys.argv[2] + '\\n')
+else:
+    raise ValueError('unknown workspace exercise')
+`);
+    }
+    const writeOperation = profile.engine_kind === 'codex'
+      ? `Run the existing test program with your shell tool: python3 ${exercise} create. `
+        + 'This program generates runtime output; do not edit it or the output file. '
+      : `Use your shell tool in your current working directory to execute exactly: cat /proc/sys/kernel/random/uuid > ${filename}. `;
+
     // The Agent writes bytes it never reads into history, so resume cannot reconstruct
     // a lost file from the previous prompt. The project label separately checks history.
     const writePrompt = `Our research project label is ${project}; keep that label in this conversation, not in a file. `
-      + `Use your shell tool in your current working directory to execute exactly: cat /proc/sys/kernel/random/uuid > ${filename}. `
+      + writeOperation
       + 'Do not read or print the file contents. After success, confirm the project label briefly. Do not ask questions.';
     const written = await browserTurn(api, page, sessionId, writePrompt);
     evidence.write = written;
@@ -344,15 +373,19 @@ function workspaceResumeScenario(engineKind: string, crossHost: boolean) {
     expect(sandboxRunning(handle)).toBe(false);
 
     // Only the browser's next input resumes the same Session; it must read before writing.
-    const readPrompt = `Use your shell tool in your current working directory to execute: `
-      + `cat ${filename} && printf '%s\\n' '${appended}' >> ${filename}. `
+    const readOperation = profile.engine_kind === 'codex'
+      ? `Run the existing test program with your shell tool: python3 ${exercise} read-append ${appended}. `
+        + 'It reads the existing output before appending; do not edit the program or output file. '
+      : `Use your shell tool in your current working directory to execute: `
+        + `cat ${filename} && printf '%s\\n' '${appended}' >> ${filename}. `;
+    const readPrompt = readOperation
       + 'Do not recreate or overwrite the file. Reply with the original file contents and the research project label '
       + 'from our earlier conversation. Do not store the project label in a file or ask questions.';
     const readBack = await browserTurn(api, page, sessionId, readPrompt);
     evidence.read = readBack;
     expect(readBack.reply).toContain(marker);
     expect(readBack.reply).toContain(project);
-    await expect(page.getByTestId('assistant-message').last().getByTestId('assistant-text')).toContainText(marker);
+    await expect(page.getByTestId('assistant-message').last().getByTestId('assistant-text')).toContainText([marker]);
     const rebuilt = await api.adminSessionDetail(sessionId);
     evidence.rebuilt = { sandboxId: rebuilt.sandbox_id, workspaceId: rebuilt.workspace_id,
       workspaceDir: rebuilt.runtime_identity?.workspace_dir };

@@ -201,12 +201,19 @@ test('removing the final skill and plugin repository persists empty lists after 
     }>('GET', `/agents/${agentId}/extensions`);
     expect(catalog.mcp_servers.length, 'the fixture exposes a managed MCP catalog').toBeGreaterThan(0);
     const managed = catalog.mcp_servers[0];
-    // The open popup hides surrounding headings from the accessibility tree.
+    // The open popup hides surrounding headings from the accessibility tree,
+    // and a pick closes it. Escape is not a way to close it: Base UI's
+    // ComboboxInput clears the whole selection on Escape once the popup has
+    // unmounted, so the test waits for the popup to close on its own.
     const managedMcp = page.locator('#agent-extension-mcp');
     await managedMcp.click();
     await managedMcp.fill(managed.name);
     await page.getByRole('option', { name: managed.name, exact: true }).click();
-    await page.keyboard.press('Escape');
+    await expect(managedMcp).toHaveAttribute('aria-expanded', 'false');
+    await expect(
+      tools.locator(`[aria-label="${managed.name}"]`),
+      'the picked managed MCP server is selected before anything is saved',
+    ).toBeVisible();
 
     const directMcp = { local_form_fixture: { command: 'true', args: [] } };
     await customMcp.fill(JSON.stringify(directMcp));

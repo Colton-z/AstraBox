@@ -19,7 +19,10 @@ astrabox:
 
 对应的环境变量是 `ASTRABOX_TITLE_MODEL_ENABLED=false`。已保存的标题和摘要仍可正常查看。
 新的执行记录使用固定的外层“过程”标题，以及内层的“工具调用”或“推理”标题；工具记录仍
-可展开。生成功能默认开启。模型连接字段留空时会复用主模型配置，不会关闭生成。
+可展开。生成功能默认开启。模型连接字段留空不会关闭生成：AstraBox 服务端会用服务端的网关凭证，
+通过模型网关的服务端地址发送这些请求，并使用部署的默认模型。服务端的网关凭证只会发给网关本身：
+`title_model.base_url` 指向其他端点时，必须配置它自己的 `title_model.api_key` 或
+`title_model.api_key_secret_name`，否则 AstraBox 拒绝启动。
 
 ## 选择适合部署方式的连接
 
@@ -153,9 +156,26 @@ Environment 决定运行哪个 Agent 程序，以及使用哪些沙箱设置、�
 ## 配置对话标题请求
 
 自动标题由 AstraBox 服务端单独发起一次非流式模型请求。标题、标题判定和执行过程摘要都会
-明确发送 `reasoning_effort: "none"`，因此需要配置支持非思考模式补全的模型端点；LiteLLM
-会为所选服务商转换这个选项。这些请求不会继承 Agent 的推理设置。在
-`astrabox/config/app.yml` 中配置它们的超时时间：
+明确发送 `reasoning_effort: "none"`，输出上限为 2048 个 token。这些请求不会继承 Agent 的推理
+设置。思考是否真正关闭，取决于 LiteLLM 用哪条路由提供标题模型。安装脚本配置的路由如下：
+
+| 内置网关上的标题路由 | LiteLLM 发往上游的内容 |
+|---|---|
+| `deepseek/<model>`（LiteLLM 原生 DeepSeek 适配器） | `thinking: {"type": "disabled"}` |
+| `claude-*` 和 `anthropic/<model>`（Anthropic Messages） | 不带 `thinking` 字段，即 Anthropic 默认不启用扩展思考。默认会思考的 Anthropic 兼容服务仍会思考。 |
+| `openai-compatible/<model>` 和走 OpenAI 协议的 DeepSeek 路由 | 不发送：对于它不认识的模型，LiteLLM 会丢弃这个选项，由服务自身的默认值决定 |
+
+使用 DeepSeek 的端点时，AstraBox 会自动为标题选择 `deepseek/<model>`。其他服务的默认模型
+如果会思考，请把 `title_model.model_name`（`ASTRABOX_TITLE_MODEL_NAME`）设为不思考的路由。
+不思考的路由写完标题就会停止，不会用满这个上限；会思考的路由则需要把推理也装进上限：
+用完上限的回复没有正文，会话会保留默认标题。在 DeepSeek 会思考的路由上，2048 个 token
+足够生成标题和执行过程摘要；不思考的路由只会用到其中一小部分，响应也更快。
+
+标题使用用户的语言。由于以公式为主的消息几乎没有可供模型判断的文字，请求会写明用户消息
+所用的书写系统。标题如果使用了用户没有使用过的非拉丁书写系统，会被记为标题生成失败，而不会
+显示出来；名称和代码使用的拉丁字母始终允许。
+
+在 `astrabox/config/app.yml` 中配置请求超时时间：
 
 ```yaml
 astrabox:

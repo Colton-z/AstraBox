@@ -43,12 +43,12 @@ def _fake_toolchain(root: Path, version: str) -> Path:
     return bin_dir / "node"
 
 
-def _archive(version: str) -> bytes:
+def _archive(version: str, *, node_source: str | None = None) -> bytes:
     payload = io.BytesIO()
     prefix = f"node-v{version}-linux-x64"
     with tarfile.open(fileobj=payload, mode="w:gz") as archive:
         for name, source in {
-            "node": f"#!/bin/sh\nprintf 'v{version}\\n'\n",
+            "node": node_source or f"#!/bin/sh\nprintf 'v{version}\\n'\n",
             "npm": "#!/bin/sh\nexit 0\n",
             "npx": "#!/bin/sh\nexit 0\n",
         }.items():
@@ -209,6 +209,35 @@ def test_installer_refuses_a_checksum_mismatch(tmp_path: Path) -> None:
             key=("linux", "x64"),
             downloader=lambda _url, output: output.write(payload),
             expected_sha256="0" * 64,
+        )
+
+
+def test_a_toolchain_that_cannot_start_names_why(tmp_path: Path) -> None:
+    """A host missing a library the official build links must hear which one.
+
+    The pinned Linux build needs ``libatomic.so.1``; a host without it gets a
+    binary whose ``--version`` exits 127 with the loader's message on stderr,
+    and "failed its version check" alone sends the reader to the checksum.
+    """
+
+    module = _module()
+    payload = _archive(
+        "26.8.1",
+        node_source=(
+            "#!/bin/sh\n"
+            "echo 'node: error while loading shared libraries: libatomic.so.1: "
+            "cannot open shared object file: No such file or directory' >&2\n"
+            "exit 127\n"
+        ),
+    )
+
+    with pytest.raises(module.ToolchainError, match=r"exited 127: .*libatomic\.so\.1"):
+        module.install_node(
+            version="26.8.1",
+            cache_root=tmp_path / "cache",
+            key=("linux", "x64"),
+            downloader=lambda _url, output: output.write(payload),
+            expected_sha256=hashlib.sha256(payload).hexdigest(),
         )
 
 

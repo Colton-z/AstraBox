@@ -82,15 +82,20 @@ class _FakeSessionsRepo:
         return True
 
     async def list_dead_binding_probe_candidates(
-        self, *, now_iso: str, limit: int = 50
+        self, *, now_iso: str, after_session_id: str | None = None, limit: int = 50
     ) -> list[dict[str, Any]]:
         self.candidate_calls.append({"now_iso": now_iso, "limit": limit})
-        return [dict(item) for item in self._candidates]
+        rows = sorted(self._candidates, key=lambda item: str(item.get("session_id") or ""))
+        return [
+            dict(item)
+            for item in rows
+            if after_session_id is None or str(item.get("session_id") or "") > after_session_id
+        ][:limit]
 
     async def list_idle_reclaim_candidates(
-        self, *, now_iso: str, limit: int = 50
+        self, *, now_iso: str, after_session_id: str | None = None, limit: int = 50
     ) -> list[dict[str, Any]]:
-        _ = (now_iso, limit)
+        _ = (now_iso, after_session_id, limit)
         return []
 
     async def list_sessions_by_sandbox_id(
@@ -120,14 +125,16 @@ class _FakeAgentRepo:
         ]
 
     async def list_dead_binding_probe_candidates(
-        self, *, now_iso: str, limit: int = 50
+        self, *, now_iso: str, after_agent_id: str | None = None, limit: int = 50
     ) -> list[dict[str, Any]]:
         _ = now_iso
+        rows = sorted(self.rows, key=lambda row: str(row.get("agent_id") or ""))
         return [
             dict(row)
-            for row in self.rows[:limit]
+            for row in rows
             if str(row.get("sandbox_id") or "").strip()
-        ]
+            and (after_agent_id is None or str(row.get("agent_id") or "") > after_agent_id)
+        ][:limit]
 
     async def compare_and_update_agent(
         self,
@@ -168,14 +175,19 @@ class _FakeAssistantWorkspaceService:
         ]
 
     async def list_dead_binding_probe_candidates(
-        self, *, now_iso: str, limit: int = 50
+        self, *, now_iso: str, after_assistant_id: str | None = None, limit: int = 50
     ) -> list[dict[str, Any]]:
         _ = now_iso
+        rows = sorted(self.rows, key=lambda row: str(row.get("assistant_id") or ""))
         return [
             dict(row)
-            for row in self.rows[:limit]
+            for row in rows
             if str(row.get("current_sandbox_id") or "").strip()
-        ]
+            and (
+                after_assistant_id is None
+                or str(row.get("assistant_id") or "") > after_assistant_id
+            )
+        ][:limit]
 
     async def realign_live_sandbox(
         self,
@@ -245,6 +257,9 @@ class _FakeRuntimeManager:
         self.evicted.append(session_id)
 
     async def reconcile_startup_allocations(self, **_kwargs: Any) -> dict[str, int]:
+        return {}
+
+    async def retire_sandboxes_with_stale_network_wiring(self) -> dict[str, int]:
         return {}
 
     async def reap_abandoned_agent_boxes(self) -> dict[str, int]:
@@ -864,6 +879,9 @@ class WatcherShutdownTests(unittest.IsolatedAsyncioTestCase):
             platform_service=SimpleNamespace(
                 _runtime_manager=SimpleNamespace(
                     reconcile_startup_allocations=AsyncMock(return_value={}),
+                    retire_sandboxes_with_stale_network_wiring=AsyncMock(
+                        return_value={}
+                    ),
                     reap_abandoned_agent_boxes=AsyncMock(return_value={}),
                     reap_ownerless_sandboxes=AsyncMock(return_value={}),
                     keep_prewarmed_agents_ready=AsyncMock(return_value={}),
@@ -1070,7 +1088,6 @@ class DeadBindingCandidatesQueryTests(unittest.IsolatedAsyncioTestCase):
             {"expires_at": {"$lte": "2026-01-01T00:00:00+00:00"}},
             captured["query"]["$or"],
         )
-        self.assertEqual(captured["sort"], ("expires_at", 1))
         self.assertEqual(captured["limit"], 25)
 
     async def test_workspace_query_selects_shared_owner_bindings_without_sessions(
@@ -1149,7 +1166,6 @@ class DeadBindingCandidatesQueryTests(unittest.IsolatedAsyncioTestCase):
             },
             captured["query"]["$or"],
         )
-        self.assertEqual(captured["sort"], ("current_sandbox_expires_at", 1))
         self.assertEqual(captured["limit"], 25)
 
 

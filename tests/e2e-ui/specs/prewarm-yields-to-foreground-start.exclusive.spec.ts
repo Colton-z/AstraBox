@@ -11,7 +11,7 @@ import { PlatformApi } from '../fixtures/platformApi';
 import { trackSessions } from '../fixtures/sessionCleanup';
 import { expectComposerEnabled } from '../fixtures/sessionPage';
 import { requireServiceContainer, SERVER_CONTAINER_HANDLE } from '../fixtures/serviceContainer';
-import { startupSkillGate } from '../fixtures/startupSkillGate';
+import { startupSkillEnvironment, startupSkillGate } from '../fixtures/startupSkillGate';
 
 const sessions = trackSessions();
 
@@ -95,17 +95,27 @@ for (const boundary of ['foreground-release', 'bounded-wait'] as const) {
     const model = await api.configuredAgentModel(researchAgent, environmentName);
     const gate = await startupSkillGate();
     const agents: string[] = [];
+    let environment: Record<string, unknown> | null = null;
     const observations: Array<Record<string, unknown>> = [];
     let completed = false;
     let enabledAt = 0;
     let firstExtraAt: number | null = null;
     let sessionId = '';
     try {
+      const environments = await api.data<Array<Record<string, unknown>>>('GET', '/admin/environments');
+      const source = environments.find((item) => item.name === environmentName);
+      expect(source, 'the startup probe requires the deployed shared Environment').toBeDefined();
+      const schema = await api.data<{ fields: Array<{ key: string }> }>('GET', '/admin/environment-schema');
+      const fixtureName = `__e2e_startup_skill_${randomUUID()}`;
+      environment = startupSkillEnvironment(source!, schema.fields.map((field) => field.key), fixtureName, gate.descriptor);
+      await api.data('PUT', `/admin/environments/${encodeURIComponent(fixtureName)}`, environment);
+      const stored = await api.data<Array<Record<string, unknown>>>('GET', '/admin/environments');
+      expect(stored.find((item) => item.name === fixtureName)?.networking).toEqual(environment.networking);
       // A fresh Skill repository and disabled prewarm ensure that the first
       // clone belongs to this foreground Session's startup.
       const agent = await api.createAgent({
         name: `__e2e_startup_priority_${randomUUID()}`, model,
-        environment_name: environmentName, prewarm_enabled: false, skills: [gate.descriptor],
+        environment_name: fixtureName, prewarm_enabled: false, skills: [gate.descriptor],
       });
       agents.push(agent.agent_id);
       sessionId = (await api.startConversation(agent.agent_id)).session_id;
@@ -149,7 +159,7 @@ for (const boundary of ['foreground-release', 'bounded-wait'] as const) {
         // would not prove that background work was actually able to advance.
         const other = await api.createAgent({
           name: `__e2e_unrelated_refill_${randomUUID()}`, model,
-          environment_name: environmentName, prewarm_enabled: true,
+          environment_name: fixtureName, prewarm_enabled: true,
         });
         agents.push(other.agent_id);
         let otherStatus: Record<string, unknown> = {};
@@ -211,11 +221,14 @@ for (const boundary of ['foreground-release', 'bounded-wait'] as const) {
         sessions.splice(sessions.indexOf(id), 1);
       }
       for (const id of agents) await api.deleteAgent(id);
+      await api.data('PUT', `/admin/environments/${encodeURIComponent(fixtureName)}`, {
+        ...environment, enabled: false,
+      });
       completed = true;
     } finally {
       gate.release();
       await test.info().attach('foreground-refill-ordering', {
-        body: JSON.stringify({ boundary, sessionId, agents, enabledAt, firstExtraAt, observations,
+        body: JSON.stringify({ boundary, sessionId, agents, environment, enabledAt, firstExtraAt, observations,
           heldAt: gate.heldAt, releasedAt: gate.releasedAt, requests: gate.requests,
           errors: gate.errors, gitCommit: gate.commit, gitVersion: gate.gitVersion, directory: gate.directory }),
         contentType: 'application/json',

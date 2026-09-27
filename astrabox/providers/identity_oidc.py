@@ -57,6 +57,7 @@ from astrabox.common.utils.user_context import (
 )
 from astrabox.identity.oidc import (
     OidcAccessTokenRejected,
+    OidcIdentityRejected,
     OidcProviderMisconfigured,
     OidcProviderConfig,
     OidcProviderUnavailable,
@@ -108,7 +109,14 @@ def mint_session_token(
     email: str | None,
     display_name: str | None,
     roles: list[str],
+    casdoor_organization: str,
 ) -> str:
+    """Mint the browser session for an identity the login just verified.
+
+    ``casdoor_organization`` is the account's Casdoor organization, the ID
+    token's ``owner`` claim, once the login has checked it against
+    ``ASTRABOX_CASDOOR_ORGANIZATION``; empty when no organization is configured.
+    """
     now = int(time.time())
     claims = {
         "use": "session",
@@ -116,17 +124,31 @@ def mint_session_token(
         "email": email or None,
         "name": display_name or None,
         "roles": list(roles or []),
+        "casdoor_organization": casdoor_organization or None,
         "iat": now,
         "exp": now + _session_ttl_seconds(),
     }
     return jwt.encode(claims, session_signing_secret(), algorithm="HS256")
 
 
-def verify_session_token(token: str) -> dict[str, Any]:
-    """Decode+verify a session token; raises ``jwt`` errors on any failure."""
+def verify_session_token(token: str, *, casdoor_organization: str) -> dict[str, Any]:
+    """Decode+verify a session token; raises ``jwt`` errors on any failure.
+
+    ``casdoor_organization`` is the configured ``ASTRABOX_CASDOOR_ORGANIZATION``.
+    When it is set, the session must name that organization. A session that
+    names none, or another one, was not minted by a login that checked the
+    account against this setting, so it is refused and its holder signs in
+    again, which applies the check; otherwise it would stay valid until it
+    expires. The caller passes the setting so that no reader can skip it.
+    """
     claims = jwt.decode(token, session_signing_secret(), algorithms=["HS256"])
     if claims.get("use") != "session":
         raise jwt.InvalidTokenError("not a session token")
+    if casdoor_organization and claims.get("casdoor_organization") != casdoor_organization:
+        raise jwt.InvalidTokenError(
+            "the session was not issued for Casdoor organization "
+            f"{casdoor_organization!r}; sign in again"
+        )
     return claims
 
 
@@ -226,7 +248,10 @@ class OidcSessionWebIdentityResolver:
         # browser also carries this cookie.
         if cookie_token:
             try:
-                claims = verify_session_token(cookie_token)
+                claims = verify_session_token(
+                    cookie_token,
+                    casdoor_organization=self._config.casdoor_organization,
+                )
             except jwt.PyJWTError as exc:
                 raise APIError(
                     code="AUTH_REQUIRED",
@@ -258,6 +283,13 @@ class OidcSessionWebIdentityResolver:
                 message="OIDC access token is invalid or expired",
                 status_code=401,
             ) from exc
+        except OidcIdentityRejected as exc:
+            logger.warning("OIDC access token refused: %s", exc)
+            raise APIError(
+                code="IDENTITY_ORGANIZATION_REJECTED",
+                message=str(exc),
+                status_code=403,
+            ) from exc
         except OidcProviderMisconfigured as exc:
             raise APIError(
                 code="IDENTITY_PROVIDER_MISCONFIGURED",
@@ -270,19 +302,12 @@ class OidcSessionWebIdentityResolver:
                 message="OIDC provider could not validate the access token",
                 status_code=503,
             ) from exc
-        roles = list(principal.roles)
-        if (
-            principal.api_scopes is not None
-            and API_ADMIN_SCOPE in principal.api_scopes
-            and PLATFORM_ADMIN_ROLE not in roles
-        ):
-            roles.append(PLATFORM_ADMIN_ROLE)
         return UserContext(
             user_id=principal.user_id,
             display_name=principal.display_name,
             email=principal.email,
             org_id=principal.org_id,
-            roles=roles,
+            roles=list(principal.roles),
             api_scopes=(
                 list(principal.api_scopes)
                 if principal.api_scopes is not None

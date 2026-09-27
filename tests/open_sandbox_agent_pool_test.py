@@ -1028,7 +1028,9 @@ def _storage_routes(monkeypatch: pytest.MonkeyPatch) -> None:
     async def backing(_assignment: str, mounts: Any) -> StorageMountPlan:
         return StorageMountPlan("backing-volume", mounts)
 
-    async def routed(_assignment: str, plan: StorageMountPlan) -> StorageMountPlan:
+    async def routed(
+        _assignment: str, plan: StorageMountPlan, **_kwargs: Any
+    ) -> StorageMountPlan:
         return StorageMountPlan("routed-volume", plan.mounts)
 
     monkeypatch.setattr(

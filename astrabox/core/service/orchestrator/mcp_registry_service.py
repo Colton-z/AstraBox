@@ -7,6 +7,7 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 from astrabox.common.utils.errors import APIError
+from astrabox.common.utils.time_utils import utcnow_iso
 from astrabox.common.utils.user_context import UserContext, default_org_id
 from astrabox.core.service.orchestrator.mcp_assignments import (
     AGENT_MCP_ASSIGNMENTS_FIELD,
@@ -170,19 +171,23 @@ class MCPRegistryService:
         for _ in range(3):
             agent = await self._must_access_agent(user, agent_id)
             version = self._version(agent)
+            # Only the built-in rows are replaced. An Agent may also be
+            # assigned servers from another catalog, and this API does not
+            # show or own those.
+            assignments = replace_provider_assignments(
+                agent.get(AGENT_MCP_ASSIGNMENTS_FIELD), BUILTIN_PROVIDER, ids
+            )
+            updates: dict[str, Any] = {
+                AGENT_MCP_ASSIGNMENTS_FIELD: assignments,
+                "version": version + 1,
+            }
+            # The assignment is authored: a changed one is a changed definition.
+            if agent.get(AGENT_MCP_ASSIGNMENTS_FIELD) != assignments:
+                updates.update(updated_at=utcnow_iso(), updated_by=user.user_id)
             applied = await self._agents.compare_and_update_agent(
                 agent_id,
                 expected={"version": version},
-                updates={
-                    # Only the built-in rows are replaced. An Agent may also be
-                    # assigned servers from another catalog, and this API does
-                    # not show or own those.
-                    AGENT_MCP_ASSIGNMENTS_FIELD: replace_provider_assignments(
-                        agent.get(AGENT_MCP_ASSIGNMENTS_FIELD), BUILTIN_PROVIDER, ids
-                    ),
-                    "version": version + 1,
-                    "updated_by": user.user_id,
-                },
+                updates=updates,
             )
             if applied:
                 return await self.get_agent_assignment(user, agent_id)

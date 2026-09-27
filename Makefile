@@ -39,6 +39,12 @@ CODEX_IMAGE         ?= astrabox/sandbox-codex:latest
 PI_IMAGE            ?= astrabox/sandbox-pi:latest
 WORKSPACE_MOUNTER_IMAGE ?= astrabox/workspace-mounter:latest
 SERVER_IMAGE        ?= astrabox/server:latest
+# `--build-context <stage>=DIR` flags for images with checksum-pinned source
+# stages. Empty for a standalone build, which downloads each pinned source in its
+# own stage; a build host with a verified cache passes it here instead
+# (scripts/pinned-build-sources.py).
+DOCKER_BUILD_CONTEXTS ?=
+ALL_IN_ONE_IMAGE    ?= astrabox/all-in-one:latest
 # Kubernetes nodes using IfNotPresent need a new tag for each image build;
 # reusing `:latest` can leave a node serving cached content. The commit-derived
 # tag also makes the deployed source identifiable from `docker images`.
@@ -51,9 +57,9 @@ SANDBOX_BASE_IMAGE  ?= ghcr.io/agent-infra/sandbox:1.11.0
 NPM_REGISTRY        ?= https://registry.npmjs.org/
 
 .PHONY: help install install-py install-web install-channel-gateway dev test test-py test-postgresql test-mongo test-opensandbox lint typecheck fmt-check check-e2e-collection \
-        check-comments check-comments-report check-i18n check-upstream check-api-client audit-interaction audit-ui audit-console \
+        check-comments check-comments-report check-i18n check-upstream check-api-client check-all-in-one check-dockerfile-modes audit-interaction audit-ui audit-console \
         test-web test-channel-gateway test-layout utilisation build-web build-dist e2e e2e-smoke e2e-browser e2e-live \
-        build-agent-image build-assistant-image build-dsh-image build-codex-image build-pi-image build-workspace-mounter-image clean \
+        build-agent-image build-assistant-image build-dsh-image build-codex-image build-pi-image build-workspace-mounter-image build-all-in-one-image clean \
         k8s-testbed-up k8s-testbed-status k8s-testbed-down k8s-testbed-purge
 
 help: ## Show this help.
@@ -91,7 +97,7 @@ dev: ## Boot the local dev stack: backend (:8000) + frontend (:5173). Ctrl-C sto
 	./scripts/dev.sh
 
 # ── test (the CI unit/lint/typecheck job — no Docker, no secret) ─────────────
-test: check-comments check-i18n check-errors check-credential-seam check-api-client lint typecheck test-py test-web ## Full unit gate: static checks + ruff + mypy + pytest + web build/vitest.
+test: check-comments check-i18n check-errors check-credential-seam check-all-in-one check-dockerfile-modes check-api-client lint typecheck test-py test-web ## Full unit gate: static checks + ruff + mypy + pytest + web build/vitest.
 
 test-py: ## Fast unit suite (database-backed and live markers are deselected).
 	$(NODE_TOOLCHAIN) $(PYTEST)
@@ -140,6 +146,12 @@ check-errors: ## Every raised error code has a registry row, against the shrinki
 
 check-credential-seam: ## Credential machinery stays behind the egress seam, against the shrinking baseline.
 	$(PY) scripts/check_credential_seam.py
+
+check-all-in-one: ## Every Compose server setting is refused or passed through by the all-in-one image, whose edges match Compose's.
+	$(PY) scripts/check_all_in_one.py
+
+check-dockerfile-modes: ## Every COPY/ADD from the build context sets its files' mode, so an image does not depend on the builder's umask.
+	$(PY) scripts/check_dockerfile_modes.py
 
 check-api-client: ## frontend/src/api/schema.d.ts is byte-identical to what the committed OpenAPI snapshot generates. Needs `npm --prefix scripts/api-codegen ci` (make install-web).
 	$(PY) scripts/check_api_client.py
@@ -228,7 +240,7 @@ build-assistant-image: ## Build the in-sandbox Hermes image the assistant engine
 	# being passed from here: a second copy of the version is a second thing to
 	# forget. The base image IS passed, because the assistant and claude-code
 	# boxes must share it.
-	docker build -t $(ASSISTANT_IMAGE) \
+	docker build -t $(ASSISTANT_IMAGE) $(DOCKER_BUILD_CONTEXTS) \
 	  --build-arg SANDBOX_BASE_IMAGE=$(SANDBOX_BASE_IMAGE) \
 	  -f containers/sandbox-hermes/Dockerfile \
 	  .
@@ -253,10 +265,13 @@ build-pi-image: ## Build the in-sandbox pi RPC runtime image.
 	  .
 
 build-workspace-mounter-image: ## Build the host-side mergerfs workspace helper, outside agent sandboxes.
-	docker build -t $(WORKSPACE_MOUNTER_IMAGE) -f containers/workspace-mounter/Dockerfile .
+	docker build -t $(WORKSPACE_MOUNTER_IMAGE) $(DOCKER_BUILD_CONTEXTS) -f containers/workspace-mounter/Dockerfile .
 
 build-server-image: ## Build the deployment image (console + backend). Slow by design: it builds the frontend.
 	docker build --build-arg NODE_VERSION=$$(cat .nvmrc) -t $(SERVER_IMAGE) -f containers/server/Dockerfile .
+
+build-all-in-one-image: build-server-image ## Build the single-container image FROM the server image just built: embedded PostgreSQL 17 and Valkey.
+	docker build --build-arg SERVER_IMAGE=$(SERVER_IMAGE) -t $(ALL_IN_ONE_IMAGE) -f containers/all-in-one/Dockerfile .
 
 # Content-addressed publish for anything a CLUSTER pulls. Tagging by tree state
 # makes IfNotPresent safe: every changed tree receives a distinct tag, so a node

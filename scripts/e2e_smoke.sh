@@ -638,7 +638,7 @@ if [[ -n "${EXACT_AGENT_ID}" ]]; then
 else
   AGENT_BODY="$("${VENV_PY}" -c '
 import json, sys
-print(json.dumps({"name": "e2e-smoke", "model": sys.argv[1], "environment_name": sys.argv[2]}))
+print(json.dumps({"name": "e2e-smoke", "model": sys.argv[1], "environment_name": sys.argv[2], "prewarm_enabled": False}))
 ' "${SMOKE_MODEL}" "${SMOKE_ENVIRONMENT}")" \
     || fail "could not encode the Agent request"
 

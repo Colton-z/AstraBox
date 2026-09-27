@@ -21,6 +21,14 @@ This product depends on and gratefully acknowledges:
 - Casdoor (the Casbin organization, Apache License 2.0) - the identity provider
   of the team-login deployment (containers/compose.sso.yaml). Used as its
   published image; no Casdoor code is vendored.
+- PostgreSQL (PostgreSQL Global Development Group, PostgreSQL License) - the
+  embedded database of the all-in-one image (containers/all-in-one/Dockerfile),
+  installed unmodified from Debian's postgresql-17 package; its licence is
+  retained at /usr/share/doc/postgresql-17/copyright.
+- Valkey (Valkey contributors, BSD 3-Clause License) - the embedded pool-state
+  store of the all-in-one image, installed unmodified from Debian's
+  valkey-server package; its licence is retained at
+  /usr/share/doc/valkey-server/copyright.
 - mergerfs (Antonio SJ Musumeci, ISC License) - the workspace router's
   host-side filesystem service. The workspace-mounter image uses release
   2.42.0 and retains its license at /usr/share/doc/mergerfs/LICENSE.

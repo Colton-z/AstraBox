@@ -45,9 +45,11 @@ from astrabox.core.service.orchestrator.chunk_processing import (
 )
 from astrabox.core.service.orchestrator.engine.input_delivery import (
     DeliveryCoordinator,
+    InputDeliveryRefused,
     JournalDeliveryOutbox,
     consumption_carrier,
     journal_input_rows,
+    settled_input_outcome,
 )
 from astrabox.core.service.orchestrator.engine.input_content import read_engine_content_blocks
 from astrabox.core.service.orchestrator.event_broker import SessionEventBroker
@@ -88,6 +90,32 @@ from astrabox.core.service.orchestrator.stream_errors import (
     normalize_pending_interaction as _normalize_pending_interaction,
     pending_interaction_matches_turn as _pending_interaction_matches_turn,
 )
+
+
+def _sandbox_gone_refusal(session: dict[str, Any]) -> str:
+    """What happened to a message refused because its sandbox is gone.
+
+    Either way the refusal has marked the conversation unavailable, so the
+    admission gate replaces the sandbox when a new message arrives
+    (``dispatch_turn_input``). The same message sent again under its
+    ``client_message_id`` replays the command this refusal already accepted
+    and is not answered, so the text asks for a new message. An Agent
+    conversation meets this only after its delivery tried to borrow a new
+    sandbox and failed; the reason is in ``data.detail``. An Assistant
+    conversation's sandbox is replaced by its workspace's startup path, never
+    inside a delivery, so its delivery refuses the message without trying.
+    """
+
+    if str(session.get("session_kind") or "") == "agent_chat":
+        return (
+            "the sandbox this conversation was on is gone, and a new sandbox "
+            "could not be prepared for this message; send a new message to try "
+            "on a new sandbox"
+        )
+    return (
+        "the sandbox this conversation was on is gone, and this message was "
+        "not delivered; send a new message to continue on a new sandbox"
+    )
 
 
 class TurnService:
@@ -587,24 +615,32 @@ class TurnService:
             # A runtime this platform could not attach is a state it knows, not
             # an internal fault: raising here rendered a 500 whose body said
             # `unexpected RuntimeError`, which tells a caller neither what
-            # happened nor whether retrying is worth anything. A sandbox the
-            # provider reports absent is retryable, because losing it already
-            # armed the re-borrow the next attempt takes.
+            # happened nor whether retrying is worth anything. The refusal ends
+            # this message: the caller that reports it settles its turn
+            # (``deliver_pending_inputs``), and a new message is what tries
+            # again.
             gone = bool(getattr(ensured, "sandbox_gone", False))
-            raise APIError(
-                code="SANDBOX_GONE" if gone else "AGENT_RUNTIME_ERROR",
+            data = {
+                "session_id": session_id,
+                "sandbox_gone": gone,
+                "detail": str(ensured.error_text or "").strip() or None,
+            }
+            if gone:
+                raise InputDeliveryRefused(
+                    code="SANDBOX_GONE",
+                    message=_sandbox_gone_refusal(session),
+                    status_code=409,
+                    data=data,
+                )
+            raise InputDeliveryRefused(
+                code="INPUT_NOT_DELIVERED",
                 message=(
-                    "the sandbox this conversation was bound to no longer "
-                    "exists; a replacement is being prepared — retry"
-                    if gone
-                    else "runtime reconnect failed, recover and retry"
+                    "this conversation's runtime could not be attached, and "
+                    "this message was not delivered; send a new message to try "
+                    "again"
                 ),
                 status_code=409,
-                data={
-                    "session_id": session_id,
-                    "sandbox_gone": gone,
-                    "detail": str(ensured.error_text or "").strip() or None,
-                },
+                data=data,
             )
         # A cold process had no resident runtime for the pre-attach renewal
         # above. Renew again after attach so transport rehydration cannot send
@@ -677,11 +713,26 @@ class TurnService:
         session_id: str,
         requested_command_id: str,
         permission_mode: str | None,
+        on_refused: Callable[[InputDeliveryRefused], Awaitable[None]] | None = None,
     ) -> Any:
-        """Replay the journal outbox into the resident engine in strict order."""
+        """Replay the journal outbox into the resident engine in strict order.
+
+        A StartTurn is delivered by the request that accepted it and again by
+        its turn worker, one after the other under this lock. A message has one
+        outcome, so the first delivery that cannot reach a runtime settles the
+        turn through ``on_refused`` before the lock is released, and every later
+        delivery of that command (the worker's, or the same message sent again)
+        answers the settled outcome instead of attaching, or replacing, a
+        runtime for it (``InputAlreadySettled``).
+        """
 
         lock = self._input_delivery_locks.setdefault(session_id, asyncio.Lock())
         async with lock:
+            settled = await settled_input_outcome(
+                self._session_events_repo, session_id, requested_command_id
+            )
+            if settled is not None:
+                raise settled
             # Another delivery may replace the sandbox while this caller waits.
             # Refresh its Session in place so the later stream uses that binding
             # too, rather than reconnecting the box from before the lock.
@@ -693,12 +744,25 @@ class TurnService:
                     status_code=404,
                 )
             session.update(current_session)
-            runtime = await self.ensure_runtime_for_input_delivery(
-                session,
-                user=user,
-                command_id=requested_command_id,
-                requested_permission_mode=permission_mode,
+            try:
+                runtime = await self.ensure_runtime_for_input_delivery(
+                    session,
+                    user=user,
+                    command_id=requested_command_id,
+                    requested_permission_mode=permission_mode,
+                )
+            except InputDeliveryRefused as refused:
+                if on_refused is not None:
+                    await on_refused(refused)
+                raise
+            # A replacement can take minutes. A turn settled meanwhile (by a
+            # reader on another server) owes this input nothing; report that
+            # outcome rather than a delivery the FIFO does not hold.
+            settled = await settled_input_outcome(
+                self._session_events_repo, session_id, requested_command_id
             )
+            if settled is not None:
+                raise settled
             engine_client = getattr(runtime, "engine_client", None)
             if not isinstance(engine_client, EngineClient):
                 raise RuntimeError(
@@ -739,6 +803,21 @@ class TurnService:
                         f"{requested_command_id!r}"
                     )
             return runtime
+
+    def input_delivery_in_progress(self, session_id: str) -> bool:
+        """Whether this server is delivering this conversation's input right now.
+
+        A delivery may be replacing a lost box, which marks the conversation
+        unavailable while the replacement is prepared; a turn it is delivering
+        is not dead for that.
+        """
+
+        lock = self._input_delivery_locks.get(session_id)
+        return lock is not None and lock.locked()
+
+    async def bound_sandbox_confirmed_gone(self, session: dict[str, Any]) -> bool:
+        """See :meth:`RuntimeEnsure.bound_sandbox_confirmed_gone`."""
+        return await self._runtime_ensure.bound_sandbox_confirmed_gone(session)
 
     async def _ensure_runtime_lightweight_for_session(self, session: dict[str, Any]):
         return await self._runtime_ensure._ensure_runtime_lightweight_for_session(session)

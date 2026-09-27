@@ -10,6 +10,7 @@ import pytest
 
 from astrabox.core.service.orchestrator.bootstrap_reconciler import BootstrapReconciler
 from astrabox.core.service.orchestrator.platform_service import AgentPlatformService
+from astrabox.persistence.repository.keyset import SWEEP_PAGE_SIZE
 from astrabox.common.utils.time_utils import utcnow
 
 
@@ -63,9 +64,11 @@ class _SessionsRepository:
             raise self.index_error
 
     async def list_bootstrap_reconcile_candidates(
-        self, *, limit: int
+        self, *, after_session_id: str | None = None, limit: int
     ) -> list[dict[str, object]]:
         self.bootstrap_candidate_calls.append(limit)
+        if after_session_id is not None:
+            return []
         return [dict(row) for row in self.rows]
 
     async def compare_and_update_session(
@@ -165,7 +168,7 @@ async def test_full_bootstrap_reconciles_once_after_a_list_only_bootstrap() -> N
     await service.ensure_bootstrap()
     await service.ensure_bootstrap()
 
-    assert repo.bootstrap_candidate_calls == [10_000]
+    assert repo.bootstrap_candidate_calls == [SWEEP_PAGE_SIZE]
     assert service._session_list_bootstrapped is True
     assert service._bootstrapped is True
 
@@ -305,5 +308,5 @@ async def test_bootstrap_candidate_query_is_bounded_to_creating_sessions() -> No
         "deleted": {"$ne": True},
         "state": "CREATING",
     }
-    assert captured["sort"] == ("updated_at", 1)
+    assert captured["sort"] == ("session_id", 1)
     assert captured["limit"] == 123

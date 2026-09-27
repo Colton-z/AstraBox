@@ -66,10 +66,71 @@ def _published_components() -> set[str]:
     workflow = yaml.safe_load(
         (_REPO_ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
     )
-    built = set(workflow["jobs"]["build"]["strategy"]["matrix"]["component"])
-    merged = set(workflow["jobs"]["merge"]["strategy"]["matrix"]["component"])
+    jobs = workflow["jobs"]
+    built = set(jobs["build"]["strategy"]["matrix"]["component"])
+    # The all-in-one image has its own job: it is built FROM the server image
+    # each architecture just pushed, so it cannot share the build matrix.
+    all_in_one = jobs["build-all-in-one"]
+    assert "build" in _needs(all_in_one), "the all-in-one is built from the server digest"
+    assert any(
+        (step.get("with") or {}).get("file") == "containers/all-in-one/Dockerfile"
+        for step in all_in_one["steps"]
+    )
+    built.add("all-in-one")
+    merged = set(jobs["merge"]["strategy"]["matrix"]["component"])
     assert built == merged, "release.yml builds and tags different images"
+    # A failed build of any image, the all-in-one included, must skip every
+    # merge, so a release never tags half its images.
+    assert {"build", "build-all-in-one"} <= _needs(jobs["merge"])
     return built
+
+
+def test_nothing_is_published_before_the_servers_gateway_answers() -> None:
+    """Every engine reaches its model through the gateway in the server image,
+    so a server whose gateway fails its first request is a release no
+    installation can use. The release checks the image it just built, by
+    digest, in the job that every tagging or release-publishing job needs."""
+    workflow = yaml.safe_load(
+        (_REPO_ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+    )
+    jobs = workflow["jobs"]
+
+    def runs(job: dict, text: str) -> bool:
+        return any(text in str(step.get("run") or "") for step in job.get("steps", []))
+
+    checking = [
+        name for name, job in jobs.items() if runs(job, "scripts/embedded-gateway-acceptance.py")
+    ]
+    assert len(checking) == 1, f"jobs running the gateway acceptance: {checking}"
+    check_job = jobs[checking[0]]
+    step = next(
+        step
+        for step in check_job["steps"]
+        if "scripts/embedded-gateway-acceptance.py" in str(step.get("run") or "")
+    )
+    assert "server" in check_job["strategy"]["matrix"]["component"]
+    assert "matrix.component == 'server'" in str(step.get("if") or "")
+    assert "steps.build.outputs.digest" in str(step.get("env") or {}) + str(step["run"])
+    assert any(built.get("id") == "build" for built in check_job["steps"])
+
+    def needs(name: str) -> set[str]:
+        direct = jobs[name].get("needs") or []
+        direct = [direct] if isinstance(direct, str) else list(direct)
+        return set(direct).union(*(needs(parent) for parent in direct))
+
+    publishing = [
+        name
+        for name, job in jobs.items()
+        if runs(job, "imagetools create") or runs(job, "gh release")
+    ]
+    assert publishing, "release.yml publishes nothing this test recognises"
+    for name in publishing:
+        assert checking[0] in needs(name), f"{name} can publish without the gateway check"
+
+
+def _needs(job: dict) -> set[str]:
+    needs = job.get("needs") or []
+    return {needs} if isinstance(needs, str) else set(needs)
 
 
 def test_the_release_publishes_every_image_in_containers() -> None:

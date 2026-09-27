@@ -2,10 +2,11 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { IMAGE_RUNNER_PATH, IMAGE_RUNNER_PORT, IMAGE_RUNNER_PYTHON } from './runnerRestart';
+import { IMAGE_RUNNER_LAUNCHER, IMAGE_RUNNER_PATH, IMAGE_RUNNER_PORT, IMAGE_RUNNER_PYTHON } from './runnerRestart';
 import { sandboxExec, type SandboxHandle } from './sandboxOps';
 
 const PROBE_PATH = '/tmp/astrabox-e2e-runner-journal-probe.py';
+const LAUNCH_PATH = '/tmp/astrabox-e2e-runner-journal-launch.py';
 const EVIDENCE_PATH = '/tmp/astrabox-e2e-runner-journal.jsonl';
 
 export interface RunnerFrame extends Record<string, unknown> {
@@ -45,18 +46,25 @@ function shellQuote(value: string): string {
 export function observedJournalRunnerLaunch(sandbox: SandboxHandle, threshold: number): string {
   if (!Number.isSafeInteger(threshold) || threshold < 1) throw new Error('journal threshold must be positive');
   const source = readFileSync(join(__dirname, 'runner_journal_probe.py'), 'utf8');
+  const launch = [
+    'import runpy, sys',
+    `sys.argv = ${JSON.stringify([PROBE_PATH, 'run', IMAGE_RUNNER_PATH, String(threshold), EVIDENCE_PATH])}`,
+    `runpy.run_path(${JSON.stringify(PROBE_PATH)}, run_name="__main__")`,
+  ].join('\n');
   sandboxExec(sandbox, [
     'set -eu',
-    `test ! -e ${PROBE_PATH} && test ! -e ${EVIDENCE_PATH}`,
+    `test ! -e ${PROBE_PATH} && test ! -e ${LAUNCH_PATH} && test ! -e ${EVIDENCE_PATH}`,
     `printf '%s' ${shellQuote(source)} > ${PROBE_PATH}`,
+    `printf '%s' ${shellQuote(launch)} > ${LAUNCH_PATH}`,
+    `chmod 644 ${PROBE_PATH} ${LAUNCH_PATH}`,
   ].join('\n'), 15_000);
-  return `${IMAGE_RUNNER_PYTHON} ${PROBE_PATH} run ${IMAGE_RUNNER_PATH} ${threshold} ${EVIDENCE_PATH}`;
+  return `env ASTRABOX_INBOX_SERVER=${LAUNCH_PATH} ${IMAGE_RUNNER_LAUNCHER}`;
 }
 
 /** Two real wire attaches, bounded by the existing get_init_info response. */
 export function readCompactedRunnerJournal(sandbox: SandboxHandle, sessionId: string): RunnerJournalEvidence {
   if (!sessionId.trim()) throw new Error('journal probe requires its owning Session');
   return JSON.parse(sandboxExec(sandbox,
-    `${IMAGE_RUNNER_PYTHON} ${PROBE_PATH} probe ${IMAGE_RUNNER_PORT} ${shellQuote(sessionId)} ${EVIDENCE_PATH}`,
+    `runuser -u "$ASTRABOX_WORKLOAD_USER" -- ${IMAGE_RUNNER_PYTHON} ${PROBE_PATH} probe ${IMAGE_RUNNER_PORT} ${shellQuote(sessionId)} ${EVIDENCE_PATH}`,
     25_000)) as RunnerJournalEvidence;
 }

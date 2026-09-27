@@ -23,6 +23,8 @@ export type QueuedMessageItem = {
   content: string;
   status: QueuedMessageStatus;
   error?: string;
+  /** A failed send whose refusal ended the message: resending is a new message. */
+  resendAsNew?: boolean;
   source?: QueuedMessageSource;
 };
 

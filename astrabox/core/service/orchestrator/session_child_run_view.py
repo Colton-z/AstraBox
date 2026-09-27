@@ -10,6 +10,7 @@ from astrabox.common.logger.logger_factory import get_logger
 from astrabox.core.service.orchestrator.engine.base import (
     ENGINE_MESSAGE_EVENT_TYPE,
     EngineStoredChildTranscript,
+    EngineStoredChildToolResults,
 )
 from astrabox.core.service.orchestrator.engine.child_runs import (
     ChildRunProjectionError,
@@ -81,6 +82,34 @@ def _child_blocks_from_event(event: dict[str, Any]) -> list[dict[str, Any]]:
         for block in blocks
         if isinstance(block, dict) and str(block.get("type") or "").strip() == "subagent"
     ]
+
+
+def _snapshot_activation_seq(event: dict[str, Any]) -> int:
+    """Return the sequence of the ``turn.background_tasks_opened`` a snapshot records.
+
+    A ``turn.background_tasks_materialized`` event is the durable end of the
+    background work opened by that event (``background_continuation.py``
+    writes both). The fold needs it to tell a snapshot of the current
+    activation from one of an activation that has since been superseded.
+    """
+
+    payload = event.get("payload")
+    value = payload.get("source_opened_event_seq") if isinstance(payload, dict) else None
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        raise ChildRunProjectionError(
+            "background snapshot does not name the activation it records "
+            f"event_seq={_event_seq(event)!r}"
+        )
+    return value
+
+
+def _child_key(data: Any) -> tuple[str, str]:
+    if not isinstance(data, dict):
+        return ("", "")
+    return (
+        str(data.get("engineKind") or "").strip(),
+        str(data.get("engineRef") or "").strip(),
+    )
 
 
 def _durable_child_frames(
@@ -342,6 +371,26 @@ def project_session_child_runs(
     if not clean_session_id:
         raise ChildRunProjectionError("child-run projection lacks session id")
 
+    # A snapshot is written only once the conversation is idle, so a child that
+    # SendMessage resumed can open its next activation before the snapshot of
+    # its previous one lands. That newer activation supersedes the snapshot for
+    # this child: the snapshot must not close it again or displace its live
+    # messages. An activation opened between the snapshot's own opening and the
+    # snapshot itself is exactly that newer one.
+    live_openings: dict[tuple[str, str], list[int]] = defaultdict(list)
+    for frame in frames:
+        block = _child_block_from_frame(frame)
+        data = block.get("data") if block is not None else None
+        if (
+            isinstance(data, dict)
+            and str(data.get("kind") or "").strip() == "lifecycle"
+            and str(data.get("event") or "").strip() == "opened"
+        ):
+            live_openings[_child_key(data)].append(_frame_seq(frame))
+
+    def superseded(event_seq: int, activation_seq: int, key: tuple[str, str]) -> bool:
+        return any(activation_seq < seq < event_seq for seq in live_openings.get(key, ()))
+
     # A child can run again. Its latest complete transcript replaces earlier
     # snapshots; later live messages extend that baseline until the next one.
     message_snapshot_seq: dict[tuple[str, str], int] = {}
@@ -351,6 +400,7 @@ def project_session_child_runs(
         ):
             continue
         event_seq = _event_seq(event)
+        activation_seq = _snapshot_activation_seq(event)
         for block in _child_blocks_from_event(event):
             data = block.get("data")
             if (
@@ -358,37 +408,41 @@ def project_session_child_runs(
                 or str(data.get("kind") or "").strip() != "message"
             ):
                 continue
-            key = (
-                str(data.get("engineKind") or "").strip(),
-                str(data.get("engineRef") or "").strip(),
-            )
-            if not all(key):
+            key = _child_key(data)
+            if not all(key) or superseded(event_seq, activation_seq, key):
                 continue
             message_snapshot_seq[key] = max(message_snapshot_seq.get(key, 0), event_seq)
 
-    ordered_blocks: list[tuple[int, int, dict[str, Any], bool]] = []
+    # (sequence, index within its event, block, snapshot activation sequence;
+    # 0 for anything that is not a background snapshot)
+    ordered_blocks: list[tuple[int, int, dict[str, Any], int]] = []
     for frame in sorted(frames, key=_frame_seq):
         block = _child_block_from_frame(frame)
         if block is not None:
-            ordered_blocks.append((_frame_seq(frame), 0, block, False))
+            ordered_blocks.append((_frame_seq(frame), 0, block, 0))
     for event in sorted(events, key=_event_seq):
+        activation_seq = (
+            _snapshot_activation_seq(event)
+            if event.get("event_type") == "turn.background_tasks_materialized"
+            else 0
+        )
         ordered_blocks.extend(
-            (
-                _event_seq(event), block_index, block,
-                event.get("event_type") == "turn.background_tasks_materialized",
-            )
+            (_event_seq(event), block_index, block, activation_seq)
             for block_index, block in enumerate(_child_blocks_from_event(event), start=1)
         )
     entries: dict[str, dict[str, Any]] = {}
     seen_blocks: dict[str, str] = {}
     applied_blocks: set[str] = set()
-    for order, (block_seq, _block_index, block, is_snapshot) in enumerate(
+    for order, (block_seq, _block_index, block, activation_seq) in enumerate(
         sorted(ordered_blocks, key=lambda item: (item[0], item[1]))
     ):
+        is_snapshot = activation_seq > 0
         block_id = str(block.get("id") or "").strip()
         data_raw = block.get("data")
         if not block_id or not isinstance(data_raw, dict):
             raise ChildRunProjectionError("child-run block lacks stable id or data")
+        if is_snapshot and superseded(block_seq, activation_seq, _child_key(data_raw)):
+            continue
         engine_kind = str(data_raw.get("engineKind") or "").strip()
         data = canonical_child_run_data(data_raw, engine_kind=engine_kind)
         if data["kind"] == "message":
@@ -589,16 +643,17 @@ class SessionChildRunView:
                     return await self._stored_child_messages(
                         session_id, child_run, adapter, events
                     )
-                return [dict(message) for message in child_run.get("messages", [])]
+                messages = [dict(message) for message in child_run.get("messages", [])]
+                if child_run["closed"] and isinstance(adapter, EngineStoredChildToolResults):
+                    return adapter.enrich_stored_child_tool_results(
+                        engine_ref=str(child_run["_engine_ref"]),
+                        raw_scopes=await self._stored_child_scopes(session_id),
+                        messages=messages,
+                    )
+                return messages
         return None
 
-    async def _stored_child_messages(
-        self,
-        session_id: str,
-        child_run: dict[str, Any],
-        adapter: EngineStoredChildTranscript,
-        events: list[dict[str, Any]],
-    ) -> list[dict[str, Any]]:
+    async def _stored_child_scopes(self, session_id: str) -> list[dict[str, Any]]:
         if self._transcript_entries_repo is None:
             raise ChildRunProjectionError("stored child transcript repository is not configured")
         raw_scopes: list[dict[str, Any]] = []
@@ -609,6 +664,16 @@ class SessionChildRunView:
                 session_id, subpath=scope.get("subpath")
             )
             raw_scopes.append({**scope, "entries": entries})
+        return raw_scopes
+
+    async def _stored_child_messages(
+        self,
+        session_id: str,
+        child_run: dict[str, Any],
+        adapter: EngineStoredChildTranscript,
+        events: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        raw_scopes = await self._stored_child_scopes(session_id)
         engine_kind = str(child_run["engine_kind"])
         engine_ref = str(child_run["_engine_ref"])
         raw_messages = [

@@ -352,7 +352,10 @@
     "permission_help": "The initial permission mode for a new session; users can still switch it within the session.",
     "icon_label": "Icon",
     "icon_placeholder": "📊 or an icon URL",
-    "icon_help": "Optional. The icon on the assistant card (an emoji or image URL)."
+    "icon_help": "Optional. The icon on the assistant card (an emoji or image URL).",
+    "system_label": "System prompt",
+    "system_placeholder": "You are a data analyst. Explain every number you report and say which file it came from.",
+    "system_help": "Optional. Defines the assistant's role, style, and rules. Leave it empty to keep the Agent program's own default. Changes take effect when the next conversation starts."
   },
   "sessions": {
     "description": "Conversations started from an Agent. Open a Session to review its messages, current status, sandbox, and technical events.",
@@ -616,6 +619,7 @@
     "access_control_section": "Access control"
   },
   "console": {
+    "load_more": "Load more",
     "error_default_title": "Couldn't load",
     "json_invalid": "Not valid JSON — fix it before saving.",
     "example_tab_hint": "Press Tab in an empty field to use the example.",

@@ -298,16 +298,23 @@ def claim_from_metadata(
     session_id_key: str,
     managed_by_key: str,
     managed_by_value: str,
+    installation_key: str,
+    installation_value: str,
 ) -> SandboxClaim:
     """Judge a box from the ownership fact it carries, and from nothing else.
 
     This is evidence kind (1): the create wrote who asked for the box, and the
-    control plane hands it back. Two keys are read and both must agree before
+    control plane hands it back. Three keys are read and all must agree before
     a box is anyone's to destroy:
 
-    * ``managed_by_key`` must equal ``managed_by_value`` — this deployment
-      created it. A box created by something else sharing the same control
-      plane is FOREIGN even if the session ids happen to collide.
+    * ``managed_by_key`` must equal ``managed_by_value`` — AstraBox created it.
+      A box created by something else sharing the same control plane is
+      FOREIGN even if the session ids happen to collide.
+    * ``installation_key`` must equal ``installation_value`` — this
+      installation created it. Another AstraBox installation sharing the
+      control plane writes the same ``managed_by_value`` and keeps its rows in
+      its own database, so its box is FOREIGN; a box naming no installation
+      cannot be attributed to this one and is UNKNOWN.
     * ``session_id_key`` must equal ``expected_session_id`` — this caller's
       session asked for it.
 
@@ -348,6 +355,24 @@ def claim_from_metadata(
             detail=(
                 f"{managed_by_key}={managed_by!r} does not name this deployment "
                 f"({managed_by_value!r})"
+            ),
+            session_id=carried_session_id or None,
+        )
+    installation = str(metadata.get(installation_key) or "").strip()
+    if not installation:
+        return SandboxClaim.unknown(
+            target,
+            detail=(
+                f"this sandbox names no AstraBox installation ({installation_key!r} "
+                "is absent), so it cannot be attributed to this one"
+            ),
+        )
+    if installation != installation_value:
+        return SandboxClaim.foreign(
+            target,
+            detail=(
+                f"{installation_key}={installation!r} names another AstraBox "
+                f"installation (this one is {installation_value!r})"
             ),
             session_id=carried_session_id or None,
         )

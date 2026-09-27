@@ -21,6 +21,7 @@ import pytest
 
 from astrabox.seams.sandbox import (
     SANDBOX_ASSIGNMENT_ID_METADATA_KEY,
+    SANDBOX_INSTALLATION_METADATA_KEY,
     SANDBOX_MANAGED_BY_METADATA_KEY,
     SANDBOX_MANAGED_BY_METADATA_VALUE,
     SANDBOX_SESSION_ID_METADATA_KEY,
@@ -29,6 +30,8 @@ from astrabox.seams.sandbox_disposal import claim_from_metadata
 
 
 pytestmark = pytest.mark.asyncio
+
+_INSTALLATION = "this-installation"
 
 
 class _Inventory:
@@ -69,6 +72,7 @@ def _stamped(session_id: str, assignment_id: str) -> dict[str, str]:
         SANDBOX_SESSION_ID_METADATA_KEY: session_id,
         SANDBOX_MANAGED_BY_METADATA_KEY: SANDBOX_MANAGED_BY_METADATA_VALUE,
         SANDBOX_ASSIGNMENT_ID_METADATA_KEY: assignment_id,
+        SANDBOX_INSTALLATION_METADATA_KEY: _INSTALLATION,
     }
 
 
@@ -122,6 +126,8 @@ async def test_a_box_created_before_its_record_is_reachable_from_durable_state()
         session_id_key=SANDBOX_SESSION_ID_METADATA_KEY,
         managed_by_key=SANDBOX_MANAGED_BY_METADATA_KEY,
         managed_by_value=SANDBOX_MANAGED_BY_METADATA_VALUE,
+        installation_key=SANDBOX_INSTALLATION_METADATA_KEY,
+        installation_value=_INSTALLATION,
     ).verdict == "MINE"
     assert inventory.assignment_lookups == [startup_command_id]
     assert inventory.listed_pages == 0, (
@@ -154,6 +160,8 @@ async def test_the_stamp_names_a_mutable_owner_rather_than_one_create_attempt() 
             session_id_key=SANDBOX_SESSION_ID_METADATA_KEY,
             managed_by_key=SANDBOX_MANAGED_BY_METADATA_KEY,
             managed_by_value=SANDBOX_MANAGED_BY_METADATA_VALUE,
+            installation_key=SANDBOX_INSTALLATION_METADATA_KEY,
+            installation_value=_INSTALLATION,
         ).verdict
         for sandbox_id, metadata in (
             ("box-retired", retired),

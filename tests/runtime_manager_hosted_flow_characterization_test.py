@@ -64,6 +64,11 @@ class _FakeSandbox:
     def __init__(self, sandbox_id: str) -> None:
         self.sandbox_id = sandbox_id
         self.runner_controller: _FakeAgent | None = None
+        self.files = SimpleNamespace(write_file=self._write_file)
+        self.written: list[str] = []
+
+    async def _write_file(self, path: str, _body: bytes, **_kwargs: Any) -> None:
+        self.written.append(path)
 
     async def get_endpoint(self, port: int) -> Any:
         assert self.runner_controller is not None
@@ -339,6 +344,7 @@ class _FakeSessionRepository:
     async def list_startup_allocation_candidates(
         self,
         *,
+        after_session_id: str | None = None,
         limit: int = 50,
     ) -> list[dict[str, Any]]:
         return [
@@ -443,6 +449,13 @@ def _hosted_flow_seams(
     engine_client: Any = None,
     workspace_identity: dict[str, Any] | None = None,
 ) -> Any:
+    # The account and home a Claude seat always has; the runner's credential
+    # is derived from them together with the box.
+    workspace_identity = workspace_identity or {
+        "linux_user": "agent",
+        "home_dir": "/home/agent",
+        "workspace_dir": "/workspace",
+    }
     """Stub the config/SDK delegation + module seams so the flow reaches the
     provider create/engine activation sequence with fakes and no network/db.
 

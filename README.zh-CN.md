@@ -23,8 +23,8 @@
   <a href="README.md">English</a> · <strong>简体中文</strong>
 </p>
 
-把你已经在使用的 Agent 程序变成 7×24 小时在线的云端 Agent。AstraBox 在你自己的基础设施上，
-把 Claude Code、Codex、Hermes、DeepSeek Harness 和 Pi 作为托管 Agent 运行，模型任选。
+把你已经在使用的 Agent 程序变成 7×24 小时在线的云端 Agent。AstraBox 在你自己的基础设施上
+运行 Claude Code、Codex、Hermes、DeepSeek Harness 和 Pi，模型任选。
 对话秒级拉起、秒级恢复；会话、沙箱、凭证和历史都留在你自己手里。
 
 你无需自己把 Agent 程序改造成服务、管理沙箱生命周期或处理长连接——部署 AstraBox，
@@ -33,6 +33,11 @@
 AstraBox 把你已经在使用的 Agent 程序变成可以远程访问、持续执行长时间任务并接入应用、
 自动化流程和消息平台的云端 Agent。网页控制台、API、Session 记录、身份验证和沙箱都
 运行在你管理的基础设施中。
+
+**一个平台，同时承载团队 Agent 和个人 Assistant。**[Agent](https://www.astrabox.ai/zh-Hans/docs/authoring-agents)
+是面向团队和自动化的可复用云端 Agent，可以通过网页控制台、API、定时任务、Webhook、消息平台或
+MCP 客户端启动任务。[Assistant](https://www.astrabox.ai/zh-Hans/docs/assistants)
+是个人专属的长期云端工作区：它的所有对话都在同一个工作区中进行，并共享 Agent 程序的状态。
 
 ## 核心概念
 
@@ -57,7 +62,9 @@ Skill 和代码仓库，通过定时任务、Webhook、API 和消息平台触发
   上游密钥留在服务端，支持预算与用量日志，后面可以接 Anthropic、OpenAI 兼容服务或本地模型。
   参见[连接模型服务](https://www.astrabox.ai/zh-Hans/docs/models)。
 - **团队登录**——预集成 [Casdoor](https://github.com/casdoor/casdoor) 作为身份提供方：
-  OIDC、组织与角色，可用钉钉、企业微信、飞书、GitHub 等账号登录。加一个 Compose 覆盖文件即可开启，
+  OIDC、组织与角色；管理员在 Casdoor 中添加身份提供方后，可用 Google、Microsoft、Okta、GitHub、
+  SAML、LDAP 等方式登录，也支持钉钉、飞书、企业微信。运行安装脚本时设置
+  `ASTRABOX_INSTALL_TEAM_LOGIN=casdoor` 即可开启，从源码运行时使用 Compose 叠加配置，
   参见[团队身份验证](https://www.astrabox.ai/zh-Hans/docs/team-login)。
 - **隔离沙箱**——基于 [OpenSandbox](https://github.com/opensandbox-group/OpenSandbox)，单台 Docker 主机
   或 Kubernetes 集群都行，并预留热容量，对话秒级拉起。
@@ -142,8 +149,8 @@ AstraBox 中每个可替换的部分都是一个 Python 接口，并有对应的
 
 ### 前置条件
 
-- 一台 Linux 主机（或 WSL 2），安装 Docker Engine 与 Compose 插件 v2 或更高版本，
-  并且当前用户可以使用 Docker socket
+- 一台 Linux 主机（或 WSL 2），安装 Docker Engine 26.0 或更高版本与 Compose 插件
+  2.17.0 或更高版本，并且当前用户可以使用 Docker socket
 - 一个模型服务的 API Key：Anthropic、DeepSeek，或其他 Anthropic 兼容、
   OpenAI 兼容的服务
 
@@ -159,8 +166,10 @@ curl -fsSL https://raw.githubusercontent.com/Colton-z/AstraBox/main/scripts/inst
 
 ![在 AstraBox 控制台创建 Agent](website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/img/agent-create-console-zh.png)
 
-本地部署只监听 loopback，并且不要求登录。向其他网络开放前，请先配置
-[团队身份验证](https://www.astrabox.ai/zh-Hans/docs/team-login)和 TLS。
+本地部署只监听 loopback，启用团队登录之前不要求登录；安装脚本设置
+`ASTRABOX_INSTALL_TEAM_LOGIN=casdoor` 即可启用。向其他网络开放前，请按
+[团队身份验证](https://www.astrabox.ai/zh-Hans/docs/team-login#put-the-login-flow-behind-a-proxy)
+把它放在 HTTPS 代理之后。
 
 升级时再次运行安装脚本：它会在原处安装最新发布版本，并保留 Session、凭证和设置。
 
@@ -183,8 +192,10 @@ scripts/compose.sh up --build -d
 安装脚本的全部设置，以及 Kubernetes 或已有 OpenSandbox 服务的用法，参见
 [部署 AstraBox](https://www.astrabox.ai/zh-Hans/docs/deploy)。
 
-预热会在 Session 领取之前准备好 Agent 运行时。原生会话状态保存在平台数据库中；持久
-工作区卷是可选能力，单独负责保留任务文件。部署多个 API 副本或沙箱节点时，参见
+预热会在 Session 领取之前准备好 Agent 运行时。随附部署中新建的 Agent 默认开启预热，
+每个这样的 Agent 会保留一个空闲的已准备沙箱，参见
+[容量规划](https://www.astrabox.ai/zh-Hans/docs/deploy#plan-capacity-for-prepared-sandboxes)。
+原生会话状态保存在平台数据库中；持久工作区卷是可选能力，单独负责保留任务文件。部署多个 API 副本或沙箱节点时，参见
 [分布式部署](https://www.astrabox.ai/zh-Hans/docs/deploy-distributed)和
 [工作区存储](https://www.astrabox.ai/zh-Hans/docs/deploy#where-conversation-workspaces-live)。
 

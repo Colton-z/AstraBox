@@ -87,14 +87,24 @@ ENGINE_KIND = DSH_ENGINE_KIND
 DSH_PERMISSION_PRESETS = ("read-only", "workspace-write", "danger-full-access")
 DSH_PERMISSION_COMMAND = "/permission"
 
-#: The harness LLM route this image's model wiring configures.
-#: ``@deepseek-ai/dsh-llm-deepseek`` owns it and reads its key from
-#: ``DEEPSEEK_API_KEY`` and its endpoint from ``DEEPSEEK_BASE_URL`` — the two
-#: variables the adapter already declares — so it is the one route the
-#: platform's gateway credential reaches. The vendor states the model id
-#: passes through to the wire, which is what lets a gateway model that is not
-#: in the harness's advisory catalogue be selected here.
+#: The harness's DeepSeek route. ``@deepseek-ai/dsh-llm-deepseek`` owns it and
+#: reads its key from ``DEEPSEEK_API_KEY`` and its endpoint from
+#: ``DEEPSEEK_BASE_URL``, the two variables the adapter declares. The vendor
+#: scopes it to DeepSeek models, optionally behind a gateway: its requests
+#: carry DeepSeek's wire fields and a 256,000-token output cap by default,
+#: which another model's endpoint refuses.
 DSH_MODEL_PROVIDER = "deepseek-official"
+
+#: The route for every other model. The vendor points OpenAI-compatible
+#: gateways at ``@deepseek-ai/dsh-llm-pi-ai``: its web profile mounts it with
+#: no routes, and a ``llm-pi-ai`` user-settings section declares them live
+#: (what the harness's own Models page writes). The declared route sends
+#: standard Chat Completions to the platform gateway with the adapter's
+#: defaults for a model it does not describe: a 262,144-token context window
+#: and a 32,768-token output cap.
+DSH_GATEWAY_PROVIDER = "astrabox-gateway"
+DSH_GATEWAY_SETTINGS_NS = "llm-pi-ai"
+DSH_GATEWAY_API = "openai-completions"
 
 #: Downlink frame types this client acts on. Everything else the gateway
 #: broadcasts — the projections, the queue views, host bookkeeping — is state
@@ -193,6 +203,16 @@ class DeepSeekHarnessEngineClient:
         #: echoes the id into the session log, which is how a dequeue is
         #: attributed to the exact input that caused it.
         self._prompted: dict[str, EngineInputCommand] = {}
+        #: Inputs the harness accepted whose ``user/message`` echo has not
+        #: arrived, in delivery order. Queue mode appends each as its own
+        #: native turn after the running one, and the running one's platform
+        #: turn carries it: an input sent while a turn runs joins that turn's
+        #: FIFO batch, which ends only at the last of these inputs' turn/end.
+        self._awaiting_echo: list[EngineInputCommand] = []
+        #: The relay's number for each written input, and the inputs whose
+        #: platform turn has begun.
+        self._submission_numbers: dict[str, int] = {}
+        self._begun_turns: set[str] = set()
         #: The turn currently streaming, for a continuation segment to re-enter.
         self._active_receipt: EngineTurnReceipt | None = None
         #: interaction_id (the downlink frame's rpcId) → the session it belongs
@@ -277,10 +297,28 @@ class DeepSeekHarnessEngineClient:
                 command, prompt_rpc_id=None, input_consumed=True
             )
             self._receipts[command.command_id] = receipt
+            self._retire_echo(command)
             self._begin_engine_turn(receipt, consumption_confirmed=True)
             self._ensure_relay().platform_turn_reattached()
             return receipt
-        return await self._submit(command)
+        first_begin = command.command_id not in self._begun_turns
+        if first_begin:
+            # The platform opens this turn now. Its input may already be
+            # written (delivery precedes the turn), so the boundary is named
+            # by the input rather than by the next write.
+            self._ensure_relay().platform_turn_begins(
+                self._submission_numbers.get(command.command_id)
+            )
+        receipt = await self._submit(command)
+        if first_begin:
+            # The turn's translation state starts here, where the platform
+            # opens it, and never at a delivery: an input delivered while
+            # another turn streams belongs to that turn's batch, and resetting
+            # the state then ended the running stream on its own turn/end with
+            # nothing to report it.
+            self._begun_turns.add(command.command_id)
+            self._begin_engine_turn(receipt)
+        return receipt
 
     async def _submit(self, command: EngineInputCommand) -> EngineTurnReceipt:
         existing = self._receipts.get(command.command_id)
@@ -293,7 +331,7 @@ class DeepSeekHarnessEngineClient:
         # Marked before the prompt is written: its acceptance and the turn's
         # `turn/start` are two frames on one socket, and the relay may take
         # the second before this coroutine takes the first.
-        relay.platform_input_submitted()
+        self._submission_numbers[command.command_id] = relay.platform_input_submitted()
         try:
             value = await self._link.call(
                 "session/prompt",
@@ -318,10 +356,17 @@ class DeepSeekHarnessEngineClient:
                 f"(session={self._session_id})"
             )
         self._prompted[prompt_rpc_id] = command
+        self._awaiting_echo.append(command)
         receipt = self._receipt(command, prompt_rpc_id=prompt_rpc_id)
         self._receipts[command.command_id] = receipt
-        self._begin_engine_turn(receipt)
         return receipt
+
+    def _retire_echo(self, command: EngineInputCommand) -> None:
+        """The harness dequeued this input, so no native turn is owed for it."""
+
+        self._awaiting_echo = [
+            owed for owed in self._awaiting_echo if owed.command_id != command.command_id
+        ]
 
     def _begin_engine_turn(
         self,
@@ -492,7 +537,9 @@ class DeepSeekHarnessEngineClient:
             str((result or {}).get("text") or ""),
         )
 
-    async def select_model(self, model: str) -> None:
+    async def select_model(
+        self, model: str, *, gateway_base_url: str, gateway_key_env: str
+    ) -> None:
         """Install the platform's model choice on this conversation.
 
         ``session/create`` takes only workspace, cwd, session identity and the
@@ -512,16 +559,23 @@ class DeepSeekHarnessEngineClient:
         ``session/model-unavailable``, but a normalization that silently
         landed on another model would otherwise look like success here and
         show up as the wrong model's answers.
+
+        The route comes first: :meth:`_route_for_model`.
         """
 
         native = self._require_session()
+        route = await self._route_for_model(
+            model,
+            gateway_base_url=gateway_base_url,
+            gateway_key_env=gateway_key_env,
+        )
         value = await self._link.call(
             "session/selectModel",
             {
                 "args": {
                     "request": {
                         "sessionId": native,
-                        "provider": DSH_MODEL_PROVIDER,
+                        "provider": route,
                         "model": model,
                     }
                 }
@@ -539,12 +593,12 @@ class DeepSeekHarnessEngineClient:
             )
         installed = str(selected.get("model") or "")
         provider = str(selected.get("provider") or "")
-        if installed != model or provider != DSH_MODEL_PROVIDER:
+        if installed != model or provider != route:
             raise APIError(
                 code="AGENT_RUNTIME_ERROR",
                 message=(
                     "deepseek_harness installed a different model than the "
-                    f"platform selected: asked {DSH_MODEL_PROVIDER}/{model!r}, "
+                    f"platform selected: asked {route}/{model!r}, "
                     f"installed {provider}/{installed!r}"
                 ),
                 status_code=502,
@@ -555,6 +609,71 @@ class DeepSeekHarnessEngineClient:
             provider,
             installed,
         )
+
+    async def _route_for_model(
+        self, model: str, *, gateway_base_url: str, gateway_key_env: str
+    ) -> str:
+        """Name the harness LLM route that serves ``model`` through the gateway.
+
+        A model the DeepSeek route advertises in the harness's own catalog
+        (``session/modelCatalog``) runs on that route. Any other model runs on
+        a generic route this call declares for the platform gateway: the same
+        base URL and credential variable the DeepSeek route reads, and the
+        model as its only entry. The section is replaced whole, so re-asserting
+        a changed model leaves no stale entry. The harness validates the
+        section when it is written and answers ``settings/rejected`` for one
+        it cannot serve.
+        """
+
+        catalog = await self._link.call("session/modelCatalog", {"args": {}})
+        groups = catalog.get("groups") if isinstance(catalog, dict) else None
+        if not isinstance(groups, list):
+            raise APIError(
+                code="AGENT_RUNTIME_ERROR",
+                message=(
+                    "deepseek_harness returned no model catalog: "
+                    f"{json.dumps(catalog)[:200]}"
+                ),
+                status_code=502,
+            )
+        deepseek_models = {
+            str(entry.get("id") or "")
+            for group in groups
+            if isinstance(group, dict) and group.get("id") == DSH_MODEL_PROVIDER
+            for entry in group.get("models") or []
+            if isinstance(entry, dict)
+        }
+        if model in deepseek_models:
+            return DSH_MODEL_PROVIDER
+        if not gateway_base_url or not gateway_key_env:
+            raise APIError(
+                code="AGENT_RUNTIME_ERROR",
+                message=(
+                    f"deepseek_harness cannot route {model!r}: the platform "
+                    "gateway base URL or credential variable is empty"
+                ),
+                status_code=500,
+            )
+        await self._link.call(
+            "settings/replace",
+            {
+                "args": {
+                    "ns": DSH_GATEWAY_SETTINGS_NS,
+                    "section": {
+                        "providers": {
+                            DSH_GATEWAY_PROVIDER: {
+                                "displayName": "AstraBox model gateway",
+                                "api": DSH_GATEWAY_API,
+                                "baseURL": gateway_base_url,
+                                "apiKeyEnv": gateway_key_env,
+                                "models": [{"id": model}],
+                            }
+                        }
+                    },
+                }
+            },
+        )
+        return DSH_GATEWAY_PROVIDER
 
     async def get_capabilities(self) -> EngineCapabilityManifest:
         history = await self._link.call(
@@ -856,18 +975,20 @@ class DeepSeekHarnessEngineClient:
                 event = frame.get("payload", {}).get("event")
                 if not isinstance(event, dict):
                     continue
-                if (
-                    not self._consumption_seen
-                    and str(event.get("type") or "") == "user/message"
-                ):
-                    command = self._consumption_command(event)
-                    if command is not None:
-                        self._consumption_seen = True
-                        yield self._consumed_frame(command, event)
-                        for held in self._held_back:
-                            yield held
-                        self._held_back.clear()
-                        continue
+                echoed = (
+                    self._consumption_command(event)
+                    if str(event.get("type") or "") == "user/message"
+                    else None
+                )
+                if echoed is not None:
+                    self._retire_echo(echoed)
+                if echoed is not None and not self._consumption_seen:
+                    self._consumption_seen = True
+                    yield self._consumed_frame(echoed, event)
+                    for held in self._held_back:
+                        yield held
+                    self._held_back.clear()
+                    continue
                 for translated in self._translate_output_frame(translator, frame):
                     if not self._consumption_seen:
                         # Nothing may precede the consumption boundary. These
@@ -879,9 +1000,22 @@ class DeepSeekHarnessEngineClient:
                         # turn's cannot precede its own echo.
                         self._held_back.append(translated)
                         continue
+                    if translated.get("type") == "result" and self._awaiting_echo:
+                        # A later input of this batch is queued behind the
+                        # native turn that just ended, and the harness starts
+                        # it next; the platform turn ends with the batch.
+                        continue
                     yield translated
                 if translator.terminal_seen:
-                    return
+                    if not self._awaiting_echo:
+                        return
+                    # The next native turn is the owed input's. Its opening
+                    # frames wait for its echo, as the first turn's did.
+                    translator = self._turn_translator = DeepSeekHarnessTurnTranslator(
+                        session_id=native
+                    )
+                    self._consumption_seen = False
+                    self._held_back = []
         except EngineStreamDetached as detached:
             # The link raises this when the socket ends, so a reported cause is
             # attached here rather than at the fall-through below, which a real

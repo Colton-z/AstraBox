@@ -1,5 +1,8 @@
-import { Search } from 'lucide-react';
+import { Loader2, Search } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 
+import { ErrorNote } from '@/components/shell/ErrorNote';
+import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { InputGroup, InputGroupAddon, InputGroupInput } from '@/components/ui/input-group';
 
@@ -95,4 +98,38 @@ export function ConsoleToolbar({ children, className }: { children: React.ReactN
   // above the empty state. A `display:none` element is not a flex item, so the
   // gap its page column would put beside it goes with it.
   return <div className={cn('flex flex-wrap items-center gap-3 empty:hidden', className)}>{children}</div>;
+}
+
+/**
+ * The foot of a list the server pages: one control that reads the next page
+ * into the table, and the failure of that read beside it.
+ *
+ * Renders nothing once the list is whole. A failed page keeps the rows already
+ * shown and offers the same control again, so the failure is the one read's,
+ * not the list's.
+ */
+export function ConsoleLoadMore({
+  hasMore,
+  loading,
+  error,
+  onLoadMore,
+}: {
+  hasMore: boolean;
+  loading: boolean;
+  error: string;
+  onLoadMore: () => void;
+}) {
+  const { t } = useTranslation();
+  if (!hasMore && !error) return null;
+  return (
+    <div className="flex flex-col items-center gap-2">
+      {error && <ErrorNote>{error}</ErrorNote>}
+      {hasMore && (
+        <Button variant="outline" size="sm" onClick={onLoadMore} disabled={loading}>
+          {loading && <Loader2 className="size-4 animate-spin" />}
+          {t('manage:console.load_more')}
+        </Button>
+      )}
+    </div>
+  );
 }

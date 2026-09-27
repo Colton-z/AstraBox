@@ -2,6 +2,7 @@
 import { randomUUID } from 'node:crypto';
 import { expect, test, type Page, type Request } from '@playwright/test';
 
+import { revealAssistantProcess } from '../fixtures/assistantProcess';
 import { AstraApi, type ChildRunMessagePage } from '../fixtures/astraApi';
 import { expectChildToolCard, expectToolBlocks } from '../fixtures/childToolAssertions';
 import { engineCases, engineProfileFor } from '../fixtures/engineProfile';
@@ -151,8 +152,14 @@ for (const declared of profiles) {
       const childId = leaves[0]!.id;
       expect(childId).toBeTruthy();
       const row = panel.locator(`[data-child-run-id="${childId}"]`);
+      const transcript = page.getByTestId('run-view').getByTestId('assistant-message');
       const openChild = async () => {
         if (profile.engine_kind === 'claude_code' && mode === 'foreground') {
+          // The launch card sits in the turn's process group, which starts
+          // closed, and a settled turn also folds that group behind its turn
+          // header. The reader opens both to reach the card.
+          await expect(transcript.getByTestId(/^assistant-(turn-)?process$/).first()).toBeAttached();
+          await revealAssistantProcess(page, { within: transcript });
           const launch = page.getByRole('button', { name: new RegExp(`^${launched[0]!.name} `) });
           await expect(launch).toBeVisible();
           if (await launch.getAttribute('aria-expanded') !== 'true') await launch.click();

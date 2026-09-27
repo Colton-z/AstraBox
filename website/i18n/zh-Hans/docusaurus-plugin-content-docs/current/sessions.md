@@ -354,6 +354,14 @@ A：`POST /sessions/{id}/ai-stream` 会返回 `HTTP 409 SESSION_BUSY`。请等�
 `POST /sessions/{id}/turn-inputs`；输入能否加入正在执行的任务，由所选 Agent
 程序决定。
 
+**Q：消息被拒绝后，能用同一个 `client_message_id` 再发一次吗？**
+
+A：得不到不同的结果。一条消息只有一个结果，被拒绝的消息所在的 turn 已经结束，
+所以同一个 `client_message_id` 每次都会返回同一个拒绝：例如 Session 的沙箱已丢失
+时返回 `SANDBOX_GONE`，无法连接运行时时返回 `INPUT_NOT_DELIVERED`。两者的
+`error.retryable` 都是 `false`。请用新的 `client_message_id` 把这段文字作为新消息
+再发一次；如果原来的沙箱已不存在，这条新消息会让 Session 换到新沙箱。
+
 **Q：Interrupt 后还能继续使用 Session 吗？**
 
 A：可以。活动 turn 结束后，发送下一条消息即可继续。Interrupt turn 不会删除

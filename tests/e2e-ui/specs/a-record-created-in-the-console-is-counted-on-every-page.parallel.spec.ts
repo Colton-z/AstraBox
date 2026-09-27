@@ -47,12 +47,11 @@
  * WHAT AN EXACT GLOBAL COUNT COSTS IN A PARALLEL LANE. This spec never names a
  * number: every read polls the badge against the deployment's own live count in
  * the same breath. The two counts are the same population by construction — the
- * badge sums `can_view_agent` over `list_agent_access_docs()`
- * (admin_service.py:588) and `GET /api/v1/agents` filters `list_all_agents()`
- * by `can_view_agent` (agent_service.py:162-165), and both repository reads are
- * the same query with the same `limit=200` and the same `{"deleted": {"$ne":
- * True}}` filter (agent_repository.py:274-296) — so they cannot diverge on a
- * large deployment either. What they can diverge in is TIME: the badge holds
+ * badge sums `can_view_agent` over `list_agent_access_docs()` and
+ * `GET /api/v1/agents` filters `list_all_agents()` by `can_view_agent`, and
+ * both repository reads take every Agent matching the same `{"deleted": {"$ne":
+ * True}}` filter, uncapped — so they cannot diverge on a large deployment
+ * either. What they can diverge in is TIME: the badge holds
  * the count as of the navigation that revalidated it, so an Agent another
  * worker creates after that read is in the live count and not in the badge, and
  * the poll then runs out against a correct product. The exposure is the second
@@ -73,9 +72,10 @@
  * assert a different property — that the rail follows writes made ELSEWHERE —
  * which a fix for this one need not deliver.
  *
- * ENGINE-INDEPENDENT. No conversation, no turn, no sandbox. A page-created
- * Agent leaves `prewarm_enabled` false (astrabox_models.py:127; the form folds
- * it away as advanced and this spec never opens that disclosure), so it
+ * ENGINE-INDEPENDENT. No conversation, no turn, no sandbox. The form starts
+ * "Keep a sandbox ready" from the deployment's create-time default, which is on
+ * wherever the deployment can prewarm, so this spec opens the advanced settings
+ * and turns it off before Create, then reads the stored record back: the Agent
  * reserves no prepared slot and holds nothing another worker needs. It runs
  * under whichever profile `ASTRABOX_E2E_AGENT_NAME` selected; all it asks of
  * that profile is that its Environment be one the create form offers, which it
@@ -392,6 +392,11 @@ test('a record created in the console is counted by the rail on every page, with
   await modelOption.click();
   await expect(modelField).toHaveValue(model);
 
+  await page.getByRole('button', { name: /^Show advanced settings/ }).click();
+  const prewarm = page.getByRole('switch', { name: 'Keep a sandbox ready', exact: true });
+  await prewarm.uncheck();
+  await expect(prewarm, 'this spec must hold no prepared sandbox').not.toBeChecked();
+
   const create = page.getByRole('button', { name: 'Create', exact: true });
   await expect(create, 'a filled create form must offer its Create').toBeEnabled();
   await create.click();
@@ -406,6 +411,11 @@ test('a record created in the console is counted by the rail on every page, with
   });
   createdAgentId = new URL(page.url()).pathname.split('/').pop() ?? '';
   expect(createdAgentId, 'the created Agent must have an id').not.toEqual('');
+  const stored = await api.data<{ prewarm_enabled?: boolean }>(
+    'GET', `/agents/${createdAgentId}`,
+  );
+  expect(stored.prewarm_enabled, 'the switch turned off in the form must be what was saved')
+    .toBe(false);
 
   // Arm the fence: from here on, a focus signal or a replaced document voids
   // every reading rather than passing it.

@@ -111,6 +111,7 @@ class RuntimeSubjectProvider(Protocol):
         self,
         *,
         session: dict[str, Any],
+        template: Any,
         sandbox_id: str,
         expires_at: str | None,
         runtime_identity: dict[str, Any] | None,
@@ -146,6 +147,7 @@ class AssistantWorkspaceLifecycle(Protocol):
         provisioning_session_id: str,
         provisioning_sandbox_generation: str,
         sandbox_id: str,
+        configuration_revision: str,
         expires_at: str | None,
         runtime_identity: dict[str, Any] | None,
     ) -> None: ...
@@ -219,11 +221,12 @@ class SessionRuntimeSubject:
         self,
         *,
         session: dict[str, Any],
+        template: Any,
         sandbox_id: str,
         expires_at: str | None,
         runtime_identity: dict[str, Any] | None,
     ) -> None:
-        _ = (session, sandbox_id, expires_at, runtime_identity)
+        _ = (session, template, sandbox_id, expires_at, runtime_identity)
 
     async def converge_startup_failure(
         self,
@@ -304,7 +307,12 @@ class AssistantWorkspaceRuntimeSubject:
         template: Any,
         resume_engine_session_key: str | None,
     ) -> RuntimeStartupResolution:
-        _ = resume_engine_session_key
+        # The conversation's native key goes to whichever runtime this startup
+        # starts or attaches, as for an Agent conversation. The workspace box is
+        # the Assistant's, but the native conversation is this Session's: Hermes
+        # restores the profile's SessionDB into a replacement box before it
+        # serves, and only `session.resume` with this key rejoins the
+        # conversation it holds. Without it the engine opens a new, empty one.
         session_id, user_id, assistant_id = self._identity(session)
         engine_kind = resolve_session_engine_kind(session)
         if not session_id or not user_id or not assistant_id:
@@ -331,6 +339,7 @@ class AssistantWorkspaceRuntimeSubject:
                 runtime_key=session_id,
                 template=template,
                 engine_kind=engine_kind,
+                resume_engine_session_key=resume_engine_session_key,
             )
             renewal_seconds = int(load_astrabox_settings().agent_sandbox_renew_ttl_seconds or 0)
             return RuntimeStartupTarget(
@@ -381,12 +390,17 @@ class AssistantWorkspaceRuntimeSubject:
             sandbox_id=sandbox_id,
             existing_terminal_cwd=(str(reconciled.get("terminal_cwd") or "").strip() or None),
             engine_kind=binding.engine_kind,
+            resume_engine_session_key=resume_engine_session_key,
         )
+        # A profile prepared from another revision of this Assistant is not
+        # reused: attaching prepares it again, and the adapter restarts its
+        # program only if what it reads actually changed.
         marker = get_assistant_profile_ready_marker(
             workspace,
             user_id=user_id,
             assistant_id=assistant_id,
             sandbox_id=sandbox_id,
+            configuration_revision=getattr(template, "assistant_revision", None),
         )
         action: RuntimeStartupAction = (
             "use_ready_binding" if marker is not None else "attach_runtime"
@@ -402,6 +416,7 @@ class AssistantWorkspaceRuntimeSubject:
         self,
         *,
         session: dict[str, Any],
+        template: Any,
         sandbox_id: str,
         expires_at: str | None,
         runtime_identity: dict[str, Any] | None,
@@ -428,6 +443,7 @@ class AssistantWorkspaceRuntimeSubject:
             provisioning_session_id=session_id,
             provisioning_sandbox_generation=str(session.get("sandbox_generation") or ""),
             sandbox_id=sandbox_id,
+            configuration_revision=str(getattr(template, "assistant_revision", "") or ""),
             expires_at=expires_at,
             runtime_identity=runtime_identity,
         )
@@ -632,12 +648,14 @@ class RuntimeSubjectCoordinator:
         self,
         *,
         session: dict[str, Any],
+        template: Any,
         sandbox_id: str,
         expires_at: str | None,
         runtime_identity: dict[str, Any] | None,
     ) -> None:
         await self.provider_for(session).publish_runtime_ready(
             session=session,
+            template=template,
             sandbox_id=sandbox_id,
             expires_at=expires_at,
             runtime_identity=runtime_identity,

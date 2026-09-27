@@ -116,7 +116,7 @@ def test_reader_adopts_exactly_what_the_claim_writer_produces(
 ) -> None:
     monkeypatch.setenv("ASTRABOX_TRANSCRIPT_CAPABILITY_REQUIRED", "false")
     payload = transcript_mirror.mirror_target_payload(
-        _Manager(), "session-42", cwd="/workspace"
+        _Manager(), "session-42"
     )
     target = tmp_path / "target.json"
     target.write_bytes(payload)
@@ -142,7 +142,7 @@ def test_a_capability_gated_store_url_survives_the_file_hop(
     # cares about URL shape, not the trust root.
     monkeypatch.setenv("ASTRABOX_LOCAL_MODE", "1")
     payload = transcript_mirror.mirror_target_payload(
-        _Manager(), "session-42", cwd="/workspace"
+        _Manager(), "session-42"
     )
     target = tmp_path / "target.json"
     target.write_bytes(payload)
@@ -246,9 +246,7 @@ def test_an_idle_unclaimed_box_waits_without_a_deadline(
             # by supplying the target the claim would have written.
             monkeypatch.setenv("ASTRABOX_TRANSCRIPT_CAPABILITY_REQUIRED", "false")
             target.write_bytes(
-                transcript_mirror.mirror_target_payload(
-                    _Manager(), "session-7", cwd="/workspace"
-                )
+                transcript_mirror.mirror_target_payload(_Manager(), "session-7")
             )
         real_sleep(min(seconds, 0.001))
 

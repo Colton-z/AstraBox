@@ -12,6 +12,7 @@ from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.settings import load_astrabox_settings
 from astrabox.common.utils.time_utils import parse_iso
 from astrabox.core.model import SessionState
+from astrabox.persistence.repository.keyset import KeysetCursor
 
 logger = get_logger(__name__)
 
@@ -84,7 +85,11 @@ def build_sandbox_callback_url(
     if not base_url:
         raise APIError(
             code="AGENT_RUNTIME_ERROR",
-            message="sandbox callback base url is not configured",
+            message=(
+                "sandbox callback base url is not configured: set "
+                "ASTRABOX_MCP_PROXY_BASE_URL to an address sandboxes may reach "
+                "(the Compose stack sets it to the sandbox edge)"
+            ),
             status_code=500,
         )
     return (
@@ -226,6 +231,14 @@ class SandboxLifecycleService:
         self._assistant_workspace_service = (
             platform_service._assistant_workspace_service
         )
+        # Where the probe sweep resumes in each owner collection. A binding the
+        # probe cannot settle stays a candidate, so each collection is read on
+        # from the last row the sweep took rather than from its first row.
+        self._probe_cursors = (
+            KeysetCursor("session_id"),
+            KeysetCursor("agent_id"),
+            KeysetCursor("assistant_id"),
+        )
 
     async def list_dead_sandbox_probe_candidates(
         self,
@@ -238,22 +251,31 @@ class SandboxLifecycleService:
         The value is the number of owner rows that nominated the box. The
         watcher probes each key once and keeps its existing row-based summary
         counters, while the round-robin merge prevents a busy owner collection
-        from starving the others under the per-tick sandbox budget.
+        from starving the others under the per-tick sandbox budget. Each
+        collection's next call starts after the last row this one took, so a
+        binding the probe cannot settle does not hold back the rows behind it.
         """
         page_limit = max(1, int(limit or 1))
-        session_rows = await self._sessions_repo.list_dead_binding_probe_candidates(
-            now_iso=now_iso,
+        sessions, agents, workspaces = self._probe_cursors
+        session_rows = await sessions.page(
+            lambda after, size: self._sessions_repo.list_dead_binding_probe_candidates(
+                now_iso=now_iso, after_session_id=after, limit=size
+            ),
             limit=page_limit,
         )
-        agent_rows = await self._agent_repo.list_dead_binding_probe_candidates(
-            now_iso=now_iso,
+        agent_rows = await agents.page(
+            lambda after, size: self._agent_repo.list_dead_binding_probe_candidates(
+                now_iso=now_iso, after_agent_id=after, limit=size
+            ),
             limit=page_limit,
         )
-        workspace_rows = (
-            await self._assistant_workspace_service.list_dead_binding_probe_candidates(
-                now_iso=now_iso,
-                limit=page_limit,
-            )
+        workspace_rows = await workspaces.page(
+            lambda after, size: (
+                self._assistant_workspace_service.list_dead_binding_probe_candidates(
+                    now_iso=now_iso, after_assistant_id=after, limit=size
+                )
+            ),
+            limit=page_limit,
         )
         batches = (
             (session_rows, "sandbox_id"),
@@ -261,19 +283,26 @@ class SandboxLifecycleService:
             (workspace_rows, "current_sandbox_id"),
         )
         candidates: dict[str, int] = {}
+        # How many leading rows of each page the budget took.
+        taken = [0, 0, 0]
+        full = [False, False, False]
         max_rows = max((len(rows) for rows, _sandbox_field in batches), default=0)
         for index in range(max_rows):
-            for rows, sandbox_field in batches:
+            for batch, (rows, sandbox_field) in enumerate(batches):
                 if index >= len(rows):
                     continue
                 sandbox_id = str(
                     (rows[index] or {}).get(sandbox_field) or ""
                 ).strip()
-                if not sandbox_id:
+                if sandbox_id and sandbox_id not in candidates and len(candidates) >= page_limit:
+                    full[batch] = True
                     continue
-                if sandbox_id not in candidates and len(candidates) >= page_limit:
-                    continue
-                candidates[sandbox_id] = candidates.get(sandbox_id, 0) + 1
+                if sandbox_id:
+                    candidates[sandbox_id] = candidates.get(sandbox_id, 0) + 1
+                if not full[batch]:
+                    taken[batch] = index + 1
+        for cursor, count in zip(self._probe_cursors, taken, strict=True):
+            cursor.visited(count)
         return candidates
 
     async def realign_live_sandbox_owners(

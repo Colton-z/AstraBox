@@ -345,6 +345,7 @@ export default function SessionFilesPanel({
     mutating,
     loadedOnce,
     error,
+    sandboxGone,
     ensureDirectoryLoaded,
     refresh,
     upload,
@@ -799,6 +800,11 @@ export default function SessionFilesPanel({
                 {renderDirectoryChildren(rootPath)}
               </DirectoryRow>
             </FileTree>
+          ) : enabled && sandboxGone && !loading ? (
+            // The note above already says what happened and what brings the
+            // files back; "Please wait" or "Refresh to retry" would promise
+            // something that does not happen until the next message.
+            null
           ) : (
             <EmptyState
               icon={<FolderIcon className="size-5" />}

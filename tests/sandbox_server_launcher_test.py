@@ -7,10 +7,10 @@ Four layers, because they fail for different reasons:
    upstream's posture on a bad value is a warning and a silent fallback, which
    is how a typo becomes a container with no cgroup or a sandbox nobody can
    reach.
-2. **The compatibility hooks, against stubs.** ``redirect_publish_host``,
-   ``redirect_proxy_host``, ``redirect_public_endpoint_host`` and
-   ``redirect_metadata_store_root`` reach into
-   upstream internals, so each
+2. **The compatibility hooks, against stubs.**
+   ``let_docker_assign_published_ports``, ``redirect_proxy_host``,
+   ``redirect_public_endpoint_host`` and ``redirect_metadata_store_root``
+   reach into upstream internals, so each
    is nailed against a stub carrying upstream's shape: the nail fires in the
    unit lane WITHOUT the optional extra, and it fires for a rename, for a
    collaborator that stops consulting the constant, and for an unwritable
@@ -36,9 +36,10 @@ import os
 import stat
 import sys
 import tomllib
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
-from typing import Any, Iterator
+from typing import Any, Iterable, Iterator
 
 import pytest
 
@@ -366,10 +367,12 @@ def document(monkeypatch: pytest.MonkeyPatch, state_dir: Path) -> dict[str, Any]
 
 def test_document_states_the_hardening_profile_explicitly(document: dict[str, Any]) -> None:
     docker = document["docker"]
-    # Drop NOTHING: capability drops are too likely to break legitimate agent
-    # workloads. Upstream's own default drops nine including SYS_PTRACE and
-    # NET_RAW, which this deployment deliberately overrides.
-    assert docker["drop_capabilities"] == []
+    # Drop NET_RAW so a root process in a sandbox cannot open raw/packet
+    # sockets and craft traffic that bypasses the egress sidecar's output hook.
+    # Other capabilities upstream drops by default (SYS_PTRACE among them) are
+    # kept, because debugger and build workloads use them.
+    assert docker["drop_capabilities"] == ["NET_RAW"]
+    assert docker["drop_capabilities"] == list(launcher.SANDBOX_DROP_CAPABILITIES)
     assert docker["no_new_privileges"] is True
     assert docker["pids_limit"] == 512
     assert docker["network_mode"] == "bridge"
@@ -486,68 +489,10 @@ def test_write_config_file_fails_loud_on_an_unwritable_directory(
 # ---------------------------------------------------------------------------
 
 
-def _port_allocator_stub(*, honours_constant: bool = True) -> ModuleType:
-    """A stub with upstream's shape: a module constant its allocator reads."""
-    module = ModuleType("opensandbox_server.services.docker.port_allocator")
-    module.DOCKER_PUBLISH_HOST = "0.0.0.0"  # type: ignore[attr-defined]
-    module.PORT_PROBE_HOST = "0.0.0.0"  # type: ignore[attr-defined]
-
-    def allocate_port_bindings(
-        container_ports: list[str], min_port: int = 40000, max_port: int = 60000
-    ) -> dict[str, tuple[str, int]]:
-        host = module.DOCKER_PUBLISH_HOST if honours_constant else "0.0.0.0"
-        return {port: (host, min_port) for port in container_ports}
-
-    module.allocate_port_bindings = allocate_port_bindings  # type: ignore[attr-defined]
-    return module
-
-
-def test_redirect_publish_host_rebinds_and_proves_it_through_the_allocator() -> None:
-    module = _port_allocator_stub()
-    launcher.redirect_publish_host(module, "127.0.0.1", ports=(40000, 60000))
-    assert module.DOCKER_PUBLISH_HOST == "127.0.0.1"
-    assert module.allocate_port_bindings(["8080"])["8080"][0] == "127.0.0.1"
-
-
-def test_redirect_publish_host_leaves_the_wider_probe_host_alone() -> None:
-    # Upstream's probe must keep the WIDER scope: probing the narrow address
-    # would hand out a port already bound on another interface, which Docker
-    # then fails to publish.
-    module = _port_allocator_stub()
-    launcher.redirect_publish_host(module, "127.0.0.1", ports=(40000, 60000))
-    assert module.PORT_PROBE_HOST == "0.0.0.0"
-
-
-@pytest.mark.parametrize("attribute", [launcher.PUBLISH_HOST_ATTR, launcher.ALLOCATE_PORTS_ATTR])
-def test_redirect_publish_host_fails_loud_when_upstream_renames_it(attribute: str) -> None:
-    module = _port_allocator_stub()
-    delattr(module, attribute)
-    with pytest.raises(launcher.SandboxServerConfigError, match=attribute):
-        launcher.redirect_publish_host(module, "127.0.0.1", ports=(40000, 60000))
-
-
-def test_redirect_publish_host_fails_loud_when_the_allocator_ignores_the_constant() -> None:
-    # The dangerous shape: the constant is still there and still assignable, but
-    # the allocator does not consult it — so the rebind "succeeds" and every
-    # sandbox port goes to 0.0.0.0 anyway.
-    module = _port_allocator_stub(honours_constant=False)
-    with pytest.raises(launcher.SandboxServerConfigError, match="still binds"):
-        launcher.redirect_publish_host(module, "127.0.0.1", ports=(40000, 60000))
-
-
-def test_redirect_publish_host_fails_loud_when_the_allocator_raises() -> None:
-    module = _port_allocator_stub()
-
-    def _boom(*args: Any, **kwargs: Any) -> Any:
-        raise RuntimeError("no free ports")
-
-    module.allocate_port_bindings = _boom  # type: ignore[attr-defined]
-    with pytest.raises(launcher.SandboxServerConfigError, match="port allocator failed"):
-        launcher.redirect_publish_host(module, "127.0.0.1", ports=(40000, 60000))
-
-
-def _networking_stub() -> ModuleType:
+def _networking_stub(*, sidecar_uses_normalizer: bool = True) -> ModuleType:
     module = ModuleType("opensandbox_server.services.docker.networking")
+    module.normalize_port_bindings = lambda bindings: dict(bindings)  # type: ignore[attr-defined]
+    module.EGRESS_SIDECAR_LABEL = "opensandbox.io/egress-sidecar-for"  # type: ignore[attr-defined]
 
     class DockerNetworkingMixin:
         def _resolve_proxy_host(self) -> str:
@@ -556,8 +501,96 @@ def _networking_stub() -> ModuleType:
         def _resolve_public_host(self) -> str:
             return "127.0.0.1"
 
+        def _wait_for_egress_sidecar_ready(
+            self, sandbox_id: str, host_port: int, egress_token: str, timeout_seconds: float
+        ) -> None:
+            return None
+
+        def _start_egress_sidecar(
+            self,
+            sandbox_id: str,
+            network_policy: Any,
+            egress_token: str,
+            host_execd_port: int,
+            host_http_port: int,
+            **_kwargs: Any,
+        ) -> Any:
+            """Upstream 0.2.3's order: image, policy, literal 0.0.0.0, host config."""
+            self._ensure_image_available(self.app_config.egress.image, None, sandbox_id)  # type: ignore[attr-defined]
+            network_policy.model_dump(by_alias=True, exclude_none=True)
+            bindings = {
+                "44772": ("0.0.0.0", host_execd_port),
+                "8080": ("0.0.0.0", host_http_port),
+            }
+            if sidecar_uses_normalizer:
+                bindings = module.normalize_port_bindings(bindings)  # type: ignore[attr-defined]
+            return self.docker_client.api.create_host_config(  # type: ignore[attr-defined]
+                network_mode="bridge", port_bindings=bindings
+            )
+
     module.DockerNetworkingMixin = DockerNetworkingMixin  # type: ignore[attr-defined]
     return module
+
+
+def _recorded_sidecar_hosts(module: ModuleType) -> dict[str, str]:
+    bindings = launcher._record_egress_sidecar_port_bindings(
+        getattr(module, launcher.NETWORKING_MIXIN_ATTR)
+    )
+    return {port: str(binding[0]) for port, binding in bindings.items()}
+
+
+def test_redirect_egress_sidecar_publish_host_narrows_execd_and_http() -> None:
+    module = _networking_stub()
+    assert _recorded_sidecar_hosts(module) == {"44772": "0.0.0.0", "8080": "0.0.0.0"}
+
+    launcher.redirect_egress_sidecar_publish_host(module, "172.17.0.1")
+
+    assert _recorded_sidecar_hosts(module) == {"44772": "172.17.0.1", "8080": "172.17.0.1"}
+    # A binding upstream already narrowed (the allocator's egress API port)
+    # passes through unchanged.
+    assert module.normalize_port_bindings({"18080": ("10.0.0.5", 3)}) == {  # type: ignore[attr-defined]
+        "18080": ("10.0.0.5", 3)
+    }
+
+
+def test_redirect_egress_sidecar_publish_host_fails_loud_when_the_sidecar_bypasses_it() -> None:
+    # The dangerous shape: the normalizer is still there and replaceable, but the
+    # sidecar stops passing its bindings through it, so every sandbox's execd
+    # would go back to 0.0.0.0 while the hook "succeeded".
+    module = _networking_stub(sidecar_uses_normalizer=False)
+    with pytest.raises(launcher.SandboxServerConfigError, match="ignored"):
+        launcher.redirect_egress_sidecar_publish_host(module, "172.17.0.1")
+
+
+@pytest.mark.parametrize(
+    "attribute",
+    [
+        launcher.NETWORKING_MIXIN_ATTR,
+        launcher.SIDECAR_PORT_BINDINGS_ATTR,
+        launcher.START_EGRESS_SIDECAR_ATTR,
+    ],
+)
+def test_redirect_egress_sidecar_publish_host_fails_loud_when_upstream_renames_it(
+    attribute: str,
+) -> None:
+    module = _networking_stub()
+    if attribute == launcher.START_EGRESS_SIDECAR_ATTR:
+        delattr(module.DockerNetworkingMixin, attribute)  # type: ignore[attr-defined]
+    else:
+        delattr(module, attribute)
+    with pytest.raises(launcher.SandboxServerConfigError, match=attribute):
+        launcher.redirect_egress_sidecar_publish_host(module, "172.17.0.1")
+
+
+def test_redirect_egress_sidecar_publish_host_fails_loud_when_the_probe_breaks() -> None:
+    module = _networking_stub()
+
+    def _boom(*_args: Any, **_kwargs: Any) -> Any:
+        raise RuntimeError("upstream changed its signature")
+
+    module.DockerNetworkingMixin._start_egress_sidecar = _boom  # type: ignore[attr-defined]
+    with pytest.raises(launcher.SandboxServerConfigError, match="failed before"):
+        launcher.redirect_egress_sidecar_publish_host(module, "172.17.0.1")
 
 
 def test_redirect_proxy_host_uses_the_docker_host_address() -> None:
@@ -600,6 +633,181 @@ def test_redirect_public_endpoint_host_fails_loud_when_upstream_renames_it(
         delattr(module.DockerNetworkingMixin, attribute)
     with pytest.raises(launcher.SandboxServerConfigError, match=attribute):
         launcher.redirect_public_endpoint_host(module, "172.17.0.1")
+
+
+def _container_ops_stub() -> ModuleType:
+    module = ModuleType("opensandbox_server.services.docker.container_ops")
+
+    class DockerContainerOpsMixin:
+        def _create_and_start_container(self, *args: Any) -> Any:
+            return SimpleNamespace(id="sandbox-container")
+
+    module.DockerContainerOpsMixin = DockerContainerOpsMixin  # type: ignore[attr-defined]
+    return module
+
+
+def _constants_stub() -> ModuleType:
+    module = ModuleType("opensandbox_server.services.constants")
+    module.SANDBOX_EMBEDDING_PROXY_PORT_LABEL = "opensandbox.io/embedding-proxy-port"  # type: ignore[attr-defined]
+    module.SANDBOX_HTTP_PORT_LABEL = "opensandbox.io/http-port"  # type: ignore[attr-defined]
+    module.SandboxErrorCodes = SimpleNamespace(  # type: ignore[attr-defined]
+        CONTAINER_START_FAILED="DOCKER::SANDBOX_START_FAILED",
+        INVALID_PARAMETER="SANDBOX::INVALID_PARAMETER",
+    )
+    return module
+
+
+def _service_stub(networking: ModuleType, container_ops: ModuleType) -> ModuleType:
+    """Upstream's shape: the allocator name the create path calls, and the class."""
+    module = ModuleType("opensandbox_server.services.docker.docker_service")
+    module.allocate_port_bindings = lambda ports, min_port=40000, max_port=60000: {  # type: ignore[attr-defined]
+        port: ("0.0.0.0", min_port) for port in ports
+    }
+
+    class DockerSandboxService(
+        networking.DockerNetworkingMixin,  # type: ignore[attr-defined,name-defined]
+        container_ops.DockerContainerOpsMixin,  # type: ignore[attr-defined,name-defined]
+    ):
+        def _expire_sandbox(self, sandbox_id: str) -> None:
+            return None
+
+        def _get_container_by_sandbox_id(self, sandbox_id: str) -> Any:
+            return None
+
+        def _remove_expiration_tracking(self, sandbox_id: str) -> None:
+            return None
+
+        def _cleanup_egress_sidecar(self, sandbox_id: str) -> None:
+            return None
+
+    module.DockerSandboxService = DockerSandboxService  # type: ignore[attr-defined]
+    return module
+
+
+def _volumes_stub() -> ModuleType:
+    module = ModuleType("opensandbox_server.services.docker.volumes")
+
+    class DockerVolumesMixin:
+        def _build_volume_binds(self, volumes: Any, pvc_inspect_cache: Any = None) -> list[str]:
+            return []
+
+    module.DockerVolumesMixin = DockerVolumesMixin  # type: ignore[attr-defined]
+    return module
+
+
+def _port_assignment_stubs() -> tuple[ModuleType, ModuleType, ModuleType, ModuleType]:
+    networking = _networking_stub()
+    container_ops = _container_ops_stub()
+    return _service_stub(networking, container_ops), networking, container_ops, _constants_stub()
+
+
+class _Published:
+    """A started container as docker-py describes it after ``reload()``."""
+
+    def __init__(self, ports: dict[str, Any]) -> None:
+        self.attrs = {"NetworkSettings": {"Ports": ports}}
+
+    def reload(self) -> None:
+        return None
+
+
+def test_published_host_ports_reads_one_port_per_container_port() -> None:
+    # Docker lists an IPv4 and an IPv6 binding of the same host port separately.
+    container = _Published(
+        {
+            "44772/tcp": [
+                {"HostIp": "0.0.0.0", "HostPort": "20011"},
+                {"HostIp": "::", "HostPort": "20011"},
+            ],
+            "8080/tcp": [{"HostIp": "172.17.0.1", "HostPort": "20012"}],
+        }
+    )
+    assert launcher._published_host_ports(container, ("44772", "8080")) == {
+        "44772": 20011,
+        "8080": 20012,
+    }
+
+
+@pytest.mark.parametrize(
+    "bindings",
+    [
+        None,
+        [],
+        [{"HostIp": "172.17.0.1", "HostPort": "20000-32000"}],
+        [
+            {"HostIp": "172.17.0.1", "HostPort": "20011"},
+            {"HostIp": "172.17.0.1", "HostPort": "20012"},
+        ],
+    ],
+)
+def test_published_host_ports_refuses_a_port_docker_did_not_publish_once(
+    bindings: Any,
+) -> None:
+    # A range, a missing port or two different ports cannot become the one
+    # number a sandbox's endpoint is resolved from.
+    container = _Published({"44772/tcp": bindings})
+    with pytest.raises(RuntimeError, match="44772/tcp"):
+        launcher._published_host_ports(container, ("44772",))
+
+
+@pytest.mark.parametrize(
+    ("module_index", "attribute"),
+    [
+        (0, launcher.SERVICE_ALLOCATE_PORTS_ATTR),
+        (0, launcher.SERVICE_CLS_ATTR),
+        (1, launcher.NETWORKING_MIXIN_ATTR),
+        (2, launcher.CONTAINER_OPS_MIXIN_ATTR),
+        (3, launcher.EXECD_PORT_LABEL_ATTR),
+        (3, launcher.HTTP_PORT_LABEL_ATTR),
+        (3, launcher.ERROR_CODES_ATTR),
+    ],
+)
+def test_let_docker_assign_published_ports_fails_loud_when_upstream_renames_it(
+    module_index: int, attribute: str
+) -> None:
+    modules = _port_assignment_stubs()
+    delattr(modules[module_index], attribute)
+    with pytest.raises(launcher.SandboxServerConfigError, match=attribute):
+        launcher.let_docker_assign_published_ports(*modules, "172.17.0.1", ports=(20000, 32000))
+
+
+@pytest.mark.parametrize(
+    "attribute",
+    [
+        launcher.START_EGRESS_SIDECAR_ATTR,
+        launcher.WAIT_FOR_SIDECAR_ATTR,
+        launcher.CREATE_AND_START_ATTR,
+    ],
+)
+def test_let_docker_assign_published_ports_fails_loud_when_a_method_is_gone(
+    attribute: str,
+) -> None:
+    service, networking, container_ops, constants = _port_assignment_stubs()
+    owner = (
+        container_ops.DockerContainerOpsMixin  # type: ignore[attr-defined]
+        if attribute == launcher.CREATE_AND_START_ATTR
+        else networking.DockerNetworkingMixin  # type: ignore[attr-defined]
+    )
+    delattr(owner, attribute)
+    with pytest.raises(launcher.SandboxServerConfigError, match=attribute):
+        launcher.let_docker_assign_published_ports(
+            service, networking, container_ops, constants, "172.17.0.1", ports=(20000, 32000)
+        )
+
+
+def test_let_docker_assign_published_ports_fails_loud_when_the_service_overrides_it() -> None:
+    # A method the service class defines itself hides the mixin's wrapper, so
+    # upstream would keep choosing ports while the hook reported success.
+    service, networking, container_ops, constants = _port_assignment_stubs()
+
+    def _own_start(self: Any, **_kwargs: Any) -> Any:
+        return None
+
+    setattr(service.DockerSandboxService, launcher.START_EGRESS_SIDECAR_ATTR, _own_start)  # type: ignore[attr-defined]
+    with pytest.raises(launcher.SandboxServerConfigError, match="overrides"):
+        launcher.let_docker_assign_published_ports(
+            service, networking, container_ops, constants, "172.17.0.1", ports=(20000, 32000)
+        )
 
 
 def _metadata_stub(
@@ -805,24 +1013,418 @@ def _upstream(name: str) -> Any:
     )
 
 
-def test_upstream_still_publishes_to_every_interface_from_that_constant() -> None:
-    """The reason :func:`redirect_publish_host` exists, asserted upstream.
+def test_upstream_still_chooses_host_ports_before_docker_does() -> None:
+    """The reason :func:`let_docker_assign_published_ports` exists, upstream.
 
-    If this ever fails because upstream now defaults to loopback, or grew a
-    config field, delete the rebind instead of updating this test.
+    The allocator the create path calls hands Docker a fixed number it chose by
+    binding a socket in its own network namespace. If this fails because
+    upstream now lets Docker choose, delete the hook instead of updating this
+    test.
     """
-    module = _upstream("opensandbox_server.services.docker.port_allocator")
-    assert getattr(module, launcher.PUBLISH_HOST_ATTR) == "0.0.0.0"
-    assert callable(getattr(module, launcher.ALLOCATE_PORTS_ATTR))
+    service = _upstream("opensandbox_server.services.docker.docker_service")
+    allocator = _upstream("opensandbox_server.services.docker.port_allocator")
+    allocate = getattr(service, launcher.SERVICE_ALLOCATE_PORTS_ATTR)
+    assert allocate is allocator.allocate_port_bindings
+    _host, port = allocate(["8080"], min_port=40000, max_port=60000)["8080"]
+    assert isinstance(port, int)
 
 
-def test_upstream_port_allocator_still_reads_the_constant_at_call_time() -> None:
-    module = _upstream("opensandbox_server.services.docker.port_allocator")
-    original = getattr(module, launcher.PUBLISH_HOST_ATTR)
-    try:
-        launcher.redirect_publish_host(module, "127.0.0.1", ports=(40000, 60000))
-    finally:
-        setattr(module, launcher.PUBLISH_HOST_ATTR, original)
+class _FakeDockerDaemon:
+    """Docker's side of a create, for upstream's real provisioning code.
+
+    ``held`` are host ports something outside the lifecycle server's network
+    namespace holds: invisible to a probe the server runs, visible to Docker,
+    which binds in the host namespace. A range binding gets the lowest port of
+    its range that is neither held nor already published, as the daemon's
+    allocator does; a fixed binding on a held port fails the way Docker does.
+    """
+
+    def __init__(self, held: Iterable[int]) -> None:
+        self.held = set(held)
+        self.created: dict[str, dict[str, Any]] = {}
+        self.published: dict[str, dict[str, list[dict[str, str]]]] = {}
+        self.removed: list[str] = []
+        self.api = SimpleNamespace(
+            create_host_config=lambda **kwargs: dict(kwargs),
+            create_container=self._create_container,
+            remove_container=lambda container_id, force=False: self.removed.append(container_id),
+            inspect_volume=lambda name: {"Labels": {}},
+            remove_volume=lambda name: None,
+        )
+        self.volumes = SimpleNamespace(create=lambda **kwargs: SimpleNamespace(**kwargs))
+        self.containers = SimpleNamespace(get=self._container, list=self._list)
+
+    def _create_container(self, **kwargs: Any) -> dict[str, str]:
+        container_id = f"container-{len(self.created)}"
+        self.created[container_id] = kwargs
+        return {"Id": container_id}
+
+    def add(self, name: str, labels: dict[str, str]) -> None:
+        """A container that already exists when the lifecycle server starts."""
+        self.created[name] = {"name": name, "labels": labels, "host_config": {}}
+
+    def _list(self, all: bool = False, filters: dict[str, Any] | None = None) -> list[Any]:
+        selector = str((filters or {}).get("label") or "")
+        key, _, value = selector.partition("=")
+        return [
+            self._container(container_id)
+            for container_id, record in self.created.items()
+            if container_id not in self.removed
+            and (
+                not key
+                or (
+                    key in (record.get("labels") or {})
+                    and (not value or record["labels"][key] == value)
+                )
+            )
+        ]
+
+    def _container(self, reference: str) -> Any:
+        from docker.errors import NotFound
+
+        daemon = self
+        container_id = next(
+            (
+                candidate
+                for candidate, record in self.created.items()
+                if reference in (candidate, record.get("name"))
+            ),
+            None,
+        )
+        if container_id is None or container_id in self.removed:
+            raise NotFound(f"No such container: {reference}")
+        record = self.created[container_id]
+
+        class _Container:
+            id = container_id
+
+            @property
+            def labels(self) -> dict[str, str]:
+                return dict(record.get("labels") or {})
+
+            @property
+            def attrs(self) -> dict[str, Any]:
+                return {
+                    "Config": {"Labels": record.get("labels") or {}},
+                    "NetworkSettings": {"Ports": daemon.published.get(container_id, {})},
+                    "State": {"Running": True},
+                }
+
+            def reload(self) -> None:
+                return None
+
+            def kill(self) -> None:
+                return None
+
+            def start(self) -> None:
+                daemon._publish(container_id, record["host_config"].get("port_bindings") or {})
+
+            def remove(self, force: bool = False) -> None:
+                daemon.removed.append(container_id)
+
+        return _Container()
+
+    def _publish(self, container_id: str, bindings: dict[str, Any]) -> None:
+        from docker.errors import APIError
+
+        in_use = self.held | {
+            int(binding["HostPort"])
+            for ports in self.published.values()
+            for published in ports.values()
+            for binding in published
+        }
+        ports: dict[str, list[dict[str, str]]] = {}
+        for container_port, (host_ip, host_port) in bindings.items():
+            low, _, high = str(host_port).partition("-")
+            candidates = range(int(low), int(high or low) + 1)
+            free = [port for port in candidates if port not in in_use]
+            if not free:
+                raise APIError(
+                    "500 Server Error: failed to set up container networking: "
+                    f"failed to bind host port {host_ip}:{candidates[-1]}/tcp: "
+                    "address already in use"
+                )
+            in_use.add(free[0])
+            key = container_port if "/" in container_port else f"{container_port}/tcp"
+            ports[key] = [{"HostIp": host_ip, "HostPort": str(free[0])}]
+        self.published[container_id] = ports
+
+
+@pytest.fixture
+def upstream_docker_service(
+    document: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> Iterator[Any]:
+    """Upstream's real Docker service class with every hook this deployment applies.
+
+    Each patched upstream attribute is registered with ``monkeypatch`` first, so
+    the real classes are restored after the test.
+    """
+    service = _upstream("opensandbox_server.services.docker.docker_service")
+    networking = _upstream("opensandbox_server.services.docker.networking")
+    container_ops = _upstream("opensandbox_server.services.docker.container_ops")
+    volumes = _upstream("opensandbox_server.services.docker.volumes")
+    constants = _upstream("opensandbox_server.services.constants")
+    config_module = _upstream("opensandbox_server.config")
+    for owner, attribute in (
+        (service, launcher.SERVICE_ALLOCATE_PORTS_ATTR),
+        (networking, launcher.SIDECAR_PORT_BINDINGS_ATTR),
+        (networking.DockerNetworkingMixin, launcher.START_EGRESS_SIDECAR_ATTR),
+        (container_ops.DockerContainerOpsMixin, launcher.CREATE_AND_START_ATTR),
+        (volumes.DockerVolumesMixin, launcher.BUILD_VOLUME_BINDS_ATTR),
+    ):
+        monkeypatch.setattr(owner, attribute, getattr(owner, attribute))
+    document["docker"]["host_ip"] = "172.17.0.1"
+    document["docker"]["port_range_min"] = 20000
+    document["docker"]["port_range_max"] = 20100
+    launcher.redirect_egress_sidecar_publish_host(networking, "172.17.0.1")
+    launcher.let_docker_assign_published_ports(
+        service, networking, container_ops, constants, "172.17.0.1", ports=(20000, 20100)
+    )
+    launcher.mount_volume_subpaths_through_docker(volumes, container_ops)
+    instance = object.__new__(service.DockerSandboxService)
+    instance.app_config = config_module.AppConfig(**document)
+    instance.network_mode = "bridge"
+    instance.docker_runtime = None
+    instance.readiness_ports = []
+    instance._ensure_image_available = lambda *_args, **_kwargs: None
+    instance._prepare_sandbox_runtime = lambda *_args, **_kwargs: None
+    instance._resolve_platform_for_container = lambda *_args, **_kwargs: None
+
+    def _record_readiness_port(
+        sandbox_id: str, host_port: int, token: str, timeout_seconds: float
+    ) -> None:
+        instance.readiness_ports.append(host_port)
+
+    instance._wait_for_egress_sidecar_ready = _record_readiness_port
+    yield instance
+
+
+def _provision(
+    instance: Any,
+    daemon: _FakeDockerDaemon,
+    *,
+    network_policy: bool = True,
+    volumes: list[dict[str, Any]] | None = None,
+    pvc_inspect_cache: dict[str, dict[str, Any]] | None = None,
+) -> Any:
+    schema = _upstream("opensandbox_server.api.schema")
+    instance.docker_client = daemon
+    request = schema.CreateSandboxRequest(
+        image={"uri": "astrabox/sandbox:test"},
+        entrypoint=["/bin/sleep", "infinity"],
+        resourceLimits={"cpu": "1", "memory": "1Gi"},
+        **({"networkPolicy": {"defaultAction": "allow"}} if network_policy else {}),
+        **({"volumes": volumes} if volumes else {}),
+    )
+    return instance._provision_sandbox(
+        "sbx", request, datetime.now(timezone.utc), None, pvc_inspect_cache
+    )
+
+
+def test_a_sandbox_records_the_ports_docker_published_while_the_host_holds_the_rest(
+    upstream_docker_service: Any,
+) -> None:
+    """Every port but three is held outside the server's namespace.
+
+    A probe in the server's own namespace sees all of them free, so a number it
+    chose would almost surely be one Docker cannot publish. Docker's choice is
+    the only one that lands on the three free ports, and the sandbox's endpoint
+    labels must name exactly what Docker published.
+    """
+    free = {20031, 20064, 20097}
+    daemon = _FakeDockerDaemon(held=set(range(20000, 20101)) - free)
+    _provision(upstream_docker_service, daemon)
+
+    sidecar_id, sandbox_id = list(daemon.created)
+    sidecar = daemon.published[sidecar_id]
+    assert daemon.created[sidecar_id]["host_config"]["port_bindings"] == {
+        "44772": ("172.17.0.1", "20000-20100"),
+        "8080": ("172.17.0.1", "20000-20100"),
+        "18080": ("172.17.0.1", "20000-20100"),
+    }
+    execd, http, egress_api = (
+        int(sidecar[f"{port}/tcp"][0]["HostPort"]) for port in ("44772", "8080", "18080")
+    )
+    assert {execd, http, egress_api} == free
+    labels = daemon.created[sandbox_id]["labels"]
+    assert labels["opensandbox.io/embedding-proxy-port"] == str(execd)
+    assert labels["opensandbox.io/http-port"] == str(http)
+    assert upstream_docker_service.readiness_ports == [egress_api]
+    assert daemon.removed == []
+
+
+def test_a_sidecar_docker_cannot_publish_reports_dockers_reason(
+    upstream_docker_service: Any,
+) -> None:
+    # Every port is held: no mechanism can publish, and the caller must learn
+    # why from the create response rather than from the server log.
+    from fastapi import HTTPException
+
+    daemon = _FakeDockerDaemon(held=range(20000, 20101))
+    with pytest.raises(HTTPException) as raised:
+        _provision(upstream_docker_service, daemon)
+    message = raised.value.detail["message"]
+    assert message.startswith("Egress sidecar container failed to start")
+    assert "address already in use" in message
+    assert list(daemon.created) == ["container-0"]
+    assert daemon.removed == ["container-0"]
+
+
+def test_a_sandbox_without_a_network_policy_is_refused_before_any_container(
+    upstream_docker_service: Any,
+) -> None:
+    # Such a sandbox would publish its own ports, and its endpoint labels are
+    # written before Docker chooses them.
+    from fastapi import HTTPException
+
+    daemon = _FakeDockerDaemon(held=())
+    with pytest.raises(HTTPException) as raised:
+        _provision(upstream_docker_service, daemon, network_policy=False)
+    assert raised.value.status_code == 400
+    assert "networkPolicy" in raised.value.detail["message"]
+    assert daemon.created == {}
+
+
+def test_a_restarted_server_leaves_another_installations_sandbox_running(
+    document: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Both sandboxes are past their create-time lease; only one is this server's.
+
+    The other installation renews its sandbox through its own lifecycle
+    server, so this server's restart must not expire it from the stale label.
+    """
+    lapsed = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+    daemon = _FakeDockerDaemon(held=())
+    for sandbox_id, installation in (("ours", "this-installation"), ("theirs", "other")):
+        daemon.add(
+            f"sandbox-{sandbox_id}",
+            {
+                "opensandbox.io/id": sandbox_id,
+                "opensandbox.io/expires-at": lapsed,
+                "astrabox.installation": installation,
+            },
+        )
+
+    _started_service(document, monkeypatch, tmp_path, daemon)
+
+    assert daemon.removed == ["sandbox-ours"]
+
+
+_WORKSPACE_VIEW = [
+    {
+        "name": "astrabox-workspace-0",
+        "pvc": {"claimName": "astrabox-view-0123"},
+        "mountPath": "/workspace",
+        "subPath": "0/workspace",
+    }
+]
+
+
+def test_a_volume_subpath_reaches_docker_as_a_volume_mount(
+    upstream_docker_service: Any,
+) -> None:
+    """A workspace view's data exists only while Docker has the volume mounted.
+
+    Its Mountpoint is an empty directory otherwise, so a bind of
+    Mountpoint/subPath gives the sandbox that empty directory. Docker must be
+    asked for the volume with the sub-path.
+    """
+    daemon = _FakeDockerDaemon(held=())
+    _provision(
+        upstream_docker_service,
+        daemon,
+        volumes=_WORKSPACE_VIEW,
+        pvc_inspect_cache={
+            "astrabox-view-0123": {
+                "Driver": "local",
+                "Mountpoint": "/var/lib/docker/volumes/astrabox-view-0123/_data",
+            }
+        },
+    )
+
+    _sidecar, sandbox = list(daemon.created)
+    host_config = daemon.created[sandbox]["host_config"]
+    assert not any("astrabox-view-0123" in bind for bind in host_config.get("binds") or [])
+    assert [dict(mount) for mount in host_config["mounts"]] == [
+        {
+            "Target": "/workspace",
+            "Source": "astrabox-view-0123",
+            "Type": "volume",
+            "ReadOnly": False,
+            "VolumeOptions": {"Subpath": "0/workspace"},
+        }
+    ]
+
+
+def _started_service(
+    document: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    daemon: _FakeDockerDaemon,
+) -> Any:
+    """Upstream's real service, constructed (and so restored) against ``daemon``."""
+    service = _upstream("opensandbox_server.services.docker.docker_service")
+    networking = _upstream("opensandbox_server.services.docker.networking")
+    metadata = _upstream("opensandbox_server.services.docker.metadata")
+    config_module = _upstream("opensandbox_server.config")
+    monkeypatch.setattr(metadata, launcher.METADATA_DEFAULT_ROOT_ATTR, tmp_path / "metadata")
+    for attribute in (
+        "__init__",
+        launcher.EXPIRE_SANDBOX_ATTR,
+        launcher.CLEANUP_SIDECAR_ATTR,
+    ):
+        monkeypatch.setattr(
+            service.DockerSandboxService,
+            attribute,
+            getattr(service.DockerSandboxService, attribute),
+        )
+    launcher.leave_other_installations_sandboxes_running(service, networking, "this-installation")
+
+    def _from_env(timeout: int | None = None) -> _FakeDockerDaemon:
+        return daemon
+
+    monkeypatch.setattr(service.docker, "from_env", _from_env)
+    return service.DockerSandboxService(config=config_module.AppConfig(**document))
+
+
+def test_a_restarted_server_leaves_another_installations_sidecar(
+    document: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Sidecars with no sandbox container: this installation's leftover, and
+    another installation's create in progress (its sidecar starts first)."""
+    daemon = _FakeDockerDaemon(held=())
+    for sandbox_id, installation in (("ours", "this-installation"), ("theirs", "other")):
+        daemon.add(
+            f"sandbox-egress-{sandbox_id}",
+            {
+                "opensandbox.io/egress-sidecar-for": sandbox_id,
+                "astrabox.installation": installation,
+            },
+        )
+
+    _started_service(document, monkeypatch, tmp_path, daemon)
+
+    assert daemon.removed == ["sandbox-egress-ours"]
+
+
+def test_the_server_labels_every_sidecar_it_creates_with_its_installation(
+    document: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    daemon = _FakeDockerDaemon(held=())
+    instance = _started_service(document, monkeypatch, tmp_path, daemon)
+    instance._ensure_image_available = lambda *_args, **_kwargs: None
+    instance._prepare_sandbox_runtime = lambda *_args, **_kwargs: None
+    instance._resolve_platform_for_container = lambda *_args, **_kwargs: None
+    instance._wait_for_egress_sidecar_ready = lambda *_args, **_kwargs: None
+
+    _provision(instance, daemon)
+
+    sidecar = next(
+        record
+        for record in daemon.created.values()
+        if "opensandbox.io/egress-sidecar-for" in (record.get("labels") or {})
+    )
+    assert sidecar["labels"]["astrabox.installation"] == "this-installation"
 
 
 def test_upstream_proxy_host_ignores_docker_host_ip_when_server_binds_loopback() -> None:
@@ -860,6 +1462,29 @@ def test_redirect_public_endpoint_host_works_against_the_real_upstream_mixin() -
         setattr(mixin, launcher.RESOLVE_PUBLIC_HOST_ATTR, original)
 
 
+def test_upstream_egress_sidecar_still_publishes_execd_on_every_interface() -> None:
+    """The reason :func:`redirect_egress_sidecar_publish_host` exists, upstream.
+
+    If this fails because upstream now honours a publish address (its
+    ``[docker] publish_host``), render that field and delete the hook instead of
+    updating this test.
+    """
+    module = _upstream("opensandbox_server.services.docker.networking")
+    assert _recorded_sidecar_hosts(module) == {"44772": "0.0.0.0", "8080": "0.0.0.0"}
+
+
+def test_redirect_egress_sidecar_publish_host_works_against_the_real_upstream_sidecar() -> None:
+    module = _upstream("opensandbox_server.services.docker.networking")
+    original = getattr(module, launcher.SIDECAR_PORT_BINDINGS_ATTR)
+    try:
+        launcher.redirect_egress_sidecar_publish_host(module, "172.17.0.1")
+        hosts = _recorded_sidecar_hosts(module)
+    finally:
+        setattr(module, launcher.SIDECAR_PORT_BINDINGS_ATTR, original)
+    assert hosts["44772"] == "172.17.0.1"
+    assert hosts["8080"] == "172.17.0.1"
+
+
 def test_upstream_metadata_store_still_defaults_under_home() -> None:
     module = _upstream("opensandbox_server.services.docker.metadata")
     default = getattr(module, launcher.METADATA_DEFAULT_ROOT_ATTR)
@@ -888,7 +1513,7 @@ def test_upstream_config_accepts_the_document_astrabox_renders(
     config_module = _upstream("opensandbox_server.config")
     config = config_module.AppConfig(**document)
     assert config.server.host == "127.0.0.1"
-    assert config.docker.drop_capabilities == []
+    assert config.docker.drop_capabilities == ["NET_RAW"]
     assert config.docker.pids_limit == 512
     # `eip` remains unset. `docker.host_ip` gives a containerized lifecycle
     # server a routable address for Docker host-port mappings.
@@ -990,7 +1615,7 @@ execd_image = "opensandbox/execd:v1.1.0"
 
 [docker]
 network_mode = "bridge"
-drop_capabilities = []
+drop_capabilities = ["NET_RAW"]
 no_new_privileges = true
 pids_limit = 512
 port_range_min = 20000
@@ -1007,6 +1632,7 @@ path = "{state_dir / "opensandbox" / "opensandbox.db"}"
 [egress]
 image = "opensandbox/egress:v1.1.7"
 mode = "dns+nft"
+disable_ipv6 = true
 """
     assert launcher.render_config_toml(launcher.config_document()) == expected
 
@@ -1022,7 +1648,11 @@ def test_kubernetes_document_carries_the_kubernetes_block_and_no_docker_one(
     # Upstream's AppConfig validator makes the two blocks exclusive, and every
     # docker field describes something Kubernetes does not have.
     assert "docker" not in document
+    template_path = (
+        state_dir / "opensandbox" / launcher.BATCHSANDBOX_TEMPLATE_FILENAME
+    )
     assert document["kubernetes"] == {
+        "batchsandbox_template_file": str(template_path),
         "namespace": launcher.DEFAULT_KUBE_NAMESPACE,
         "workload_provider": launcher.DEFAULT_KUBE_WORKLOAD_PROVIDER,
         "image_pull_policy": launcher.DEFAULT_KUBE_IMAGE_PULL_POLICY,
@@ -1037,6 +1667,79 @@ def test_kubernetes_document_carries_the_kubernetes_block_and_no_docker_one(
     assert document["storage"]["allowed_host_paths"] == []
     assert str(state_dir) in document["store"]["path"]
     assert tomllib.loads(launcher.render_config_toml(document)) == document
+
+
+def test_kubernetes_sandbox_containers_drop_the_docker_capabilities_through_the_template(
+    kubernetes: None, state_dir: Path
+) -> None:
+    """The pinned server has no capability field for Kubernetes; its template does it."""
+    template_file = Path(launcher.config_document()["kubernetes"]["batchsandbox_template_file"])
+
+    template = json.loads(template_file.read_text(encoding="utf-8"))
+
+    assert template["kind"] == "BatchSandbox"
+    [container] = template["spec"]["template"]["spec"]["containers"]
+    # The server picks the container named "sandbox" for its securityContext.
+    assert container["name"] == "sandbox"
+    assert container["securityContext"] == {
+        "capabilities": {"drop": list(launcher.SANDBOX_DROP_CAPABILITIES)}
+    }
+    assert "NET_RAW" in launcher.SANDBOX_DROP_CAPABILITIES
+
+
+def test_the_agent_sandbox_provider_gets_no_template_it_would_not_read(
+    kubernetes: None, state_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(launcher.KUBE_WORKLOAD_PROVIDER_ENV, "agent-sandbox")
+
+    assert "batchsandbox_template_file" not in launcher.config_document()["kubernetes"]
+
+
+def _replace_on_conflict(template_sc: dict[str, Any], runtime_sc: dict[str, Any]) -> dict[str, Any]:
+    """The pinned server's merge: nested dicts recurse, the runtime wins a leaf."""
+    merged = dict(template_sc)
+    for key, value in runtime_sc.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _replace_on_conflict(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def test_the_template_drop_survives_the_network_policy_drop() -> None:
+    """A network-policy sandbox's runtime drop must not replace the template's."""
+    module = ModuleType("opensandbox_server.services.k8s.batchsandbox_provider")
+    module._merge_security_context = _replace_on_conflict  # type: ignore[attr-defined]
+    template = {"capabilities": {"drop": ["NET_RAW"]}}
+    runtime = {"capabilities": {"drop": ["NET_ADMIN"], "add": ["SYS_ADMIN"]}, "seccompProfile": {"type": "Unconfined"}}
+    # What the pinned merge does on its own: the template's drop is gone.
+    assert module._merge_security_context(template, runtime)["capabilities"]["drop"] == ["NET_ADMIN"]
+
+    launcher.drop_template_capabilities_with_the_runtime_ones(module)
+    merged = module._merge_security_context(template, runtime)  # type: ignore[attr-defined]
+
+    assert merged == {
+        "capabilities": {"drop": ["NET_ADMIN", "NET_RAW"], "add": ["SYS_ADMIN"]},
+        "seccompProfile": {"type": "Unconfined"},
+    }
+    # Without a runtime drop the template's stands alone; without a template
+    # drop the merge is the server's own.
+    assert module._merge_security_context(template, {})["capabilities"] == {"drop": ["NET_RAW"]}  # type: ignore[attr-defined]
+    assert module._merge_security_context({}, runtime) == _replace_on_conflict({}, runtime)  # type: ignore[attr-defined]
+
+
+def test_the_upstream_merge_keeps_the_template_drop_once_hooked() -> None:
+    provider = _upstream("opensandbox_server.services.k8s.batchsandbox_provider")
+    original = provider._merge_security_context
+    template = {"capabilities": {"drop": ["NET_RAW"]}}
+    runtime = {"capabilities": {"drop": ["NET_ADMIN"]}}
+    try:
+        assert original(template, runtime)["capabilities"]["drop"] == ["NET_ADMIN"]
+        launcher.drop_template_capabilities_with_the_runtime_ones(provider)
+        merged = provider._merge_security_context(template, runtime)
+    finally:
+        provider._merge_security_context = original
+    assert merged["capabilities"]["drop"] == ["NET_ADMIN", "NET_RAW"]
 
 
 def test_docker_refuses_kubernetes_secure_access(
@@ -1112,6 +1815,34 @@ def test_kubernetes_gateway_refuses_an_unusable_browser_route(
 
     with pytest.raises(launcher.SandboxServerConfigError, match=message):
         launcher.config_document()
+
+
+def test_kubernetes_direct_mode_refuses_a_gateway_setting_it_would_ignore(
+    kubernetes: None, state_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(launcher.INGRESS_GATEWAY_ADDRESS_ENV, "gateway.example.com")
+
+    with pytest.raises(
+        launcher.SandboxServerConfigError, match=launcher.INGRESS_GATEWAY_ADDRESS_ENV
+    ):
+        launcher.config_document()
+
+
+def test_kubernetes_direct_mode_reads_an_empty_gateway_setting_as_unset(
+    kubernetes: None, state_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The Kubernetes Compose overlay passes every ingress knob through as
+    # `${NAME:-}`; a deployment that sets none of them must still start.
+    for name in (
+        launcher.INGRESS_MODE_ENV,
+        launcher.INGRESS_GATEWAY_ADDRESS_ENV,
+        launcher.INGRESS_ROUTE_MODE_ENV,
+        launcher.INGRESS_SIGNING_KEY_ENV,
+        launcher.INGRESS_SIGNING_KEY_ID_ENV,
+    ):
+        monkeypatch.setenv(name, "")
+
+    assert launcher.config_document()["ingress"] == {"mode": "direct"}
 
 
 def test_kubernetes_gateway_requires_an_address(
@@ -1678,24 +2409,42 @@ def fake_upstream(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> SimpleName
     docker_package = ModuleType("opensandbox_server.services.docker")
     upstream_home = tmp_path / "upstream-home"
     metadata = _metadata_stub(home=upstream_home)
-    port_allocator = _port_allocator_stub()
-    networking = _networking_stub()
+    docker_service, networking, container_ops, constants = _port_assignment_stubs()
+    volumes = _volumes_stub()
     docker_package.metadata = metadata  # type: ignore[attr-defined]
+    docker_package.volumes = volumes  # type: ignore[attr-defined]
     docker_package.networking = networking  # type: ignore[attr-defined]
-    docker_package.port_allocator = port_allocator  # type: ignore[attr-defined]
+    docker_package.docker_service = docker_service  # type: ignore[attr-defined]
+    docker_package.container_ops = container_ops  # type: ignore[attr-defined]
+    services.constants = constants  # type: ignore[attr-defined]
+    k8s_package = ModuleType("opensandbox_server.services.k8s")
+    batchsandbox_provider = ModuleType("opensandbox_server.services.k8s.batchsandbox_provider")
+    batchsandbox_provider._merge_security_context = _replace_on_conflict  # type: ignore[attr-defined]
+    k8s_package.batchsandbox_provider = batchsandbox_provider  # type: ignore[attr-defined]
+    monkeypatch.setattr(launcher, "installation_id", lambda: "this-installation")
+    monkeypatch.setattr(
+        launcher, "docker_engine_version", lambda: {"Version": "29.8.1", "ApiVersion": "1.52"}
+    )
     for name, module in {
         "opensandbox_server": root,
         "opensandbox_server.config": config_module,
         "opensandbox_server.logging_config": logging_module,
         "opensandbox_server.services": services,
+        "opensandbox_server.services.constants": constants,
         "opensandbox_server.services.docker": docker_package,
         "opensandbox_server.services.docker.networking": networking,
+        "opensandbox_server.services.docker.docker_service": docker_service,
+        "opensandbox_server.services.docker.container_ops": container_ops,
+        "opensandbox_server.services.docker.volumes": volumes,
+        "opensandbox_server.services.k8s": k8s_package,
+        "opensandbox_server.services.k8s.batchsandbox_provider": batchsandbox_provider,
     }.items():
         monkeypatch.setitem(sys.modules, name, module)
     return SimpleNamespace(
         metadata=metadata,
         networking=networking,
-        port_allocator=port_allocator,
+        docker_service=docker_service,
+        batchsandbox_provider=batchsandbox_provider,
         upstream_home=upstream_home,
     )
 
@@ -1705,13 +2454,75 @@ def test_prepare_runs_the_docker_halves_on_the_docker_runtime(
     fake_upstream: SimpleNamespace,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    pytest.importorskip(
+        "docker",
+        reason="the Docker half compares Engine API versions and builds Docker SDK mounts",
+    )
     monkeypatch.setenv(launcher.PUBLISH_HOST_IP_ENV, "172.17.0.1")
     launcher.prepare()
-    assert fake_upstream.port_allocator.DOCKER_PUBLISH_HOST == "172.17.0.1"
+    assert fake_upstream.docker_service.allocate_port_bindings(
+        ["44772"], min_port=20000, max_port=32000
+    ) == {"44772": ("172.17.0.1", "20000-32000")}
+    assert _recorded_sidecar_hosts(fake_upstream.networking) == {
+        "44772": "172.17.0.1",
+        "8080": "172.17.0.1",
+    }
     networking = object.__new__(fake_upstream.networking.DockerNetworkingMixin)
     assert networking._resolve_proxy_host() == "172.17.0.1"
     assert networking._resolve_public_host() == "172.17.0.1"
     assert fake_upstream.metadata.DEFAULT_STORE_DIR == launcher.metadata_dir()
+
+
+@pytest.mark.parametrize(
+    ("engine", "api_version"), [("25.0.5", "1.44"), ("20.10.24", "1.41"), ("unknown", "")]
+)
+def test_prepare_refuses_a_docker_engine_older_than_the_minimum(
+    state_dir: Path,
+    fake_upstream: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+    engine: str,
+    api_version: str,
+) -> None:
+    pytest.importorskip("docker", reason="the Docker SDK compares Engine API versions")
+    monkeypatch.setattr(
+        launcher, "docker_engine_version", lambda: {"Version": engine, "ApiVersion": api_version}
+    )
+    with pytest.raises(launcher.SandboxServerConfigError) as refused:
+        launcher.prepare()
+    message = str(refused.value)
+    assert f"Docker Engine {engine}" in message
+    required = f"Docker Engine {launcher.MIN_DOCKER_ENGINE} (API {launcher.MIN_DOCKER_API_VERSION})"
+    assert required in message
+
+
+def test_prepare_accepts_the_minimum_docker_engine(
+    state_dir: Path, fake_upstream: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("docker", reason="the Docker SDK compares Engine API versions")
+    monkeypatch.setattr(
+        launcher, "docker_engine_version", lambda: {"Version": "26.0.0", "ApiVersion": "1.45"}
+    )
+    launcher.prepare()
+
+
+def test_prepare_names_a_daemon_it_cannot_ask(
+    state_dir: Path, fake_upstream: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("docker", reason="the Docker SDK compares Engine API versions")
+
+    def _unreachable() -> dict[str, Any]:
+        raise ConnectionError("connection refused")
+
+    monkeypatch.setattr(launcher, "docker_engine_version", _unreachable)
+    with pytest.raises(launcher.SandboxServerConfigError, match="connection refused"):
+        launcher.prepare()
+
+
+def test_the_installer_requires_the_same_docker_engine() -> None:
+    """One minimum: the installer refuses what the server would refuse at start."""
+    installer = (Path(__file__).resolve().parents[1] / "scripts/install.sh").read_text()
+    assert f'readonly MIN_DOCKER_ENGINE="{launcher.MIN_DOCKER_ENGINE}"' in installer
+    assert f'readonly MIN_DOCKER_API="{launcher.MIN_DOCKER_API_VERSION}"' in installer
 
 
 def test_prepare_skips_the_docker_hooks_on_the_kubernetes_runtime(
@@ -1728,6 +2539,11 @@ def test_prepare_skips_the_docker_hooks_on_the_kubernetes_runtime(
     wrong reason, and would break the moment the document grew that key.
     """
     seen: list[tuple[Path | None, str]] = []
+
+    def _no_docker() -> dict[str, Any]:
+        raise AssertionError("the Kubernetes runtime drives no Docker daemon")
+
+    monkeypatch.setattr(launcher, "docker_engine_version", _no_docker)
     monkeypatch.setattr(
         launcher,
         "kubernetes_preflight",
@@ -1736,9 +2552,20 @@ def test_prepare_skips_the_docker_hooks_on_the_kubernetes_runtime(
     launcher.prepare()
 
     assert seen == [(None, launcher.DEFAULT_KUBE_NAMESPACE)]
+    # The Kubernetes half: the template's NET_RAW drop survives the runtime's.
+    merged = fake_upstream.batchsandbox_provider._merge_security_context(
+        {"capabilities": {"drop": ["NET_RAW"]}}, {"capabilities": {"drop": ["NET_ADMIN"]}}
+    )
+    assert merged["capabilities"]["drop"] == ["NET_ADMIN", "NET_RAW"]
     # Untouched: nothing publishes a host port, and a renewed lease is written to
     # the workload's own spec.expireTime rather than to a local directory.
-    assert fake_upstream.port_allocator.DOCKER_PUBLISH_HOST == "0.0.0.0"
+    assert fake_upstream.docker_service.allocate_port_bindings(["44772"]) == {
+        "44772": ("0.0.0.0", 40000)
+    }
+    assert _recorded_sidecar_hosts(fake_upstream.networking) == {
+        "44772": "0.0.0.0",
+        "8080": "0.0.0.0",
+    }
     networking = object.__new__(fake_upstream.networking.DockerNetworkingMixin)
     assert networking._resolve_proxy_host() == "127.0.0.1"
     assert networking._resolve_public_host() == "127.0.0.1"
@@ -1981,6 +2808,7 @@ def test_the_pinned_egress_sidecar_is_available_by_default(state_dir: Path) -> N
     assert launcher.egress() == {
         "image": launcher.DEFAULT_EGRESS_IMAGE,
         "mode": "dns+nft",
+        "disable_ipv6": True,
     }
     assert launcher.config_document()["egress"]["image"] == launcher.DEFAULT_EGRESS_IMAGE
 
@@ -1989,22 +2817,43 @@ def test_naming_the_sidecar_renders_the_block(
     state_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv(launcher.EGRESS_IMAGE_ENV, launcher.DEFAULT_EGRESS_IMAGE)
-    assert launcher.egress() == {"image": launcher.DEFAULT_EGRESS_IMAGE, "mode": "dns+nft"}
+    assert launcher.egress() == {
+        "image": launcher.DEFAULT_EGRESS_IMAGE,
+        "mode": "dns+nft",
+        "disable_ipv6": True,
+    }
     assert launcher.config_document()["egress"]["image"] == launcher.DEFAULT_EGRESS_IMAGE
 
 
 def test_the_strict_mode_is_the_default(state_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """`dns+nft`, not `dns`, and deliberately not upstream's own default.
-
-    A DNS-only policy is bypassed by connecting to an address directly, so a
-    deployment that asked for egress control and got name filtering has a
-    weaker guarantee than it believes. Opting DOWN is possible; drifting down is
-    not.
-    """
+    """`dns+nft`, deliberately not upstream's own `dns` default."""
     monkeypatch.setenv(launcher.EGRESS_IMAGE_ENV, "example/egress:1")
     assert launcher.egress()["mode"] == "dns+nft"
+
+
+def test_the_name_only_mode_is_refused(state_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`dns` enforces no IP or CIDR rule, and every policy AstraBox writes has them.
+
+    Under it the cloud-metadata deny, the Docker bridge deny and the address
+    entries of a Limited allow list reach no packet, so a sandbox connecting to
+    an address directly would pass all three.
+    """
+    monkeypatch.setenv(launcher.EGRESS_IMAGE_ENV, "example/egress:1")
     monkeypatch.setenv(launcher.EGRESS_MODE_ENV, "dns")
-    assert launcher.egress()["mode"] == "dns"
+    with pytest.raises(launcher.SandboxServerConfigError) as caught:
+        launcher.egress()
+    assert "no IP or CIDR rule" in str(caught.value)
+
+
+def test_ipv6_is_disabled_in_every_sandbox_namespace(
+    kubernetes: None, state_dir: Path, tmp_path: Path
+) -> None:
+    """Written, not inherited: upstream's own default could change under a pin bump."""
+    config = _upstream("opensandbox_server.config")
+    path = tmp_path / "ipv6.toml"
+    path.write_text(launcher.render_config_toml(launcher.config_document()), encoding="utf-8")
+    assert "disable_ipv6 = true" in path.read_text(encoding="utf-8")
+    assert config.load_config(path).egress.disable_ipv6 is True
 
 
 def test_an_unknown_egress_mode_refuses_to_start(

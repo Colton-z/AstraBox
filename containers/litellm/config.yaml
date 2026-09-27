@@ -123,35 +123,42 @@ model_list:
       api_base: "https://api.deepseek.com/anthropic"
       api_key: os.environ/DEEPSEEK_API_KEY
 
+  # LiteLLM's native DeepSeek adapter, for platform titles and process
+  # summaries. They send `reasoning_effort: "none"`, and only this adapter
+  # maps it to DeepSeek's `thinking: {"type": "disabled"}`; the two routes
+  # above drop it, and DeepSeek then thinks by default. On a DeepSeek
+  # deployment the entry point sets ASTRABOX_TITLE_MODEL_NAME to
+  # `deepseek/<model>` (astrabox/deploy/onebox.py). A wildcard is safe here:
+  # what follows `deepseek/` is DeepSeek's full model id.
+  - model_name: "deepseek/*"
+    litellm_params:
+      model: "deepseek/*"
+      api_base: "https://api.deepseek.com"
+      api_key: os.environ/DEEPSEEK_API_KEY
+
 litellm_settings:
   # Anthropic-format clients may send params an upstream doesn't accept;
   # dropping them beats a 400 for cross-provider routing.
   drop_params: true
 
-  # LLM-call observability (bring-your-own Langfuse). Every request/response
-  # through this gateway — tokens, cost, latency, prompt/completion — is emitted
-  # to your Langfuse project. This is the ecosystem-standard litellm mechanism;
-  # AstraBox itself writes no tracing code (all model traffic already transits
-  # this proxy — the endpoint_provider seam).
+  # Model-call traces to a Langfuse project you bring: tokens, cost, latency,
+  # prompt and completion for every request through this gateway.
+  # langfuse_tracing.py registers LiteLLM's `langfuse_otel` logger, its
+  # integration for Langfuse v3 and v4, only when LANGFUSE_PUBLIC_KEY and
+  # LANGFUSE_SECRET_KEY are both set in this gateway's environment
+  # (LANGFUSE_HOST is optional). Without them the gateway sends nothing; a
+  # partial setting stops it at startup. LiteLLM's `langfuse` callback is not
+  # used: it needs the Langfuse Python SDK v2, which Langfuse v4 rejects.
   #
-  # INERT BY DEFAULT: the langfuse logger only ships spans when
-  # LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY (and optional LANGFUSE_HOST — cloud
-  # or self-hosted) are set on THIS litellm container. compose.yaml forwards
-  # those three from the host env with empty defaults; with them absent the
-  # bundled langfuse SDK self-disables ("Langfuse client is disabled since no
-  # public_key was provided") and the proxy runs normally — verified against
-  # v1.90.3 (langfuse 2.59.7): no crash, no failed requests.
-  success_callback: ["langfuse"]
-  failure_callback: ["langfuse"]
-
-  # Copies a Session-scoped virtual key's AstraBox identity metadata into the
-  # request metadata the langfuse callback reads. Prepared engine children
-  # cannot send langfuse_* headers (their environment is frozen before the
-  # Session exists); their identity rides the key minted at claim instead.
+  # langfuse_session_hook copies a Session-scoped virtual key's AstraBox
+  # identity into the request metadata the Langfuse logger reads. Prepared
+  # engine children cannot send langfuse_* headers (their environment is
+  # frozen before the Session exists); their identity rides the key minted at
+  # claim instead.
   # Streamed tool-call deltas leave with the OpenAI shape: an upstream that
   # repeats id and name as empty strings on later deltas would otherwise
   # break clients that merge by field presence (the DeepSeek Harness does).
-  callbacks: ["langfuse_session_hook.handler_instance", "stream_normalization_hook.handler_instance"]
+  callbacks: ["langfuse_tracing.handler_instance", "langfuse_session_hook.handler_instance", "stream_normalization_hook.handler_instance"]
 
 general_settings:
   # Custom auth accepts the private service credential, the same OIDC identity

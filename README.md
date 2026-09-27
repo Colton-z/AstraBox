@@ -24,8 +24,8 @@
 </p>
 
 Turn the Agent programs you already use into cloud Agents that stay available
-24/7. AstraBox runs Claude Code, Codex, Hermes, DeepSeek Harness and Pi as
-managed Agents on your own infrastructure, with any model. Conversations start
+24/7. AstraBox runs Claude Code, Codex, Hermes, DeepSeek Harness and Pi on
+your own infrastructure, with any model. Conversations start
 and resume in seconds; Sessions, sandboxes, credentials and history stay under
 your control.
 
@@ -38,6 +38,13 @@ AstraBox runs the Agent programs you already use as cloud Agents that can be
 reached remotely, continue long-running work, and connect to your applications,
 automations, and messaging platforms. The web console, API, Session records,
 authentication, and sandboxes all run on infrastructure you control.
+
+**One platform for team Agents and personal Assistants.** An
+[Agent](docs/authoring-agents.md) is a reusable cloud Agent for teams and
+automation, started from the web console, the API, schedules, webhooks,
+messaging platforms or an MCP client. An [Assistant](docs/assistants.md) is one
+person's long-lived cloud workspace: all of its conversations share one
+workspace and the Agent program's state.
 
 ## Core concepts
 
@@ -66,8 +73,10 @@ One deployment brings up the pieces a team usually assembles by hand:
   provider behind it. See [Connect a model](docs/models.md).
 - **Team login** — [Casdoor](https://github.com/casdoor/casdoor) is
   pre-integrated as the identity provider: OIDC, organizations and roles, and
-  sign-in through providers such as DingTalk, WeCom, Feishu or GitHub. Turn it
-  on with one Compose overlay; see [Team login](docs/team-login.md).
+  sign-in through the identity providers an administrator adds in Casdoor, such
+  as Google, Microsoft Entra ID, Okta, GitHub, SAML or LDAP. The installer turns
+  it on with `ASTRABOX_INSTALL_TEAM_LOGIN=casdoor`, and a clone
+  with one Compose overlay; see [Team login](docs/team-login.md).
 - **Isolated sandboxes** — [OpenSandbox](https://github.com/opensandbox-group/OpenSandbox)
   on one Docker host or a Kubernetes cluster, with warm capacity so
   conversations start in seconds.
@@ -167,8 +176,8 @@ See [Add an Agent program](docs/writing-an-engine-adapter.md),
 
 ### Prerequisites
 
-- A Linux host (or WSL 2) running Docker Engine with the Compose plugin, v2 or
-  later, and a user that can use the Docker socket
+- A Linux host (or WSL 2) running Docker Engine 26.0 or later with the Compose
+  plugin 2.17.0 or later, and a user that can use the Docker socket
 - An API key for a model service: Anthropic, DeepSeek, or another Anthropic- or
   OpenAI-compatible service
 
@@ -185,9 +194,10 @@ an Environment, create an Agent, and start your first Session from the console.
 
 ![Create an Agent in the AstraBox console](docs/img/agent-create-console-en.png)
 
-The local deployment listens on loopback and does not require login. Configure
-[team authentication](https://www.astrabox.ai/docs/team-login) and TLS before
-exposing it to another network.
+The local deployment listens on loopback and requires no login until you turn
+on team login, which the installer does with `ASTRABOX_INSTALL_TEAM_LOGIN=casdoor`.
+Before exposing it to another network, put it behind an HTTPS proxy as described
+in [Team login](https://www.astrabox.ai/docs/team-login#put-the-login-flow-behind-a-proxy).
 
 Run the installer again to upgrade: it installs the latest release over the
 current one and keeps your Sessions, credentials and settings.
@@ -213,8 +223,10 @@ For the complete setup and API alternative, see the
 Kubernetes, or an existing OpenSandbox service, see
 [Deploy AstraBox](https://www.astrabox.ai/docs/deploy).
 
-Prewarming prepares the Agent runtime before a Session claims it. Native
-conversation state is stored in the platform database; a persistent workspace
+Prewarming prepares the Agent runtime before a Session claims it. New Agents
+have it on in the bundled deployments, and each one holds an idle prepared
+sandbox; see [capacity planning](docs/deploy.md#plan-capacity-for-prepared-sandboxes).
+Native conversation state is stored in the platform database; a persistent workspace
 volume is optional and preserves task files separately. For multiple API
 replicas or sandbox nodes, see [distributed deployment](docs/deploy-distributed.md)
 and [workspace storage](docs/deploy.md#where-conversation-workspaces-live).

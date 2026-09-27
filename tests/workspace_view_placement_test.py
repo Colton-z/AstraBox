@@ -145,6 +145,14 @@ class _Cluster:
         return self.pvc
 
 
+#: The pending receipt a helper is created with; placement ignores it.
+_RECEIPT = {
+    "astrabox.storage-id": "assignment",
+    "astrabox.sandbox-backend": "open_sandbox",
+    "astrabox.installation": "installation",
+}
+
+
 def _assignment() -> MountAssignment:
     name = "astrabox-view-" + "0" * 32
     return MountAssignment(
@@ -188,7 +196,7 @@ def test_the_view_volume_admits_only_the_helper_node(monkeypatch: pytest.MonkeyP
         helper_node=WORKER,
     )
 
-    _driver(cluster, monkeypatch).provision(_assignment())
+    _driver(cluster, monkeypatch).provision(_assignment(), _RECEIPT)
 
     assert cluster.pv_body is not None and cluster.pvc is not None
     affinity = cluster.pv_body["spec"]["nodeAffinity"]
@@ -205,5 +213,5 @@ def test_a_hostname_shared_by_two_nodes_cannot_pin_a_view(
     )
 
     with pytest.raises(RuntimeError, match="no unique kubernetes.io/hostname label"):
-        _driver(cluster, monkeypatch).provision(_assignment())
+        _driver(cluster, monkeypatch).provision(_assignment(), _RECEIPT)
     assert cluster.pv_body is None

@@ -19,6 +19,7 @@ from astrabox.common.utils.user_context import UserContext
 
 from astrabox.core.service.orchestrator.session_kernel.conversation_recovery import (
     append_settle_terminal_frame,
+    append_user_stop_result_frame,
     build_turn_terminal_snapshot_updates,
     settle_parked_turn,
     normalize_current_turn_remote_anchor as _normalize_current_turn_remote_anchor,
@@ -435,6 +436,7 @@ class TurnWorker(_TurnProjectionMixin, _AnswerStreamMixin, KernelWorkerBase):
             failure_phase=None,
             error_text=None,
             causation=f"interrupt-settle:{session_id}:{turn_id}",
+            user_stop=True,
         )
 
     async def _settle_pre_first_token_interrupt(
@@ -477,6 +479,28 @@ class TurnWorker(_TurnProjectionMixin, _AnswerStreamMixin, KernelWorkerBase):
         )
         if existing_frames:
             return None  # frames exist -> the bridge owns the terminal settle
+        # The frames go down before the terminal event: a history read loads a
+        # turn's frames only up to the newest message event, so frames written
+        # after the terminal would stay out of reads until a later event.
+        # The stop itself, as every stop path records it: a cancelled result.
+        # Without it the turn has no frame at all, so a reloaded page shows
+        # nothing where the stopped response would have been.
+        await append_user_stop_result_frame(
+            session_events_repo=self._session_events_repo,
+            session_id=session_id,
+            turn_id=turn_id,
+            command_id=command_id,
+        )
+        # The frame half. Settling only the snapshot leaves every client that
+        # is already streaming with no terminal to read: the database calls the
+        # session idle while an open page keeps its header running, which is
+        # the hang this force-settle exists to end, moved one layer out.
+        terminal_frame = await append_settle_terminal_frame(
+            session_events_repo=self._session_events_repo,
+            session_id=session_id,
+            turn_id=turn_id,
+            command_id=command_id,
+        )
         settle_event = await self._session_events_repo.append_event(
             {
                 "session_id": session_id,
@@ -497,16 +521,6 @@ class TurnWorker(_TurnProjectionMixin, _AnswerStreamMixin, KernelWorkerBase):
             }
         )
         settle_seq = int(settle_event.get("event_seq") or 0)
-        # The frame half. Settling only the snapshot leaves every client that
-        # is already streaming with no terminal to read: the database calls the
-        # session idle while an open page keeps its header running, which is
-        # the hang this force-settle exists to end, moved one layer out.
-        terminal_frame = await append_settle_terminal_frame(
-            session_events_repo=self._session_events_repo,
-            session_id=session_id,
-            turn_id=turn_id,
-            command_id=command_id,
-        )
         result = await self._session_snapshots_repo.apply_channel_update(
             session_id,
             channel="conversation",

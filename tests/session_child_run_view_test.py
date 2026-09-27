@@ -269,6 +269,7 @@ def test_child_run_projection_uses_terminal_event_when_live_reader_was_absent() 
                 "turn_id": "launcher-turn",
                 "event_type": "turn.background_tasks_materialized",
                 "payload": {
+                    "source_opened_event_seq": 6,
                     "blocks": [
                         {
                             "type": "subagent",
@@ -403,6 +404,7 @@ def test_background_snapshot_replaces_live_fragment_arrival_order() -> None:
         "event_seq": 9,
         "event_type": "turn.background_tasks_materialized",
         "payload": {
+            "source_opened_event_seq": 6,
             "blocks": [
                 {
                     "type": "subagent",
@@ -576,6 +578,7 @@ def test_child_run_projection_respects_the_shared_session_sequence() -> None:
         "event_seq": 5,
         "event_type": "turn.background_tasks_materialized",
         "payload": {
+            "source_opened_event_seq": 4,
             "blocks": [
                 {
                     "type": "subagent",
@@ -652,6 +655,104 @@ def test_child_run_projection_keeps_a_close_that_is_never_contradicted() -> None
     projected = _project(frames=[opened, closed])
 
     assert projected[0]["closed"] is True
+
+
+def _snapshot(event_seq: int, activation_seq: int, blocks: list[dict]) -> dict:
+    return {
+        "session_id": "session-1",
+        "event_seq": event_seq,
+        "event_type": "turn.background_tasks_materialized",
+        "payload": {"source_opened_event_seq": activation_seq, "blocks": blocks},
+    }
+
+
+def _child_message(engine_ref: str, message_id: str, text: str) -> dict:
+    return {
+        "kind": "message",
+        "engineRef": engine_ref,
+        "engineKind": "claude_code",
+        "role": "assistant",
+        "messageId": message_id,
+        "content": [{"type": "text", "text": text}],
+    }
+
+
+def test_a_resumed_child_is_not_closed_again_by_its_previous_runs_snapshot() -> None:
+    """The e0847 sequence: SendMessage resumed the child before the snapshot of
+    its first run was written, because a snapshot waits for an idle conversation.
+    """
+
+    ref = "a2b074ce17bcaf84e"
+    frames = [
+        _frame(
+            32,
+            turn_id=None,
+            frame_id="first-opened",
+            data=_lifecycle(ref, event="opened", engine_event="task_started"),
+        ),
+        _frame(
+            56,
+            turn_id=None,
+            frame_id="first-closed",
+            data=_lifecycle(
+                ref, event="closed", engine_event="task_notification", engine_status="completed"
+            ),
+        ),
+        _frame(
+            93,
+            turn_id=None,
+            frame_id="resumed-opened",
+            data=_lifecycle(ref, event="opened", engine_event="task_started"),
+        ),
+        _frame(95, turn_id=None, frame_id="resumed-message", data=_child_message(ref, "m2", "resumed")),
+    ]
+    first_run_snapshot = _snapshot(
+        109,
+        54,
+        [
+            {
+                "type": "subagent",
+                "id": "background:first:lifecycle",
+                "data": _lifecycle(
+                    ref, event="closed", engine_event="task_notification", engine_status="completed"
+                ),
+            },
+            {"type": "subagent", "id": "background:first:m1", "data": _child_message(ref, "m1", "first")},
+        ],
+    )
+
+    [child] = _project(frames=frames, events=[first_run_snapshot], include_messages=True)
+
+    assert child["closed"] is False, "the snapshot of the earlier run must not close the resumed one"
+    assert [message["content"][0]["text"] for message in child["messages"]] == ["resumed"], (
+        "the resumed run's live messages stay; the stale snapshot must not displace them"
+    )
+
+    resumed_run_snapshot = _snapshot(
+        129,
+        107,
+        [
+            {
+                "type": "subagent",
+                "id": "background:resumed:lifecycle",
+                "data": _lifecycle(
+                    ref, event="closed", engine_event="task_notification", engine_status="completed"
+                ),
+            }
+        ],
+    )
+
+    [child] = _project(frames=frames, events=[first_run_snapshot, resumed_run_snapshot])
+
+    assert child["closed"] is True, "the resumed run's own snapshot still closes it"
+
+
+def test_a_background_snapshot_must_name_the_activation_it_records() -> None:
+    snapshot = _snapshot(9, 6, [])
+    del snapshot["payload"]["source_opened_event_seq"]
+
+    with pytest.raises(ChildRunProjectionError, match="does not name the activation"):
+        _project(frames=[], events=[snapshot])
 
 
 def test_child_run_projection_rejects_public_projection_fields_in_private_fact() -> None:

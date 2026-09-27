@@ -99,7 +99,12 @@ for (const declared of engineCases().filter((profile) => profile.contracts.backg
     expect((await emptyCatalog.json()).data.child_runs).toEqual([]);
     const panel = page.getByTestId('subagent-agents-panel');
     await expect(panel.getByTestId('subagent-agent-row')).toHaveCount(0);
-    const prompt = childPrompt(profile, 'foreground', gate);
+    const prompt = [
+      childPrompt(profile, 'foreground', gate),
+      profile.engine_kind === 'codex'
+        ? 'Call spawn_agent with exactly one argument named message. Omit fork_context and every other optional argument; do not fork the parent history.'
+        : '',
+    ].filter(Boolean).join('\n');
     observations.push({ permissionMode: detail.permission_mode, gate, prompt });
     await sendPrompt(page, sessionId, prompt);
     const first = await api.waitForSession(sessionId, (session) => {

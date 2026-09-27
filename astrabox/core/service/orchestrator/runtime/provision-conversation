@@ -335,6 +335,11 @@ with ThreadPoolExecutor(128) as ex:
       set -e
       clone_output="$(cat "$clone_raw")"
       rm -f "$clone_raw"
+      if [ "$clone_rc" -ne 0 ]; then
+        # The key serves the checkout and later pushes. A clone that failed has
+        # neither, so the session user must not keep the secret.
+        rm -f "$key_path"
+      fi
     fi
     if [ "$clone_rc" -ne 0 ]; then
       if [ -n "$clone_output" ]; then

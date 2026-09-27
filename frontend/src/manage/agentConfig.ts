@@ -1,6 +1,6 @@
 // Shared read helpers for the management-side Agent pages.
 import i18n from '@/i18n';
-import type { AgentConfig, AgentDraft } from '@/types';
+import type { AgentConfig, AgentDraft, FormSchema } from '@/types';
 
 // Re-export the console's locale-neutral mono date formatter so every manage
 // module importing `formatDateTime` from './agentConfig' (and the
@@ -52,7 +52,15 @@ export function isEmptyValue(value: unknown): boolean {
 // Blank starting draft for the single-step create page. Deliberately almost
 // empty: `model` and `environment_name` are required choices the operator makes
 // (the server rejects a payload missing either), and seeding empty containers
-// would only persist `{}` debris the schema-driven form prunes anyway.
-export function buildAgentDraft(): AgentDraft {
-  return { name: '', enabled: true };
+// would only persist `{}` debris the schema-driven form prunes anyway. The one
+// exception is a value the schema serves as this deployment's create-time
+// default (`prewarm_enabled`): the server stores it when the field is left
+// alone, so the form starts from it rather than showing a switch the saved
+// record will contradict.
+export function buildAgentDraft(schema: FormSchema): AgentDraft {
+  const draft: AgentDraft = { name: '', enabled: true };
+  for (const field of schema.fields) {
+    if (field.default !== undefined) draft[field.key] = field.default;
+  }
+  return draft;
 }

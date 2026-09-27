@@ -15,6 +15,7 @@ const api = vi.hoisted(() => ({
   adminListSessions: vi.fn(),
   listAdminEnvironments: vi.fn(),
   listAgents: vi.fn(),
+  listAgentsPage: vi.fn(),
 }));
 
 vi.mock('@/api', async (importOriginal) => ({
@@ -70,6 +71,7 @@ describe('ManageSidebar collection counts', () => {
     expect(badgeFor('Sessions')?.textContent).toBe('5');
     expect(api.adminNavigationSummary).toHaveBeenCalledTimes(1);
     expect(api.listAgents).not.toHaveBeenCalled();
+    expect(api.listAgentsPage).not.toHaveBeenCalled();
     expect(api.listAdminEnvironments).not.toHaveBeenCalled();
     expect(api.adminListSessions).not.toHaveBeenCalled();
   });

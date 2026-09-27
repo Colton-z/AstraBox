@@ -271,26 +271,36 @@ def test_compose_keeps_postgresql_off_the_sandbox_bridge_and_uses_file_secrets()
         "127.0.0.1:${ASTRABOX_POSTGRES_PORT:-55432}:5432"
     ]
     assert set(postgres["networks"]) == {"database"}
-    assert set(server["networks"]) == {"platform", "database"}
-    assert sandbox_edge["network_mode"] == "bridge"
-    assert sandbox_edge["environment"]["ASTRABOX_EDGE_MODEL_UPSTREAM_PORT"] == (
-        "${ASTRABOX_MODEL_GATEWAY_HOST_PORT:-80}"
+    assert set(server["networks"]) == {"platform", "database", "sandbox-edges"}
+    # The server's only publication is the loopback console. Anything on the
+    # Docker bridge gateway is reachable by any sandbox whose egress admits
+    # the gateway, and the no-login API there is platform admin.
+    assert server["ports"] == ["127.0.0.1:${ASTRABOX_SERVER_HOST_PORT:-8088}:8000"]
+    # The edges reach the server over a private network with no route off the
+    # host; no sandbox joins it (OpenSandbox attaches sandboxes to `bridge`).
+    assert compose["networks"]["sandbox-edges"] == {"driver": "bridge", "internal": True}
+    assert server["environment"]["ASTRABOX_SANDBOX_EDGE_NETWORK"] == "sandbox-edges"
+    assert server["environment"]["ASTRABOX_SANDBOX_EGRESS_DENY_CIDRS"] == (
+        "${ASTRABOX_SANDBOX_EGRESS_DENY_CIDRS:-}"
     )
-    assert "networks" not in sandbox_edge
-    assert "ports" not in sandbox_edge
-    assert not any("docker.sock" in mount for mount in sandbox_edge.get("volumes", []))
-    assert sandbox_dns_edge["network_mode"] == "bridge"
-    assert "networks" not in sandbox_dns_edge
-    assert "ports" not in sandbox_dns_edge
-    assert "secrets" not in sandbox_dns_edge
-    assert not any(
-        "docker.sock" in mount for mount in sandbox_dns_edge.get("volumes", [])
-    )
-    assert server["depends_on"]["sandbox-edge"]["condition"] == "service_started"
-    assert (
-        server["depends_on"]["sandbox-dns-edge"]["condition"]
-        == "service_started"
-    )
+    for edge in (sandbox_edge, sandbox_dns_edge):
+        # Compose cannot dual-home a service onto the built-in bridge; onebox
+        # connects the edges to `sandbox-edges`.
+        assert edge["network_mode"] == "bridge"
+        assert "networks" not in edge
+        assert "ports" not in edge
+        assert "secrets" not in edge
+        assert "extra_hosts" not in edge
+        assert not any("docker.sock" in mount for mount in edge.get("volumes", []))
+    assert sandbox_edge["environment"]["ASTRABOX_EDGE_UPSTREAM_HOST"] == "server"
+    assert sandbox_dns_edge["volumes"] == [
+        "./sandbox-edge/dns-edge.nginx.conf:/etc/nginx/nginx.conf:ro"
+    ]
+    for edge_name in ("sandbox-edge", "sandbox-dns-edge"):
+        assert server["depends_on"][edge_name] == {
+            "condition": "service_started",
+            "restart": True,
+        }
     assert server["environment"]["ASTRABOX_SANDBOX_SERVER_NETWORK_MODE"] == "bridge"
     assert server["environment"]["ASTRABOX_SANDBOX_SERVER_PORT_RANGE"] == (
         "${ASTRABOX_SANDBOX_SERVER_PORT_RANGE:-20000-32000}"
@@ -341,10 +351,6 @@ def test_compose_keeps_postgresql_off_the_sandbox_bridge_and_uses_file_secrets()
         "astrabox_database_password",
         "litellm_database_password",
     }
-    assert (
-        "${ASTRABOX_MODEL_GATEWAY_HOST_PORT:-80}:80"
-        in server["ports"][2]
-    )
 
     rendered = (ROOT / "containers" / "compose.yaml").read_text()
     for known_default in (
@@ -394,6 +400,7 @@ def test_kubernetes_compose_overlay_clears_docker_only_edge_discovery() -> None:
         "ASTRABOX_SANDBOX_EDGE_SERVICE",
         "ASTRABOX_SANDBOX_DNS_EDGE_SERVICE",
         "ASTRABOX_SANDBOX_EDGE_CALLBACK_PORT",
+        "ASTRABOX_SANDBOX_EDGE_NETWORK",
         "ASTRABOX_SANDBOX_SERVER_NETWORK_MODE",
         "ASTRABOX_SANDBOX_SERVER_PORT_RANGE",
         "ASTRABOX_PUBLISH_HOST_IP",
@@ -425,19 +432,46 @@ def test_kubernetes_compose_overlay_clears_docker_only_edge_discovery() -> None:
 
 def test_sandbox_edge_forwards_only_model_and_capability_scoped_platform_routes() -> None:
     template = (ROOT / "containers" / "sandbox-edge" / "default.conf.template").read_text()
+    directives = [
+        line.strip()
+        for line in template.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
 
-    assert "listen 80" in template
-    assert "ASTRABOX_EDGE_MODEL_UPSTREAM_PORT" in template
-    assert "location ^~ /api/v1/platform-mcp/" in template
+    assert "listen 80 default_server;" in directives
+    assert "listen 8000 default_server;" in directives
+    assert "location ^~ /api/v1/platform-mcp/ {" in directives
     assert "/api/v1/mcp-proxy/" not in template
-    assert "location ^~ /api/v1/sbxcap/" in template
-    assert "ASTRABOX_EDGE_CALLBACK_UPSTREAM_PORT" in template
+    assert "location ^~ /api/v1/sbxcap/ {" in directives
     assert "location / {\n        return 404;" in template
-    assert "proxy_pass $" not in template
+    # The upstream is the Compose server over the private network, resolved per
+    # request by Docker's embedded DNS; never the bridge gateway, and never a
+    # destination taken from the request (that would make the edge an SSRF
+    # proxy): the only variable proxy_pass reads is set from the fixed name.
+    assert "host.docker.internal" not in template
+    assert "resolver 127.0.0.11 valid=10s ipv6=off;" in directives
+    assert [d for d in directives if d.startswith("set ")] == [
+        "set $astrabox_upstream ${ASTRABOX_EDGE_UPSTREAM_HOST};"
+    ] * 2
+    assert sorted(d for d in directives if d.startswith("proxy_pass")) == sorted(
+        ["proxy_pass http://$astrabox_upstream:80;"]
+        + ["proxy_pass http://$astrabox_upstream:8000;"] * 3
+    )
 
-    dns_edge = (ROOT / "containers" / "coredns" / "sandbox-edge.Corefile").read_text()
-    assert "forward . {$ASTRABOX_EDGE_DNS_UPSTREAM}" in dns_edge
-    assert "hosts" not in dns_edge
+    dns_edge = (ROOT / "containers" / "sandbox-edge" / "dns-edge.nginx.conf").read_text()
+    dns_directives = [
+        line.strip()
+        for line in dns_edge.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    assert "http {" not in dns_directives
+    assert "resolver 127.0.0.11 valid=10s ipv6=off;" in dns_directives
+    assert "listen 53 udp;" in dns_directives
+    assert "listen 53;" in dns_directives
+    assert [d for d in dns_directives if d.startswith(("set ", "proxy_pass"))] == [
+        "set $astrabox_dns server:5353;",
+        "proxy_pass $astrabox_dns;",
+    ] * 2
 
     gateway_dns = (ROOT / "containers" / "coredns" / "Corefile").read_text()
     first_directive = next(
@@ -469,6 +503,7 @@ def test_source_overlay_mounts_code_and_bundled_gateway_adapters() -> None:
         "../astrabox/providers/litellm_shared_auth.py:/opt/astrabox/litellm/astrabox_litellm_auth.py:ro",
         "./litellm/custom_auth.py:/opt/astrabox/litellm/custom_auth.py:ro",
         "./litellm/langfuse_session_hook.py:/opt/astrabox/litellm/langfuse_session_hook.py:ro",
+        "./litellm/langfuse_tracing.py:/opt/astrabox/litellm/langfuse_tracing.py:ro",
         "./litellm/stream_normalization_hook.py:/opt/astrabox/litellm/stream_normalization_hook.py:ro",
     ]
     assert server["command"][:4] == ["python", "-m", "uvicorn", "astrabox.api.app:create_app"]
@@ -488,7 +523,14 @@ def test_source_and_live_e2e_launchers_reuse_the_maintained_compose_topology() -
         assert '"$REPO_ROOT/scripts/compose.sh"' in launcher
         assert "containers/compose.source.yaml" in launcher
         assert "ASTRABOX_LOCAL_DATABASE_SECRET_DIR" in launcher
-        assert "ASTRABOX_MODEL_GATEWAY_HOST_PORT" in launcher
+        # The server publishes nothing on the bridge gateway, so there is no
+        # per-stack gateway port left to move.
+        for retired in (
+            "ASTRABOX_SERVER_SANDBOX_PORT",
+            "ASTRABOX_MODEL_GATEWAY_HOST_PORT",
+            "ASTRABOX_GATEWAY_DNS_HOST_PORT",
+        ):
+            assert retired not in launcher
         assert "postgresql+asyncpg://astrabox:" not in launcher
         assert "postgresql://litellm:" not in launcher
         assert "http://172.17.0.1" not in launcher
@@ -517,6 +559,7 @@ def test_sso_overlay_keeps_casdoor_on_its_own_database_secret_and_loopback_port(
         "oidc_client_secret",
         "oidc_api_client_secret",
         "casdoor_admin_password",
+        "casdoor_builtin_admin_password",
     ]
     assert casdoor["environment"]["CASDOOR_OIDC_CLIENT_SECRET_FILE"] == (
         "/run/secrets/oidc_client_secret"
@@ -533,12 +576,13 @@ def test_sso_overlay_keeps_casdoor_on_its_own_database_secret_and_loopback_port(
     assert casdoor["environment"]["origin"] == (
         "${ASTRABOX_OIDC_ISSUER:-http://127.0.0.1:${ASTRABOX_CASDOOR_HOST_PORT:-8087}}"
     )
+    # Healthy only when built-in/admin rejects Casdoor's default password;
+    # AstraBox waits for a healthy Casdoor.
     assert casdoor["healthcheck"] == {
         "test": [
-            "CMD",
-            "curl",
-            "-fsS",
-            "http://127.0.0.1:8000/.well-known/openid-configuration",
+            "CMD-SHELL",
+            "test -f /run/astrabox-casdoor/built-in-admin-checked && "
+            "curl -fsS -o /dev/null http://127.0.0.1:8000/.well-known/openid-configuration",
         ],
         "interval": "5s",
         "timeout": "5s",

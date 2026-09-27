@@ -570,7 +570,10 @@ async def test_declared_fifo_engine_dispatches_through_native_fifo() -> None:
     }
     user = UserContext(user_id="owner")
     service._must_get_projection_backed_session = AsyncMock(return_value=session)
+    # No earlier outcome is recorded for this client_message_id.
+    service._session_events_repo = SimpleNamespace(list_events=AsyncMock(return_value=[]))
     service._bound_runtime_lease_expired = lambda _session: False
+    service._bound_subject_sandbox_gone = AsyncMock(return_value=False)
     service._require_turn_eligible = lambda _session, *, channel: None
     service._get_kernel_session_snapshot = AsyncMock(return_value=None)
     service._dispatch_active_input_queue = AsyncMock(return_value=receipt)
@@ -642,6 +645,62 @@ async def test_assistant_turn_recovers_its_runtime_subject_before_dispatch() -> 
         permission_mode=None,
         client_message_id=None,
     )
+
+
+async def test_an_assistant_box_found_gone_is_replaced_before_the_turn_is_accepted() -> None:
+    """The same send is answered on a replacement box.
+
+    Nothing had marked the conversation unavailable: its box was removed out
+    of band. Learnt during delivery, the loss refused the message as
+    SANDBOX_GONE and the user had to send it again; learnt here, the Assistant
+    workspace's startup replaces the box and this input is dispatched to it.
+    """
+    service = TurnDispatchStreamingMixin()
+    bound = {
+        "session_id": "session-1",
+        "session_kind": "assistant_chat",
+        "engine_kind": "assistant",
+        "state": "READY",
+        "sandbox_id": "removed-box",
+    }
+    ready = {**bound, "sandbox_id": "replacement-box"}
+    receipt = {"turn_id": "turn-1", "command_id": "command-1", "accepted": True}
+    user = UserContext(user_id="owner")
+    service._must_get_projection_backed_session = AsyncMock(return_value=bound)
+    service._bound_runtime_lease_expired = lambda _session: False
+    service._runtime_subjects = SimpleNamespace(
+        recovery_action_for=lambda _session: "restart_session_on_subject"
+    )
+    service._turn_service = SimpleNamespace(
+        bound_sandbox_confirmed_gone=AsyncMock(return_value=True)
+    )
+    service.recover_session = AsyncMock()
+    service._await_runtime_subject_rebuild_ready = AsyncMock(return_value=ready)
+    service._require_turn_eligible = lambda _session, *, channel: None
+    service._get_kernel_session_snapshot = AsyncMock(return_value=None)
+    service._dispatch_active_input_queue = AsyncMock(return_value=receipt)
+
+    result = await service.dispatch_turn_input(user, "session-1", "hello")
+
+    assert result == receipt
+    service._turn_service.bound_sandbox_confirmed_gone.assert_awaited_once_with(bound)
+    service.recover_session.assert_awaited_once_with(user, "session-1")
+    assert service._dispatch_active_input_queue.await_args.kwargs["session"] is ready
+
+
+async def test_an_agent_conversation_leaves_a_lost_box_to_its_delivery() -> None:
+    """An Agent's box is replaced inside delivery; admission does not probe it."""
+    service = TurnDispatchStreamingMixin()
+    service._runtime_subjects = SimpleNamespace(
+        recovery_action_for=lambda _session: "recover_session_allocation"
+    )
+    service._turn_service = SimpleNamespace(
+        bound_sandbox_confirmed_gone=AsyncMock(
+            side_effect=AssertionError("an Agent box must not be probed at admission")
+        )
+    )
+
+    assert await service._bound_subject_sandbox_gone({"session_id": "s-1"}) is False
 
 
 async def test_start_turn_delivery_retry_restores_its_missing_producer() -> None:

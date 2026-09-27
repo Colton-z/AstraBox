@@ -15,6 +15,9 @@ platform's appended account-assembly pair, and ``groupadd`` — which the
 provisioning script really invokes, guarded by ``command -v``, and the
 hand-written declaration forgot — is now demanded too. The image carries
 both commands.
+
+Hermes also requires the image's Assistant profile bootstrap, which establishes
+writable private directories before the conversation startup checks.
 """
 
 from __future__ import annotations
@@ -101,6 +104,7 @@ def test_hermes_shared_profile_matches_except_the_documented_groupadd() -> None:
         "readlink",
         "hermes",
         "/usr/local/bin/astrabox-provision-conversation",
+        "/usr/local/bin/astrabox-provision-assistant-profile",
         "/usr/local/bin/astrabox-hermes-profile-setup",
     )
     # Two deliberate diffs from the hand-written era, both in commands only

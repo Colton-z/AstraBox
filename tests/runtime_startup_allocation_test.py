@@ -17,6 +17,7 @@ from astrabox.core.service.orchestrator.session_workspace_plan import (
     RuntimeWorkspacePlan,
 )
 from astrabox.persistence.repository.session_repository import SessionRepository
+from astrabox.persistence.repository.session_snapshot_repository import SessionSnapshotRepository
 from astrabox.seams.sandbox import (
     SANDBOX_LIFECYCLE_PROBE_OK,
     SandboxAllocation,
@@ -103,12 +104,14 @@ class _SessionRows:
     async def list_startup_allocation_candidates(
         self,
         *,
+        after_session_id: str | None = None,
         limit: int = 50,
     ) -> list[dict[str, Any]]:
         candidates = [
             dict(row)
-            for row in self.rows.values()
+            for _, row in sorted(self.rows.items())
             if isinstance(row.get("startup_allocation"), dict)
+            and (after_session_id is None or str(row.get("session_id")) > after_session_id)
         ][:limit]
         if self.after_list is not None:
             self.after_list()
@@ -420,7 +423,7 @@ async def test_reconcile_distinguishes_active_adopted_and_abandoned_allocations(
         "startup_allocations_deferred": 1,
         "startup_allocation_failures": 0,
     }
-    assert destroyed == ["box-stale", "box-deleted"]
+    assert sorted(destroyed) == ["box-deleted", "box-stale"]
     assert repo.rows["fresh"]["startup_allocation"] == whole("box-fresh")
     assert repo.rows["ready"]["startup_allocation"] is None
     assert repo.rows["deleted"]["startup_allocation"] is None
@@ -477,6 +480,75 @@ async def test_periodic_reconcile_does_not_reap_this_process_active_start(
 
     assert summary["startup_allocations_deferred"] == 1
     assert repo.rows["active"]["startup_allocation"] == allocation.as_record()
+    destroy.assert_not_awaited()
+
+
+@pytest.mark.parametrize("local_owner", [False, True])
+async def test_reconcile_preserves_replacement_until_accepted_turn_settles(
+    monkeypatch: pytest.MonkeyPatch, local_owner: bool,
+) -> None:
+    allocation = SandboxAllocation(
+        sandbox_id="replacement", sandbox_backend="test-backend", scope="sandbox",
+    )
+    repo = _SessionRows([{
+        **_row("rebuilding"), "state": "READY", "sandbox_id": None,
+        "current_turn_id": None, "startup_allocation": allocation.as_record(),
+    }])
+    manager = RemoteAgentRuntimeManager(sessions_repo=repo)
+    if local_owner:
+        await manager.record_startup_allocation("rebuilding", allocation)
+    snapshot: dict[str, Any] = {"current_turn_id": "accepted-turn"}
+    read_snapshot = AsyncMock(side_effect=lambda _session_id: dict(snapshot))
+    monkeypatch.setattr(
+        SessionSnapshotRepository, "get_snapshot", read_snapshot,
+    )
+    destroy = AsyncMock(return_value=SandboxDestruction.confirmed_gone("replacement", detail="supplier confirmed deletion"))
+    monkeypatch.setattr(manager, "destroy_sandbox_by_id", destroy)
+    monkeypatch.setattr(runtime_manager_module, "sandbox_for_name", lambda _name: _SandboxProvider())
+    cutoff = datetime(2026, 8, 17, 12, tzinfo=timezone.utc)
+
+    active = await manager.reconcile_startup_allocations(stale_before=cutoff)
+
+    assert active["startup_allocations_deferred"] == 1
+    assert active["startup_allocations_released"] == 0
+    assert repo.rows["rebuilding"]["startup_allocation"] == allocation.as_record()
+    destroy.assert_not_awaited()
+
+    snapshot["current_turn_id"] = None
+    settled = await manager.reconcile_startup_allocations(stale_before=cutoff)
+
+    assert settled["startup_allocations_released"] == 1
+    assert settled["startup_allocation_failures"] == 0
+    destroy.assert_awaited_once_with("replacement")
+    assert repo.rows["rebuilding"]["startup_allocation"] is None
+
+
+async def test_reconcile_keeps_replacement_when_turn_ownership_cannot_be_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    allocation = SandboxAllocation(
+        sandbox_id="replacement", sandbox_backend="test-backend", scope="sandbox",
+    )
+    repo = _SessionRows([{
+        **_row("rebuilding"), "state": "READY", "sandbox_id": None,
+        "startup_allocation": allocation.as_record(),
+    }])
+    manager = RemoteAgentRuntimeManager(sessions_repo=repo)
+    read_snapshot = AsyncMock(side_effect=RuntimeError("snapshot store unavailable"))
+    monkeypatch.setattr(SessionSnapshotRepository, "get_snapshot", read_snapshot)
+    destroy = AsyncMock(return_value=SandboxDestruction.confirmed_gone(
+        "replacement", detail="supplier confirmed deletion",
+    ))
+    monkeypatch.setattr(manager, "destroy_sandbox_by_id", destroy)
+    monkeypatch.setattr(runtime_manager_module, "sandbox_for_name", lambda _name: _SandboxProvider())
+
+    result = await manager.reconcile_startup_allocations(
+        stale_before=datetime(2026, 8, 17, 12, tzinfo=timezone.utc),
+    )
+
+    assert result["startup_allocation_failures"] == 1
+    assert result["startup_allocations_released"] == 0
+    assert repo.rows["rebuilding"]["startup_allocation"] == allocation.as_record()
     destroy.assert_not_awaited()
 
 

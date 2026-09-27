@@ -54,6 +54,45 @@ _LIVE_DIRECT_SUPPRESSED_FRAME_TYPES = frozenset(
     {"finish", "error", "data-result", "data-session-store-reload"}
 )
 
+#: Fields of the platform's turn result that the browser's result card carries.
+#: ``finish_reason`` is the outcome the engine seam declared (``engine_turn.py``
+#: writes ``cancelled`` for a user stop); a reader cannot tell a stopped turn
+#: from a finished one without it.
+_PUBLIC_RESULT_OUTCOME_FIELDS = ("finish_reason", "is_error")
+
+
+def public_result_frame_data(
+    platform_result: dict[str, Any],
+    supplier_card: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Return the ``data-result`` payload to publish for a turn's result, or ``None``.
+
+    Without a supplier card, the platform's card is the only one: it carries
+    the usage and the outcome. When the engine has already published its own
+    card, that card stands for a normal stop, which is what a card without an
+    outcome means to every reader. A cancelled or failed outcome is not
+    derivable from it, so the card is published again with the outcome merged
+    in. It keeps the supplier's metrics, and the frame's ``result:<turn>`` id
+    makes the open page replace the earlier card and the durable projection
+    merge the two into one ``result`` block.
+    """
+
+    outcome = {
+        key: platform_result[key]
+        for key in _PUBLIC_RESULT_OUTCOME_FIELDS
+        if key in platform_result
+    }
+    if supplier_card is None:
+        card: dict[str, Any] = {}
+        usage = platform_result.get("usage")
+        if isinstance(usage, dict):
+            card["usage"] = dict(usage)
+        card.update(outcome)
+        return card
+    if outcome.get("finish_reason") != "cancelled" and outcome.get("is_error") is not True:
+        return None
+    return {**supplier_card, **outcome}
+
 
 def _record_translated_frame(worker: Any, state: _BridgeRunState, ctx: Any, frame: dict[str, Any]) -> bool:
     ordered_assistant_segments = ctx.ordered_assistant_segments
@@ -62,6 +101,8 @@ def _record_translated_frame(worker: Any, state: _BridgeRunState, ctx: Any, fram
         # UI presence is not terminal authority. It only prevents a later
         # typed terminal from replacing the supplier's complete result card.
         state.saw_public_result_frame = True
+        card = frame.get("data")
+        state.public_result_card = dict(card) if isinstance(card, dict) else {}
     if frame_type == "reasoning-delta":
         state.accumulated_thinking_parts.append(str(frame.get("delta") or ""))
     elif frame_type == "text-delta":
