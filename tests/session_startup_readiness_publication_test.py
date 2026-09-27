@@ -292,6 +292,30 @@ async def test_a_second_read_neither_journals_nor_projects_again() -> None:
 
 
 @pytest.mark.asyncio
+async def test_an_interrupted_termination_publication_does_not_leave_the_session_active() -> None:
+    service = _read_service(
+        row=_ready_row(state="TERMINATED", runtime_unavailable=True),
+        snapshot=_creating_projection(session_lifecycle_state="ACTIVE", runtime_connectivity_state="CONNECTED"),
+    )
+    rendered = await service.get_session(_USER, _SESSION_ID)
+    assert rendered["state"] == "TERMINATED"
+    assert service._session_events_repo.appended[0]["payload"]["reason"] == "unpublished_termination_outcome"
+    assert service._session_snapshots_repo.snapshot["runtime_connectivity_state"] == "LOST"
+
+
+@pytest.mark.asyncio
+async def test_missing_compute_does_not_turn_an_active_conversation_into_a_terminal_one() -> None:
+    service = _read_service(
+        row=_ready_row(runtime_unavailable=True),
+        snapshot=_creating_projection(session_lifecycle_state="ACTIVE", runtime_connectivity_state="DEGRADED"),
+    )
+    rendered = await service.get_session(_USER, _SESSION_ID)
+    assert rendered["state"] == "READY"
+    assert service._session_snapshots_repo.snapshot["session_lifecycle_state"] == "ACTIVE"
+    assert service._session_events_repo.appended == []
+
+
+@pytest.mark.asyncio
 async def test_the_conversation_list_shows_the_published_state() -> None:
     service = _read_service(row=_ready_row(), snapshot=_creating_projection())
 

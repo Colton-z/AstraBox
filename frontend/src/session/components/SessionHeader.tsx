@@ -102,7 +102,7 @@ export function SessionHeader({
             {terminateLoading ? t('chat:header.terminating') : t('chat:header.terminate')}
           </Button>
         )}
-        {showRecoverButton && <Button size="sm" className="hover:bg-astra-2" onClick={handleRecover}>{t('chat:header.recover_session')}</Button>}
+        {showRecoverButton && <Button data-testid="session-recover" size="sm" className="hover:bg-astra-2" onClick={handleRecover}>{t('chat:header.recover_session')}</Button>}
       </div>
     </header>
   );

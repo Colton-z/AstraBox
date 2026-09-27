@@ -23,7 +23,7 @@
         ]
       }
     },
-    "tests": {"no_volume_core": 500, "persistent_files": 23}
+    "tests": {"no_volume_core": 508, "persistent_files": 23}
   },
   "max_test_seconds": 180,
   "model_conditional_skips": [
@@ -119,7 +119,7 @@
         "codex",
         "pi"
       ],
-      "matrix_tests": 236,
+      "matrix_tests": 244,
       "parallel_node_ids": [
         "tests/e2e/test_background_subagent.py::test_background_subagent_surfaces_on_stream_and_stays_sendable",
         "tests/e2e/test_background_subagent.py::test_background_subagent_stop_is_accepted",
@@ -138,6 +138,7 @@
         "tests/e2e/test_conversation_end.py::test_conversation_end_rejects_chat_session_without_teardown",
         "tests/e2e/test_delete_and_archive.py::test_archive_reclaims_sandbox_and_keeps_history_readable",
         "tests/e2e/test_delete_and_archive.py::test_delete_makes_session_unreadable",
+        "tests/e2e/test_delete_and_archive.py::test_admin_kill_ends_input_but_keeps_completed_history",
         "tests/e2e/test_durable_workspace.py::test_an_agent_conversation_keeps_its_files_after_its_box_is_destroyed",
         "tests/e2e/test_durable_workspace.py::test_a_conversation_comes_back_after_its_box_is_destroyed",
         "tests/e2e/test_evict_runtime.py::test_evict_runtime_preserves_context",
@@ -166,6 +167,7 @@
         "tests/e2e/test_sandbox_reborrow.py::test_deployment_provides_both_box_tenancies",
         "tests/e2e/test_sandbox_reborrow.py::test_terminate_sandbox_keeps_session_wakeable",
         "tests/e2e/test_sandbox_reborrow.py::test_next_turn_reborrows_a_fresh_sandbox",
+        "tests/e2e/test_sandbox_reborrow.py::test_active_session_automatically_recovers_after_sandbox_reclaim",
         "tests/e2e/test_shared_box_cohabitation.py::test_two_conversations_share_the_box_and_nothing_else",
         "tests/e2e/test_shared_box_cohabitation.py::test_evicted_last_shared_conversation_reclaims_box",
         "tests/e2e/test_shared_persistent_warm_resume.py::test_shared_persistent_conversation_resumes_on_existing_sdk_pool_box",
@@ -183,11 +185,11 @@
         "tests/e2e/test_reattach.py::test_sandbox_and_session_survive_backend_restart",
         "tests/e2e/test_reattach.py::test_reattach_turn_reuses_sandbox_without_rebuild"
       ],
-      "tests": 59,
+      "tests": 61,
       "workers": 5
     },
-    "matrix_tests": 244,
-    "tests": 67
+    "matrix_tests": 252,
+    "tests": 69
   },
   "suites": {
     "audit": {

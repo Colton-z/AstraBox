@@ -200,6 +200,10 @@ class TurnDispatchStreamingMixin:
             )
             if settled is not None:
                 raise settled
+        # A missing runtime can be rebuilt only for a conversation still open
+        # to input. Recovery must not erase an explicit lifecycle termination
+        # before the ordinary turn guard gets to see it.
+        self._require_turn_eligible(session, channel="conversation", reject_creating=False)
         # Reconcile before recovery, not after it: a dead pre-write turn
         # (PROCESSING + no anchor + no lease) must be cleaned up so that
         # frontend retries can start a fresh turn. Recovery derives its

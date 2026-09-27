@@ -305,6 +305,7 @@ class AgentPlatformService:
                 agent_config=self._agent_config,
                 runtime_manager=self._runtime_manager,
                 sanitize_session=SessionService._sanitize_session,
+                session_kernel=self._session_kernel,
             ),
         )
 

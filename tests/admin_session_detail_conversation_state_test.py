@@ -60,6 +60,7 @@ def _service(snapshot: dict[str, Any] | None) -> AdminService:
         agent_config=_AgentConfig(),  # type: ignore[arg-type]
         runtime_manager=_RuntimeManager(),  # type: ignore[arg-type]
         sanitize_session=lambda doc: dict(doc),
+        session_kernel=object(),  # type: ignore[arg-type]
     )
     service._session_snapshots_repo = _Snapshots()  # type: ignore[assignment]
     return service

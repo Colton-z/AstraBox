@@ -7,6 +7,12 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Fixed
+
+- Administrator-terminated sessions publish their terminal state and reject
+  new messages before automatic runtime recovery. Active sessions still
+  recover after sandbox reclamation, and explicit manual recovery remains available.
+
 ## [0.1.1]
 
 Upgrading is strongly recommended for every 0.1.0 installation: it fixes

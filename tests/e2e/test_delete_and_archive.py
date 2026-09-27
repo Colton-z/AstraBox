@@ -247,3 +247,35 @@ def test_delete_makes_session_unreadable(e2e_client: httpx.Client) -> None:
         )
     finally:
         release_session(sid)
+
+
+def test_admin_kill_ends_input_but_keeps_completed_history(e2e_client: httpx.Client) -> None:
+    """A killed conversation cannot recreate its sandbox by accepting another message."""
+    created = create_session(e2e_client, permission_mode=permission_mode("unattended"))
+    sid = str(created["session_id"])
+    try:
+        poll_until_agent_ready(e2e_client, sid)
+        before = get_session(e2e_client, sid)
+        reply = stream_turn(e2e_client, sid, content="Reply with just the number 2.")
+        assert reply.error is None, reply.error
+        wait_until_settled(e2e_client, sid)
+        history = _messages(e2e_client, sid)
+        assert {row["role"] for row in history} >= {"user", "assistant"}
+
+        killed = data(e2e_client.post(f"/api/v1/admin/sessions/{sid}/kill"))
+        assert_release_matches_the_box(
+            e2e_client, killed, sandbox_id=str(before["sandbox_id"]), operation="admin kill"
+        )
+        assert get_session(e2e_client, sid)["state"] == "TERMINATED"
+        refused = e2e_client.post(
+            f"/api/v1/sessions/{sid}/turn-inputs",
+            json={"content": "This message must not run", "client_message_id": str(uuid.uuid4())},
+        )
+        assert refused.status_code == 409, refused.text
+        assert "terminated" in refused.text.lower(), refused.text
+        after = get_session(e2e_client, sid)
+        assert after["state"] == "TERMINATED"
+        assert after.get("sandbox_id") == before.get("sandbox_id")
+        assert _messages(e2e_client, sid) == history
+    finally:
+        release_session(sid)

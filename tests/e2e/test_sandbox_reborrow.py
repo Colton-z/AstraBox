@@ -306,3 +306,26 @@ def test_next_turn_reborrows_a_fresh_sandbox(e2e_client: httpx.Client) -> None:
             )
     finally:
         release_session(sid)
+
+
+def test_active_session_automatically_recovers_after_sandbox_reclaim(e2e_client: httpx.Client) -> None:
+    """Missing compute is recoverable; sending a new message must not terminate the session."""
+    created = create_session(e2e_client, permission_mode=permission_mode("unattended"))
+    sid = str(created["session_id"])
+    try:
+        poll_until_agent_ready(e2e_client, sid)
+        _reply_turn(e2e_client, sid, "Reply with exactly the single digit 2. Do not use tools.", "2")
+        before = wait_until_settled(e2e_client, sid)
+        original_box = _sandbox_id(before)
+        reclaimed = _terminate_sandbox(e2e_client, sid, sandbox_id=original_box)
+        _wait_runtime_unavailable(e2e_client, sid)
+        assert get_session(e2e_client, sid)["state"] not in {"TERMINATED", "DELETED"}
+        marker = "AUTO" + uuid.uuid4().hex[:6].upper()
+        _reply_turn(e2e_client, sid, f"Reply with exactly {marker}. Do not use tools.", marker)
+        after = wait_until_settled(e2e_client, sid)
+        assert after["state"] == "READY"
+        assert _sandbox_id(after)
+        if reclaimed.get("killed"):
+            assert _sandbox_id(after) != original_box
+    finally:
+        release_session(sid)

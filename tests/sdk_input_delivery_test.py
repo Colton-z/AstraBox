@@ -574,7 +574,7 @@ async def test_declared_fifo_engine_dispatches_through_native_fifo() -> None:
     service._session_events_repo = SimpleNamespace(list_events=AsyncMock(return_value=[]))
     service._bound_runtime_lease_expired = lambda _session: False
     service._bound_subject_sandbox_gone = AsyncMock(return_value=False)
-    service._require_turn_eligible = lambda _session, *, channel: None
+    service._require_turn_eligible = lambda _session, **_kwargs: None
     service._get_kernel_session_snapshot = AsyncMock(return_value=None)
     service._dispatch_active_input_queue = AsyncMock(return_value=receipt)
     service._ensure_start_turn_allowed = AsyncMock(
@@ -625,7 +625,7 @@ async def test_assistant_turn_recovers_its_runtime_subject_before_dispatch() -> 
     service._bound_runtime_lease_expired = lambda _session: False
     service.recover_session = AsyncMock()
     service._await_runtime_subject_rebuild_ready = AsyncMock(return_value=ready)
-    service._require_turn_eligible = lambda _session, *, channel: None
+    service._require_turn_eligible = lambda _session, **_kwargs: None
     service._get_kernel_session_snapshot = AsyncMock(return_value=None)
     service._dispatch_active_input_queue = AsyncMock(return_value=receipt)
 
@@ -676,7 +676,7 @@ async def test_an_assistant_box_found_gone_is_replaced_before_the_turn_is_accept
     )
     service.recover_session = AsyncMock()
     service._await_runtime_subject_rebuild_ready = AsyncMock(return_value=ready)
-    service._require_turn_eligible = lambda _session, *, channel: None
+    service._require_turn_eligible = lambda _session, **_kwargs: None
     service._get_kernel_session_snapshot = AsyncMock(return_value=None)
     service._dispatch_active_input_queue = AsyncMock(return_value=receipt)
 

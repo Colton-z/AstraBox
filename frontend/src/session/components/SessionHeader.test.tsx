@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import type { ReactElement, ReactNode } from 'react';
 import { describe, it, expect, afterEach, beforeAll, beforeEach, vi } from 'vitest';
-import { cleanup, render as renderBare, screen, type RenderOptions } from '@testing-library/react';
+import { cleanup, isInaccessible, render as renderBare, screen, type RenderOptions } from '@testing-library/react';
 
 import { SidebarProvider } from '@/components/ui/sidebar';
 import i18n from '../../i18n';
@@ -154,6 +154,7 @@ describe('SessionHeader', () => {
 
     expect(screen.queryByRole('button', { name: 'Terminate' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'End conversation' })).toBeNull();
+    expect(isInaccessible(screen.getByRole('button', { name: 'Recover session' }))).toBe(false);
     screen.getByRole('button', { name: 'Recover session' }).click();
     expect(handleRecover).toHaveBeenCalledTimes(1);
   });

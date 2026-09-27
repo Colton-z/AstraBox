@@ -9,7 +9,10 @@ import resource
 import socket
 import threading
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from astrabox.core.service.orchestrator.session_kernel.service import SessionKernelService
 
 from astrabox.core.service.orchestrator.session_message_view import SessionMessageView
 from astrabox.persistence.repository import (
@@ -281,6 +284,7 @@ class AdminService:
         agent_config: AgentConfigService,
         runtime_manager: RemoteAgentRuntimeManager,
         sanitize_session,
+        session_kernel: SessionKernelService,
     ) -> None:
         self._sessions_repo = sessions_repo
         self._message_view = message_view
@@ -291,6 +295,7 @@ class AdminService:
         self._agent_config = agent_config
         self._runtime_manager = runtime_manager
         self._sanitize_session = sanitize_session
+        self._session_kernel = session_kernel
 
     @staticmethod
     def _derive_conversation_state(snapshot: dict[str, Any] | None) -> str | None:
@@ -1245,6 +1250,21 @@ class AdminService:
             "runtime_unavailable": True,
             "last_error": "killed by admin",
         })
+        event = await self._session_events_repo.append_event({
+            "session_id": session_id,
+            "channel": "lifecycle",
+            "event_type": "session.terminated",
+            "payload": {"reason": "admin_kill", "destruction": destruction.outcome},
+        })
+        terminated = await self._sessions_repo.get_session(session_id)
+        if terminated is None:
+            raise APIError(code="SESSION_NOT_FOUND", message="session not found", status_code=404)
+        await self._session_kernel.project_lifecycle_snapshot_from_session(
+            session_id=session_id,
+            event_seq=int(event["event_seq"]),
+            session=terminated,
+            fallback_permission_mode=None,
+        )
 
         return {
             "session_id": session_id,

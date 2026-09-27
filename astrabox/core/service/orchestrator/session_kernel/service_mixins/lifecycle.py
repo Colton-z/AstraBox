@@ -436,6 +436,10 @@ class LifecycleCommandsMixin:
         in that pair — cold create, prepared-slot claim, attach and recovery —
         so this converges all of them.
 
+        An explicit termination also writes the row before its lifecycle
+        projection. Republish that terminal outcome if publication was
+        interrupted; missing compute on an active row is not a termination.
+
         The lifecycle channel is a pure function of the row
         (``SessionLifecycleWorker._derive_lifecycle_state``), so republishing it
         is derivation, not repair by guesswork. The journal append is the
@@ -449,15 +453,17 @@ class LifecycleCommandsMixin:
         if not isinstance(snapshot, dict) or not isinstance(session, dict):
             return snapshot
         projected_state = str(snapshot.get("session_lifecycle_state") or "").strip()
-        if projected_state != "CREATING":
-            return snapshot
-        if SessionLifecycleWorker._derive_lifecycle_state(session) == "CREATING":
+        observed_state = SessionLifecycleWorker._derive_lifecycle_state(session)
+        if projected_state == "CREATING" and observed_state != "CREATING":
+            reason = "unpublished_startup_outcome"
+        elif observed_state == "TERMINATED" and projected_state not in {"TERMINATED", "DELETED"}:
+            reason = "unpublished_termination_outcome"
+        else:
             return snapshot
         session_id = str(session.get("session_id") or "").strip()
         if not session_id:
             return snapshot
 
-        reason = "unpublished_startup_outcome"
         event = await self._session_events_repo.append_event(
             {
                 "session_id": session_id,
