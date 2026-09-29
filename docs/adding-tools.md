@@ -121,6 +121,22 @@ For an existing Agent, **MCP configuration** and **Skill configuration** each gr
 
 The system prompt and every extension are optional. Configure only the capabilities the Agent needs, then click **Create** or **Save**.
 
+### Repository authentication {#repository-authentication}
+
+If a Plugin or Skill repository requires HTTPS authentication, ask a **platform
+administrator** to open **Console → Credentials**, add an **HTTP Basic (Git
+HTTPS)** credential with the repository's full HTTPS URL, username, and access
+token, and assign its Vault to the Agent that downloads the extension.
+
+Keep the repository URL in the Plugin or Skill configuration free of tokens.
+After the Vault is assigned, start a new Session. See
+[private Git repository authentication](credentials.md#private-git-repositories)
+for the full console procedure, a Gitee example, and clone-error troubleshooting.
+
+This credential authorizes downloading the extension. A protected MCP service
+inside the Plugin needs its own service credential; see
+[MCP credential configuration](credentials.md#2-add-a-credential).
+
 ## Extension Configuration Examples
 
 ### Minimal (remote MCP only)
