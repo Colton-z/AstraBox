@@ -112,12 +112,12 @@ describe('management integrations permissions', () => {
 
   it('shares the integration read between the rail and model field for administrators', async () => {
     api.adminListIntegrations.mockResolvedValue({ services: [{
-      id: 'litellm', name: 'LiteLLM', category: 'model_gateway', admin_url: '/litellm',
+      id: 'gateway', name: 'Team Gateway', category: 'model_gateway', admin_url: '/gateway-console',
     }] });
     renderSidebar('/manage/agents', {}, true);
 
     await waitFor(() => expect(screen.getAllByRole('link').filter(
-      (link) => link.getAttribute('href') === '/litellm',
+      (link) => link.getAttribute('href') === '/gateway-console',
     )).toHaveLength(2));
     expect(api.adminListIntegrations).toHaveBeenCalledTimes(1);
   });
