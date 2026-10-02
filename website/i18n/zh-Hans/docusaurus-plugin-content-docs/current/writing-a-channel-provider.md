@@ -187,7 +187,7 @@ class ExampleChannelProvider(ChannelProvider):
 
 `verify_and_resolve()` 会在回调请求中同步执行，传入的 Header 名称均为小写。应先根据原始字节验证签名，再解析正文；认证失败时，返回状态码为 `401` 的 `APIError`。示例中的 `verify_official_signature_and_decode()` 代表消息产品要求的验证函数，请严格按照该产品的官方规范实现。
 
-## 投递 Agent 回复
+## 投递 Agent 回复 {#deliver-agent-replies}
 
 实现 `deliver_outbound()`，即可发送 Agent 的最终回复。AstraBox 会传入重新读取的 `binding`，其中 `channel_credentials` 包含只写凭证。`reply_context` 会被持久化以支持重试，只能保存路由 ID，不能包含凭证。
 

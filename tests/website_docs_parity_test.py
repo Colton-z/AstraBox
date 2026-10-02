@@ -47,6 +47,7 @@ _EXPECTED_SIDEBAR = (
         "Delegate tasks",
         (
             "sessions",
+            "voice-input",
             "events-stream",
             "working-with-repos",
             "credentials",
@@ -81,6 +82,7 @@ _EXPECTED_SIDEBAR = (
             "team-login",
             "egress-credential-injection",
             "providers/opensandbox",
+            "providers/opensandbox-snapshot-differ",
             "providers/aws-efs",
             "architecture",
         ),

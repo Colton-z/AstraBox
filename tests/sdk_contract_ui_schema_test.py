@@ -175,9 +175,11 @@ def test_deepseek_harness_frames_match_the_installed_ai_sdk_schema(
     Two vendor recordings drive the real client after their old durable chunk
     envelopes are repackaged into the current compact settlement contract:
     the recorded downlink of a live ``dsh --profile web`` server (which is
-    what carries the consumption boundary, because only the product echoes the
-    caller's prompt id), and the vendor's SDK snapshots for the tool and
-    subagent turns those two prompts did not cover. ``result`` is the
+    what carries the recorded prompt identity), and the vendor's SDK snapshots
+    for the tool and subagent turns those two prompts did not cover. The SDK
+    notifications lack gateway prompt identities, so their mux adaptation adds
+    the fixture's identity to the root user echo without changing content.
+    ``result`` is the
     platform-internal terminal frame the turn worker consumes; it is not an AI
     SDK UI chunk and is excluded here exactly as the claude leg excludes it."""
     import asyncio
@@ -242,6 +244,7 @@ def test_deepseek_harness_frames_match_the_installed_ai_sdk_schema(
         frames = []
         child_active = False
         children_finished = 0
+        root_inputs = 0
         for line in raw.splitlines():
             if not line.strip():
                 continue
@@ -264,6 +267,20 @@ def test_deepseek_harness_frames_match_the_installed_ai_sdk_schema(
                 continue
             if message.get("method") != "session.event":
                 continue
+            event = message["params"]["event"]
+            if not child_active and event.get("type") == "user/message":
+                data = event["data"]
+                source = data.get("source") or {}
+                if source.get("kind") == "user":
+                    assert "rpcId" not in source
+                    root_inputs += 1
+                    event = {
+                        **event,
+                        "data": {
+                            **data,
+                            "source": {**source, "rpcId": recorded_prompt_rpc_id},
+                        },
+                    }
             frames.append(
                 {
                     "rpcId": "",
@@ -274,15 +291,16 @@ def test_deepseek_harness_frames_match_the_installed_ai_sdk_schema(
                             else message["params"]["sessionId"]
                         ),
                         "type": "session/event",
-                        "event": message["params"]["event"],
+                        "event": event,
                     },
                 }
             )
         assert not child_active
         assert children_finished == int(case == "subagent-spawn-in-process")
+        assert root_inputs == 1
         return current_settlement_frames(frames, session_id=session_id)
 
-    async def _collect(frames: list[dict], *, pin_prompt: bool) -> list[EngineEmission]:
+    async def _collect(frames: list[dict]) -> list[EngineEmission]:
         client = DeepSeekHarnessEngineClient(
             session_id=session_id,
             link=_GoldenLink(frames),
@@ -295,28 +313,22 @@ def test_deepseek_harness_frames_match_the_installed_ai_sdk_schema(
             input_id="11111111-2222-4333-8444-555555555555",
             content="golden",
         )
-        # The SDK snapshots predate the product wire and carry no prompt id on
-        # their echo, so their consumption boundary cannot be recognised — it
-        # is asserted instead, through the platform's own recovery entry
-        # point, which is exactly what that flag means: this input is already
-        # known to have been consumed. The product recording drives the
-        # boundary for real.
         try:
-            receipt = await client.begin_delivery(
-                command, consumption_confirmed=not pin_prompt
-            )
-            if pin_prompt:
-                client._prompted = {recorded_prompt_rpc_id: command}  # noqa: SLF001
+            receipt = await client.begin_delivery(command)
+            client._prompted = {recorded_prompt_rpc_id: command}  # noqa: SLF001
             async with asyncio.timeout(10):
                 emissions = [frame async for frame in client.iter_turn_events(receipt)]
             result = emissions[-1].as_frame()
             assert result["type"] == "result" and result["finishReason"] == "stop"
             assert sum(frame.as_frame()["type"] == "result" for frame in emissions) == 1
+            assert sum(
+                frame.as_frame()["type"] == "data-input-consumed" for frame in emissions
+            ) == 1
             return emissions
         finally:
             await client.close()
 
-    emissions = asyncio.run(_collect(_product_frames(), pin_prompt=True))
+    emissions = asyncio.run(_collect(_product_frames()))
     frames = [emission.as_frame() for emission in emissions]
     assert sum(frame.get("type") == "data-input-consumed" for frame in frames) == 1
     assert any(frame.get("type") == "text-delta" for frame in frames)
@@ -324,7 +336,7 @@ def test_deepseek_harness_frames_match_the_installed_ai_sdk_schema(
         case_frames = [
             emission.as_frame()
             for emission in asyncio.run(
-                _collect(_snapshot_frames(case), pin_prompt=False)
+                _collect(_snapshot_frames(case))
             )
         ]
         assert {"text-delta", "reasoning-delta"} <= {
@@ -343,6 +355,7 @@ def test_deepseek_harness_frames_match_the_installed_ai_sdk_schema(
                     "content": [{"type": "text", "text": "child answer 42."}],
                     "isError": False,
                 },
+                "__engine_output_cursor": {"sessionId": session_id, "seq": 99},
             }]
             assert "".join(
                 frame["delta"] for frame in case_frames if frame["type"] == "text-delta"

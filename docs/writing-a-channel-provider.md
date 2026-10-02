@@ -235,7 +235,7 @@ names are lower case. Verify the raw bytes before decoding them and raise an
 function required by the messaging product; implement it from that product's
 official specification.
 
-## Deliver Agent replies
+## Deliver Agent replies {#deliver-agent-replies}
 
 Implement `deliver_outbound()` to send the final Agent reply. AstraBox passes a
 freshly loaded `binding`; its `channel_credentials` contains the write-only

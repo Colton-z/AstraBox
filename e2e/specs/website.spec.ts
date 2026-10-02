@@ -81,9 +81,11 @@ test.describe("public website", () => {
           const entry = sidebar.locator(`a[href="${route}"]`);
           await expect(entry).toHaveCount(1);
           await expect(entry).toBeVisible();
+          const expectedTitle = (await entry.innerText()).trim();
           await entry.click();
           await expect(page).toHaveURL((url) => url.pathname === route);
           const article = page.locator("article");
+          await expect(article.getByRole("heading", { level: 1 })).toHaveText(expectedTitle);
           await expect(article.getByRole("heading", { level: 1 })).toBeVisible();
           const instructions = article.locator(guide.content);
           expect(await instructions.count(), `${route}: missing rendered technical content`).toBeGreaterThan(0);
@@ -112,8 +114,10 @@ test.describe("public website", () => {
           );
           const nextPath = new URL(nextHref!, page.url()).pathname;
           expect(nextPath).not.toBe(route);
+          const nextTitle = (await next.locator(".pagination-nav__label").innerText()).trim();
           await next.click();
           await expect(page).toHaveURL((url) => url.pathname === nextPath);
+          await expect(page.locator("article").getByRole("heading", { level: 1 })).toHaveText(nextTitle);
           await expect(page.locator("article").getByRole("heading", { level: 1 })).toBeVisible();
         });
       }

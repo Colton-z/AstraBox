@@ -86,7 +86,7 @@ Web 和消息适配器读取同一份 Session 输出。Agent 程序适配器解�
 
 渠道订阅保存事件游标，现有回复 outbox 保存投递尝试和平台消息 ID。读取不完整的回复后，
 订阅会从回复边界重新构建内容，再推进游标，无需另建对话存储。参见
-[接入新的消息平台](writing-a-channel-provider.md#投递-agent-回复)。
+[接入新的消息平台](writing-a-channel-provider.md#deliver-agent-replies)。
 
 ### 数据与凭证
 

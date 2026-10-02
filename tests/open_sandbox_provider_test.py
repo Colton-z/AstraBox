@@ -450,10 +450,12 @@ def test_pytest_defaults_enforce_provider_test_isolation() -> None:
         pyproject = tomllib.load(fh)
     pytest_options = pyproject["tool"]["pytest"]["ini_options"]
     assert pytest_options["addopts"] == (
-        "-m 'not e2e and not mongo and not postgresql and not opensandbox' --timeout=120 "
+        "-m 'not e2e and not mongo and not mongo_transaction and not postgresql "
+        "and not opensandbox' --timeout=120 "
         "--strict-markers --ignore-glob='**/._*'"
     )
     assert any(m.startswith("postgresql:") for m in pytest_options["markers"])
+    assert any(m.startswith("mongo_transaction:") for m in pytest_options["markers"])
     assert any(m.startswith("opensandbox:") for m in pytest_options["markers"])
 
 

@@ -374,8 +374,8 @@ _EXPECTED_ROUTES: list[tuple[tuple[str, ...], str, str]] = [
 
 #: Documentation-level sanity constants, redundant with the full-list equality
 #: check but give a clearer top-line failure signal than a 100+ row list diff.
-_EXPECTED_ROUTE_COUNT = 170
-_EXPECTED_DISTINCT_PATH_COUNT = 142
+_EXPECTED_ROUTE_COUNT = 172
+_EXPECTED_DISTINCT_PATH_COUNT = 143
 
 
 def _effective_routes(app: Any) -> list[tuple[tuple[str, ...], str, str]]:
