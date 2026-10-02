@@ -103,6 +103,24 @@ class TerminalIsWriteOnceTests(unittest.IsolatedAsyncioTestCase):
         types = [f.get("type") for f in self.appended if f.get("type") in ("error", "finish")]
         self.assertEqual(types, ["finish"])
 
+    async def test_the_first_terminal_retains_its_private_native_cursor(self) -> None:
+        state, ctx = _state(), _ctx()
+        cursor = {"sessionId": "native", "seq": 19}
+        await bridge_terminal._append_terminal_signal(
+            object(), state, ctx, "error", error_text="native failure", publish=False,
+            engine_metadata={"engine_kind": "deepseek_harness", "engine_turn_id": "native-turn",
+                             "engine_output_cursor": cursor, "message": "not metadata"},
+        )
+        await bridge_terminal._append_terminal_signal(
+            object(), state, ctx, "finish", publish=False,
+            engine_metadata={"engine_output_cursor": {"seq": 20}},
+        )
+        terminals = [frame for frame in self.appended if frame["type"] in {"error", "finish"}]
+        self.assertEqual(len(terminals), 1)
+        self.assertEqual(terminals[0]["__engine_output_cursor"], cursor)
+        self.assertEqual(terminals[0]["__engine_kind"], "deepseek_harness")
+        self.assertNotIn("__message", terminals[0])
+
     async def test_a_different_turn_still_gets_its_own_terminal(self) -> None:
         # The guard is per turn, not per worker: settling one turn must not
         # silence the next one on the same session.

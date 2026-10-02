@@ -8,6 +8,7 @@ from astrabox.persistence.repository.backend import (
     get_async_collection,
     run_mongo_with_retry,
 )
+from astrabox.persistence.repository.environment_repository import write_environment_binding
 from astrabox.persistence.repository.index_verification import ensure_unique_index
 from astrabox.persistence.repository.session_repository import _safe_create_index
 from astrabox.common.logger.logger_factory import get_logger
@@ -82,8 +83,9 @@ class AgentRepository:
         now = utcnow_iso()
         doc = _with_name_sort_key({"deleted": False, "created_at": now, "updated_at": now, **payload})
         collection = await get_async_collection(self._collection_name)
-        await run_mongo_with_retry(
-            "agents.create", lambda: collection.insert_one(doc)
+        await write_environment_binding(
+            self._collection_name, str(doc.get("environment_name") or "").strip(),
+            "agents.create", lambda bound: bound.insert_one(doc),
         )
         stored = await run_mongo_with_retry(
             "agents.read_after_create",
@@ -279,6 +281,30 @@ class AgentRepository:
             fault_context={"vault_id": target},
         )
 
+    async def list_agents_by_environment(
+        self, name: str, *, transaction: Any = None,
+    ) -> list[dict[str, Any]]:
+        """Preset references, including deleted owners with cleanup bookkeeping."""
+        collection = (
+            transaction.collection(self._collection_name) if transaction is not None
+            else await get_async_collection(self._collection_name)
+        )
+
+        async def _list() -> list[dict[str, Any]]:
+            cursor = collection.find(
+                {"environment_name": name},
+                projection={
+                    "agent_id": 1, "name": 1, "display_meta": 1,
+                    "deleted": 1, "sandbox_id": 1, "undestroyed_sandbox_ids": 1,
+                    "_prepared_slot": 1, "_client_pool_name": 1, "_retiring_client_pools": 1,
+                },
+            )
+            return [doc async for doc in cursor]
+
+        if transaction is not None:
+            return await _list()
+        return await run_mongo_with_retry("agents.list_by_environment", _list)
+
     async def list_agents_by_ids(
         self,
         agent_ids: list[str],
@@ -399,10 +425,17 @@ class AgentRepository:
         """
         collection = await get_async_collection(self._collection_name)
         fields = _with_name_sort_key(updates)
-        result = await run_mongo_with_retry(
-            "agents.update",
-            lambda: collection.update_one({"agent_id": agent_id}, {"$set": fields}),
-        )
+        if "environment_name" in fields:
+            result = await write_environment_binding(
+                self._collection_name, str(fields["environment_name"] or "").strip(),
+                "agents.update",
+                lambda bound: bound.update_one({"agent_id": agent_id}, {"$set": fields}),
+            )
+        else:
+            result = await run_mongo_with_retry(
+                "agents.update",
+                lambda: collection.update_one({"agent_id": agent_id}, {"$set": fields}),
+            )
         return result.modified_count > 0
 
     async def compare_and_update_agent(
@@ -418,14 +451,79 @@ class AgentRepository:
         """
         collection = await get_async_collection(self._collection_name)
         fields = _with_name_sort_key(updates)
-        result = await run_mongo_with_retry(
-            "agents.compare_and_update",
-            lambda: collection.update_one(
-                {"agent_id": agent_id, "deleted": {"$ne": True}, **dict(expected)},
-                {"$set": fields},
-            ),
-        )
+        query = {"agent_id": agent_id, "deleted": {"$ne": True}, **dict(expected)}
+        if "environment_name" in fields:
+            result = await write_environment_binding(
+                self._collection_name, str(fields["environment_name"] or "").strip(),
+                "agents.compare_and_update",
+                lambda bound: bound.update_one(query, {"$set": fields}),
+            )
+        else:
+            result = await run_mongo_with_retry(
+                "agents.compare_and_update",
+                lambda: collection.update_one(query, {"$set": fields}),
+            )
         return bool(getattr(result, "modified_count", 0) or getattr(result, "matched_count", 0))
+
+    async def clear_resident_sandbox_binding(
+        self, agent_id: str, *, sandbox_id: str, sandbox_backend: str | None = None,
+    ) -> bool:
+        """Clear a confirmed-gone binding even when its owner has been deleted.
+
+        The expected binding fences a replacement made during the provider probe.
+        This cleanup cannot restore the Agent or change its authored definition.
+        """
+        if not agent_id or not sandbox_id:
+            raise ValueError("agent_id and sandbox_id are required for binding cleanup")
+        query = {"agent_id": agent_id, "sandbox_id": sandbox_id}
+        if sandbox_backend:
+            query["sandbox_backend"] = sandbox_backend
+        collection = await get_async_collection(self._collection_name)
+        for _attempt in range(8):
+            row = await run_mongo_with_retry(
+                "agents.read_resident_sandbox_binding",
+                lambda: collection.find_one(query),
+            )
+            if row is None:
+                return False
+            manifest = row.get("_prepared_slot")
+            updates: dict[str, Any] = {
+                "sandbox_id": None,
+                "sandbox_backend": None,
+                "_resident_sandbox_generation": None,
+                "expires_at": None,
+            }
+            if (
+                isinstance(manifest, dict)
+                and manifest.get("placement") == "shared_slot"
+                and manifest.get("sandbox_id") == sandbox_id
+                and manifest.get("sandbox_backend") == row.get("sandbox_backend")
+                and manifest.get("state") == "prepared"
+            ):
+                # Withdraw the advertisement in the same write as its parent
+                # binding. Keep the cleanup address for ordinary retirement;
+                # a claim that already won still owns its hand-off cleanup.
+                updates["_prepared_slot"] = {
+                    **manifest,
+                    "state": "retiring",
+                    "retire_reason": "resident sandbox is confirmed gone",
+                    "retiring_at": utcnow_iso(),
+                }
+            expected = {
+                **query,
+                "_prepared_slot": (
+                    manifest if "_prepared_slot" in row else {"$exists": False}
+                ),
+            }
+            result = await run_mongo_with_retry(
+                "agents.clear_resident_sandbox_binding",
+                lambda: collection.update_one(expected, {"$set": updates}),
+            )
+            if result.modified_count > 0:
+                return True
+        raise RuntimeError(
+            f"Agent {agent_id!r} prepared ownership changed repeatedly during binding cleanup"
+        )
 
     async def soft_delete(self, agent_id: str, user_id: str) -> bool:
         return await self.update_agent(

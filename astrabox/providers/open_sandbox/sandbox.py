@@ -3001,6 +3001,18 @@ class OpenSandboxSandboxProvider(SandboxProvider):
         try:
             session = await underlying.isolation.attach(target)
         except Exception as exc:
+            with contextlib.suppress(Exception):
+                await handle.close()
+            if (
+                isinstance(exc, SandboxApiException)
+                and exc.status_code == 404
+                and getattr(exc.error, "code", None) == "SESSION_NOT_FOUND"
+            ):
+                raise APIError(
+                    code="SANDBOX_ISOLATED_SESSION_NOT_FOUND",
+                    message=f"isolated session {target!r} is absent from sandbox {sandbox_id!r}",
+                    status_code=409,
+                ) from exc
             if box_is_unreachable(exc):
                 # The typed code IS the mechanism here: the turn path classifies
                 # on SANDBOX_GONE and nothing downstream re-derives it from the

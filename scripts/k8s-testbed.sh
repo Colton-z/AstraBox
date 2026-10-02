@@ -137,6 +137,15 @@ render_external_containerd_config() {
     -e "s|conf_dir = '/etc/cni/net.d'|conf_dir = '/var/lib/rancher/k3s/agent/etc/cni/net.d'|" \
     -e "s|config_path = '/etc/containerd/certs.d:/etc/docker/certs.d'|config_path = '/etc/containerd/certs.d'|" \
     "$output"
+
+  # Retain an installed snapshot differ when regenerating this owned testbed
+  # configuration. The node installer owns binary validation and service health.
+  if sudo test -f /var/lib/astrabox-snapshot-differ/receipt.json; then
+    local with_differ
+    with_differ="$(mktemp)"
+    python3 "$TESTBED_REPO_ROOT/tools/snapshot-differ/node.py" --render "$output" >"$with_differ"
+    mv "$with_differ" "$output"
+  fi
 }
 
 wait_for_snapshot_node() {

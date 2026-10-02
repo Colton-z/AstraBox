@@ -369,6 +369,34 @@ def test_running_in_a_session_that_is_gone_is_a_conflict_not_a_crash() -> None:
             _provider(isolation).run_in_isolated_session("sbx-1", "iso-7", code="id")
         )
     assert caught.value.status_code == 409
+    assert caught.value.code == "AGENT_RUNTIME_ERROR"
+
+
+@pytest.mark.parametrize(
+    ("status", "supplier_code", "expected"),
+    [
+        (404, "SESSION_NOT_FOUND", "SANDBOX_ISOLATED_SESSION_NOT_FOUND"),
+        (404, "NOT_FOUND", "AGENT_RUNTIME_ERROR"),
+        (403, "SESSION_NOT_FOUND", "AGENT_RUNTIME_ERROR"),
+        (500, "SESSION_NOT_FOUND", "AGENT_RUNTIME_ERROR"),
+    ],
+)
+def test_only_an_explicit_missing_session_allows_isolation_recreation(
+    status: int, supplier_code: str, expected: str,
+) -> None:
+    from opensandbox.exceptions import SandboxApiException, SandboxError
+    from unittest.mock import AsyncMock
+
+    isolation = _FakeIsolation(attach_error=SandboxApiException(
+        status_code=status, error=SandboxError(supplier_code, "session not found"),
+    ))
+    provider = _provider(isolation)
+    handle = SimpleNamespace(sidecar_faces=SimpleNamespace(isolation=isolation), close=AsyncMock())
+    provider.connect = AsyncMock(return_value=handle)  # type: ignore[method-assign]
+    with pytest.raises(APIError) as caught:
+        asyncio.run(provider.run_in_isolated_session("sbx-1", "iso-7", code="id"))
+    assert caught.value.code == expected
+    handle.close.assert_awaited_once()
 
 
 def test_a_hung_run_times_out_loudly() -> None:

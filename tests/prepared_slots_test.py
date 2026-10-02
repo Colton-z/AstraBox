@@ -12,7 +12,7 @@ import copy
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -1251,3 +1251,239 @@ def test_no_allocation_at_all_is_not_an_error(monkeypatch: Any) -> None:
     )
 
     assert sessions.cleared == []
+
+
+@pytest.mark.parametrize("binding", [
+    {"sandbox_id": None, "sandbox_backend": None},
+    {"sandbox_id": "replacement", "sandbox_backend": "fake"},
+    {"sandbox_id": "box-1", "sandbox_backend": "other-backend"},
+])
+def test_fresh_shared_slot_cannot_be_claimed_from_a_different_binding(
+    binding: dict[str, Any],
+) -> None:
+    manifest = _manifest(placement="shared_slot", sandbox_backend="fake")
+    repo = FakeAgentRepo(_row(manifest, **binding))
+    claimed = asyncio.run(ps.claim_prepared_slot(
+        agent_id="agent-1", session_id="session", expected_runtime_generation="generation-1",
+        agent_repo=repo,
+    ))
+    assert claimed is None
+    assert repo.rows["agent-1"][ps.PREPARED_SLOT_FIELD] == manifest
+
+
+@pytest.mark.parametrize("move_during_cas", [False, True])
+def test_shared_slot_publication_is_fenced_by_its_resident_binding(
+    move_during_cas: bool,
+) -> None:
+    manifest = _manifest(placement="shared_slot", sandbox_backend="fake")
+    repo = FakeAgentRepo(_row(None, with_field=True, sandbox_id="box-1", sandbox_backend="fake"))
+    original_cas = repo.compare_and_update_agent
+
+    async def cas(agent_id: str, *, expected: dict[str, Any], updates: dict[str, Any]) -> bool:
+        if move_during_cas:
+            repo.rows[agent_id]["sandbox_id"] = "replacement"
+        return await original_cas(agent_id, expected=expected, updates=updates)
+
+    repo.compare_and_update_agent = cas  # type: ignore[method-assign]
+    if move_during_cas:
+        with pytest.raises(APIError) as error:
+            asyncio.run(ps._publish_prepared_manifest(repo, "agent-1", manifest, replacing=None))
+        assert error.value.code == "AGENT_PREWARM_SLOT_CONFLICT"
+        assert repo.rows["agent-1"][ps.PREPARED_SLOT_FIELD] is None
+    else:
+        asyncio.run(ps._publish_prepared_manifest(repo, "agent-1", manifest, replacing=None))
+        assert repo.rows["agent-1"][ps.PREPARED_SLOT_FIELD] == manifest
+
+
+def test_shared_slot_claim_cannot_win_after_its_binding_moves(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(ps, "sandbox_for_name", lambda _name: SimpleNamespace(
+        name="fake", read_memory_headroom=AsyncMock(return_value=(4 * 1024**3, 0)),
+    ))
+    manifest = _manifest(placement="shared_slot", sandbox_backend="fake")
+    repo = FakeAgentRepo(_row(manifest, sandbox_id="box-1", sandbox_backend="fake"))
+    original_cas = repo.compare_and_update_agent
+
+    async def cas(agent_id: str, *, expected: dict[str, Any], updates: dict[str, Any]) -> bool:
+        repo.rows[agent_id]["sandbox_id"] = "replacement"
+        return await original_cas(agent_id, expected=expected, updates=updates)
+
+    repo.compare_and_update_agent = cas  # type: ignore[method-assign]
+    assert asyncio.run(ps.claim_prepared_slot(
+        agent_id="agent-1", session_id="session", expected_runtime_generation="generation-1",
+        agent_repo=repo,
+    )) is None
+    assert repo.rows["agent-1"][ps.PREPARED_SLOT_FIELD] == manifest
+
+
+def _capacity_claim(repo: FakeAgentRepo) -> dict[str, Any] | None:
+    return asyncio.run(ps.claim_prepared_slot(
+        agent_id="agent-1", session_id="session-1",
+        expected_runtime_generation="generation-1", agent_repo=repo,
+    ))
+
+
+def _capacity_fixture(
+    monkeypatch: pytest.MonkeyPatch, *, free_reservations: int,
+    admissions: list[dict[str, Any]],
+) -> tuple[FakeAgentRepo, AsyncMock]:
+    from astrabox.core.service.orchestrator.runtime.shared_sandbox_lease import (
+        CONVERSATION_MEMORY_RESERVE_BYTES,
+    )
+
+    manifest = _manifest(placement="shared_slot", sandbox_backend="fake")
+    repo = FakeAgentRepo(_row(
+        manifest, sandbox_id="box-1", sandbox_backend="fake", box_admissions=admissions,
+    ))
+    memory = AsyncMock(return_value=(
+        512 * 1024**2 + free_reservations * CONVERSATION_MEMORY_RESERVE_BYTES,
+        512 * 1024**2,
+    ))
+    monkeypatch.setattr(ps, "sandbox_for_name", lambda _name: SimpleNamespace(
+        name="fake", read_memory_headroom=memory,
+    ))
+    return repo, memory
+
+
+def test_a_full_box_withdraws_its_prepared_slot_without_releasing_siblings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admission = {"sandbox_id": "box-1", "session_id": "slot-abc", "at": ps.time.time()}
+    repo, memory = _capacity_fixture(monkeypatch, free_reservations=0, admissions=[admission])
+    assert _capacity_claim(repo) is None
+    row = repo.rows["agent-1"]
+    assert row["sandbox_id"] == "box-1"
+    assert row[ps.BOX_ADMISSIONS] == [admission]
+    manifest = row[ps.PREPARED_SLOT_FIELD]
+    assert manifest["state"] == "retiring"
+    assert manifest["isolated_session_id"] == "iso-1"
+    assert "claimed_session_id" not in manifest
+    memory.assert_awaited_once_with("box-1")
+
+
+@pytest.mark.parametrize("reservation_age", [1, 300])
+def test_claim_refreshes_its_own_reservation_without_charging_it_twice(
+    monkeypatch: pytest.MonkeyPatch, reservation_age: int,
+) -> None:
+    before = ps.time.time()
+    admission = {"sandbox_id": "box-1", "session_id": "slot-abc", "at": before - reservation_age}
+    repo, memory = _capacity_fixture(monkeypatch, free_reservations=1, admissions=[admission])
+    assert _capacity_claim(repo) is not None
+    entries = repo.rows["agent-1"][ps.BOX_ADMISSIONS]
+    assert len(entries) == 1
+    assert entries[0]["session_id"] == "session-1"
+    assert entries[0]["sandbox_id"] == "box-1"
+    assert entries[0]["at"] >= before
+    memory.assert_awaited_once_with("box-1")
+
+
+@pytest.mark.parametrize("sibling", ["another-session", None])
+def test_claim_keeps_other_young_admissions_reserved(
+    monkeypatch: pytest.MonkeyPatch, sibling: str | None,
+) -> None:
+    pending = {"sandbox_id": "box-1", "at": ps.time.time()}
+    if sibling is not None:
+        pending["session_id"] = sibling
+    repo, _memory = _capacity_fixture(monkeypatch, free_reservations=1, admissions=[pending])
+    assert _capacity_claim(repo) is None
+    assert repo.rows["agent-1"][ps.BOX_ADMISSIONS] == [pending]
+    assert repo.rows["agent-1"][ps.PREPARED_SLOT_FIELD]["state"] == "retiring"
+
+
+def test_claim_rechecks_memory_after_another_admission_wins_the_cas(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, memory = _capacity_fixture(monkeypatch, free_reservations=1, admissions=[])
+    original = repo.compare_and_update_agent
+
+    async def cas(agent_id: str, *, expected: dict[str, Any], updates: dict[str, Any]) -> bool:
+        if not repo.rows[agent_id][ps.BOX_ADMISSIONS]:
+            repo.rows[agent_id][ps.BOX_ADMISSIONS] = [{
+                "sandbox_id": "box-1", "session_id": "sibling", "at": ps.time.time(),
+            }]
+        return await original(agent_id, expected=expected, updates=updates)
+
+    repo.compare_and_update_agent = cas  # type: ignore[method-assign]
+    assert _capacity_claim(repo) is None
+    assert memory.await_count == 2
+    assert repo.rows["agent-1"][ps.PREPARED_SLOT_FIELD]["state"] == "retiring"
+    assert [e["session_id"] for e in repo.rows["agent-1"][ps.BOX_ADMISSIONS]] == ["sibling"]
+
+
+def test_capacity_refusal_cannot_retire_a_slot_claimed_by_another_worker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, memory = _capacity_fixture(monkeypatch, free_reservations=0, admissions=[])
+    manifest = repo.rows["agent-1"][ps.PREPARED_SLOT_FIELD]
+    winner = {**manifest, "state": "claimed", "claimed_session_id": "winner"}
+
+    async def read_memory(_box: str) -> tuple[int, int]:
+        repo.rows["agent-1"][ps.PREPARED_SLOT_FIELD] = winner
+        return 512 * 1024**2, 512 * 1024**2
+
+    memory.side_effect = read_memory
+    assert _capacity_claim(repo) is None
+    assert repo.rows["agent-1"][ps.PREPARED_SLOT_FIELD] == winner
+
+
+def test_unexpected_capacity_probe_failure_preserves_the_prepared_slot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, memory = _capacity_fixture(monkeypatch, free_reservations=1, admissions=[])
+    manifest = copy.deepcopy(repo.rows["agent-1"][ps.PREPARED_SLOT_FIELD])
+    memory.side_effect = RuntimeError("memory probe contract broken")
+    with pytest.raises(RuntimeError, match="memory probe contract broken"):
+        _capacity_claim(repo)
+    assert repo.rows["agent-1"][ps.PREPARED_SLOT_FIELD] == manifest
+    assert repo.rows["agent-1"][ps.BOX_ADMISSIONS] == []
+
+
+def test_slot_expiring_during_the_capacity_probe_is_not_claimed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime.now(timezone.utc)
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz: Any = None) -> datetime:
+            return now
+
+    monkeypatch.setattr(ps, "datetime", Clock)
+    repo, memory = _capacity_fixture(monkeypatch, free_reservations=1, admissions=[])
+    manifest = repo.rows["agent-1"][ps.PREPARED_SLOT_FIELD]
+    manifest["prepared_at"] = now.isoformat()
+
+    async def delayed_probe(_box: str) -> tuple[int, int]:
+        nonlocal now
+        now += timedelta(seconds=ps.PREPARED_SLOT_TTL_SECONDS + 1)
+        return 4 * 1024**3, 0
+
+    memory.side_effect = delayed_probe
+    assert _capacity_claim(repo) is None
+    assert repo.rows["agent-1"][ps.PREPARED_SLOT_FIELD]["state"] == "prepared"
+    assert repo.rows["agent-1"][ps.BOX_ADMISSIONS] == []
+
+
+def test_dedicated_prepared_boxes_do_not_use_shared_memory_admission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = Mock(side_effect=AssertionError("dedicated claim must not probe shared memory"))
+    monkeypatch.setattr(ps, "sandbox_for_name", provider)
+    repo = FakeAgentRepo(_row(_manifest(placement="conversation_box")))
+    assert _capacity_claim(repo) is not None
+    provider.assert_not_called()
+
+
+def test_refill_retires_a_detached_fresh_slot_before_building(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest = _manifest(placement="shared_slot", sandbox_backend="fake")
+    repo = FakeAgentRepo(_row(manifest, sandbox_id=None, sandbox_backend=None))
+    retire = AsyncMock()
+    monkeypatch.setattr(ps, "_retire_manifest", retire)
+    reason = asyncio.run(ps.reap_slot_manifest_if_stale(
+        SimpleNamespace(agent_id="agent-1", runtime_generation="generation-1"), agent_repo=repo,
+    ))
+    assert reason == "prepared slot no longer belongs to the resident sandbox"
+    retire.assert_awaited_once_with("agent-1", manifest, reason=reason, repo=repo)

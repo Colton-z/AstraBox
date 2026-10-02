@@ -482,12 +482,14 @@ async def attach_platform_runtime(
     vendor reconnect handshake.
     """
 
-    if attach_mode not in {"full", "lightweight"}:
+    if attach_mode not in {"full", "lightweight", "observe"}:
         raise APIError(
             code="ENGINE_ATTACH_MODE_INVALID",
             message=f"unsupported runtime attach_mode: {attach_mode!r}",
             status_code=500,
         )
+    if attach_mode == "observe" and not adapter.supports_unowned_output_attach():
+        raise ValueError(f"engine {adapter.engine_kind!r} cannot attach unowned output")
     target_sandbox = str(sandbox_id or "").strip()
     if not target_sandbox:
         raise APIError(
@@ -585,10 +587,14 @@ async def attach_platform_runtime(
             vault_write=vault_write,
         )
         if vault_write is not None and not vault_write.is_empty:
+            # Snapshot resume boots a fresh sidecar with no in-memory Vault.
+            # This path has resolved the complete Session credential plan, so
+            # it can recreate that Vault before activating the engine. Partial
+            # per-turn MCP refreshes must remain patch-only.
             await backend_adapter.apply_credential_vault(
                 sandbox,
                 vault_write=vault_write,
-                create_if_missing=False,
+                create_if_missing=True,
             )
         if credential_slot_id:
             from astrabox.core.service.orchestrator.agent.prepared_slots import (
@@ -644,6 +650,18 @@ async def attach_platform_runtime(
                 agent_repo=AgentRepository(),
                 provider=backend_adapter,
             )
+
+            async def record_recreated_placement(restored: Any) -> None:
+                await platform.record_attached_runtime_identity(
+                    session_id,
+                    sandbox_id=target_sandbox,
+                    runtime_identity={
+                        **identity,
+                        "isolated_session_id": restored.isolated_session_id,
+                        "terminal_isolated_session_id": restored.terminal_isolated_session_id,
+                    },
+                )
+
             placement = await lease.restore_existing(
                 sandbox_id=target_sandbox,
                 isolated_session_id=str(identity["isolated_session_id"]),
@@ -655,6 +673,7 @@ async def attach_platform_runtime(
                 workspace_source_dir=str(identity["workspace_source_dir"]),
                 uid=int(identity["uid"]),
                 gid=int(identity["gid"]),
+                on_recreated=record_recreated_placement,
             )
             identity.update(
                 {

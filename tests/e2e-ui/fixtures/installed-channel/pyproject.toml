@@ -1,0 +1,15 @@
+[build-system]
+requires = ["hatchling==1.32.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "astrabox-test-channel"
+version = "1.0.0"
+requires-python = ">=3.12"
+dependencies = ["astrabox>=0.1.1"]
+
+[project.entry-points."astrabox.providers.channel"]
+installed_probe = "astrabox_test_channel:InstalledChannel"
+
+[tool.hatch.build.targets.wheel]
+packages = ["astrabox_test_channel"]

@@ -728,6 +728,7 @@ def create_app() -> FastAPI:
     from astrabox.api.routes.user import router as user_router
     from astrabox.api.routes.sessions import router as sessions_router
     from astrabox.api.routes.turns import router as turns_router
+    from astrabox.api.routes.speech_input import router as speech_input_router
     from astrabox.api.routes.admin import router as admin_router
     from astrabox.api.routes._shared import (
         handle_api_error,
@@ -738,6 +739,7 @@ def create_app() -> FastAPI:
     app.include_router(user_router)
     app.include_router(sessions_router)
     app.include_router(turns_router)
+    app.include_router(speech_input_router)
     app.include_router(admin_router)
 
     app.add_exception_handler(APIError, handle_api_error)

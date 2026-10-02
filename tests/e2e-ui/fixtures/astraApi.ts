@@ -270,7 +270,8 @@ export interface TurnResult {
 }
 
 /**
- * Flatten a message's visible text. Structured `blocks` carry the same text as
+ * Flatten a message's prose, excluding tool results and thinking blocks.
+ * Structured `blocks` carry the same text as
  * `content` on assistant messages, so counting both would double it — prefer the
  * structured blocks and fall back to `content` only when no structured text
  * exists.
@@ -279,6 +280,7 @@ export function messageText(message: MessageRecord): string {
   const chunks: string[] = [];
   const collect = (list?: Array<Record<string, unknown>>) => {
     for (const block of list || []) {
+      if (block.type !== 'text') continue;
       const text = block.text ?? block.content;
       if (typeof text === 'string') {
         chunks.push(text);

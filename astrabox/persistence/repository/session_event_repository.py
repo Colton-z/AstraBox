@@ -28,6 +28,7 @@ EVENT_KIND_FIELD = "event_kind"
 EVENT_KIND_COMMAND = "command"
 EVENT_KIND_STREAM = "stream"
 EVENT_KIND_ENGINE_FRAME = "engine_frame"
+RESIDENT_OUTPUT_SOURCE_KIND = "resident_engine_output"
 IDEMPOTENCY_KEY_FIELD = "idempotency_key"
 _IDEMPOTENCY_INDEX_NAME = "ux_session_events_idempotency_key"
 _IDEMPOTENCY_INDEX_KEYS = [(IDEMPOTENCY_KEY_FIELD, 1)]
@@ -486,6 +487,41 @@ class SessionEventRepository:
     async def get_max_session_frame_seq(self, session_id: str) -> int | None:
         return await self._get_max_frame_seq(session_id)
 
+    async def get_max_engine_sequence(self, session_id: str, *, engine_kind: str) -> int | None:
+        """Highest recorded reader position, including facts between responses.
+
+        A reader that numbers its connection locally resumes above this value.
+        The latest terminal alone excludes idle child observations and output
+        committed before an interrupted response's terminal.
+        """
+        await self.ensure_indexes()
+        collection = await get_async_collection(COLLECTION_NAME)
+
+        async def _query() -> int | None:
+            positions: list[int] = []
+            for field, query in (
+                ("engine_sequence_number", {
+                    EVENT_KIND_FIELD: EVENT_KIND_ENGINE_FRAME, "engine_kind": engine_kind,
+                }),
+                ("payload.runner_sequence", {
+                    "event_type": "engine.message", "payload.engine_kind": engine_kind,
+                }),
+            ):
+                row = await collection.find_one(
+                    {"session_id": session_id, **query, field: {"$gte": 0}},
+                    projection={field: 1},
+                    sort=[(field, -1)],
+                )
+                if row is None:
+                    continue
+                value = row.get("engine_sequence_number") if field == "engine_sequence_number" else row["payload"].get("runner_sequence")
+                if not isinstance(value, int) or isinstance(value, bool):
+                    raise ValueError("journaled engine reader position must be an integer")
+                positions.append(value)
+            return max(positions) if positions else None
+
+        return await run_mongo_with_retry("session_events.max_engine_sequence", _query)
+
     async def get_max_turn_frame_seq(
         self,
         session_id: str,
@@ -529,6 +565,9 @@ class SessionEventRepository:
         turn_id: str | None = None,
         turn_ids: Collection[str] | None = None,
         scope: str | None = None,
+        engine_kind: str | None = None,
+        source_kind: str | None = None,
+        frame_types: Collection[str] | None = None,
         after_seq: int = -1,
         before_seq: int | None = None,
         limit: int = 500,
@@ -552,6 +591,12 @@ class SessionEventRepository:
             query["command_id"] = command_id
         if scope is not None:
             query["scope"] = scope
+        if engine_kind is not None:
+            query["engine_kind"] = engine_kind
+        if source_kind is not None:
+            query["source_kind"] = source_kind
+        if frame_types is not None:
+            query["payload.type"] = {"$in": list(frame_types)}
         if turn_id is not None:
             query["turn_id"] = turn_id
         elif turn_ids is not None:
@@ -572,6 +617,34 @@ class SessionEventRepository:
             return [_public_frame(doc) async for doc in cursor]
 
         return await run_mongo_with_retry("session_events.list_frames", _query)
+
+    async def get_open_resident_response(
+        self, session_id: str, *, engine_kind: str | None = None,
+        before_seq: int | None = None,
+    ) -> dict[str, Any] | None:
+        """Read the mainline's latest published response until its own terminal.
+
+        Accepting an input may replace the active Session snapshot while this
+        response is still running. Its existing start frame retains custody;
+        a platform input's terminal cannot settle it.
+        """
+        starts = await self.list_frames(
+            session_id, engine_kind=engine_kind, scope="turn",
+            source_kind=RESIDENT_OUTPUT_SOURCE_KIND, frame_types=("start",),
+            before_seq=before_seq, newest_first=True, limit=1,
+        )
+        if not starts:
+            return None
+        start = starts[0]
+        turn_id = str(start.get("turn_id") or "").strip()
+        if not turn_id:
+            raise RuntimeError("resident response start has no turn identity")
+        terminal = await self.list_events(
+            session_id, turn_id=turn_id,
+            event_types=("turn.completed", "turn.failed", "turn.recovered"),
+            before_seq=before_seq, limit=1,
+        )
+        return None if terminal else start
 
     async def get_command_event(
         self,

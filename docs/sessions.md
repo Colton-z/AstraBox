@@ -198,6 +198,11 @@ Vaults](credentials.md), and [Attach and download files](files.md).
 
 ## Send Messages
 
+When an administrator has configured a transcription model, the console's
+microphone button records speech and appends its transcript to the editable
+draft. Review the text before sending it. See [Voice input](voice-input.md)
+for setup, recording limits, and retry behavior.
+
 The request body for `POST /sessions/{id}/ai-stream` contains one user message
 and returns that turn as an AI SDK UI Message Stream v1 event stream.
 

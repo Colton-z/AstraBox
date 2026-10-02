@@ -196,6 +196,7 @@ services:
       ANTHROPIC_MODEL:
       # Omit when unset so the application YAML remains the default authority.
       ASTRABOX_TITLE_MODEL_ENABLED:
+      ASTRABOX_SPEECH_INPUT_MODELS:
       ASTRABOX_TITLE_MODEL_NAME:
       ASTRABOX_TITLE_MODEL_REQUEST_TIMEOUT_SECONDS:
       # ── AstraBox runtime knobs (already baked as image defaults; pinned here

@@ -42,6 +42,7 @@ import {
 } from './console';
 import {
   channelEditField,
+  channelExecutionUserField,
   channelFieldValues,
   firstMissingChannelField,
   hasChannelFieldValue,
@@ -129,6 +130,7 @@ export default function DeploymentDetailPage() {
           timezone: found.schedule?.timezone ?? '',
         });
         setChannelDraft({
+          execution_user_id: found.execution_user_id ?? '',
           channel_config: { ...(found.channel_config ?? {}) },
           credentials: {},
         });
@@ -171,6 +173,7 @@ export default function DeploymentDetailPage() {
     || scheduleDraft.cron !== (deployment?.schedule?.cron ?? '')
     || scheduleDraft.timezone !== (deployment?.schedule?.timezone ?? '')
     || JSON.stringify(channelDraft) !== JSON.stringify({
+      execution_user_id: deployment?.execution_user_id ?? '',
       channel_config: { ...(deployment?.channel_config ?? {}) },
       credentials: {},
     })
@@ -277,6 +280,7 @@ export default function DeploymentDetailPage() {
             provider: channelProvider.label,
           }),
           fields: [
+            channelExecutionUserField(t, channelProvider.can_configure_execution_user === true),
             ...channelProvider.config_fields.map((field) =>
               channelEditField(field, 'channel_config'),
             ),
@@ -310,6 +314,7 @@ export default function DeploymentDetailPage() {
         : undefined)
     : undefined;
   const channelBaseline = {
+    execution_user_id: deployment.execution_user_id ?? '',
     channel_config: { ...(deployment.channel_config ?? {}) },
     credentials: {},
   };
@@ -673,6 +678,8 @@ export default function DeploymentDetailPage() {
                   deployment.agent_id,
                   deployment.deployment_id,
                   {
+                    execution_user_id: channelProvider.can_configure_execution_user
+                      ? String(channelDraft.execution_user_id ?? '').trim() : undefined,
                     channel_config: channelFieldValues(
                       channelDraft,
                       'channel_config',

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import json
+import os
 import shlex
 import subprocess
 import time
@@ -46,6 +47,7 @@ from tests.e2e._sandbox_helpers import (
     wait_until_settled,
 )
 from tests.e2e._service_containers import SERVER_CONTAINER_HANDLE, require_service_container
+from tests.e2e.test_transcript_mirror import _psql, _sql_literal
 
 pytestmark = pytest.mark.e2e
 
@@ -304,3 +306,64 @@ def test_evicted_last_shared_conversation_reclaims_box(
     assert_release_matches_the_box(
         e2e_client, archived, sandbox_id=sandbox_id, operation="archive after eviction"
     )
+
+
+def test_new_conversation_replaces_a_dead_shared_box(
+    e2e_client: httpx.Client, request: pytest.FixtureRequest,
+) -> None:
+    """The first new conversation survives a stale resident binding without retry."""
+    agent_id = _create_shared_agent(e2e_client)
+    first_sid = _start_conversation(e2e_client, agent_id)
+    poll_until_agent_ready(e2e_client, first_sid)
+    original = get_admin_session_detail(e2e_client, first_sid)
+    dead_box = str(original.get("sandbox_id") or "")
+    assert dead_box, "the original shared conversation has no sandbox"
+    first_marker = uuid.uuid4().hex
+    _answered(stream_turn(
+        e2e_client, first_sid, content=f"Reply with just ORIGINAL-{first_marker}",
+    ), first_marker, first_sid)
+    wait_until_settled(e2e_client, first_sid)
+
+    # Only this test's conversation may occupy the box removed below.
+    occupants = _psql(
+        "SELECT doc ->> 'session_id' FROM astrabox_documents "
+        "WHERE collection='sessions' "
+        f"AND doc ->> 'sandbox_id' = {_sql_literal(dead_box)}"
+    )
+    assert occupants == [first_sid], occupants
+    resident_sql = (
+        "SELECT doc ->> 'sandbox_id' FROM astrabox_documents "
+        "WHERE collection='agents' "
+        f"AND doc ->> 'agent_id' = {_sql_literal(agent_id)}"
+    )
+    assert _psql(resident_sql) == [dead_box]
+    kubectl = [
+        "kubectl", "--kubeconfig", os.environ["ASTRABOX_E2E_KUBECONFIG"],
+        "--namespace", os.environ["ASTRABOX_E2E_KUBE_NAMESPACE"],
+    ]
+    subprocess.run(
+        [*kubectl, "delete", "batchsandbox", dead_box],
+        capture_output=True, text=True, check=True, timeout=30,
+    )
+    # A sweep-cleared binding would exercise the ordinary cold path instead.
+    # Do not silently accept that different scene as stale-lease evidence.
+    assert _psql(resident_sql) == [dead_box], (
+        "the resident binding was cleared before the new-conversation scene"
+    )
+    next_sid = _start_conversation(e2e_client, agent_id)
+    assert next_sid != first_sid
+    poll_until_agent_ready(e2e_client, next_sid)
+    replacement = get_admin_session_detail(e2e_client, next_sid)
+    live_box = str(replacement.get("sandbox_id") or "")
+    assert live_box and live_box != dead_box, (dead_box, live_box)
+    next_marker = uuid.uuid4().hex
+    reply = _answered(stream_turn(
+        e2e_client, next_sid, content=f"Reply with just REPLACEMENT-{next_marker}",
+    ), next_marker, next_sid)
+    assert first_marker not in reply
+    wait_until_settled(e2e_client, next_sid)
+    request.node.user_properties.append(("dead_shared_binding", json.dumps({
+        "agent_id": agent_id, "engine": current_profile()["engine_kind"],
+        "original_session_id": first_sid, "dead_sandbox_id": dead_box,
+        "new_session_id": next_sid, "replacement_sandbox_id": live_box,
+    })))

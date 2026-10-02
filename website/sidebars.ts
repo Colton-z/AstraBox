@@ -32,6 +32,7 @@ const sidebars: SidebarsConfig = {
       label: 'Delegate tasks',
       items: [
         'sessions',
+        'voice-input',
         'events-stream',
         'working-with-repos',
         'credentials',
@@ -84,6 +85,7 @@ const sidebars: SidebarsConfig = {
         'team-login',
         'egress-credential-injection',
         'providers/opensandbox',
+        'providers/opensandbox-snapshot-differ',
         'providers/aws-efs',
         'architecture',
       ],

@@ -11,17 +11,6 @@ Agent 经常需要访问第三方服务——GitHub、Jira、数据库、自建�
 | `auth.type` | 凭证认证方式：MCP 服务 bearer token（`static_bearer`）、MCP 服务 OAuth token（`mcp_oauth`）、MCP 服务 API-key 请求头（`mcp_static_header`）、HTTPS 目标的 HTTP Basic（`http_basic`）或其他服务的环境变量（`environment_variable`） |
 | `vault_ids` | 分配给 Agent 或 Assistant 的有序 Vault ID 列表 |
 
-## 谁可以管理凭证
-
-Vault 和 Credential 由**平台管理员**管理，包括查看和创建记录、修改或轮换密钥、
-停用和删除记录，以及分配或解绑 Vault。这些 API 全部位于 `/api/v1/admin/` 下；
-已登录但没有管理员角色的用户调用时，会收到 `403 ADMIN_ROLE_REQUIRED`。
-
-创建 Agent 不会自动获得凭证管理权限。普通 Agent 开发者需要请平台管理员配置所需
-凭证，并将 Vault 分配给 Agent。用户随后运行 Agent 时，系统自动使用已分配的凭证，
-无需在每次 Session 中选择 Vault 或填写 Token。这个权限范围适用于所有凭证类型，
-包括 MCP Token、OAuth Token、Git HTTP Basic 和环境变量凭证。
-
 ## 安全性
 
 - `access_token`**永远不会**在 API 响应中返回
@@ -125,57 +114,10 @@ Agent 任务开始前刷新已经过期的 access token。它不会在每次 MCP
 提供时选择 `environment_variable`；主机和请求范围限制见
 [保护 Agent 使用的凭证](egress-credential-injection.md)。
 
-#### 私有 Plugin 和 Skill 的 Git 仓库 {#private-git-repositories}
-
-通过 HTTPS 从私有 Git 仓库下载 Plugin 或 Skill 时，由管理员在管理台配置：
-
-1. 打开**管理台 → 凭证**，点击**新建凭证库**，创建后进入该 Vault。
-2. 点击**添加凭证**，类型选择 **HTTP Basic（Git HTTPS）**，填写目标地址、用户名和
-   密码或访问令牌，然后保存。
-3. 在 Vault 的**已分配给**区域点击**分配**，使用方类型选择 **Agent**，再选择需要
-   下载 Plugin 或 Skill 的 Agent。只保存凭证不会自动把它分配给 Agent。
-4. Agent 的 Plugin 或 Skill 配置保留不含凭证的仓库 URL；完成分配后，新建 Session。
-
-以 Gitee 私有仓库为例：
-
-| 页面字段 | 填写内容 |
-| --- | --- |
-| 凭证类型 | **HTTP Basic（Git HTTPS）**（`http_basic`） |
-| 目标地址 | `https://gitee.com/your-team/private-plugins.git`，替换为仓库实际的 HTTPS 克隆地址 |
-| 用户名 | 有权访问该仓库的 Gitee 账号用户名 |
-| 密码或访问令牌 | 该账号的个人访问令牌，需要具备读取该仓库的权限 |
-
-[Gitee 的 HTTPS 操作说明](https://gitee.com/oschina/git-osc)使用账号用户名和个人
-访问令牌代替登录密码。其他 Git 服务也应按各自要求填写用户名和 Token 权限。
-如果 Skill 来源为 `https://gitee.com/your-team/private-skills.git@main#skills/review`，
-凭证的目标地址只填写 `https://gitee.com/your-team/private-skills.git`；版本和子目录
-保留在 Skill 配置中。
-
-对应的管理 API 请求示例：
-
-```http
-POST /api/v1/admin/vaults/{vault_id}/credentials
-Content-Type: application/json
-
-{
-  "display_name": "私有 Skill 仓库",
-  "auth": {
-    "type": "http_basic",
-    "url": "https://gitee.com/your-team/private-skills.git",
-    "username": "your-gitee-username",
-    "password": "<repository-access-token>"
-  }
-}
-```
-
-`auth.password` 只写，响应只包含凭证类型、目标地址和用户名。URL 必须使用 HTTPS
-443 端口和非根路径，不含嵌入凭证、查询参数、片段或通配符；用户名不能包含冒号或
-控制字符。
-
-AstraBox 在下载 Plugin 和 Skill 前就应用 Agent 的 Vault 分配，预热也使用这套配置。
-OpenSandbox 在网络出口为目标路径及其子路径的 `GET`、`HEAD`、`POST` 请求添加
-HTTP Basic 鉴权，不会应用到同一主机的其他仓库路径。无需把 Token 或占位符放进
-Git URL 或沙箱环境变量。直接配置和管理员目录中的 Git Skill 来源都使用这条路径。
+通过 HTTPS 访问私有 Git 仓库时，选择 `http_basic`，配置 `auth.url`、`auth.username`
+和只写的 `auth.password`。URL 必须使用 HTTPS 443 端口和非根路径，不含嵌入凭证、
+查询参数、片段或通配符。用户名不能包含冒号或控制字符；密码可以是 Git 服务要求的
+仓库访问 Token。请按该服务要求选择用户名和仓库权限。
 
 ### 3. 在 Session 中使用
 
@@ -218,22 +160,6 @@ curl -X PUT \
 | `auth.refresh` | object | 否 | OAuth refresh 配置 |
 
 ## 常见问题
-
-**Q: Plugin 或 Skill 拉取时报 `could not read Username for 'https://gitee.com': No such device or address`，怎么排查？**
-
-A: Git 没能完成认证，随后尝试在没有交互输入的运行环境中询问用户名。仅凭这条
-错误，不能确定是未配置凭证、凭证被拒绝，还是凭证匹配了其他仓库。请管理员检查：
-
-1. Vault 中存在可用的 **HTTP Basic（Git HTTPS）** 凭证。MCP Bearer Token 或环境
-   变量凭证不会为 Git 配置 HTTP Basic 鉴权。
-2. 目标地址与实际 HTTPS 克隆地址一致，包含仓库路径和实际使用的 `.git` 后缀。
-   不能只填写 `https://gitee.com`，也不要带 Skill 的 `@ref` 和 `#path` 后缀。
-3. 用户名正确、Token 有效，并且所属账号及 Token 权限允许读取该仓库；同时确认
-   仓库 URL 本身填写正确。
-4. Vault 未停用，且已分配给报错的 Agent。修正配置后，新建 Session 再试。
-
-Token 只填写在凭证的密码字段，不要放进 Git URL、Agent 提示词或错误报告。
-具体操作见[私有仓库配置步骤](#private-git-repositories)。
 
 **Q: MCP OAuth token 过期后怎么办？** A: Credential 包含 refresh token 和 refresh
 配置时，AstraBox 会在准备或重连运行时、以及下一项顶层 Agent 任务开始前刷新过期 Token。

@@ -6,6 +6,12 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import i18n from '../../i18n';
 import { SessionComposerBox } from './SessionComposerBox';
 
+vi.mock('@/api', () => ({
+  ApiError: class extends Error {},
+  getSpeechInputOptions: vi.fn().mockResolvedValue({ models: [], max_audio_bytes: 1, max_recording_seconds: 120 }),
+  transcribeSpeechInput: vi.fn(),
+}));
+
 beforeAll(async () => {
   await i18n.changeLanguage('en');
 });
@@ -18,6 +24,7 @@ type ComposerProps = ComponentProps<typeof SessionComposerBox>;
 
 function composerProps(overrides: Partial<ComposerProps> = {}): ComposerProps {
   return {
+    sessionId: 'session-1',
     displayedQueue: [],
     removeQueueItem: vi.fn(),
     retryQueueItem: vi.fn(),

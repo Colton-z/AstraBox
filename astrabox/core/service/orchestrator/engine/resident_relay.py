@@ -38,6 +38,7 @@ from typing import Any, Protocol
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.core.service.orchestrator.engine.base import (
     EngineEventSink,
+    ResidentOutputCheckpoint,
     ResidentOutputSink,
     ResidentResponseHandle,
 )
@@ -84,8 +85,28 @@ class RelaySeam(Protocol):
         """Whether this record opens a model run."""
         ...
 
+    def platform_run(
+        self, record: dict[str, Any], *, pending: bool, active: bool,
+    ) -> bool | None:
+        """Whether the opening run belongs to a platform input.
+
+        None defers attribution until a later native record proves it. The
+        relay retains the opening records in order until the engine answers.
+        """
+        ...
+
     def settles_run(self, record: dict[str, Any]) -> bool:
         """Whether this record is the engine's own end of a run."""
+        ...
+
+    def handoff_to_platform(
+        self, translator: Any, record: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """The preceding response's terminal at a native queued-input boundary.
+
+        Called only while an external input awaits output and an engine-owned
+        response is open. None keeps the record with that response.
+        """
         ...
 
     def response_id(self, record: dict[str, Any], sequence: int) -> str:
@@ -154,6 +175,7 @@ class ResidentRelay:
         current_sequence: Callable[[], Awaitable[int]],
         resident_output_sink: ResidentOutputSink | None,
         event_sink: EngineEventSink | None,
+        checkpoint: ResidentOutputCheckpoint | None = None,
     ) -> None:
         self._seam = seam
         self._session_id = str(session_id)
@@ -162,6 +184,7 @@ class ResidentRelay:
         self._send_command = send_command
         self._current_sequence = current_sequence
         self._sink = resident_output_sink
+        self._checkpoint = checkpoint
         self._event_sink = event_sink
         #: Records that belong to the platform's own turn, in wire order. The
         #: turn iterator drains this instead of the process.
@@ -172,6 +195,7 @@ class ResidentRelay:
         #: pending input was given, with that input's number.
         self._submissions = 0
         self._attributed_starts: list[tuple[Any, int]] = []
+        self._run_prelude: list[Any] = []
         self._resident: _Resident | None = None
         #: Sequences below this are wire replay from before this relay read
         #: the process. They may still belong to a platform turn being
@@ -202,7 +226,7 @@ class ResidentRelay:
 
     # ── attribution ──────────────────────────────────────────────────────
     def platform_input_submitted(self) -> int:
-        """A platform input is on its way to the engine; its next run is the turn's.
+        """A platform input is on its way to the engine.
 
         Marked before the input is written, not after the engine answers it:
         the engine's acknowledgement and the run's first record are two
@@ -311,7 +335,11 @@ class ResidentRelay:
         sink = self._sink
         if sink is None:
             return
-        checkpoint = await sink.restore_resident_output(engine_kind=self._seam.engine_kind)
+        checkpoint = self._checkpoint or await sink.restore_resident_output(
+            engine_kind=self._seam.engine_kind
+        )
+        if checkpoint.replay_after_sequence is not None:
+            self._floor = checkpoint.replay_after_sequence + 1
         if checkpoint.external_turn_active:
             self._platform_active = True
         response_id = str(checkpoint.open_response_id or "").strip()
@@ -324,7 +352,9 @@ class ResidentRelay:
             )
         self._resident = _Resident(
             response_id=response_id,
-            handle=ResidentResponseHandle(response_id=response_id, owns_slot=True),
+            handle=ResidentResponseHandle(
+                response_id=response_id, owns_slot=checkpoint.open_response_owns_slot,
+            ),
             translator=self._seam.new_translator(),
             after_sequence=int(checkpoint.after_sequence),
         )
@@ -344,36 +374,58 @@ class ResidentRelay:
         record = seam.record(wire)
         sequence = seam.sequence(wire)
 
+        # A replayed start belongs to the response already in custody. The
+        # next input cannot claim it merely because that input is pending.
+        if self._resident is not None:
+            if self._platform_pending or self._platform_active:
+                frame = seam.handoff_to_platform(self._resident.translator, record)
+                if frame is not None:
+                    terminal = emission_from_translated_frame(frame)
+                    if not isinstance(terminal, TurnTerminal):
+                        raise RuntimeError("engine input handoff did not end the preceding response")
+                    await self._close(self._resident, terminal, sequence)
+                    self._platform_active = True
+                    if self._platform_pending:
+                        self._platform_pending = False
+                        self._attributed_starts.append((wire, self._submissions))
+                    await self.turn_inbox.put(wire)
+                    return
+            await self._observe(self._resident, record, sequence)
+            return
+
+        if self._run_prelude or (
+            seam.starts_run(record)
+            and (sequence >= self._floor or self._platform_active or self._platform_pending)
+        ):
+            self._run_prelude.append(wire)
+            attribution = seam.platform_run(
+                record, pending=self._platform_pending, active=self._platform_active,
+            )
+            if attribution is None:
+                return
+            prelude, self._run_prelude = self._run_prelude, []
+            start = prelude[0]
+            self._platform_active = attribution
+            if attribution:
+                if self._platform_pending:
+                    self._platform_pending = False
+                    self._attributed_starts.append((start, self._submissions))
+                for item in prelude:
+                    await self.turn_inbox.put(item)
+                if seam.settles_run(record):
+                    self._platform_active = False
+            else:
+                await self._open(seam.record(start), seam.sequence(start))
+                resident = self._resident
+                assert resident is not None
+                for item in prelude:
+                    await self._observe(resident, seam.record(item), seam.sequence(item))
+            return
+
         if self._platform_active:
-            if seam.starts_run(record) and self._platform_pending:
-                # A restored active snapshot can precede this input's start.
-                # Consume its pending attribution here too, not on run end:
-                # another input may be queued while this run is in progress.
-                self._platform_pending = False
-                self._attributed_starts.append((wire, self._submissions))
             await self.turn_inbox.put(wire)
             if seam.settles_run(record):
                 self._platform_active = False
-            return
-
-        if seam.starts_run(record) and self._platform_pending:
-            self._platform_pending = False
-            self._platform_active = True
-            self._attributed_starts.append((wire, self._submissions))
-            await self.turn_inbox.put(wire)
-            return
-
-        if self._resident is None and seam.starts_run(record):
-            if sequence < self._floor:
-                # Wire replay of a run that ended before this relay existed:
-                # whatever it was, it is journaled under its own address or
-                # was never the platform's to keep.
-                return
-            await self._open(record, sequence)
-
-        resident = self._resident
-        if resident is not None:
-            await self._observe(resident, record, sequence)
             return
 
         if sequence < self._floor:

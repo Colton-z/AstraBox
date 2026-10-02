@@ -3,6 +3,8 @@ import { ResizablePanel } from '@/components/ui/resizable';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import TerminalPanel from '../../components/TerminalPanel';
 import DiffPanel from '../../components/DiffPanel';
+import { ErrorNote } from '@/components/shell';
+import { Button } from '@/components/ui/button';
 import type { FileChange } from '../../types';
 import type { SubagentRegistry } from '../hooks/useSubagentRegistry';
 import {
@@ -34,6 +36,9 @@ export function SessionRightPanel({
   selectedChildRunId,
   setSelectedChildRunId,
   fileChanges,
+  fileChangesLoading,
+  fileChangesError,
+  refreshFileChanges,
   selectedDiffFile,
   setSelectedDiffFile,
 }: {
@@ -54,6 +59,9 @@ export function SessionRightPanel({
   selectedChildRunId: string | null;
   setSelectedChildRunId: (id: string | null) => void;
   fileChanges: FileChange[];
+  fileChangesLoading: boolean;
+  fileChangesError: string | null;
+  refreshFileChanges: () => Promise<void>;
   selectedDiffFile: string | null;
   setSelectedDiffFile: (path: string) => void;
 }) {
@@ -131,7 +139,18 @@ export function SessionRightPanel({
         )}
         {enabledTabs.has('diff') && (
           <TabsContent value="diff" className="flex-1 min-h-0 overflow-hidden">
-            <DiffPanel fileChanges={fileChanges} selectedFile={selectedDiffFile} onSelectFile={setSelectedDiffFile} />
+            {fileChangesError ? (
+              <div className="flex flex-col gap-2 p-3">
+                <ErrorNote>{t('chat:diff.load_failed')}</ErrorNote>
+                <Button variant="outline" size="sm" onClick={() => void refreshFileChanges()}>
+                  {t('common:retry')}
+                </Button>
+              </div>
+            ) : fileChangesLoading ? (
+              <div role="status" className="p-3 text-sm text-muted-foreground">{t('chat:diff.loading')}</div>
+            ) : (
+              <DiffPanel fileChanges={fileChanges} selectedFile={selectedDiffFile} onSelectFile={setSelectedDiffFile} />
+            )}
           </TabsContent>
         )}
       </Tabs>

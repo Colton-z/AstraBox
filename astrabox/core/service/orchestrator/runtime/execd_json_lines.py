@@ -73,6 +73,10 @@ class ExecdChannelDetached(RuntimeError):
     """The pipe carrying this process is gone; nothing more will arrive."""
 
 
+class ExecdChannelAlreadyAttached(RuntimeError):
+    """Another live connection holds the pipe's exclusive read/write slot."""
+
+
 class _ExecdConnection(ClientConnection):
     """A client connection that ends TCP itself once the closing handshake is done.
 
@@ -199,7 +203,7 @@ class ExecdJsonLineChannel:
     async def current_output_offset(self) -> int:
         return int((await self.status()).get("output_offset") or 0)
 
-    async def connect(self, *, since: int) -> None:
+    async def connect(self, *, since: int, takeover: bool = True) -> None:
         """Open the pipe from ``since`` and start reading.
 
         Returning proves the transport is up, not that the process can answer.
@@ -215,7 +219,7 @@ class ExecdJsonLineChannel:
         self._buffer_start_offset = self._requested_since
         url = (
             f"{self._ws_origin}/pty/{pty_session_id}/ws"
-            f"?pty=0&takeover=1&since={self._requested_since}"
+            f"?pty=0&takeover={int(takeover)}&since={self._requested_since}"
         )
         try:
             self._ws = await websockets.connect(
@@ -235,6 +239,15 @@ class ExecdJsonLineChannel:
                 raise self._fatal
         except asyncio.CancelledError:
             raise
+        except websockets.exceptions.InvalidStatus as exc:
+            failure: BaseException = exc
+            if not takeover and exc.response.status_code == 409:
+                failure = ExecdChannelAlreadyAttached(
+                    f"{self.label} pipe already has a live connection"
+                )
+            await self.fail(failure)
+            assert self._fatal is not None
+            raise self._fatal from exc
         except BaseException as exc:
             await self.fail(exc)
             assert self._fatal is not None

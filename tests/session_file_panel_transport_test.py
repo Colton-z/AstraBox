@@ -9,6 +9,7 @@ binary fidelity, response bounds and symlink containment cheap to diagnose.
 from __future__ import annotations
 
 import io
+from contextlib import asynccontextmanager
 import posixpath
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -162,6 +163,10 @@ class _Box:
 class _Wrapper:
     def __init__(self, sandbox: _Box) -> None:
         self.sandbox = sandbox
+        self.closed = False
+
+    async def close(self) -> None:
+        self.closed = True
 
 
 class _Upload:
@@ -213,8 +218,9 @@ class _Service(SessionFileService):
         }
         self.box = _Wrapper(_Box(filesystem))
 
+    @asynccontextmanager
     async def _resolve_session_context(self, *_args: Any, **_kwargs: Any):
-        return self.session, self.box, "/workspace"
+        yield self.session, self.box, "/workspace"
 
 
 async def test_full_file_journey_uses_only_execd_filesystem() -> None:
@@ -364,7 +370,7 @@ async def test_assistant_file_api_maps_the_owner_profile_without_persisting_it_o
                 sessions_repo=None,
                 session_snapshots_repo=None,
                 agent_repo=None,
-                runtime_manager=SimpleNamespace(get_runtime=lambda *_a, **_k: None),
+                runtime_manager=SimpleNamespace(connect_sandbox_only=self.connect),
             )
             self.session = {
                 "session_id": "assistant-session",
@@ -385,7 +391,7 @@ async def test_assistant_file_api_maps_the_owner_profile_without_persisting_it_o
         async def _resolve_effective_runtime_session(self, session: dict[str, Any]):
             return session
 
-        async def _get_or_connect_sandbox(self, *_args: Any, **_kwargs: Any):
+        async def connect(self, *_args: Any, **_kwargs: Any):
             return _Wrapper(_Box(filesystem))
 
     listing = await AssistantService().list_entries(object(), "assistant-session")
@@ -511,3 +517,175 @@ def test_a_recognised_status_still_answers_in_its_own_terms() -> None:
     assert missing.status_code == 404
     assert missing.code == "FILE_NOT_FOUND"
     assert "/workspace/absent.txt" in missing.message
+
+
+class _FileSessions:
+    def __init__(self, session: dict[str, Any]) -> None:
+        self.session = dict(session)
+        self.updates: list[dict[str, Any]] = []
+        self.fail_write = False
+
+    async def get_session(self, _session_id: str) -> dict[str, Any]:
+        return dict(self.session)
+
+    async def compare_and_update_session(
+        self, _session_id: str, *, expected: dict[str, Any],
+        updates: dict[str, Any], touch_updated_at: bool = True,
+    ) -> bool:
+        if self.fail_write:
+            raise RuntimeError('database unavailable')
+        if not all(self.session.get(key) == value for key, value in expected.items()):
+            return False
+        assert touch_updated_at is False
+        self.session.update(updates)
+        self.updates.append(dict(updates))
+        return True
+
+
+def _file_transport(*, parked: bool = False):
+    from astrabox.core.service.orchestrator.runtime_manager import RemoteAgentRuntimeManager
+
+    filesystem = _Filesystem()
+    session = {
+        **_Service(filesystem).session,
+        'user_id': 'owner',
+        'sandbox_id': 'same-box',
+        'sandbox_endpoint': 'old-endpoint',
+        'sandbox_parked_at': 'park-1' if parked else None,
+        'state': 'READY',
+        'runtime_unavailable': False,
+    }
+    repo = _FileSessions(session)
+
+    class Manager(RemoteAgentRuntimeManager):
+        def __init__(self) -> None:
+            self._sessions_repo = repo
+            self._session_locks = {}
+            self.filesystem = filesystem
+            self.handles: list[_Wrapper] = []
+            self.resumes: list[str] = []
+            self.resume_result = True
+            self.during_resume = None
+
+        async def resume_sandbox_by_id(self, sandbox_id: str) -> bool:
+            self.resumes.append(sandbox_id)
+            if self.during_resume:
+                await self.during_resume()
+            return self.resume_result
+
+        async def connect_sandbox_only(self, sandbox_id: str):
+            assert sandbox_id == 'same-box'
+            assert repo.session['sandbox_parked_at'] is None
+            handle = _Wrapper(_Box(self.filesystem))
+            self.handles.append(handle)
+            return handle
+
+        def get_runtime(self, *_args: Any, **_kwargs: Any):
+            raise AssertionError('file operations must not reuse runtime transport')
+
+    class Service(SessionFileService):
+        async def _resolve_effective_runtime_session(self, session: dict[str, Any]):
+            return session
+
+    manager = Manager()
+    service = Service(
+        sessions_repo=repo, session_snapshots_repo=None, agent_repo=None,
+        runtime_manager=manager,
+    )
+    return service, manager, repo, SimpleNamespace(user_id='owner')
+
+
+async def test_file_listing_wakes_original_box_and_preserves_ready_state() -> None:
+    service, manager, repo, user = _file_transport(parked=True)
+    manager.filesystem.entries['/workspace/kept.txt'] = _Info('/workspace/kept.txt', 'file')
+
+    listing = await service.list_entries(user, 's-1')
+
+    assert [entry['name'] for entry in listing['entries']] == ['kept.txt']
+    assert manager.resumes == ['same-box']
+    assert repo.session['sandbox_id'] == 'same-box'
+    assert repo.session['sandbox_endpoint'] is None
+    assert repo.session['sandbox_parked_at'] is None
+    assert datetime.fromisoformat(repo.session['sandbox_resumed_at']).tzinfo is not None
+    assert repo.session['state'] == 'READY'
+    assert repo.session['runtime_unavailable'] is False
+    assert len(manager.handles) == 1 and manager.handles[0].closed
+
+
+async def test_file_request_resolves_new_endpoint_after_another_reader_wakes_same_id() -> None:
+    service, manager, repo, user = _file_transport()
+    await service.list_entries(user, 's-1')
+    manager.filesystem = _Filesystem()
+    manager.filesystem.entries['/workspace/new.txt'] = _Info('/workspace/new.txt', 'file', 3)
+    manager.filesystem.content['/workspace/new.txt'] = b'new'
+    # Another worker already completed resume: neither the ID nor the parked
+    # mark tells this reader that its previous connection is now obsolete.
+    body, name = await service.download_file_for_session(repo.session, path='new.txt')
+    assert (body, name) == (b'new', 'new.txt')
+    assert manager.resumes == []
+    assert len(manager.handles) == 2
+    assert manager.handles[0] is not manager.handles[1]
+    assert all(handle.closed for handle in manager.handles)
+
+
+async def test_file_connection_closes_after_filesystem_failure() -> None:
+    service, manager, _repo, user = _file_transport()
+    manager.filesystem.fail_list_with = _FilesystemError(503)
+    with pytest.raises(APIError):
+        await service.list_entries(user, 's-1')
+    assert len(manager.handles) == 1 and manager.handles[0].closed
+
+
+async def test_file_owner_check_precedes_wake_or_connection() -> None:
+    service, manager, repo, _user = _file_transport(parked=True)
+    with pytest.raises(APIError) as raised:
+        await service.list_entries(SimpleNamespace(user_id='other-owner'), 's-1')
+    assert raised.value.status_code == 404
+    assert manager.resumes == [] and manager.handles == []
+    assert repo.session['sandbox_parked_at'] == 'park-1'
+
+
+@pytest.mark.parametrize('failure', ['refused', 'provider-error', 'database-error', 'binding-change'])
+async def test_file_wake_failure_does_not_replace_box_or_erase_park_record(failure: str) -> None:
+    service, manager, repo, user = _file_transport(parked=True)
+    if failure == 'refused':
+        manager.resume_result = False
+    elif failure == 'database-error':
+        repo.fail_write = True
+    else:
+        async def change_or_fail():
+            if failure == 'provider-error':
+                raise RuntimeError('provider unavailable')
+            repo.session.update(sandbox_id='replacement', sandbox_parked_at='park-2')
+        manager.during_resume = change_or_fail
+    with pytest.raises((APIError, RuntimeError)):
+        await service.list_entries(user, 's-1')
+    assert manager.handles == []
+    assert repo.updates == []
+    assert repo.session['sandbox_parked_at'] == ('park-2' if failure == 'binding-change' else 'park-1')
+    assert repo.session['state'] == 'READY'
+    assert repo.session['runtime_unavailable'] is False
+
+
+async def test_concurrent_file_and_turn_wake_share_one_resume() -> None:
+    import asyncio
+
+    service, manager, repo, user = _file_transport(parked=True)
+    turn_session = dict(repo.session)
+    entered = asyncio.Event()
+    released = asyncio.Event()
+
+    async def hold_resume():
+        entered.set()
+        await released.wait()
+
+    manager.during_resume = hold_resume
+    listing = asyncio.create_task(service.list_entries(user, 's-1'))
+    await asyncio.wait_for(entered.wait(), timeout=1)
+    turn = asyncio.create_task(manager.wake_parked_session(turn_session))
+    released.set()
+    await asyncio.gather(listing, turn)
+    assert manager.resumes == ['same-box']
+    assert turn_session['sandbox_parked_at'] is None
+    assert turn_session['sandbox_endpoint'] is None
+    assert all(handle.closed for handle in manager.handles)

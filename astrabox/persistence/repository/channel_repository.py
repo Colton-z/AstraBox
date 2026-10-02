@@ -1,6 +1,6 @@
 """Channel spine persistence — inbound work items, conversation map, reply outbox.
 
-Three collections behind the channel ingress spine
+Durable collections behind the channel ingress spine
 (:mod:`astrabox.core.service.orchestrator.channel_ingress_service`), contract
 in ``docs/channel-spine.md``:
 
@@ -27,12 +27,14 @@ in ``docs/channel-spine.md``:
   paths never delete: they CAS back to RECEIVED (re-drivable, attempts
   ``$inc``-ed, lease set to the retry watermark) or to DEAD with evidence.
 * ``channel_conversations`` — conversation continuity. One doc per
-  (binding, conversation_key) mapping to the live session; replaced via CAS
+  (binding, configured execution account, conversation_key) mapping to the live session; replaced via CAS
   when the mapped session is terminated. Doubles as the per-conversation
   dispatch lock (owner + TTL + the same monotonic fence).
-* ``channel_outbox`` — reply delivery, one row per SETTLED turn, created
-  idempotently under a deterministic ``_id`` per (work item, command) and
-  bound to the exact command/turn it reports — the deliverer never reads
+* ``channel_output_subscriptions`` — one destination and one journal cursor per
+  (binding, Session). Delivery intents are durable before the cursor advances.
+* ``channel_outbox`` — reply delivery, created idempotently per
+  (binding, Session, response) and
+  bound to the exact response it reports — the deliverer never reads
   "the session's last assistant message". States
   ``PENDING → SENDING → DELIVERED | DEAD`` under a fenced lease; platform
   aliases are persisted on the row before it is marked DELIVERED.
@@ -41,6 +43,7 @@ in ``docs/channel-spine.md``:
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import time
 import uuid
@@ -60,6 +63,7 @@ INBOUND_COLLECTION = "channel_inbound"
 CONVERSATIONS_COLLECTION = "channel_conversations"
 OUTBOX_COLLECTION = "channel_outbox"
 ALIASES_COLLECTION = "channel_aliases"
+OUTPUT_SUBSCRIPTIONS_COLLECTION = "channel_output_subscriptions"
 
 # Inbound work item states (see module docstring for the machine).
 INBOUND_RECEIVED = "RECEIVED"
@@ -123,6 +127,15 @@ _CONVERSATION_LOCK_SECONDS = 900.0
 def _scoped_id(prefix: str, deployment_id: str, key: str) -> str:
     digest = hashlib.sha256(f"{deployment_id}::{key}".encode("utf-8")).hexdigest()
     return f"{prefix}:{digest}"
+
+
+def _conversation_id(deployment_id: str, key: str, execution_user_id: str) -> str:
+    if not execution_user_id:
+        return _scoped_id("conv", deployment_id, key)
+    return _scoped_id(
+        "conv-executor", deployment_id,
+        json.dumps([execution_user_id, key], ensure_ascii=False, separators=(",", ":")),
+    )
 
 
 def new_owner_token() -> str:
@@ -386,7 +399,8 @@ class ChannelRepository:
         return bool(getattr(result, "modified_count", 0))
 
     async def mark_inbound_ignored(
-        self, *, item_id: str, owner_token: str, generation: int, reason: str
+        self, *, item_id: str, owner_token: str, generation: int, reason: str,
+        exclude_from_context: bool = False,
     ) -> bool:
         """CAS RECEIVED → IGNORED: a terminal, ACK-safe policy classification."""
         collection = await get_async_collection(INBOUND_COLLECTION)
@@ -402,6 +416,7 @@ class ChannelRepository:
                     "state": INBOUND_IGNORED,
                     "ignored_reason": str(reason)[:200],
                     "updated_at": utcnow_iso(),
+                    **({"context_excluded": True} if exclude_from_context else {}),
                 }
             },
         )
@@ -573,10 +588,12 @@ class ChannelRepository:
             "deployment_id": item["deployment_id"],
             "payload.conversation_key": payload["conversation_key"],
             "payload.binding_revision": payload["binding_revision"],
+            "payload.creator_user_id": payload.get("creator_user_id"),
             "payload.retain_context": True,
             "payload.provider_ignore_reason": None,
             "payload.message_timestamp": {"$lte": payload["message_timestamp"]},
             "context_submitted": {"$ne": True},
+            "context_excluded": {"$ne": True},
         })
         context = []
         async for record in cursor:
@@ -639,11 +656,11 @@ class ChannelRepository:
     # ── conversation continuity ──────────────────────────────────────────
 
     async def get_conversation(
-        self, *, deployment_id: str, conversation_key: str
+        self, *, deployment_id: str, conversation_key: str, execution_user_id: str = "",
     ) -> dict[str, Any] | None:
         collection = await get_async_collection(CONVERSATIONS_COLLECTION)
         return await collection.find_one(
-            {"_id": _scoped_id("conv", deployment_id, conversation_key)}
+            {"_id": _conversation_id(deployment_id, conversation_key, execution_user_id)}
         )
 
     async def upsert_conversation(
@@ -654,6 +671,7 @@ class ChannelRepository:
         session_id: str,
         agent_id: str,
         replaces_session_id: str | None = None,
+        execution_user_id: str = "",
     ) -> dict[str, Any] | None:
         """Map the key to ``session_id``.
 
@@ -662,7 +680,7 @@ class ChannelRepository:
         callbacks cannot both replace and orphan a session.
         """
         collection = await get_async_collection(CONVERSATIONS_COLLECTION)
-        doc_id = _scoped_id("conv", deployment_id, conversation_key)
+        doc_id = _conversation_id(deployment_id, conversation_key, execution_user_id)
         now = utcnow_iso()
         if replaces_session_id is None:
             doc = {
@@ -671,6 +689,7 @@ class ChannelRepository:
                 "conversation_key": conversation_key,
                 "session_id": session_id,
                 "agent_id": agent_id,
+                "execution_user_id": execution_user_id,
                 "created_at": now,
                 "last_inbound_at": now,
             }
@@ -688,11 +707,11 @@ class ChannelRepository:
         )
 
     async def touch_conversation(
-        self, *, deployment_id: str, conversation_key: str
+        self, *, deployment_id: str, conversation_key: str, execution_user_id: str = "",
     ) -> None:
         collection = await get_async_collection(CONVERSATIONS_COLLECTION)
         await collection.update_one(
-            {"_id": _scoped_id("conv", deployment_id, conversation_key)},
+            {"_id": _conversation_id(deployment_id, conversation_key, execution_user_id)},
             {"$set": {"last_inbound_at": utcnow_iso()}},
         )
 
@@ -704,6 +723,7 @@ class ChannelRepository:
         deployment_id: str,
         conversation_key: str,
         owner: str,
+        execution_user_id: str = "",
         now: float | None = None,
         ttl_seconds: float = _CONVERSATION_LOCK_SECONDS,
     ) -> int | None:
@@ -721,7 +741,7 @@ class ChannelRepository:
         now = now if now is not None else time.time()
         result = await collection.find_one_and_update(
             {
-                "_id": _scoped_id("conv", deployment_id, conversation_key),
+                "_id": _conversation_id(deployment_id, conversation_key, execution_user_id),
                 "$or": [
                     {"lock_owner": None},
                     {"lock_owner": {"$exists": False}},
@@ -744,13 +764,14 @@ class ChannelRepository:
         deployment_id: str,
         conversation_key: str,
         owner: str,
+        execution_user_id: str = "",
         generation: int,
     ) -> None:
         """Release iff still held by ``owner`` at ``generation`` (never steal)."""
         collection = await get_async_collection(CONVERSATIONS_COLLECTION)
         await collection.update_one(
             {
-                "_id": _scoped_id("conv", deployment_id, conversation_key),
+                "_id": _conversation_id(deployment_id, conversation_key, execution_user_id),
                 "lock_owner": owner,
                 "lock_generation": int(generation),
             },
@@ -759,39 +780,74 @@ class ChannelRepository:
 
     # ── reply outbox ─────────────────────────────────────────────────────
 
+    async def subscribe_to_output(
+        self, *, session_id: str, deployment_id: str, channel_name: str,
+        reply_context: dict[str, Any], conversation_key: str | None,
+        after_seq: int, streaming: bool,
+    ) -> None:
+        """Bind a destination for the Session lifetime without replaying history."""
+        collection = await get_async_collection(OUTPUT_SUBSCRIPTIONS_COLLECTION)
+        await collection.update_one(
+            {"_id": _scoped_id("output", deployment_id, session_id)},
+            {"$setOnInsert": {
+                "session_id": session_id, "deployment_id": deployment_id,
+                "channel_name": channel_name, "reply_context": dict(reply_context),
+                "conversation_key": conversation_key, "streaming": streaming,
+                "after_seq": after_seq,
+            }}, upsert=True,
+        )
+
+    async def list_output_subscriptions(
+        self, *, after_id: str = "", limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        collection = await get_async_collection(OUTPUT_SUBSCRIPTIONS_COLLECTION)
+        return [row async for row in collection.find({"_id": {"$gt": after_id}}).sort("_id", 1).limit(limit)]
+
+    async def advance_output_subscription(
+        self, subscription_id: str, *, expected_seq: int, sequence: int,
+    ) -> bool:
+        collection = await get_async_collection(OUTPUT_SUBSCRIPTIONS_COLLECTION)
+        result = await collection.update_one(
+            {"_id": subscription_id, "after_seq": expected_seq}, {"$set": {"after_seq": sequence}},
+        )
+        return bool(result.modified_count)
+
+    async def remove_output_subscription(self, subscription_id: str) -> None:
+        collection = await get_async_collection(OUTPUT_SUBSCRIPTIONS_COLLECTION)
+        await collection.delete_one({"_id": subscription_id})
+
     async def create_outbox_entry(
         self,
         *,
-        work_item_id: str,
         deployment_id: str,
         channel_name: str,
         session_id: str,
         command_id: str,
         turn_id: str,
+        response_seq: int,
+        response_id: str,
+        start_after_seq: int,
         reply_context: dict[str, Any],
         conversation_key: str | None = None,
         streaming: bool = False,
     ) -> dict[str, Any]:
         """Idempotently create the turn's delivery row.
 
-        The ``_id`` is deterministic per (work item, command): a re-driven
-        settle after a crash re-creates the same row and finds the prior
-        delivery state instead of double-sending. The row is born bound to
-        the exact command/turn it reports (channel-spine.md invariant C).
-        Simple deliveries create it at settle time; a streaming delivery
-        creates it at dispatch-bind time (``streaming=True``) so the session
-        can tail the turn's durable frames live, resuming from
-        ``frame_cursor`` after a crash.
+        Identity is the destination binding, Session and response. Input
+        dispatch and engine-owned output share this delivery path. Replaying
+        the Session cursor finds the same row and retains its delivery state.
         """
         collection = await get_async_collection(OUTBOX_COLLECTION)
         doc = {
-            "_id": _scoped_id("outbox", work_item_id, command_id),
-            "work_item_id": work_item_id,
+            "_id": _scoped_id("outbox", deployment_id, json.dumps([session_id, response_id])),
             "deployment_id": deployment_id,
             "channel_name": channel_name,
             "session_id": session_id,
             "command_id": command_id,
             "turn_id": turn_id,
+            "response_seq": response_seq,
+            "response_id": response_id,
+            "start_after_seq": start_after_seq,
             "conversation_key": conversation_key,
             "reply_context": dict(reply_context),
             "streaming": bool(streaming),
@@ -872,6 +928,16 @@ class ChannelRepository:
         """
         collection = await get_async_collection(OUTBOX_COLLECTION)
         now = now if now is not None else time.time()
+        entry = await collection.find_one({"_id": outbox_id})
+        if entry is None:
+            return None
+        earlier = await collection.find_one({
+            "deployment_id": entry["deployment_id"], "session_id": entry["session_id"],
+            "response_seq": {"$lt": entry["response_seq"]},
+            "state": {"$in": [OUTBOX_PENDING, OUTBOX_SENDING]},
+        })
+        if earlier is not None:
+            return None
         result = await collection.find_one_and_update(
             {
                 "_id": outbox_id,

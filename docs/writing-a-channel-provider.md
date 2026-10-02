@@ -242,6 +242,13 @@ freshly loaded `binding`; its `channel_credentials` contains the write-only
 values. `reply_context` is persisted for retry, so it must contain routing IDs
 only and never credentials.
 
+AstraBox subscribes the destination to the Session's output. This is the same
+output read by Web, so delivery does not require another inbound message. A
+native background task or extension can wake the main Agent and produce a new
+reply for every attached destination. The adapter receives that reply through
+the ordinary delivery methods; it does not inspect native transcripts, poll
+child tasks, or initiate another Agent turn.
+
 Return a `ChannelDeliveryReceipt` with every platform message ID created or
 updated. AstraBox stores those IDs before marking delivery complete so inbound
 replies can resolve their `reference`. A receipt alone does not make the
@@ -254,6 +261,17 @@ For products that update a message while the Agent works, set
 `turn_started`, `progress`, `settled`, and `failed` events. The
 `prior_aliases` argument contains platform message IDs saved by an earlier
 attempt; update those messages instead of creating replacements.
+
+Use `ChannelEvent.response_id` to identify the main-Agent reply independently
+of what triggered it. `command_id` and `turn_id` can be empty for native
+Session output; do not require an inbound command to deliver it. `progress`
+contains the reply's accumulated text, including its earlier text blocks.
+Treat it as replacement content when updating a message. Text-only delivery
+omits replies with no text; native tool cards remain available in Web.
+
+AstraBox retains the subscription cursor and reconstructs partial replies
+from the Session journal after a restart. The durable outbox owns retries;
+the provider owns rendering and the destination API's idempotency behavior.
 
 Every optional capability flag must be implemented together with its matching
 method. Registration rejects partial capability shapes.

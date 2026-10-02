@@ -20,6 +20,7 @@ from astrabox.core.service.orchestrator.session_kernel.active_turn_projection im
     build_active_engine_fifo_messages,
     build_active_turn_message,
 )
+from astrabox.persistence.repository.session_event_repository import RESIDENT_OUTPUT_SOURCE_KIND
 
 
 _TERMINAL_EVENT_TYPES = frozenset(
@@ -39,6 +40,10 @@ _MESSAGE_EVENT_TYPES = frozenset(
 )
 _USER_MESSAGE_EVENT_TYPES = frozenset({"command.accepted", "input.consumed"})
 _MESSAGE_SCAN_BATCH_SIZE = 100
+
+
+class FileChangeCursorError(ValueError):
+    """The requested file-change checkpoint is outside the owned history."""
 
 
 def _event_seq(row: dict[str, Any]) -> int:
@@ -276,6 +281,7 @@ def _resident_session_message(event: dict[str, Any]) -> dict[str, Any] | None:
     return {
         "session_id": str(event["session_id"]),
         "message_id": fact.message_id,
+        "is_response": fact.is_response,
         "message_seq": seq,
         "turn_id": "",
         "role": "assistant",
@@ -324,6 +330,23 @@ def project_session_messages(
             turn_id = str(event.get("turn_id") or "").strip()
             if turn_id:
                 terminal_by_turn[turn_id] = event
+
+    for turn_id, turn_frames in frames_by_turn.items():
+        if turn_id in terminal_by_turn:
+            continue
+        starts = [row for row in turn_frames
+                  if row.get("source_kind") == RESIDENT_OUTPUT_SOURCE_KIND
+                  and (row.get("payload") or {}).get("type") == "start"]
+        if not starts:
+            continue
+        start = starts[0]
+        partial = build_active_turn_message(
+            session_id=str(start["session_id"]), turn_id=turn_id, message_id=turn_id,
+            frames=turn_frames, existing_message=None,
+            default_message_seq=_frame_seq(start), user_id=user_id,
+        )
+        if partial is not None:
+            messages[turn_id] = partial
 
     for turn_id, terminal_event in terminal_by_turn.items():
         turn_frames = frames_by_turn.get(turn_id, [])
@@ -513,6 +536,13 @@ class SessionMessageView:
         events: list[dict[str, Any]] = []
         frames: list[dict[str, Any]] = []
         loaded_turn_ids: set[str] = set()
+        # Published output survives a new input taking the active overlay.
+        # The journal already owns these blocks; no second transcript is kept.
+        open_response = await self._session_events_repo.get_open_resident_response(session_id)
+        if open_response is not None:
+            open_turn_id = str(open_response["turn_id"])
+            frames.extend(await self._frames(session_id, turn_id=open_turn_id))
+            loaded_turn_ids.add(open_turn_id)
         before_seq: int | None = None
         batch_size = max(20, min(_MESSAGE_SCAN_BATCH_SIZE, required_count * 4))
         while True:
@@ -676,14 +706,69 @@ class SessionMessageView:
         message events at all.
         """
 
+        event_sequence = await self._message_event_checkpoint_seq(session_id)
+        resident_frames = await self._session_events_repo.list_frames(
+            session_id, source_kind=RESIDENT_OUTPUT_SOURCE_KIND,
+            newest_first=True, limit=1,
+        )
+        return max(
+            event_sequence,
+            _frame_seq(resident_frames[0]) if resident_frames else 0,
+        )
+
+    async def _message_event_checkpoint_seq(self, session_id: str) -> int:
         rows = await self._session_events_repo.list_events(
-            session_id,
-            after_seq=0,
-            event_types=_MESSAGE_EVENT_TYPES,
-            limit=1,
-            newest_first=True,
+            session_id, after_seq=0, event_types=_MESSAGE_EVENT_TYPES,
+            limit=1, newest_first=True,
         )
         return _event_seq(rows[0]) if rows else 0
+
+    async def file_changes(
+        self, session_id: str, *, after_seq: int = 0,
+    ) -> dict[str, Any]:
+        """Read settled file changes without depending on a transcript window.
+
+        Each returned turn replaces its previous projection, including when it
+        contains no changes. Recovery can add a newer terminal event for a turn
+        the reader already knows. Live unfinished turns remain the stream's job.
+        """
+        through_seq = await self._message_event_checkpoint_seq(session_id)
+        if after_seq < 0 or after_seq > through_seq:
+            raise FileChangeCursorError("file-change cursor is outside this session's history")
+        turns: dict[str, dict[str, Any]] = {}
+        cursor = after_seq
+        while cursor < through_seq:
+            events = await self._session_events_repo.list_events(
+                session_id, after_seq=cursor, before_seq=through_seq + 1,
+                event_types=_TERMINAL_EVENT_TYPES, limit=_MESSAGE_SCAN_BATCH_SIZE,
+            )
+            if not events:
+                break
+            turn_ids = list(dict.fromkeys(str(event["turn_id"]) for event in events))
+            frames = await self._frames(
+                session_id, turn_ids=frozenset(turn_ids), before_seq=through_seq + 1,
+            )
+            for turn_id in turn_ids:
+                turns[turn_id] = {"turn_id": turn_id, "messages": []}
+            for message in project_session_messages(events=events, frames=frames):
+                if message.get("role") != "assistant":
+                    continue
+                parts = [
+                    dict(block["part"])
+                    for block in message.get("blocks", [])
+                    if block.get("type") == "ui_data"
+                    and isinstance(block.get("part"), dict)
+                    and block["part"].get("type") == "data-file-changes"
+                ]
+                if parts:
+                    turns[str(message["turn_id"])]["messages"].append({
+                        "message_id": message["message_id"], "parts": parts,
+                    })
+            next_cursor = max(_event_seq(event) for event in events)
+            if next_cursor <= cursor:
+                raise RuntimeError("file-change event scan did not advance")
+            cursor = next_cursor
+        return {"through_seq": through_seq, "turns": list(turns.values())}
 
     async def _history_scan(
         self,
@@ -711,6 +796,15 @@ class SessionMessageView:
         frames: list[dict[str, Any]] = []
         loaded_turn_ids: set[str] = set()
         frame_before_seq = through_seq + 1
+        open_response = await self._session_events_repo.get_open_resident_response(
+            session_id, before_seq=frame_before_seq,
+        )
+        if open_response is not None:
+            open_turn_id = str(open_response["turn_id"])
+            frames.extend(await self._frames(
+                session_id, turn_id=open_turn_id, before_seq=frame_before_seq,
+            ))
+            loaded_turn_ids.add(open_turn_id)
         before_seq: int | None = frame_before_seq
         scanned_floor = frame_before_seq
         while True:

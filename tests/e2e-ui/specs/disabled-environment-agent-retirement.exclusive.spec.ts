@@ -21,7 +21,7 @@ let environment: Record<string, unknown> = {};
 onPassOnly(async ({ request }) => {
   const api = new AstraApi(request);
   for (const id of agents) await api.deleteAgent(id);
-  // Environments have no DELETE route. Leave this test-owned record disabled.
+  // Keep the test-owned Environment disabled after its Agents are removed.
   if (environmentName) {
     await new PlatformApi(request).putEnvironment(environmentName, { ...environment, enabled: false });
   }
@@ -198,7 +198,7 @@ for (const tenancy of ['agent', 'conversation'] as const) {
       if (response.status() >= 500 && response.url().includes('/api/v1/')) serverErrors.push(response.url());
     });
     await page.goto(appPath(`/manage/agents/${warmAgent}`));
-    await expect(page.getByTestId('prewarm-state')).toHaveText('Disabled');
+    await expect(page.getByTestId('prewarm-state')).toHaveText('Warm start is off for this Agent.');
     await expect(page.getByTestId('prewarm-count')).toHaveText('Available: 0');
     expect(serverErrors, 'the management page must load without server errors').toEqual([]);
 

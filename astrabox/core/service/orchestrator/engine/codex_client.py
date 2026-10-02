@@ -842,8 +842,20 @@ class _CodexRelaySeam:
     def starts_run(self, record: dict[str, Any]) -> bool:
         return str(record.get("method") or "") == "turn/started" and self._on_root(record)
 
+    @staticmethod
+    def platform_run(
+        record: dict[str, Any], *, pending: bool, active: bool,
+    ) -> bool:
+        return pending or active
+
     def settles_run(self, record: dict[str, Any]) -> bool:
         return str(record.get("method") or "") == "turn/completed" and self._on_root(record)
+
+    @staticmethod
+    def handoff_to_platform(
+        translator: CodexTurnTranslator, record: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        return None
 
     @staticmethod
     def response_id(record: dict[str, Any], sequence: int) -> str:

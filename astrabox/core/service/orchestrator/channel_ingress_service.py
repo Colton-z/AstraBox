@@ -18,9 +18,9 @@ provider-authenticated inbound message and the delivered reply:
   A re-drive (crash recovery, steal) first looks for its token's command and
   attaches to it instead of appending a second one: at-least-once ingress,
   at-most-once turns.
-* Turn-bound delivery (invariant C): the outbox row is created at settle
-  time, bound to the exact ``command_id``/``turn_id``, and the deliverer
-  reads the assistant text of that exact turn — never the session's latest.
+* Session output subscriptions create response-bound deliveries independently
+  of input dispatch. The deliverer reads each exact response, never the
+  session's latest message or an engine's task notifications.
 
 The channel reconciler (:mod:`channel_spine_reconciler`) re-drives expired
 items and re-delivers abandoned outbox rows through the same methods.
@@ -112,7 +112,7 @@ class ChannelIngressReceipt:
     ``accepted`` — the work item is owned and will drive a turn;
     ``duplicate`` — this message already settled (idempotent redelivery ack);
     ``in_progress`` — a live owner is driving it;
-    ``ignored`` — the provider or attention policy terminally classified it.
+    ``ignored`` — a provider or platform policy terminally classified it.
     Whatever the status, the source may acknowledge upstream: the outcome is
     durable (invariant A).
     """
@@ -152,6 +152,8 @@ class ChannelIngressService:
         spawn_background_task: Any,
         channel_repo: ChannelRepository | None = None,
         channel_credentials: ChannelCredentialService | None = None,
+        read_session_output: Any,
+        session_output_cursor: Any,
     ) -> None:
         self._deployment_repo = deployment_repo
         self._agent_repo = agent_repo
@@ -166,6 +168,10 @@ class ChannelIngressService:
         self._spawn_background_task = spawn_background_task
         self._channel_repo = channel_repo or ChannelRepository()
         self._channel_credentials = channel_credentials or ChannelCredentialService()
+        self._read_session_output = read_session_output
+        self._session_output_cursor = session_output_cursor
+        self._output_subscription_cursor = ""
+        self._delivering: set[str] = set()
 
     # ── ingress (invariants A + E) ───────────────────────────────────────
 
@@ -240,7 +246,8 @@ class ChannelIngressService:
             raise APIError(
                 code="NOT_FOUND", message="bound agent not found", status_code=404
             )
-        creator_user_id = str(agent.get("user_id") or "").strip()
+        execution_user_id = str(binding.get("execution_user_id") or "").strip()
+        creator_user_id = execution_user_id or str(agent.get("user_id") or "").strip()
         if not creator_user_id:
             raise APIError(
                 code="DEPLOYMENT_NO_OWNER",
@@ -263,6 +270,7 @@ class ChannelIngressService:
             "participant": inbound.participant,
             "provider_ignore_reason": inbound.ignore_reason,
             "creator_user_id": creator_user_id,
+            "execution_user_id": execution_user_id,
             "retain_context": inbound.retain_context,
             "message_timestamp": inbound.message_timestamp,
             "binding_revision": binding.get("updated_at"),
@@ -306,7 +314,21 @@ class ChannelIngressService:
         # redeliveries get a session in their in_progress/duplicate acks).
         # Idempotent under crash: the session binds onto the item via CAS and
         # a re-drive reuses it.
-        session_id = await self._resolve_item_session(item)
+        try:
+            session_id = await self._resolve_item_session(item)
+        except APIError as exc:
+            if exc.code == "CHANNEL_REFERENCE_OWNER_MISMATCH":
+                recorded = await self._channel_repo.mark_inbound_ignored(
+                    item_id=str(item["_id"]), owner_token=str(item["owner_token"]),
+                    generation=int(item["generation"]), reason=exc.code,
+                    exclude_from_context=True,
+                )
+                if recorded:
+                    return ChannelIngressReceipt(
+                        status=CLAIM_OUTCOME_IGNORED, item_id=str(item["_id"]),
+                        ack_extra={**inbound.ack_extra, "reason": exc.code},
+                    )
+            raise
         self._spawn_background_task(
             self._drive_work_item(item),
             name=f"channel-drive-{item['_id']}",
@@ -371,14 +393,30 @@ class ChannelIngressService:
         agent_id = str(item.get("agent_id") or "")
         deployment_id = str(item.get("deployment_id") or "")
         conversation_key = str(payload.get("conversation_key") or "")
+        execution_user_id = str(payload.get("execution_user_id") or "")
         referenced_session = ""
-        if not conversation_key and str(payload.get("reference") or ""):
-            resolved = await self._resolve_reference(
-                deployment_id, str(payload["reference"])
-            )
+        if str(payload.get("reference") or ""):
+            if conversation_key:
+                # An explicit channel key already selects the conversation;
+                # only known delivered aliases need an ownership check here.
+                resolved = await self._channel_repo.resolve_alias(
+                    deployment_id=deployment_id, alias=str(payload["reference"]),
+                )
+            else:
+                resolved = await self._resolve_reference(
+                    deployment_id, str(payload["reference"]),
+                )
             if resolved is not None:
-                conversation_key = str(resolved.get("conversation_key") or "")
+                if not conversation_key:
+                    conversation_key = str(resolved.get("conversation_key") or "")
                 referenced_session = str(resolved.get("session_id") or "")
+                referenced = await self._sessions_repo.get_session(referenced_session)
+                if referenced is None or str(referenced.get("user_id") or "") != user.user_id:
+                    raise APIError(
+                        code="CHANNEL_REFERENCE_OWNER_MISMATCH",
+                        message="the referenced conversation belongs to another execution account",
+                        status_code=409,
+                    )
         if conversation_key:
             session_id = await self._resolve_conversation_session(
                 user=user,
@@ -386,14 +424,24 @@ class ChannelIngressService:
                 deployment_id=deployment_id,
                 agent_id=agent_id,
                 conversation_key=conversation_key,
+                execution_user_id=execution_user_id,
             )
         elif referenced_session:
             # The referenced delivery was a one-shot session: continue it.
             session_id = referenced_session
         else:
-            started = await agent_service.start_conversation(user, agent_id)
+            started = await self._start_channel_conversation(
+                agent_service, user, agent_id, execution_user_id,
+            )
             session_id = str(started.get("session_id") or "")
         if session_id:
+            session = await self._sessions_repo.get_session(session_id)
+            if session is None or str(session.get("user_id") or "") != user.user_id:
+                raise APIError(
+                    code="CHANNEL_SESSION_OWNER_MISMATCH",
+                    message="the channel conversation belongs to another execution account",
+                    status_code=409,
+                )
             await self._channel_repo.bind_inbound_dispatch(
                 item_id=str(item["_id"]),
                 owner_token=str(item["owner_token"]),
@@ -453,7 +501,8 @@ class ChannelIngressService:
             ) or None
             if conversation_key is not None:
                 lock_generation = await self._acquire_conversation_lock_blocking(
-                    deployment_id, conversation_key, owner
+                    deployment_id, conversation_key, owner,
+                    execution_user_id=str(payload.get("execution_user_id") or ""),
                 )
                 if lock_generation is None:
                     await self._fail_item(item, "conversation lock unavailable")
@@ -467,15 +516,20 @@ class ChannelIngressService:
 
             reply_context = payload.get("reply_context")
             has_reply = isinstance(reply_context, dict) and bool(reply_context)
-            wants_streaming = has_reply and self._provider_streams(
-                str(item.get("channel_name") or "")
-            )
+            if has_reply:
+                boundary = await self._session_output_cursor(session_id)
+                await self._channel_repo.subscribe_to_output(
+                    session_id=session_id, deployment_id=deployment_id,
+                    channel_name=str(item["channel_name"]),
+                    reply_context=dict(reply_context or {}), conversation_key=conversation_key,
+                    after_seq=boundary,
+                    streaming=self._provider_streams(str(item["channel_name"])),
+                )
             token = _dispatch_token(item)
             command = await self._session_events_repo.find_command_by_client_message_id(
                 session_id, client_message_id=token
             )
             drove = False
-            streaming_started = False
             if command is None:
                 # Fence the interaction side effect too: a worker that lost
                 # ownership while waiting must not answer this session's UI.
@@ -521,21 +575,7 @@ class ChannelIngressService:
                     client_message_id=token,
                 )
                 drove = True
-                drain_task = asyncio.ensure_future(
-                    self._drain_with_lease_renewal(agen, item)
-                )
-                if wants_streaming:
-                    # Bind as soon as the kernel accepts the command so the
-                    # delivery session can tail the live turn's durable frames.
-                    command = await self._await_command(
-                        session_id, token, drain_task
-                    )
-                    if command is not None:
-                        streaming_started = await self._start_streaming_delivery(
-                            item, command, dict(reply_context or {}),
-                            conversation_key,
-                        )
-                ok = await drain_task
+                ok = await self._drain_with_lease_renewal(agen, item)
                 if not ok:
                     await self._fail_item(item, "turn stream failed")
                     return
@@ -555,14 +595,6 @@ class ChannelIngressService:
                 command_id=command_id,
                 turn_id=turn_id,
             )
-            if wants_streaming and not streaming_started:
-                # Attach/recovery path (or the command landed after the live
-                # window): the streaming deliverer resumes from its durable
-                # cursor and observes the item's terminal state.
-                streaming_started = await self._start_streaming_delivery(
-                    item, command, dict(reply_context or {}), conversation_key
-                )
-
             if not drove:
                 user = UserContext(user_id=str(payload.get("creator_user_id") or ""))
                 resumed = self._resume_command_stream(
@@ -579,25 +611,6 @@ class ChannelIngressService:
                 await self._fail_item(item, "attached turn ended without output")
                 return
 
-            # The reply intent must be durable BEFORE the item goes terminal:
-            # SETTLED is unreachable by the reconciler, so a crash
-            # between settle and outbox-create would lose the reply with no
-            # evidence. Creating the (idempotent, command-bound) row first
-            # keeps every crash window recoverable: before settle the item is
-            # still live and re-drives to the same row; after settle the
-            # PENDING row is swept.
-            outbox: dict[str, Any] | None = None
-            if has_reply and not wants_streaming:
-                outbox = await self._channel_repo.create_outbox_entry(
-                    work_item_id=item_id,
-                    deployment_id=deployment_id,
-                    channel_name=str(item.get("channel_name") or ""),
-                    session_id=session_id,
-                    command_id=command_id,
-                    turn_id=turn_id,
-                    reply_context=dict(reply_context or {}),
-                    conversation_key=conversation_key,
-                )
             if payload.get("retain_context"):
                 await self._channel_repo.mark_context_submitted(item)
             if not await self._channel_repo.settle_inbound(
@@ -606,11 +619,7 @@ class ChannelIngressService:
                 generation=generation,
                 session_id=session_id,
             ):
-                return  # stolen mid-turn — the successor settles and delivers
-            if outbox is not None:
-                await self._deliver_outbox_row(outbox)
-            # Streaming rows settle themselves: the delivery session observes
-            # the item's SETTLED state and emits the terminal event.
+                return  # The successor owns input settlement.
         except asyncio.CancelledError:
             released = await self._channel_repo.release_inbound_lease(
                 item_id=item_id, owner_token=owner, generation=generation,
@@ -629,6 +638,7 @@ class ChannelIngressService:
                         conversation_key=conversation_key,
                         owner=owner,
                         generation=lock_generation,
+                        execution_user_id=str(payload.get("execution_user_id") or ""),
                     )
 
     async def _decline_superseded_channel_question(
@@ -695,47 +705,7 @@ class ChannelIngressService:
 
     @staticmethod
     def _provider_streams(channel_name: str) -> bool:
-        try:
-            return bool(get_channel(channel_name).supports_streaming_delivery)
-        except Exception:
-            return False
-
-    async def _await_command(
-        self, session_id: str, token: str, drain_task: Any
-    ) -> dict[str, Any] | None:
-        """Poll the journal until this drive's command lands (or the drain ends)."""
-        while True:
-            command = await self._session_events_repo.find_command_by_client_message_id(
-                session_id, client_message_id=token
-            )
-            if command is not None or drain_task.done():
-                return command
-            await asyncio.sleep(0.2)
-
-    async def _start_streaming_delivery(
-        self,
-        item: dict[str, Any],
-        command: dict[str, Any],
-        reply_context: dict[str, Any],
-        conversation_key: str | None,
-    ) -> bool:
-        """Create the dispatch-time streaming outbox row and spawn its session."""
-        outbox = await self._channel_repo.create_outbox_entry(
-            work_item_id=str(item["_id"]),
-            deployment_id=str(item.get("deployment_id") or ""),
-            channel_name=str(item.get("channel_name") or ""),
-            session_id=str(item.get("session_id") or ""),
-            command_id=str(command.get("causation_id") or ""),
-            turn_id=str(command.get("turn_id") or ""),
-            reply_context=reply_context,
-            conversation_key=conversation_key,
-            streaming=True,
-        )
-        self._spawn_background_task(
-            self._deliver_outbox_row(outbox),
-            name=f"channel-stream-{outbox['_id']}",
-        )
-        return True
+        return bool(get_channel(channel_name).supports_streaming_delivery)
 
     async def _fail_item(self, item: dict[str, Any], error: str) -> None:
         """Record a failed drive: backoff → RECEIVED, exhausted → DEAD."""
@@ -787,8 +757,19 @@ class ChannelIngressService:
                 await agen.aclose()
         return ok
 
+    @staticmethod
+    async def _start_channel_conversation(
+        agent_service: Any, user: UserContext, agent_id: str, execution_user_id: str,
+    ) -> dict[str, Any]:
+        if execution_user_id:
+            if execution_user_id != user.user_id:
+                raise RuntimeError("channel execution identity differs from its admitted account")
+            return await agent_service.start_integration_conversation(user, agent_id)
+        return await agent_service.start_conversation(user, agent_id)
+
     async def _acquire_conversation_lock_blocking(
-        self, deployment_id: str, conversation_key: str, owner: str
+        self, deployment_id: str, conversation_key: str, owner: str, *,
+        execution_user_id: str = "",
     ) -> int | None:
         """Acquire the conversation lock, waiting (bounded) for a prior turn."""
         deadline_polls = max(
@@ -796,14 +777,16 @@ class ChannelIngressService:
         )
         for _ in range(deadline_polls):
             generation = await self._channel_repo.acquire_conversation_lock(
-                deployment_id=deployment_id, conversation_key=conversation_key, owner=owner
+                deployment_id=deployment_id, conversation_key=conversation_key, owner=owner,
+                execution_user_id=execution_user_id,
             )
             if generation is not None:
                 return generation
             await asyncio.sleep(_SESSION_READY_POLL_SECONDS)
         # Last try after the budget (a crashed holder's TTL may have lapsed).
         return await self._channel_repo.acquire_conversation_lock(
-            deployment_id=deployment_id, conversation_key=conversation_key, owner=owner
+            deployment_id=deployment_id, conversation_key=conversation_key, owner=owner,
+            execution_user_id=execution_user_id,
         )
 
     async def _resolve_conversation_session(
@@ -814,36 +797,45 @@ class ChannelIngressService:
         deployment_id: str,
         agent_id: str,
         conversation_key: str,
+        execution_user_id: str = "",
     ) -> str:
-        """The (binding, conversation_key) → session routing."""
+        """Route one channel conversation within its configured execution account."""
         mapping = await self._channel_repo.get_conversation(
-            deployment_id=deployment_id, conversation_key=conversation_key
+            deployment_id=deployment_id, conversation_key=conversation_key,
+            execution_user_id=execution_user_id,
         )
         mapped_session_id = str((mapping or {}).get("session_id") or "")
         if mapped_session_id:
             session = await self._sessions_repo.get_session(mapped_session_id)
             state = str((session or {}).get("state") or "")
-            if session is not None and state not in (
-                "TERMINATED", "DELETED", "RECOVERY_REQUIRED",
+            if (
+                session is not None
+                and str(session.get("user_id") or "") == user.user_id
+                and state not in ("TERMINATED", "DELETED", "RECOVERY_REQUIRED")
             ):
                 await self._channel_repo.touch_conversation(
-                    deployment_id=deployment_id, conversation_key=conversation_key
+                    deployment_id=deployment_id, conversation_key=conversation_key,
+                    execution_user_id=execution_user_id,
                 )
                 return mapped_session_id
             # Mapped session is gone: start a replacement and CAS-swap the
             # mapping; a racing replacement's winner is read back and used.
-            started = await agent_service.start_conversation(user, agent_id)
+            started = await self._start_channel_conversation(
+                agent_service, user, agent_id, execution_user_id,
+            )
             new_session_id = str(started.get("session_id") or "")
             swapped = await self._channel_repo.upsert_conversation(
                 deployment_id=deployment_id,
                 conversation_key=conversation_key,
                 session_id=new_session_id,
                 agent_id=agent_id,
+                execution_user_id=execution_user_id,
                 replaces_session_id=mapped_session_id,
             )
             if swapped is None:
                 current = await self._channel_repo.get_conversation(
-                    deployment_id=deployment_id, conversation_key=conversation_key
+                    deployment_id=deployment_id, conversation_key=conversation_key,
+                    execution_user_id=execution_user_id,
                 )
                 winner = str((current or {}).get("session_id") or "")
                 if winner and winner != new_session_id:
@@ -855,13 +847,16 @@ class ChannelIngressService:
                     return winner
             return new_session_id
 
-        started = await agent_service.start_conversation(user, agent_id)
+        started = await self._start_channel_conversation(
+            agent_service, user, agent_id, execution_user_id,
+        )
         new_session_id = str(started.get("session_id") or "")
         existing = await self._channel_repo.upsert_conversation(
             deployment_id=deployment_id,
             conversation_key=conversation_key,
             session_id=new_session_id,
             agent_id=agent_id,
+            execution_user_id=execution_user_id,
         )
         winner = str((existing or {}).get("session_id") or new_session_id)
         if winner != new_session_id:
@@ -949,25 +944,10 @@ class ChannelIngressService:
         session_id = str(entry.get("session_id") or "")
         turn_id = str(entry.get("turn_id") or "")
 
-        # A row bound to a superseded turn attempt (the item failed and
-        # retried under a new command) must never deliver its stale text —
-        # the winning attempt's row carries the reply.
-        item = await self._channel_repo.get_inbound(str(entry.get("work_item_id") or ""))
-        item_command = str((item or {}).get("command_id") or "")
-        if item is not None and item_command and item_command != str(entry.get("command_id") or ""):
-            await self._channel_repo.record_outbox_failure(
-                outbox_id,
-                owner=owner,
-                generation=generation,
-                error="turn attempt superseded by a retry",
-                next_attempt_at=None,
-            )
-            return
-
-        message = await self._message_view.get_assistant_message_for_turn(
-            session_id, turn_id=turn_id
-        )
-        text = str((message or {}).get("content") or "").strip()
+        response = await self._read_outbox_response(entry)
+        if not response.complete:
+            raise RuntimeError("simple delivery requires a completed Session response")
+        text = response.text.strip()
         if not text:
             logger.warning(
                 "channel %s outbox %s: bound turn %s has no assistant text",
@@ -1025,32 +1005,27 @@ class ChannelIngressService:
                     return
                 await asyncio.sleep(_OUTBOX_RETRY_BACKOFF_SECONDS[attempt - 1])
 
-    @staticmethod
-    def _coalesce_frame_text(frames: list[dict[str, Any]], text_so_far: str) -> str:
-        for frame in frames:
-            if str(frame.get("type") or "") == "text-delta":
-                text_so_far = f"{text_so_far}{str(frame.get('delta') or '')}"
-        return text_so_far
+    async def _read_outbox_response(self, entry: dict[str, Any]) -> Any:
+        batch = await self._read_session_output(
+            str(entry["session_id"]), after_seq=int(entry["start_after_seq"]),
+        )
+        for response in batch.responses:
+            if response.response_id == entry["response_id"]:
+                return response
+        raise RuntimeError("subscribed Session response is missing from its journal")
 
     async def _deliver_streaming(
         self, entry: dict[str, Any], *, owner: str, generation: int
     ) -> None:
-        """One streaming delivery session over the turn's durable frame log.
+        """Render the platform subscription as provider progress and settlement.
 
-        Projects frames after the durable ``frame_cursor`` into versioned
-        channel events (invariant D: coalesced progress, no raw frames, no
-        backpressure on the turn — this loop only reads what the turn already
-        persisted). The work item is the terminal authority: SETTLED emits
-        ``settled`` with the turn-bound final text; a superseded/dead item
-        emits ``failed``. Aliases persist before every completion write, so a
-        crashed session resumes with update-instead-of-create evidence.
+        Reply identity, reconstruction and completion come from Session output;
+        the channel owns only its lease, transport receipt and delivery cursor.
         """
         outbox_id = str(entry.get("_id") or "")
         channel_name = str(entry.get("channel_name") or "")
-        session_id = str(entry.get("session_id") or "")
         command_id = str(entry.get("command_id") or "")
         turn_id = str(entry.get("turn_id") or "")
-        work_item_id = str(entry.get("work_item_id") or "")
         reply_context = dict(entry.get("reply_context") or {})
         known_aliases = [str(a) for a in (entry.get("delivery_aliases") or [])]
         cursor = int(entry.get("frame_cursor") if entry.get("frame_cursor") is not None else -1)
@@ -1078,20 +1053,12 @@ class ChannelIngressService:
         text_so_far = ""
         started = time.monotonic()
         try:
-            # Rebuild the coalesced text already delivered (resume) and emit
-            # turn_started exactly once per row (fresh cursor).
-            if cursor >= 0:
-                prior = await self._session_events_repo.list_frames(
-                    session_id, command_id=command_id, after_seq=-1
-                )
-                text_so_far = self._coalesce_frame_text(
-                    [f for f in prior if int(f.get("frame_seq") or 0) <= cursor], ""
-                )
             if cursor < 0:
                 receipt = await handle.emit(
                     ChannelEvent(
                         type=EVENT_TURN_STARTED, seq=seq,
                         command_id=command_id, turn_id=turn_id,
+                        response_id=str(entry["response_id"]),
                     )
                 )
                 known_aliases = await self._persist_receipt(
@@ -1106,46 +1073,33 @@ class ChannelIngressService:
                     outbox_id, owner=owner, generation=generation
                 ):
                     return  # lease stolen — the successor resumes from the cursor
-                new_frames = await self._session_events_repo.list_frames(
-                    session_id, command_id=command_id, after_seq=cursor
-                )
-                if new_frames:
-                    grown = self._coalesce_frame_text(new_frames, text_so_far)
-                    last_seq = max(int(f.get("frame_seq") or 0) for f in new_frames)
-                    if grown != text_so_far:
-                        text_so_far = grown
-                        seq += 1
-                        receipt = await handle.emit(
-                            ChannelEvent(
-                                type=EVENT_PROGRESS, seq=seq, text=text_so_far,
-                                command_id=command_id, turn_id=turn_id,
-                            )
+                response = await self._read_outbox_response(entry)
+                if response.text != text_so_far:
+                    text_so_far = response.text
+                    seq += 1
+                    receipt = await handle.emit(
+                        ChannelEvent(
+                            type=EVENT_PROGRESS, seq=seq, text=text_so_far,
+                            command_id=command_id, turn_id=turn_id,
+                            response_id=str(entry["response_id"]),
                         )
-                        known_aliases = await self._persist_receipt(
-                            entry, owner=owner, generation=generation,
-                            known_aliases=known_aliases, receipt=receipt,
-                        )
+                    )
+                    known_aliases = await self._persist_receipt(
+                        entry, owner=owner, generation=generation,
+                        known_aliases=known_aliases, receipt=receipt,
+                    )
                     await self._channel_repo.advance_outbox_cursor(
                         outbox_id, owner=owner, generation=generation,
-                        frame_seq=last_seq,
+                        frame_seq=response.response_seq,
                     )
-                    cursor = max(cursor, last_seq)
-
-                item = await self._channel_repo.get_inbound(work_item_id)
-                item_state = str((item or {}).get("state") or "")
-                item_command = str((item or {}).get("command_id") or "")
-                if item_state == INBOUND_SETTLED and item_command == command_id:
-                    message = await self._message_view.get_assistant_message_for_turn(
-                        session_id, turn_id=turn_id
-                    )
-                    final_text = (
-                        str((message or {}).get("content") or "").strip() or text_so_far
-                    )
+                if response.complete and response.error is None:
+                    final_text = response.text
                     seq += 1
                     receipt = await handle.emit(
                         ChannelEvent(
                             type=EVENT_SETTLED, seq=seq, text=final_text,
                             command_id=command_id, turn_id=turn_id,
+                            response_id=str(entry["response_id"]),
                         )
                     )
                     known_aliases = await self._persist_receipt(
@@ -1156,24 +1110,18 @@ class ChannelIngressService:
                         outbox_id, owner=owner, generation=generation
                     )
                     return
-                if item is None or item_state == INBOUND_DEAD or (
-                    item_command and item_command != command_id
-                ) or (
-                    item_state == INBOUND_RECEIVED
-                    and int((item or {}).get("attempts") or 0) > 0
-                ):
-                    # This command's attempt failed (or was superseded by a
-                    # retry that will get its own outbox row): terminal.
+                if response.error is not None:
                     seq += 1
                     with contextlib.suppress(Exception):
                         await handle.emit(
                             ChannelEvent(
                                 type=EVENT_FAILED, seq=seq,
-                                error="turn attempt failed",
+                                error=response.error,
                                 command_id=command_id, turn_id=turn_id,
+                                response_id=str(entry["response_id"]),
                             )
                         )
-                    await _fail_delivery("bound turn attempt failed", dead=True)
+                    await _fail_delivery("bound response failed", dead=True)
                     return
                 await asyncio.sleep(_STREAMING_POLL_SECONDS)
         except Exception as exc:
@@ -1208,6 +1156,58 @@ class ChannelIngressService:
 
     # ── recovery (the reconciler's entry points) ─────────────────────────
 
+    async def project_session_outputs(self) -> int:
+        """Project every main-conversation response through the channel seam."""
+        subscriptions = await self._channel_repo.list_output_subscriptions(
+            after_id=self._output_subscription_cursor,
+        )
+        self._output_subscription_cursor = str(subscriptions[-1]["_id"]) if len(subscriptions) == 50 else ""
+        count = 0
+        for subscription in subscriptions:
+            try:
+                count += await self._project_session_output(subscription)
+            except Exception:
+                logger.exception("channel Session output failed subscription=%s", subscription["_id"])
+        return count
+
+    async def _project_session_output(self, subscription: dict[str, Any]) -> int:
+        session_id = str(subscription["session_id"])
+        session = await self._sessions_repo.get_session(session_id)
+        if session is None:
+            await self._channel_repo.remove_output_subscription(str(subscription["_id"]))
+            return 0
+        cursor = int(subscription["after_seq"])
+        batch = await self._read_session_output(session_id, after_seq=cursor)
+        count = 0
+        for response in batch.responses:
+            if not response.complete and not subscription["streaming"]:
+                continue
+            # Text-only destinations have nothing to send for a tool-only reply.
+            if response.complete and not response.text.strip() and not subscription["streaming"]:
+                continue
+            await self._channel_repo.create_outbox_entry(
+                deployment_id=str(subscription["deployment_id"]),
+                channel_name=str(subscription["channel_name"]), session_id=session_id,
+                command_id="", turn_id=response.turn_id,
+                response_id=response.response_id, response_seq=response.response_seq,
+                start_after_seq=response.start_after_seq,
+                reply_context=dict(subscription["reply_context"]),
+                conversation_key=subscription.get("conversation_key"),
+                streaming=bool(subscription["streaming"]),
+            )
+            count += 1
+        if batch.after_seq > cursor:
+            await self._channel_repo.advance_output_subscription(
+                str(subscription["_id"]), expected_seq=cursor, sequence=batch.after_seq,
+            )
+        return count
+
+    async def _run_delivery(self, entry: dict[str, Any]) -> None:
+        try:
+            await self._deliver_outbox_row(entry)
+        finally:
+            self._delivering.discard(str(entry["_id"]))
+
     async def recover_inbound(self, *, limit: int = 50) -> int:
         """Re-drive expired live work items (crash recovery, invariant A).
 
@@ -1225,7 +1225,9 @@ class ChannelIngressService:
             if claimed is None:
                 continue
             recovered += 1
-            await self._drive_work_item(claimed)
+            self._spawn_background_task(
+                self._drive_work_item(claimed), name=f"channel-recovery-{claimed['_id']}",
+            )
         if recovered:
             logger.info("channel inbound recovery re-drove %d items", recovered)
         return recovered
@@ -1234,7 +1236,13 @@ class ChannelIngressService:
         """Re-deliver abandoned outbox rows (boot + periodic recovery)."""
         entries = await self._channel_repo.list_pending_outbox(limit=limit)
         for entry in entries:
-            await self._deliver_outbox_row(entry)
+            identity = str(entry["_id"])
+            if identity in self._delivering:
+                continue
+            self._delivering.add(identity)
+            self._spawn_background_task(
+                self._run_delivery(entry), name=f"channel-delivery-{identity}",
+            )
         if entries:
             logger.info("channel outbox sweep processed %d abandoned entries", len(entries))
         return len(entries)

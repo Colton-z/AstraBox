@@ -175,6 +175,9 @@ AstraBox 创建 Session 的请求不接受 `resources` 数组。默认 GitHub �
 
 ## 发送消息
 
+管理员配置转写模型后，可以点击控制台的麦克风按钮录音，将转写文字追加到可编辑草稿，
+检查后再发送。配置方式、录音限制和重试行为见[语音输入](voice-input.md)。
+
 `POST /sessions/{id}/ai-stream` 的请求体包含一条用户消息，并以 AI SDK UI
 Message Stream v1 事件流返回本轮结果。
 

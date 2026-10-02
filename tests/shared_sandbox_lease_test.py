@@ -526,6 +526,117 @@ def test_restart_refuses_a_persisted_session_with_the_wrong_identity() -> None:
 
     assert caught.value.status_code == 409
     assert "does not match this conversation" in caught.value.message
+    assert provider.opened == []
+
+
+def _restore_after_pause(provider: _FakeProvider, **kwargs: Any) -> SharedSandboxBinding:
+    return asyncio.run(SharedSandboxLease(agent_repo=_FakeAgentRepo(), provider=provider).restore_existing(
+        sandbox_id="box-1", isolated_session_id="old-agent", terminal_isolated_session_id="old-terminal",
+        home_dir="/home/conversations/conv1", workspace_dir="/workspace",
+        workspace_source_dir="/home/conversations/conv1/workspace", uid=2042, gid=2042,
+        **kwargs,
+    ))
+
+
+class _ResumedProvider(_FakeProvider):
+    async def run_in_isolated_session(self, sandbox_id: str, session_id: str, **kwargs: Any) -> tuple[int, str, str]:
+        if session_id in {"old-agent", "old-terminal"}:
+            raise APIError(
+                code="SANDBOX_ISOLATED_SESSION_NOT_FOUND", message="process-local session lost", status_code=409,
+            )
+        return await super().run_in_isolated_session(sandbox_id, session_id, **kwargs)
+
+
+def test_snapshot_resume_recreates_both_sessions_on_the_original_private_workspace() -> None:
+    provider = _ResumedProvider()
+    binding = _restore_after_pause(provider)
+    assert (binding.isolated_session_id, binding.terminal_isolated_session_id) == ("iso-1", "iso-2")
+    assert len(provider.opened) == 2
+    for opened in provider.opened:
+        assert opened == {
+            "sandbox_id": "box-1", "workspace_dir": "/workspace",
+            "workspace_source_dir": "/home/conversations/conv1/workspace", "uid": 2042, "gid": 2042,
+            "share_net": True, "extra_writable": ["/home/conversations/conv1"],
+            "extra_binds": [("/home/conversations/conv1/tmp", "/tmp")],
+        }
+    assert provider.prepared == [], "restoring must not chown or replace existing private directories"
+    assert provider.killed == []
+    assert provider.closed == [("box-1", "old-terminal")]
+    assert any('test "$(id -u)" = 2042' in code for code in provider.ran)
+
+
+def test_recreated_pair_is_recorded_before_restore_returns() -> None:
+    provider = _ResumedProvider()
+    saved: list[tuple[str, str]] = []
+
+    async def record(binding: SharedSandboxBinding) -> None:
+        assert len(provider.opened) == 2
+        assert provider.closed == [("box-1", "old-terminal")]
+        saved.append((binding.isolated_session_id, binding.terminal_isolated_session_id))
+
+    _restore_after_pause(provider, on_recreated=record)
+    assert saved == [("iso-1", "iso-2")]
+
+
+@pytest.mark.parametrize("primary_missing", [False, True])
+def test_failed_identity_record_discards_new_sessions_and_preserves_existing_ones(primary_missing: bool) -> None:
+    class Provider(_ResumedProvider):
+        async def run_in_isolated_session(self, sandbox_id: str, session_id: str, **kwargs: Any) -> tuple[int, str, str]:
+            if not primary_missing and session_id == "old-agent":
+                return (0, "", "")
+            return await super().run_in_isolated_session(sandbox_id, session_id, **kwargs)
+
+    async def refuse_record(binding: SharedSandboxBinding) -> None:
+        raise RuntimeError("binding was replaced during recovery")
+
+    provider = Provider()
+    with pytest.raises(RuntimeError, match="binding was replaced"):
+        _restore_after_pause(provider, on_recreated=refuse_record)
+    expected_new = [("box-1", "iso-2"), ("box-1", "iso-1")] if primary_missing else [("box-1", "iso-1")]
+    assert provider.closed == [("box-1", "old-terminal"), *expected_new]
+    assert provider.killed == []
+
+
+def test_existing_pair_needs_no_recreation_write() -> None:
+    async def unexpected_record(binding: SharedSandboxBinding) -> None:
+        raise AssertionError("an unchanged placement must not be republished here")
+
+    provider = _FakeProvider()
+    binding = _restore_after_pause(provider, on_recreated=unexpected_record)
+    assert (binding.isolated_session_id, binding.terminal_isolated_session_id) == ("old-agent", "old-terminal")
+    assert provider.opened == []
+
+
+@pytest.mark.parametrize("code", ["AGENT_RUNTIME_ERROR", "SANDBOX_GONE", "FORBIDDEN"])
+def test_uncertain_primary_session_does_not_open_a_replacement(code: str) -> None:
+    class UncertainProvider(_FakeProvider):
+        async def run_in_isolated_session(self, *args: Any, **kwargs: Any) -> tuple[int, str, str]:
+            raise APIError(code=code, message="cannot establish presence", status_code=409)
+
+    provider = UncertainProvider()
+    with pytest.raises(APIError) as caught:
+        _restore_after_pause(provider)
+    assert caught.value.code == code
+    assert provider.opened == []
+    assert provider.closed == []
+
+
+@pytest.mark.parametrize("failure", ["identity", "terminal"])
+def test_failed_restore_closes_only_the_new_primary_session(failure: str) -> None:
+    class FailedProvider(_ResumedProvider):
+        async def open_isolated_session(self, sandbox_id: str, **kwargs: Any) -> SandboxIsolatedSession:
+            if failure == "terminal" and self.opened:
+                raise RuntimeError("terminal create failed")
+            return await super().open_isolated_session(sandbox_id, **kwargs)
+
+    provider = FailedProvider()
+    if failure == "identity":
+        provider.probe_exit = 1
+    with pytest.raises((APIError, RuntimeError)):
+        _restore_after_pause(provider)
+    assert ("box-1", "iso-1") in provider.closed
+    assert ("box-1", "old-agent") not in provider.closed
+    assert provider.killed == []
 
 
 def test_the_private_home_and_workspace_are_prepared_before_the_session_opens() -> None:

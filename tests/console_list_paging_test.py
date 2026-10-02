@@ -25,6 +25,7 @@ from astrabox.core.service.orchestrator.assistant.assistant_workspace_service im
 )
 from astrabox.core.service.orchestrator.session_kernel.service import SessionKernelService
 from astrabox.persistence.repository.agent_repository import AgentRepository
+from astrabox.persistence.repository.environment_repository import EnvironmentRepository
 from astrabox.persistence.repository.session_repository import SessionRepository
 from astrabox.persistence.repository.assistant_catalog_repository import (
     AssistantCatalogRepository,
@@ -217,6 +218,7 @@ async def _assistant(repo: AssistantCatalogRepository, assistant_id: str, owner:
 
 
 async def test_an_owner_sees_their_assistants_behind_fifty_newer_ones_of_others() -> None:
+    await EnvironmentRepository().upsert("env-1", {"engine_kind": "assistant"})
     repo = AssistantCatalogRepository()
     for index in range(3):
         await _assistant(repo, f"mine-{index}", "viewer", _stamp(index))
@@ -229,6 +231,7 @@ async def test_an_owner_sees_their_assistants_behind_fifty_newer_ones_of_others(
 
 
 async def test_the_assistant_pages_reach_every_owned_assistant_with_its_workspace() -> None:
+    await EnvironmentRepository().upsert("env-1", {"engine_kind": "assistant"})
     repo = AssistantCatalogRepository()
     owned = [f"mine-{index:03d}" for index in range(120)]
     for index, assistant_id in enumerate(owned):

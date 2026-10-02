@@ -78,7 +78,7 @@ docker run -d --name astrabox --restart unless-stopped \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v astrabox-data:/data \
   --env-file ~/.config/astrabox/model.env \
-  ghcr.io/colton-z/astrabox:0.1.1
+  ghcr.io/colton-z/astrabox:0.1.2
 ```
 
 Then follow the log:
@@ -172,7 +172,7 @@ the copy is consistent:
 ```bash
 docker stop astrabox
 docker run --rm -v astrabox-data:/data -v "$PWD":/backup --entrypoint tar \
-  ghcr.io/colton-z/astrabox:0.1.1 -czf /backup/astrabox-data.tgz -C /data .
+  ghcr.io/colton-z/astrabox:0.1.2 -czf /backup/astrabox-data.tgz -C /data .
 docker start astrabox
 ```
 
@@ -181,7 +181,7 @@ To restore, extract the backup into a new volume:
 ```bash
 docker volume create astrabox-data-restored
 docker run --rm -v astrabox-data-restored:/data -v "$PWD":/backup --entrypoint tar \
-  ghcr.io/colton-z/astrabox:0.1.1 -xzf /backup/astrabox-data.tgz -C /data
+  ghcr.io/colton-z/astrabox:0.1.2 -xzf /backup/astrabox-data.tgz -C /data
 ```
 
 Then remove the old container and run the Step 2 command with

@@ -31,6 +31,7 @@ from astrabox.core.service.orchestrator.engine.child_runs import (
     ChildRunProjectionError,
 )
 from astrabox.core.service.orchestrator.engine.claude_code_background import (
+    background_task_opening,
     build_background_task_manifest,
 )
 from astrabox.core.service.orchestrator.engine.base import EngineAdapter
@@ -490,3 +491,37 @@ def test_background_manifest_parser_is_not_part_of_the_platform_adapter_seam() -
     """
     assert not hasattr(EngineAdapter, "background_tasks_opened")
     assert not hasattr(get_engine_adapter("claude_code"), "background_tasks_opened")
+
+
+def test_each_launch_opens_its_own_manifest_before_any_parent_terminal() -> None:
+    first = _runner_launch('launch-1', 'agent-1')
+    second = _runner_launch('launch-2', 'agent-2')
+    opening = background_task_opening([first, second])
+    assert opening is not None
+    assert opening['manifest_id'] == 'launch-2'
+    assert opening['manifest']['engine_refs'] == ['agent-2']
+    assert opening['manifest']['activation_to_engine_ref'] == {'launch-2': 'agent-2'}
+    assert background_task_opening([first])['manifest_id'] == 'launch-1'
+    assert background_task_opening([first, {'__sdk_type': 'ResultMessage'}]) is None
+
+
+def test_reactivating_the_same_child_opens_another_native_activation() -> None:
+    first = _runner_launch('launch-1', 'agent-1')
+    call = {'type': 'assistant', 'message': {'content': [{
+        'type': 'tool_use', 'name': 'SendMessage', 'id': 'resume-1',
+        'input': {'to': 'agent-1', 'message': 'continue'},
+    }]}}
+    resumed = _runner_launch('resume-1', 'agent-1')
+    resumed['tool_use_result'] = {'success': True, 'resumedAgentId': 'agent-1'}
+    opening = background_task_opening([first, call, resumed])
+    assert opening is not None
+    assert opening['manifest_id'] == 'resume-1'
+    assert opening['manifest']['activation_to_engine_ref'] == {'resume-1': 'agent-1'}
+
+
+def test_nested_or_failed_launch_receipts_open_no_parent_manifest() -> None:
+    nested = {**_runner_launch('nested', 'agent-child'), 'parent_tool_use_id': 'outer'}
+    failed = _runner_launch('failed', 'agent-failed')
+    failed['tool_use_result'] = {'status': 'failed', 'agentId': 'agent-failed'}
+    assert background_task_opening([nested]) is None
+    assert background_task_opening([failed]) is None

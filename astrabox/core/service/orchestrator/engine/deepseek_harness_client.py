@@ -41,6 +41,7 @@ from astrabox.core.service.orchestrator.engine.base import (
     EngineInputCommand,
     EngineStreamDetached,
     EngineTurnReceipt,
+    ResidentOutputCheckpoint,
 )
 from astrabox.core.service.orchestrator.engine.deepseek_harness_events import (
     DeepSeekHarnessProtocolError,
@@ -136,6 +137,10 @@ class DeepSeekHarnessLink(Protocol):
 
     async def respond(self, rpc_id: str, result: dict[str, Any]) -> bool: ...
 
+    async def follow_session(
+        self, address: dict[str, Any], *, after_sequence: int | None = None,
+    ) -> dict[str, Any]: ...
+
     def iter_frames(self) -> AsyncIterator[dict[str, Any]]:
         """Downlink frames in arrival order, until the socket ends."""
         ...
@@ -185,15 +190,28 @@ class DeepSeekHarnessEngineClient:
         session_create: dict[str, Any] | None = None,
         resident_output_sink: Any = None,
         event_sink: Any = None,
+        output_checkpoint: ResidentOutputCheckpoint | None = None,
+        initial_sequence: int = 0,
     ) -> None:
         self._session_id = session_id
         self._link = link
         self._resident_output_sink = resident_output_sink
         self._event_sink = event_sink
+        self._output_checkpoint = output_checkpoint
+        self._resumed_follow = False
+        self._restored_translator = False
+        self._committed_replay: tuple[int, int] | None = None
+        self._replayed_turn: int | None = None
         #: The one reader of the downlink, started with the first turn and
         #: stopped with the client; ``_translate_stream`` drains its inbox.
         self._relay: ResidentRelay | None = None
-        self._inbound_sequence = 0
+        self._inbound_sequence = initial_sequence
+        if output_checkpoint is not None:
+            self._inbound_sequence = max(
+                initial_sequence, output_checkpoint.after_sequence or 0,
+                output_checkpoint.replay_after_sequence or 0,
+                output_checkpoint.high_water_sequence or 0,
+            )
         self._native_session_id = str(native_session_id or "").strip() or None
         self._cwd = str(cwd or "").strip() or None
         self._session_create = dict(session_create or {})
@@ -332,6 +350,10 @@ class DeepSeekHarnessEngineClient:
         # `turn/start` are two frames on one socket, and the relay may take
         # the second before this coroutine takes the first.
         self._submission_numbers[command.command_id] = relay.platform_input_submitted()
+        # Native records can arrive before the RPC continuation resumes.
+        # Attribution must already know the exact id written to the harness.
+        self._prompted[prompt_rpc_id] = command
+        self._awaiting_echo.append(command)
         try:
             value = await self._link.call(
                 "session/prompt",
@@ -347,16 +369,18 @@ class DeepSeekHarnessEngineClient:
                 rpc_id=prompt_rpc_id,
             )
         except BaseException:
+            self._prompted.pop(prompt_rpc_id, None)
+            self._retire_echo(command)
             relay.platform_input_rejected()
             raise
         if not isinstance(value, dict) or value.get("accepted") is not True:
+            self._prompted.pop(prompt_rpc_id, None)
+            self._retire_echo(command)
             relay.platform_input_rejected()
             raise EngineStreamDetached(
                 "deepseek_harness session/prompt was not accepted "
                 f"(session={self._session_id})"
             )
-        self._prompted[prompt_rpc_id] = command
-        self._awaiting_echo.append(command)
         receipt = self._receipt(command, prompt_rpc_id=prompt_rpc_id)
         self._receipts[command.command_id] = receipt
         return receipt
@@ -676,12 +700,35 @@ class DeepSeekHarnessEngineClient:
         return DSH_GATEWAY_PROVIDER
 
     async def get_capabilities(self) -> EngineCapabilityManifest:
-        history = await self._link.call(
-            "session/follow",
-            {"args": {"request": {"address": {
-                "kind": "session", "sessionId": self._require_session(),
-            }}}},
-        )
+        address = {"kind": "session", "sessionId": self._require_session()}
+        if self._output_checkpoint is not None and not self._resumed_follow:
+            checkpoint = self._output_checkpoint
+            cursor = (
+                checkpoint.open_response_replay_cursor
+                if checkpoint.open_response_id else checkpoint.replay_output_cursor
+            )
+            if not isinstance(cursor, dict) or cursor.get("sessionId") != self._require_session():
+                raise EngineStreamDetached("deepseek_harness output has no matching committed terminal cursor")
+            sequence = cursor.get("seq")
+            if not isinstance(sequence, int) or isinstance(sequence, bool) or sequence < -1:
+                raise EngineStreamDetached("deepseek_harness terminal cursor has no native event sequence")
+            published = checkpoint.replay_output_cursor
+            if checkpoint.open_response_id and published is not None:
+                published_seq = published.get("seq")
+                if published.get("sessionId") != self._require_session() or (
+                    not isinstance(published_seq, int) or isinstance(published_seq, bool)
+                ):
+                    raise EngineStreamDetached("deepseek_harness committed output cursor is invalid")
+                if published_seq > sequence:
+                    prefix = f"{self._require_session()}:"
+                    response = checkpoint.open_response_id
+                    if not response.startswith(prefix) or not response[len(prefix):].isdecimal():
+                        raise EngineStreamDetached("deepseek_harness open response belongs to another native Session")
+                    self._committed_replay = (int(response[len(prefix):]), published_seq)
+            history = await self._link.follow_session(address, after_sequence=sequence)
+            self._resumed_follow = True
+        else:
+            history = await self._link.call("session/follow", {"args": {"request": {"address": address}}})
         projections = history.get("projections") if isinstance(history, dict) else None
         values = projections.get("values") if isinstance(projections, dict) else None
         permissions = values.get("permissions") if isinstance(values, dict) else None
@@ -1026,6 +1073,12 @@ class DeepSeekHarnessEngineClient:
             raise self._detached(str(detached)) from detached
 
     # ── the relay ────────────────────────────────────────────────────────
+    def observe_output(self) -> None:
+        """Start the retained Session reader after native follow has resumed."""
+        if self._output_checkpoint is None or not self._resumed_follow:
+            raise RuntimeError("deepseek_harness output observation requires a resumed follow")
+        self._ensure_relay()
+
     def _ensure_relay(self) -> ResidentRelay:
         relay = self._relay
         if relay is None:
@@ -1038,6 +1091,7 @@ class DeepSeekHarnessEngineClient:
                 current_sequence=self._current_inbound_sequence,
                 resident_output_sink=self._resident_output_sink,
                 event_sink=self._event_sink,
+                checkpoint=self._output_checkpoint,
             )
             self._relay = relay
             relay.start()
@@ -1059,8 +1113,11 @@ class DeepSeekHarnessEngineClient:
 
         if self._frames is None:
             self._frames = self._link.iter_frames()
-        frame = await self._frames.__anext__()
-        self._inbound_sequence += 1
+        while True:
+            frame = await self._frames.__anext__()
+            self._inbound_sequence += 1
+            if not self._already_published_replay(frame):
+                break
         frame_type = str(frame.get("type") or "")
         if frame_type == _FRAME_STREAM_ERROR:
             error = frame.get("payload", {}).get("error")
@@ -1092,6 +1149,32 @@ class DeepSeekHarnessEngineClient:
                 )
         return CountedRecord(sequence=self._inbound_sequence, record=frame)
 
+    def _already_published_replay(self, frame: dict[str, Any]) -> bool:
+        """Recover an older unfinished reply without repeating later output.
+
+        A later input may already have completed while the older response
+        remains partially journaled. Native turn boundaries distinguish the
+        response being repaired from output covered by the committed cursor.
+        """
+        replay = self._committed_replay
+        payload = frame.get("payload") or {}
+        if replay is None or frame.get("type") != _FRAME_SESSION_EVENT or payload.get("sessionId") != self._require_session():
+            return False
+        event = payload.get("event") or {}
+        sequence = event.get("seq")
+        if not isinstance(sequence, int) or isinstance(sequence, bool):
+            raise DeepSeekHarnessProtocolError("replayed session event has no native sequence")
+        response_turn, through = replay
+        if sequence > through:
+            self._committed_replay = None
+            return False
+        if event.get("type") == "turn/start":
+            turn = (event.get("data") or {}).get("turn")
+            if not isinstance(turn, int) or isinstance(turn, bool):
+                raise DeepSeekHarnessProtocolError("replayed turn start has no native turn")
+            self._replayed_turn = turn
+        return self._replayed_turn != response_turn
+
     async def _current_inbound_sequence(self) -> int:
         return self._inbound_sequence
 
@@ -1107,12 +1190,28 @@ class DeepSeekHarnessEngineClient:
             return []
         frame_type = frame.get("type")
         if frame_type == "session/assistant-stream":
-            return list(translator.translate_assistant_stream(payload["frame"]))
-        if frame_type == "session/assistant-stream-snapshot":
-            return list(translator.restore_assistant_stream(payload["baseline"]))
-        if frame_type == _FRAME_SESSION_EVENT:
-            return list(translator.translate(payload["event"]))
-        return []
+            frames = list(translator.translate_assistant_stream(payload["frame"]))
+        elif frame_type == "session/assistant-stream-snapshot":
+            frames = list(translator.restore_assistant_stream(
+                payload["baseline"], through_sequence=payload.get("cursor"),
+            ))
+        elif frame_type == _FRAME_SESSION_EVENT:
+            frames = list(translator.translate(payload["event"]))
+        else:
+            return []
+        cursor = translator.output_cursor
+        event = payload.get("event") or {}
+        if (
+            self._committed_replay is not None
+            and event.get("type") == "turn/end"
+            and (event.get("data") or {}).get("turn") == self._committed_replay[0]
+            and self._output_checkpoint is not None
+        ):
+            # Filling an older gap must not move the next attachment behind
+            # a later reply the platform already holds.
+            cursor = self._output_checkpoint.replay_output_cursor
+        positioned = [{**value, "__engine_output_cursor": cursor} for value in frames] if cursor is not None else frames
+        return translator.publishable_frames(positioned)
 
     async def _send_relay_command(self, payload: dict[str, Any]) -> Any:
         raise RuntimeError(
@@ -1167,9 +1266,52 @@ class _DshRelaySeam:
         event = self._own_event(record)
         return event is not None and str(event.get("type") or "") == "turn/start"
 
+    def platform_run(
+        self, record: dict[str, Any], *, pending: bool, active: bool,
+    ) -> bool | None:
+        """Resolve ownership after the native input prelude, before output.
+
+        DSH opens a turn before claiming its messages. All claimed messages
+        are appended before the first assistant stream starts, so another
+        native user/message cannot decide ownership while the input echo may still
+        follow. A queued platform input alone proves nothing about this run.
+        """
+
+        event = self._own_event(record)
+        if event is not None:
+            kind = event.get("type")
+            if kind == "user/message":
+                if self._client._consumption_command(event) is not None:
+                    return True
+                source = (event.get("data") or {}).get("source") or {}
+                checkpoint = self._client._output_checkpoint
+                if (
+                    checkpoint is not None and checkpoint.external_turn_active
+                    and checkpoint.engine_turn_id and source.get("kind") == "user"
+                    and source.get("rpcId") == checkpoint.engine_turn_id
+                ):
+                    return True
+            if kind in {"assistant/message", "assistant/attempt", "turn/end"}:
+                return False
+        payload = record.get("payload") or {}
+        if payload.get("sessionId") == self._client._require_session():
+            if record.get("type") == "session/assistant-stream":
+                return False
+            if record.get("type") == "session/assistant-stream-snapshot":
+                baseline = payload.get("baseline") or {}
+                if baseline.get("activeAttempt") is not None:
+                    return False
+        return None
+
     def settles_run(self, record: dict[str, Any]) -> bool:
         event = self._own_event(record)
         return event is not None and str(event.get("type") or "") == "turn/end"
+
+    @staticmethod
+    def handoff_to_platform(
+        translator: DeepSeekHarnessTurnTranslator, record: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        return None
 
     def response_id(self, record: dict[str, Any], sequence: int) -> str:
         event = self._own_event(record) or {}
@@ -1182,7 +1324,21 @@ class _DshRelaySeam:
         return f"{self._client._require_session()}:{turn}"
 
     def new_translator(self) -> DeepSeekHarnessTurnTranslator:
-        return DeepSeekHarnessTurnTranslator(session_id=self._client._require_session())
+        client = self._client
+        checkpoint = client._output_checkpoint
+        committed: tuple[dict[str, Any], ...] = ()
+        expected_turn: int | None = None
+        if checkpoint is not None and checkpoint.open_response_id and not client._restored_translator:
+            prefix = f"{client._require_session()}:"
+            identity = checkpoint.open_response_id
+            if not identity.startswith(prefix) or not identity[len(prefix):].isdecimal():
+                raise EngineStreamDetached("deepseek_harness open response belongs to another native Session")
+            expected_turn = int(identity[len(prefix):])
+            committed = checkpoint.committed_frames
+            client._restored_translator = True
+        return DeepSeekHarnessTurnTranslator(
+            session_id=client._require_session(), committed_frames=committed, expected_turn=expected_turn,
+        )
 
     def translate(
         self, translator: DeepSeekHarnessTurnTranslator, record: dict[str, Any]

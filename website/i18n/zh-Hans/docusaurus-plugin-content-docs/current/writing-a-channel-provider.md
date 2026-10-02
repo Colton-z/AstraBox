@@ -191,9 +191,21 @@ class ExampleChannelProvider(ChannelProvider):
 
 实现 `deliver_outbound()`，即可发送 Agent 的最终回复。AstraBox 会传入重新读取的 `binding`，其中 `channel_credentials` 包含只写凭证。`reply_context` 会被持久化以支持重试，只能保存路由 ID，不能包含凭证。
 
+AstraBox 会为目标渠道订阅 Session 输出，与 Web 读取同一份内容，因此投递不依赖新的
+入站消息。原生后台任务或扩展可以唤醒主 Agent，为接入的目标渠道产生新回复。适配器通过
+普通投递方法收到回复，不需要检查原生对话记录、轮询子任务或另起 Agent 执行。
+
 返回 `ChannelDeliveryReceipt`，其中包含本次创建或更新的全部平台消息 ID。AstraBox 会先保存这些 ID，再把投递标记为完成，让后续入站回复可以解析 `reference`。Receipt 本身不能保证外部发送幂等：如果发送成功但 Receipt 持久化失败，投递可能再次执行。产品 API 提供幂等支持时，应使用该能力。
 
 如果消息产品支持在 Agent 执行期间更新消息，请设置 `supports_streaming_delivery = True` 并实现 `open_delivery()`。依次处理 `turn_started`、`progress`、`settled` 和 `failed` 事件。`prior_aliases` 参数包含之前一次投递已保存的平台消息 ID；应更新这些消息，不要创建替代消息。
+
+使用 `ChannelEvent.response_id` 标识主 Agent 回复，无需依赖它的触发来源。原生 Session
+输出的 `command_id` 和 `turn_id` 可以为空，不应以存在入站命令作为投递条件。`progress`
+包含回复的累计正文，包括之前的文本块；更新消息时应替换正文。纯文本投递省略没有正文的
+回复，原生工具卡片仍可在 Web 查看。
+
+AstraBox 保留订阅游标，并在重启后从 Session 事件记录重新构建未完成的回复。持久化
+outbox 负责重试，provider 负责展示和目标平台 API 的幂等行为。
 
 每个可选能力开关都必须与对应方法一起实现。注册时会拒绝不完整的能力组合。
 

@@ -162,6 +162,10 @@ def _write_death_notice(notice: Any) -> None:
         logger.warning("death notice not written to %s: %s", DEATH_NOTICE_SCRIPT, exc)
 
 
+class RunnerObservationBusy(Exception):
+    """The runner has an output owner, including a handshake in progress."""
+
+
 class RunnerProtocolError(Exception):
     """A frame violated the runner protocol. Fail loud — no tolerant parsing."""
 
@@ -2309,6 +2313,10 @@ class RunnerWsServer:
             return
         try:
             await self._open_session(opening, link, ws)
+        except RunnerObservationBusy as exc:
+            await link.send({"op": "error", "code": "OUTPUT_ALREADY_OBSERVED", "detail": str(exc)})
+            await ws.close()
+            return
         except RunnerProtocolError as exc:
             await link.send({"op": "error", "detail": str(exc)})
             await ws.close(code=1002, reason=str(exc))
@@ -2418,7 +2426,7 @@ class RunnerWsServer:
                 with contextlib.suppress(BaseException):
                     await session.stop()
                 raise
-        elif op == "attach":
+        elif op in {"attach", "observe"}:
             if self.session is None or not self.session.is_active:
                 raise RunnerProtocolError("attach with no active session")
             # The credential, before anything the runner holds is compared or
@@ -2452,11 +2460,15 @@ class RunnerWsServer:
             # Validate before replacing the live link. A malformed attach must
             # not evict the host that is still serving this session.
             self.session.sender.cursor_window(after_sequence)
+            # No await between the ownership check and replacement. A link
+            # still handshaking owns output too, before replay makes it ready.
+            if op == "observe" and self.session.sender.link.is_connected():
+                raise RunnerObservationBusy("runner output already has a connected host")
             self.session.attach_link(link)
             logger.info("attached to session %s", self.session.session_id)
         else:
             raise RunnerProtocolError(
-                f"first frame must be prepare|activate|attach, got {op!r}"
+                f"first frame must be prepare|activate|attach|observe, got {op!r}"
             )
         logger.info("runner serving session %s", self.session.session_id)
         _write_death_notice(opening.get("death_notice"))

@@ -93,6 +93,7 @@ from astrabox.seams.egress_credentials import (
     workload_model_placeholder,
 )
 from astrabox.seams.sandbox import (
+    SANDBOX_LIFECYCLE_PROBE_NOT_FOUND,
     SANDBOX_PERMISSION_LEVEL_ADVANCED,
     SANDBOX_PERMISSION_LEVEL_DEFAULT,
     SANDBOX_PERMISSION_LEVELS,
@@ -1813,7 +1814,28 @@ async def claim_prepared_engine_sandbox(
                 message="claimed shared slot carries no home/account identity",
                 status_code=500,
             )
-        sandbox = await backend_adapter.connect(sandbox_id)
+        try:
+            sandbox = await backend_adapter.connect(sandbox_id)
+        except APIError as exc:
+            if exc.code != "SANDBOX_GONE":
+                raise
+            # SANDBOX_GONE also describes paused or outdated wiring. Only
+            # control-plane absence permits abandoning this prepared claim
+            # and continuing through the ordinary cold allocation path.
+            probe = await backend_adapter.probe(sandbox_id)
+            if probe.probe_status != SANDBOX_LIFECYCLE_PROBE_NOT_FOUND:
+                raise
+            from astrabox.persistence.repository.agent_repository import AgentRepository
+
+            await AgentRepository().clear_resident_sandbox_binding(
+                agent_id, sandbox_id=sandbox_id,
+                sandbox_backend=str(backend_adapter.name),
+            )
+            await _discard_failed_prepared_claim(
+                manager, session_id=session_id, template=template,
+                reason="prepared sandbox disappeared before hand-off",
+            )
+            return None
         isolated_session_ids = tuple(
             value
             for value in (

@@ -14,10 +14,11 @@
     "test": "vitest run",
     "//gen:api": "The generator does not live here. openapi-typescript prints its output through the TypeScript COMPILER API (ts.factory), and this project is on typescript@7 — the Go port, whose npm package exports no compiler API at all, so `ts.factory` is undefined and the tool dies on import. Its peer bound of ^5.x is live, not stale. npm will not nest a conflicting PEER under the dependent, and turning peer resolution off tree-wide (legacy-peer-deps) would silence every future conflict too, so the generator is its own hermetic package on its own typescript@5: scripts/api-codegen. `make check-api-client` regenerates through it and fails on a byte of difference.",
     "gen:api": "npm --prefix ../scripts/api-codegen run gen",
-    "e2e": "playwright test -c ../e2e/playwright.config.ts"
+    "e2e": "playwright test -c ../e2e/playwright.config.ts",
+    "postinstall": "patch-package --error-on-fail"
   },
   "dependencies": {
-    "@ai-sdk/react": "^4.0.119",
+    "@ai-sdk/react": "^4.0.94",
     "@base-ui/react": "^1.7.0",
     "@fontsource-variable/geist": "^5.3.0",
     "@fontsource-variable/geist-mono": "^5.3.0",
@@ -54,7 +55,7 @@
     "react-markdown": "^10.1.0",
     "react-resizable-panels": "^4.12.3",
     "react-router-dom": "^7.18.3",
-    "react-virtuoso": "^4.18.13",
+    "react-virtuoso": "4.18.13",
     "rehype-highlight": "^7.0.2",
     "remark-gfm": "^4.0.1",
     "shadcn": "^4.20.1",
@@ -78,10 +79,11 @@
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.1",
     "jsdom": "^30.0.1",
+    "patch-package": "8.0.1",
     "tailwindcss": "^4.3.3",
     "typescript": "^7.0.2",
-    "vite": "^8.3.1",
-    "vitest": "^5.0.2"
+    "vite": "^8.2.2",
+    "vitest": "^5.0.0"
   },
   "overrides": {
     "ansi-to-react": {

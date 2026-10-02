@@ -193,6 +193,10 @@ for production Environments:
 astrabox verify-opensandbox-snapshots
 ```
 
+For Linux overlayfs nodes, the optional
+[snapshot differ](opensandbox-snapshot-differ.md) avoids scanning unchanged
+parent image files when creating snapshots.
+
 Apply a retention policy to the snapshot registry. Deleting OpenSandbox
 snapshot metadata does not by itself garbage-collect the OCI image data. See
 OpenSandbox's

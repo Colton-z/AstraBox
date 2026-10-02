@@ -1,9 +1,16 @@
 {
   "workspace_storage": {
-    "order": ["no_volume_core", "persistent_files"],
+    "order": [
+      "no_volume_core",
+      "persistent_files"
+    ],
     "persistent_files": {
       "python": {
-        "main": ["tests/e2e/test_durable_workspace.py::test_an_agent_conversation_keeps_its_files_after_its_box_is_destroyed", "tests/e2e/test_cold_conversation_resume.py::test_cold_rebuild_restores_existing_conversation", "tests/e2e/test_shared_persistent_warm_resume.py::test_shared_persistent_conversation_resumes_on_existing_sdk_pool_box"],
+        "main": [
+          "tests/e2e/test_durable_workspace.py::test_an_agent_conversation_keeps_its_files_after_its_box_is_destroyed",
+          "tests/e2e/test_cold_conversation_resume.py::test_cold_rebuild_restores_existing_conversation",
+          "tests/e2e/test_shared_persistent_warm_resume.py::test_shared_persistent_conversation_resumes_on_existing_sdk_pool_box"
+        ],
         "assistant": []
       },
       "playwright": {
@@ -23,7 +30,10 @@
         ]
       }
     },
-    "tests": {"no_volume_core": 508, "persistent_files": 23}
+    "tests": {
+      "no_volume_core": 576,
+      "persistent_files": 23
+    }
   },
   "max_test_seconds": 180,
   "model_conditional_skips": [
@@ -33,15 +43,18 @@
   ],
   "playwright": {
     "exclusive": {
-      "files": 138,
-      "parallel_files": 91,
-      "parallel_tests": 138,
+      "files": 166,
+      "parallel_files": 103,
+      "parallel_tests": 155,
       "serial_files": [
+        "specs/a-prepared-seat-is-not-a-promise-the-box-can-still-keep.exclusive.spec.ts",
         "specs/a-turn-that-ends-in-an-error-is-not-missing-its-proof.exclusive.spec.ts",
         "specs/admin-native-transcript-batch-export.exclusive.spec.ts",
         "specs/agent-per-session-sandbox.exclusive.spec.ts",
         "specs/agent-workspace-resume.exclusive.spec.ts",
         "specs/aggregate-stopped-task-notification-recovery.exclusive.spec.ts",
+        "specs/an-assistant-used-today-keeps-its-box-overnight.exclusive.spec.ts",
+        "specs/an-expired-oauth-credential-is-reported-before-a-conversation-dies-on-it.exclusive.spec.ts",
         "specs/an-idle-assistant-card-stops-reading-ready-on-an-open-page.exclusive.spec.ts",
         "specs/assistant-record-page-reaches-ready-without-a-reload.exclusive.spec.ts",
         "specs/assistant-tool-card-live-and-cold.exclusive.spec.ts",
@@ -51,15 +64,26 @@
         "specs/backend-restart-completed-journal-projection-lag.exclusive.spec.ts",
         "specs/backend-restart-delivered-answer-projection-gap.exclusive.spec.ts",
         "specs/backend-restart-rehydrates-resident-session-and-pending-approval.exclusive.spec.ts",
+        "specs/background-result-outlives-a-newer-manifest-backlog.exclusive.spec.ts",
+        "specs/background-work-keeps-its-box-off-the-idle-sweep.exclusive.spec.ts",
+        "specs/channel-account-change-refuses-old-replies.exclusive.spec.ts",
+        "specs/channel-background-result-is-delivered.exclusive.spec.ts",
         "specs/channel-completed-before-receipt-survives-server-restart.exclusive.spec.ts",
         "specs/channel-completed-outbox-survives-server-and-sandbox-loss.exclusive.spec.ts",
+        "specs/channel-execution-account-isolates-conversations.exclusive.spec.ts",
         "specs/channel-message-supersedes-exited-question.exclusive.spec.ts",
         "specs/console-axe.exclusive.spec.ts",
         "specs/console-extension-save-reschedules-prewarm.exclusive.spec.ts",
         "specs/cross-host-backend-claim.exclusive.spec.ts",
+        "specs/dead-agent-box-does-not-leave-a-claimable-prepared-slot.exclusive.spec.ts",
+        "specs/deleted-agent-loses-its-missing-box-reference.exclusive.spec.ts",
         "specs/distributed-prewarm.exclusive.spec.ts",
+        "specs/dsh-channel-background-completion.exclusive.spec.ts",
+        "specs/dsh-output-control-recovery.exclusive.spec.ts",
         "specs/expired-channel-question-continues-on-thread-reply.exclusive.spec.ts",
         "specs/file-panel-uploads-file-larger-than-100mib.exclusive.spec.ts",
+        "specs/idle-park-refuses-a-box-holding-a-prepared-slot.exclusive.spec.ts",
+        "specs/idle-parked-conversation-serves-its-workspace-and-its-next-message.exclusive.spec.ts",
         "specs/investment-research-production-journey.exclusive.spec.ts",
         "specs/metadata-transient-fault-first-turn.exclusive.spec.ts",
         "specs/native-diff-failure-and-recovery.exclusive.spec.ts",
@@ -68,6 +92,7 @@
         "specs/opensandbox-agent-prewarm-real-extensions.exclusive.spec.ts",
         "specs/ownerless-sandbox-reaping-preserves-prepared-capacity.exclusive.spec.ts",
         "specs/pending-interaction-survives-server-restart.exclusive.spec.ts",
+        "specs/pi-channel-background-completion.exclusive.spec.ts",
         "specs/pre-result-history-survives-sandbox-death.exclusive.spec.ts",
         "specs/prepared-capacity-returns-after-a-restart-mid-claim.exclusive.spec.ts",
         "specs/prepared-slot-survives-a-claim-during-its-renewal.exclusive.spec.ts",
@@ -83,16 +108,17 @@
         "specs/sandbox-replacement-preserves-conversation-identity.exclusive.spec.ts",
         "specs/server-restart-reattaches-running-sandbox-turn.exclusive.spec.ts",
         "specs/subagent-replay-recovery.exclusive.spec.ts",
-        "specs/turn-terminal-is-first-writer-not-last.exclusive.spec.ts"
+        "specs/turn-terminal-is-first-writer-not-last.exclusive.spec.ts",
+        "specs/untouched-tab-catches-up-after-backend-restart.exclusive.spec.ts"
       ],
-      "serial_tests": 74,
+      "serial_tests": 104,
       "serial_workers": 1,
-      "tests": 212,
+      "tests": 259,
       "workers": 5
     },
     "parallel": {
-      "files": 36,
-      "tests": 67,
+      "files": 37,
+      "tests": 68,
       "workers": 5
     }
   },
@@ -119,8 +145,12 @@
         "codex",
         "pi"
       ],
-      "matrix_tests": 244,
+      "matrix_tests": 264,
       "parallel_node_ids": [
+        "tests/e2e/agent_instruction_install_test.py::test_authored_instructions_reach_the_first_reply[cold-conversation]",
+        "tests/e2e/agent_instruction_install_test.py::test_authored_instructions_reach_the_first_reply[cold-agent]",
+        "tests/e2e/agent_instruction_install_test.py::test_authored_instructions_reach_the_first_reply[prepared-conversation]",
+        "tests/e2e/agent_instruction_install_test.py::test_authored_instructions_reach_the_first_reply[prepared-agent]",
         "tests/e2e/test_background_subagent.py::test_background_subagent_surfaces_on_stream_and_stays_sendable",
         "tests/e2e/test_background_subagent.py::test_background_subagent_stop_is_accepted",
         "tests/e2e/test_cli_journey.py::test_status_reports_a_live_deployment",
@@ -170,6 +200,7 @@
         "tests/e2e/test_sandbox_reborrow.py::test_active_session_automatically_recovers_after_sandbox_reclaim",
         "tests/e2e/test_shared_box_cohabitation.py::test_two_conversations_share_the_box_and_nothing_else",
         "tests/e2e/test_shared_box_cohabitation.py::test_evicted_last_shared_conversation_reclaims_box",
+        "tests/e2e/test_shared_box_cohabitation.py::test_new_conversation_replaces_a_dead_shared_box",
         "tests/e2e/test_shared_persistent_warm_resume.py::test_shared_persistent_conversation_resumes_on_existing_sdk_pool_box",
         "tests/e2e/test_stale_interaction_answer_lands_nowhere.py::test_replaying_the_first_answer_does_not_resolve_the_second",
         "tests/e2e/test_stream_close_admits_next_send.py::test_next_send_is_admissible_the_instant_the_body_ends",
@@ -185,11 +216,11 @@
         "tests/e2e/test_reattach.py::test_sandbox_and_session_survive_backend_restart",
         "tests/e2e/test_reattach.py::test_reattach_turn_reuses_sandbox_without_rebuild"
       ],
-      "tests": 61,
+      "tests": 66,
       "workers": 5
     },
-    "matrix_tests": 252,
-    "tests": 69
+    "matrix_tests": 272,
+    "tests": 74
   },
   "suites": {
     "audit": {

@@ -577,6 +577,15 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "astrabox.common.utils.settings",
     ),
     (
+        "ASTRABOX_SPEECH_INPUT_MODELS",
+        "public",
+        "[]",
+        "JSON list of gateway transcription route names offered in voice input. "
+        "The first is the default; empty disables voice input. Uses the existing "
+        "model endpoint provider and session inference credentials.",
+        "astrabox.common.utils.settings",
+    ),
+    (
         "ASTRABOX_MODEL_ENDPOINT_PROVIDER",
         "public",
         "",
@@ -1338,10 +1347,10 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
     (
         "ASTRABOX_CHANNEL_RECONCILE_INTERVAL_SECONDS",
         "public",
-        "60",
-        "Interval in seconds for retrying expired inbound messaging events and "
-        "unfinished outbound deliveries. Multiple replicas can run this recovery "
-        "loop. The minimum is 10 seconds.",
+        "5",
+        "Interval in seconds for projecting Session output and retrying expired "
+        "inbound events and unfinished outbound deliveries. Multiple replicas "
+        "can run this recovery loop. The minimum is 1 second.",
         "astrabox.core.service.orchestrator.channel_spine_reconciler",
     ),
     (

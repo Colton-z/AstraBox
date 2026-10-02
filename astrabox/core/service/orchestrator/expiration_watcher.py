@@ -363,7 +363,7 @@ class ExpirationWatcher:
             # journal, which moves neither the snapshot's state nor its clock.
             # The same native-activity read that projects BACKGROUND_RUNNING to
             # the page keeps the box off the sweep.
-            if await self._platform._get_background_task_state(session_id) is not None:
+            if await self._platform._session_kernel._get_background_task_state(session_id) is not None:
                 summary["idle_active"] += 1
                 continue
             try:
@@ -462,49 +462,25 @@ class ExpirationWatcher:
     async def _box_is_this_session_s_alone(
         self, *, session_id: str, sandbox_id: str
     ) -> bool:
-        """False when other live sessions are bound to the same box.
-
-        Parking is a whole-box operation: the pause commits the filesystem and
-        frees the compute, which takes the egress sidecar and every
-        conversation's runner down with it. Under the shared tenancy that cuts
-        somebody else's conversation off mid-turn, and the wake path cannot undo
-        it — it restores the one conversation that woke the box, while the
-        siblings' isolated sessions are gone.
-
-        The question is put to the session rows rather than to this session's
-        runtime because parking is a sweeper decision that any replica may make,
-        and the replica sweeping is usually not the one holding the runtime.
-
-        Under the per-session tenancy a box carrying two live sessions is a
-        defect rather than a design, and refusing to park it is still the right
-        answer: a box two rows point at is not one row's to freeze.
-        """
+        """Retain boxes owned by another Session, startup or prepared slot."""
         try:
-            bound = await self._platform._sessions_repo.list_sessions_by_sandbox_id(
-                sandbox_id
+            occupied = await self._platform._runtime_manager.agent_box_has_other_recorded_occupants(
+                sandbox_id, excluding=session_id,
             )
         except Exception:
-            # Not knowing who else is in the box is not a licence to freeze it.
             logger.exception(
-                "expiration_watcher: not parking — could not list the sessions "
-                "bound to sandbox=%s (session=%s)",
+                "expiration_watcher: not parking — could not establish ownership "
+                "of sandbox=%s (session=%s)",
                 sandbox_id, session_id,
             )
             return False
-        others = [
-            str((row or {}).get("session_id") or "")
-            for row in bound
-            if str((row or {}).get("session_id") or "") != session_id
-        ]
-        if not others:
-            return True
-        logger.info(
-            "expiration_watcher: not parking — sandbox=%s carries %d other "
-            "conversation(s) (%s); an idle conversation does not get to freeze "
-            "a box its siblings are working in",
-            sandbox_id, len(others), ", ".join(sorted(others)[:5]),
-        )
-        return False
+        if occupied:
+            logger.info(
+                "expiration_watcher: not parking — sandbox=%s has another owner "
+                "besides session=%s",
+                sandbox_id, session_id,
+            )
+        return not occupied
 
     async def _clear_parked_mark(self, session_id: str) -> None:
         with contextlib.suppress(Exception):
@@ -554,7 +530,10 @@ class ExpirationWatcher:
         if not agent_id:
             return None
         try:
-            view = await self._platform._agent_config.resolve_agent_harness(agent_id)
+            # Maintaining existing compute does not admit new work.
+            view = await self._platform._agent_config.resolve_agent_harness(
+                agent_id, require_enabled_environment=False
+            )
         except Exception:
             logger.exception(
                 "expiration_watcher: agent resolve failed agent=%s", agent_id
@@ -607,6 +586,12 @@ class ExpirationWatcher:
         )
         if last_activity is None:
             return False
+        # Opening Files can resume compute without starting a turn. Give that
+        # return the configured idle window rather than parking it again on the
+        # old transcript clock at the next sweep.
+        resumed_at = _parse_iso(session.get("sandbox_resumed_at"))
+        if resumed_at is not None:
+            last_activity = max(last_activity, resumed_at)
         return (now - last_activity) >= timedelta(seconds=int(idle_after_seconds))
 
     # ── Shared helpers ──────────────────────────────────────────────────

@@ -736,6 +736,7 @@ async def _prepare_hermes_profile(
         sandbox,
         path=posixpath.join(normalized["config_dir"], _HERMES_RUNTIME_STATE_FILENAME),
         content=json.dumps(runtime_state_store, ensure_ascii=False, sort_keys=True),
+        runtime_identity=normalized,
         mode=0o600,
         error_code="HERMES_PROFILE_ENV_INSTALL_FAILED",
         error_message="failed to install Hermes runtime-state target",
@@ -744,6 +745,7 @@ async def _prepare_hermes_profile(
         sandbox,
         path=profile_env_path,
         content=profile_env_content,
+        runtime_identity=normalized,
     )
     result = await run_fn(
         "bash -lc "
@@ -805,6 +807,7 @@ async def _prepare_hermes_profile(
         sandbox,
         path=process_digest_path,
         content=process_digest,
+        runtime_identity=normalized,
         mode=0o600,
         error_code="HERMES_PROFILE_ENV_INSTALL_FAILED",
         error_message="failed to record the Hermes backend's process configuration",
@@ -1081,11 +1084,13 @@ async def _install_hermes_profile_env_file(
     *,
     path: str,
     content: str,
+    runtime_identity: dict[str, Any],
 ) -> None:
     await install_verified_text_script(
         sandbox,
         path=path,
         content=content,
+        runtime_identity=runtime_identity,
         mode=0o600,
         error_code="HERMES_PROFILE_ENV_INSTALL_FAILED",
         error_message="failed to install Hermes profile env file",

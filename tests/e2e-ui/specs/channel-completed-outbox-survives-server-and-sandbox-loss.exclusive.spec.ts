@@ -6,12 +6,12 @@ import { expect, test } from '@playwright/test';
 
 import { AstraApi, messageText } from '../fixtures/astraApi';
 import { channelCallback } from '../fixtures/channelCallback';
-import { documentsByField, replaceDocs, sessionEvents } from '../fixtures/dbOracle';
+import { documentsByField, replaceDocs, sessionEvents, waitForTurnTerminalProof } from '../fixtures/dbOracle';
 import { absoluteBaseUrl, apiPath } from '../fixtures/env';
 import { PlatformApi } from '../fixtures/platformApi';
 import { killSandbox, requireSandboxHandle, restartServerContainer, sandboxRunning } from '../fixtures/sandboxOps';
 import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
-import { openSessionView } from '../fixtures/sessionPage';
+import { openSessionView, sendPrompt } from '../fixtures/sessionPage';
 import { requireServiceContainer, SERVER_CONTAINER_HANDLE } from '../fixtures/serviceContainer';
 
 const sessions = trackSessions();
@@ -61,9 +61,11 @@ test('a completed channel outbox replays its original reply after the server and
     sessionId = String(receipt.session_id || '');
     expect(sessionId).not.toEqual('');
     sessions.push(sessionId);
+    let originalResponseId = '';
     const outbox = () => {
-      const rows = documentsByField('channel_outbox', '$.session_id', sessionId);
-      expect(rows, 'one accepted channel input must own one outbox').toHaveLength(1);
+      const rows = documentsByField('channel_outbox', '$.session_id', sessionId)
+        .filter((row) => !originalResponseId || row.response_id === originalResponseId);
+      expect(rows, 'the original mainline reply must own exactly one outbox').toHaveLength(1);
       return rows[0];
     };
     await expect.poll(() => {
@@ -75,6 +77,8 @@ test('a completed channel outbox replays its original reply after the server and
       (value) => value.state === 'READY' && !value.current_turn_id, 30_000);
     expect(ready.last_error ?? null).toBeNull();
     const originalOutbox = outbox();
+    originalResponseId = String(originalOutbox.response_id || '');
+    expect(originalResponseId).not.toEqual('');
     const turnId = String(originalOutbox.turn_id || '');
     expect(turnId).not.toEqual('');
     expect(originalOutbox.streaming).toBe(false);
@@ -86,6 +90,7 @@ test('a completed channel outbox replays its original reply after the server and
     expect(originalRows.filter((row) => row.role === 'user').map((row) => row.text)).toEqual([prompt]);
     const replies = originalRows.filter((row) => row.role === 'assistant' && row.turn === turnId);
     expect(replies).toHaveLength(1);
+    expect(originalResponseId).toBe(replies[0].id);
     expect(replies[0].text.trim()).not.toEqual('');
     expect(recipient.deliveries[0].text).toBe(replies[0].text.trim());
     await openSessionView(page, sessionId);
@@ -146,6 +151,7 @@ test('a completed channel outbox replays its original reply after the server and
     await expect.poll(() => outbox().state).toBe('DELIVERED');
     const recovered = outbox();
     expect(recovered._id).toBe(originalOutbox._id);
+    expect(recovered.response_id).toBe(originalResponseId);
     expect(recovered.command_id).toBe(originalOutbox.command_id);
     expect(recovered.turn_id).toBe(turnId);
     expect(recovered.lease_generation).toBe(deadGeneration + 1);
@@ -153,7 +159,10 @@ test('a completed channel outbox replays its original reply after the server and
     const recoveredSession = await api.getSession(sessionId);
     expect(recoveredSession).toMatchObject({ state: 'READY', last_turn_id: turnId, last_turn_status: 'COMPLETED' });
     expect(recoveredSession.current_turn_id ?? null).toBeNull();
-    expect(recoveredSession.last_error ?? null).toBeNull();
+    // Compute loss is a lifecycle fact; it must not fail the completed reply.
+    const completed = await waitForTurnTerminalProof(sessionId, turnId, 'COMPLETED');
+    expect(completed.last_turn_error ?? null).toBeNull();
+    expect(sessionEvents(sessionId).filter((event) => event.event_type === 'turn.failed')).toEqual([]);
     expect(recipient.deliveries.map((delivery) => delivery.text))
       .toEqual([replies[0].text.trim(), replies[0].text.trim()]);
     expect(sessionEvents(sessionId).filter((event) => event.event_type === 'command.accepted'))
@@ -169,6 +178,42 @@ test('a completed channel outbox replays its original reply after the server and
     expect(recipient.deliveries).toHaveLength(2);
     expect(recipient.errors).toEqual([]);
     evidence.recovered = { outbox: recovered, deliveries: recipient.deliveries };
+
+    // Only after proving replay without input, exercise transparent recovery.
+    const nextPrompt = 'Explain what a pencil is in one short plain sentence. Do not use tools.';
+    await sendPrompt(page, sessionId, nextPrompt);
+    await expect(page.getByTestId('user-message')).toHaveText([prompt, nextPrompt]);
+    await expect(page.getByTestId('assistant-text')).toHaveCount(2, { timeout: 60_000 });
+    const nextReply = page.getByTestId('assistant-message').last();
+    await expect(nextReply).not.toHaveAttribute('data-streaming', 'true', { timeout: 60_000 });
+    const rebound = await api.waitForSession(sessionId,
+      (value) => value.state === 'READY' && !value.current_turn_id && value.last_turn_id !== turnId, 30_000);
+    expect(rebound.last_turn_status).toBe('COMPLETED');
+    expect(rebound.runtime_unavailable).toBe(false);
+    expect(rebound.last_error ?? null).toBeNull();
+    expect(String(rebound.sandbox_id || '')).not.toEqual('');
+    expect(rebound.sandbox_id).not.toEqual(ready.sandbox_id);
+    const continued = await api.getMessages(sessionId, 50);
+    for (const original of originalHistory.messages) {
+      expect(continued.messages.find((row) => row.message_id === original.message_id)).toEqual(original);
+    }
+    expect(continued.messages.filter((row) => row.role === 'user').map(messageText)).toEqual([prompt, nextPrompt]);
+    const nextAnswer = continued.messages.filter((row) => row.role === 'assistant' && row.turn_id === rebound.last_turn_id);
+    expect(nextAnswer).toHaveLength(1);
+    expect(messageText(nextAnswer[0]).trim()).not.toEqual('');
+    await expect(page.getByTestId('assistant-text').last()).toHaveText(messageText(nextAnswer[0]));
+    await expect.poll(() => {
+      if (recipient.errors.length) throw new Error(recipient.errors.join('; '));
+      return recipient.deliveries.map((delivery) => delivery.text);
+    }, { timeout: 30_000 }).toEqual([
+      replies[0].text.trim(), replies[0].text.trim(), messageText(nextAnswer[0]).trim(),
+    ]);
+    const continuedOutboxes = documentsByField('channel_outbox', '$.session_id', sessionId);
+    expect(continuedOutboxes).toHaveLength(2);
+    expect(continuedOutboxes.map((row) => row.response_id).sort())
+      .toEqual([originalResponseId, nextAnswer[0].message_id].sort());
+    expect(outbox()).toEqual(recovered);
+    evidence.continued = { sandboxId: rebound.sandbox_id, turnId: rebound.last_turn_id };
   } finally {
     try {
       if (stopped) serverCommand(server, ['start']);

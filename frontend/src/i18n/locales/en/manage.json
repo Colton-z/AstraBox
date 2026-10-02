@@ -1,12 +1,14 @@
 {
   "prewarm": {
-    "label": "Prewarm status",
+    "label": "Warm capacity",
     "help": "Reprepare fetches Plugins and Skills using the saved configuration and replaces waiting capacity without interrupting existing sessions. Pinned commits remain pinned.",
     "loading": "Loading…",
-    "disabled": "Disabled",
-    "ready": "Ready",
-    "preparing": "Preparing",
-    "failed": "Preparation failed",
+    "disabled": "Warm start is off for this Agent.",
+    "ready": "The next conversation starts warm while this capacity remains available.",
+    "preparing": "No sandbox is standing by. Preparation is in progress.",
+    "failed": "AstraBox could not prepare a sandbox.",
+    "expired": "The prepared sandbox has expired and is waiting for renewal.",
+    "prepared_at": "Prepared",
     "available": "Available: {{count}}",
     "reprepare": "Reprepare",
     "requesting": "Submitting…",
@@ -226,6 +228,9 @@
     "no_match": "No sessions match “{{query}}”."
   },
   "deployments": {
+    "field_execution_user": "Execution account user ID",
+    "execution_user_default": "Agent creator",
+    "execution_user_help": "Administrators can enter an identity-provider user ID. Leave empty to use the Agent creator. Each execution account keeps a separate channel conversation; queued messages retain their admitted account.",
     "title": "Triggers",
     "meta": "{{count}} triggers · {{enabled}} enabled",
     "description": "Start Agent conversations from a schedule, signed Webhook, external scheduler, or messaging platform.",
@@ -471,7 +476,8 @@
     "err_name_exists": "An environment named “{{name}}” already exists. Pick another name.",
     "not_found": "No environment named {{name}}",
     "card_note": "The identifier is fixed. Every other field can change at any time.",
-    "create_title": "New environment"
+    "create_title": "New environment",
+    "confirm_delete": "Delete Environment “{{name}}”?"
   },
   "env_form": {
     "select_placeholder": "Select…",

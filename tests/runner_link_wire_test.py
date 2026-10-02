@@ -27,7 +27,7 @@ import pytest
 from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock
 
 from astrabox.core.service.orchestrator import sandbox_runner as sandbox_runner_module
-from astrabox.core.service.orchestrator.engine.base import EngineStreamDetached
+from astrabox.core.service.orchestrator.engine.base import EngineOutputAlreadyObserved, EngineStreamDetached
 from astrabox.core.service.orchestrator.engine.runner_link import (
     DeliveryCommand,
     RUNNER_PROTOCOL as HOST_RUNNER_PROTOCOL,
@@ -1067,3 +1067,43 @@ def test_binding_a_store_after_prepare_is_refused() -> None:
 
     with pytest.raises(sandbox_runner.RunnerProtocolError, match="after the slot is prepared"):
         session.bind_store("sess-1", {"base_url": "http://platform.invalid"})
+
+
+async def test_observer_cannot_replace_a_live_output_owner(wire) -> None:
+    _server, sdk, uri = wire
+    async with RunnerLink(uri) as owner, RunnerLink(uri) as observer:
+        await owner.configure("sess-1", options={})
+        with pytest.raises(EngineOutputAlreadyObserved):
+            await observer.attach("sess-1", last_seen_seq=0, observe_only=True)
+        sdk.emit(_assistant_message("original owner still receives output"))
+        event = await asyncio.wait_for(
+            _next_message_type(owner.frames(), "AssistantMessage"), timeout=2,
+        )
+        assert event["message"]["content"][0]["text"] == "original owner still receives output"
+        assert sdk.queries == []
+
+
+async def test_only_one_observer_claims_a_disconnected_runner_and_replays(wire) -> None:
+    server, sdk, uri = wire
+    async with RunnerLink(uri) as owner:
+        await owner.configure("sess-1", options={})
+    assert server.session is not None
+    async with asyncio.timeout(2):
+        while server.session.sender.link.is_connected():
+            await asyncio.sleep(0.01)
+    sdk.emit(_assistant_message("completion produced while disconnected"))
+    async with RunnerLink(uri) as first, RunnerLink(uri) as second:
+        results = await asyncio.gather(
+            first.attach("sess-1", last_seen_seq=0, observe_only=True),
+            second.attach("sess-1", last_seen_seq=0, observe_only=True),
+            return_exceptions=True,
+        )
+        assert sum(isinstance(result, EngineOutputAlreadyObserved) for result in results) == 1
+        assert sum(isinstance(result, dict) for result in results) == 1
+        winner = first if isinstance(results[0], dict) else second
+        event = await asyncio.wait_for(
+            _next_message_type(winner.frames(), "AssistantMessage"), timeout=2,
+        )
+        assert event["message"]["content"][0]["text"] == "completion produced while disconnected"
+        assert sdk.queries == []
+        assert len(sdk.openings) == 1

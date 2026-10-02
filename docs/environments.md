@@ -69,7 +69,7 @@ Agent image. Start from the image tag of the AstraBox release you run, because
 the platform components inside the image must match the server:
 
 ```dockerfile
-FROM ghcr.io/colton-z/astrabox-sandbox-claude-code:0.1.1
+FROM ghcr.io/colton-z/astrabox-sandbox-claude-code:0.1.2
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git build-essential libssl-dev \

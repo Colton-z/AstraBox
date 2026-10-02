@@ -43,6 +43,7 @@ def harness(monkeypatch: pytest.MonkeyPatch) -> _Recorder:
         *,
         path: str,
         content: str,
+        runtime_identity: dict[str, Any] | None,
         mode: int,
         error_code: str,
         error_message: str,

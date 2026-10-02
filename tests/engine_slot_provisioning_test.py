@@ -881,3 +881,76 @@ async def test_failed_pre_activation_handoff_discards_the_exact_claim(
     )
     release.assert_awaited_once_with("session-1", manifest)
     refill.assert_called_once_with(template, manager)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("code", "probe_status", "cleanup_fails"), [
+    ("SANDBOX_GONE", "NOT_FOUND", False),
+    ("SANDBOX_GONE", "NOT_FOUND", True),
+    ("SANDBOX_GONE", "OK", False),
+    ("SANDBOX_GONE", "PROBE_FAILED", False),
+    ("SANDBOX_UNAVAILABLE", "NOT_FOUND", False),
+])
+async def test_prepared_handoff_only_falls_back_after_confirmed_absence_and_cleanup(
+    monkeypatch: pytest.MonkeyPatch, code: str, probe_status: str, cleanup_fails: bool,
+) -> None:
+    from astrabox.core.service.orchestrator.agent import prepared_slots
+    from astrabox.persistence.repository import agent_repository
+    from astrabox.seams.sandbox import SandboxLifecycleProbeResult
+
+    manifest = {
+        "slot_id": "slot", "engine_kind": "codex", "placement": "shared_slot",
+        "sandbox_id": "box", "sandbox_backend": "fake",
+        "environment_credential_contract": [], "runtime_env": {},
+        "runtime_identity": {"home_dir": "/home/slot", "linux_user": "slot"},
+    }
+    monkeypatch.setattr(prepared_slots, "claim_prepared_slot", AsyncMock(return_value=manifest))
+    manager = SimpleNamespace(
+        resolve_session_egress_credentials=AsyncMock(return_value=[]),
+        record_startup_allocation=AsyncMock(),
+    )
+    connect_error = APIError(code=code, message="cannot connect", status_code=503)
+    backend = SimpleNamespace(
+        name="fake", connect=AsyncMock(side_effect=connect_error),
+        probe=AsyncMock(return_value=SandboxLifecycleProbeResult(probe_status=probe_status)),
+    )
+    repo = SimpleNamespace(clear_resident_sandbox_binding=AsyncMock(return_value=True))
+    monkeypatch.setattr(agent_repository, "AgentRepository", lambda: repo)
+    cleanup = AsyncMock(side_effect=RuntimeError("cleanup not settled") if cleanup_fails else None)
+    monkeypatch.setattr(provisioning, "_discard_failed_prepared_claim", cleanup)
+    template = SimpleNamespace(
+        agent_id="agent", engine_kind="codex", prewarm_enabled=True, runtime_generation="generation",
+    )
+
+    async def handoff() -> Any:
+        return await provisioning.claim_prepared_engine_sandbox(
+            manager, session_id="session", assignment_id="assignment", template=template,
+            workspace_plan=SimpleNamespace(resume_engine_session_key=""), user_id="user",
+            request=SimpleNamespace(credential=object()), backend_adapter=backend,
+            credential="placeholder", mcp_vault_write=None, vault_enabled=True, session_log=None,
+        )
+
+    confirmed = code == "SANDBOX_GONE" and probe_status == "NOT_FOUND"
+    if confirmed and not cleanup_fails:
+        assert await handoff() is None
+    elif cleanup_fails:
+        with pytest.raises(RuntimeError, match="cleanup not settled"):
+            await handoff()
+    else:
+        with pytest.raises(APIError) as caught:
+            await handoff()
+        assert caught.value is connect_error
+    if confirmed:
+        repo.clear_resident_sandbox_binding.assert_awaited_once_with(
+            "agent", sandbox_id="box", sandbox_backend="fake",
+        )
+        cleanup.assert_awaited_once_with(
+            manager, session_id="session", template=template,
+            reason="prepared sandbox disappeared before hand-off",
+        )
+    else:
+        repo.clear_resident_sandbox_binding.assert_not_awaited()
+        cleanup.assert_not_awaited()
+    if code != "SANDBOX_GONE":
+        backend.probe.assert_not_awaited()
+    manager.record_startup_allocation.assert_not_awaited()

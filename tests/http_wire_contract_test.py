@@ -31,7 +31,7 @@ _OPENAPI_SNAPSHOT_PATH = _DATA_DIR / "openapi_snapshot.json"
 #: independently (see ``test_openapi_schema_matches_frozen_hash`` /
 #: ``test_openapi_schema_matches_committed_snapshot_file``) so tampering with
 #: just the file, or just this constant, still fails loud.
-_OPENAPI_SHA256 = "59fcde8fa0184f2b2ea09133781717503799742b4455b8c203b83be967f54c36"
+_OPENAPI_SHA256 = "38f67d75cf7da0faa700fcb8af2dec27fbb22f4e43c486c04fea1450d09bea7a"
 
 #: The frozen ROUTE TABLE of the current tree. One row per route OBJECT (not
 #: per HTTP method) — ``methods`` carries every verb registered on that one
@@ -105,6 +105,7 @@ _EXPECTED_ROUTES: list[tuple[tuple[str, ...], str, str]] = [
     (("GET",), "/api/v1/admin/channel-providers", "list_channel_providers"),
     (("GET",), "/api/v1/admin/deployments", "list_deployments"),
     (("GET",), "/api/v1/admin/environment-schema", "get_environment_schema_endpoint"),
+    (("DELETE",), "/api/v1/admin/environments/{name}", "delete_admin_environment"),
     (("GET",), "/api/v1/admin/environments", "list_admin_environments"),
     (("PUT",), "/api/v1/admin/environments/{name}", "upsert_admin_environment"),
     (("GET",), "/api/v1/admin/environments/{name}/models", "list_environment_models"),
@@ -278,12 +279,15 @@ _EXPECTED_ROUTES: list[tuple[tuple[str, ...], str, str]] = [
         "stop_session_child_run",
     ),
     (("POST",), "/api/v1/sessions/{session_id}/conversation/end", "end_conversation"),
+    (("GET",), "/api/v1/sessions/{session_id}/file-changes", "get_session_file_changes"),
     (("POST",), "/api/v1/sessions/{session_id}/files/delete", "delete_session_files"),
     (("GET",), "/api/v1/sessions/{session_id}/files/download", "download_session_file"),
     (("POST",), "/api/v1/sessions/{session_id}/files/list", "list_session_files"),
     (("POST",), "/api/v1/sessions/{session_id}/files/mkdir", "mkdir_session_files"),
     (("POST",), "/api/v1/sessions/{session_id}/files/move", "move_session_files"),
     (("POST",), "/api/v1/sessions/{session_id}/files/upload", "upload_session_files"),
+    (("GET",), "/api/v1/sessions/{session_id}/speech-input", "get_speech_input_options"),
+    (("POST",), "/api/v1/sessions/{session_id}/speech-input", "transcribe_session_speech"),
     (
         ("GET",),
         "/api/v1/sessions/{session_id}/history-blocks",
@@ -370,8 +374,8 @@ _EXPECTED_ROUTES: list[tuple[tuple[str, ...], str, str]] = [
 
 #: Documentation-level sanity constants, redundant with the full-list equality
 #: check but give a clearer top-line failure signal than a 100+ row list diff.
-_EXPECTED_ROUTE_COUNT = 168
-_EXPECTED_DISTINCT_PATH_COUNT = 141
+_EXPECTED_ROUTE_COUNT = 170
+_EXPECTED_DISTINCT_PATH_COUNT = 142
 
 
 def _effective_routes(app: Any) -> list[tuple[tuple[str, ...], str, str]]:

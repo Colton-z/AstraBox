@@ -76,6 +76,18 @@ Environment 选择的镜像必须与 `engine_kind` 兼容。需要新增 Agent �
 具体消息平台无需另外部署 Koishi 或 Satori。Satori Protocol Server 选项用于连接部署方
 已经运行的服务。多副本安装可以配置一个经过认证的外部消息网关。
 
+Web 和消息适配器读取同一份 Session 输出。Agent 程序适配器解释原生回复边界，平台把
+正文、工具和结束状态保存到现有的 Session 事件记录中。渠道负责向目标平台展示这些输出。
+
+接入的渠道会持续跟随 Session，不需要收到新的入站消息。当原生后台任务或扩展唤醒
+主 Agent 时，它的回复会沿同一条输出路径到达 Web 和接入的消息平台。子任务状态和
+子任务对话记录与主 Agent 回复分别保留。纯文本渠道收到回复正文，Web 还会展示工具卡片
+及其他受支持的内容。
+
+渠道订阅保存事件游标，现有回复 outbox 保存投递尝试和平台消息 ID。读取不完整的回复后，
+订阅会从回复边界重新构建内容，再推进游标，无需另建对话存储。参见
+[接入新的消息平台](writing-a-channel-provider.md#投递-agent-回复)。
+
 ### 数据与凭证
 
 AstraBox 记录默认保存在 PostgreSQL。通过 `mongo` extra 可以使用 MongoDB；SQLite 适合

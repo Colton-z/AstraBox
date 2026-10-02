@@ -94,6 +94,7 @@ RUN set -eux; \
 # that catalogue is the vendor's product, and a gate over it would make
 # AstraBox the curator of someone else's agent.
 COPY --chmod=u=rwX,go=rX containers/sandbox-deepseek-harness/astrabox-dsh-profile.patch.yml ${DSH_PREFIX}/profile.patch.yml
+COPY --chmod=u=rwX,go=rX containers/sandbox-deepseek-harness/astrabox-dsh-output.mjs ${DSH_PREFIX}/output.mjs
 RUN set -eux; \
     DSH_HOME=/tmp/dsh-build-home \
       "${DSH_PREFIX}/node_modules/.bin/dsh" --profile web \
@@ -199,3 +200,7 @@ ENV ASTRABOX_WORKLOAD_USER=agent \
     WORKSPACE=/workspace
 
 WORKDIR /workspace
+
+# Foreground commands wait for execd to drain their SSE stream. Match the
+# supplier's 200ms drain without changing command execution timeouts.
+ENV EXECD_API_GRACE_SHUTDOWN=200ms

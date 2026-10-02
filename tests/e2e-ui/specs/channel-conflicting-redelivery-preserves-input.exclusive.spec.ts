@@ -7,7 +7,7 @@ import { documentsByField, sessionEvents, waitForTurnTerminalProof } from '../fi
 import { PlatformApi } from '../fixtures/platformApi';
 import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
 import { openSessionView } from '../fixtures/sessionPage';
-import { satoriSource } from '../fixtures/satoriSource';
+import { satoriReplyTexts, satoriSource } from '../fixtures/satoriSource';
 
 const sessions = trackSessions();
 let agentId = '';
@@ -95,7 +95,7 @@ async function waitSettled(messageId: string, command: Record<string, unknown>, 
   expect(object(receipts.find((row) => row.event_type === 'input.consumed')!.payload).content)
     .toBe(object(command.payload).content);
   const outbox = documentsByField('channel_outbox', '$.session_id', sessionId)
-    .filter((row) => row.command_id === commandId);
+    .filter((row) => row.turn_id === command.turn_id);
   expect(outbox).toHaveLength(1);
   expect(outbox[0].state).toBe('DELIVERED');
   evidence[`receipts-${deliveryCount}`] = receipts;
@@ -225,6 +225,10 @@ test('conflicting redelivery preserves ignored context and settled input while l
   const replies = history.filter((row) => row.role === 'assistant');
   expect(replies).toHaveLength(2);
   expect(replies.every((row) => messageText(row).trim().length > 0)).toBe(true);
+  expect(await satoriReplyTexts(page, source!.deliveries, firstId))
+    .toEqual(replies.map((reply) => messageText(reply).trim()));
+  expect(documentsByField('channel_outbox', '$.session_id', sessionId).map((row) => row.response_id).sort())
+    .toEqual(replies.map((reply) => reply.message_id).sort());
   await openSessionView(page, sessionId);
   const renderedInputs = page.getByTestId('user-message');
   await expect(renderedInputs).toHaveCount(2);

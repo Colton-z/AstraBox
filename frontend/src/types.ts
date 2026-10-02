@@ -217,6 +217,7 @@ export interface ChannelFieldDescriptor {
 }
 
 export interface ChannelProviderDescriptor {
+  can_configure_execution_user?: boolean;
   name: string;
   label: string;
   scene: `channel:${string}`;
@@ -231,6 +232,7 @@ export interface ChannelProviderDescriptor {
 
 // A Deployment is one internal or external trigger binding on an Agent.
 export interface AgentDeployment {
+  execution_user_id?: string;
   deployment_id: string;
   agent_id: string;
   agent_name?: string;

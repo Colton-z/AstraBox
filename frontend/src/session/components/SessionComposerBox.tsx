@@ -1,5 +1,5 @@
 import type React from 'react';
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Popover as PopoverPrimitive } from '@base-ui/react/popover';
 import { PromptInput, PromptInputTextarea, PromptInputFooter, PromptInputButton, PromptInputSubmit, usePromptInputAttachments } from '@/components/ai-elements/prompt-input';
@@ -24,6 +24,8 @@ import type { QueuedMessageItem } from '../../utils/messages';
 import type { DisplaySlashCommand } from '../slashCommands';
 import { PermissionModeStripInline } from './PermissionModeStrip';
 import { StopGenerationButton } from './StopGenerationButton';
+import { ComposerSpeechInput } from './ComposerSpeechInput';
+import type { SpeechInputState } from '@/components/voice/SpeechInput';
 
 // The composer's own paste rule and attachment strip.
 //
@@ -110,6 +112,7 @@ function ComposerSubmit({
 // Composer footer used when no pending interaction is active. It contains the
 // queued-message strip, slash-command popup, and prompt input.
 export function SessionComposerBox({
+  sessionId,
   displayedQueue,
   removeQueueItem,
   retryQueueItem,
@@ -143,6 +146,7 @@ export function SessionComposerBox({
   isInterruptSettling,
   wrappedStopGeneration,
 }: {
+  sessionId: string;
   displayedQueue: QueuedMessageItem[];
   removeQueueItem: (id: string) => void;
   retryQueueItem: (id: string) => void;
@@ -177,6 +181,8 @@ export function SessionComposerBox({
   wrappedStopGeneration: () => Promise<void>;
 }) {
   const { t } = useTranslation();
+  const [voiceState, setVoiceState] = useState<SpeechInputState>('idle');
+  const voiceBusy = voiceState !== 'idle';
   const isBusy = isStreaming || isSubmitted;
   // The slash menu hangs off the composer box, and the composer box is not a
   // trigger: making it one would put button semantics around the textarea.
@@ -198,7 +204,10 @@ export function SessionComposerBox({
       <PopoverPrimitive.Root open={showSlashPopup}>
         <div ref={composerAnchorRef} className="relative">
           <PromptInput
-            className="rounded-xl border border-border bg-card shadow-none transition-colors duration-150 focus-within:border-primary/60 has-[textarea:focus]:border-primary/60"
+            onSubmitCapture={(event) => {
+              if (voiceBusy) { event.preventDefault(); event.stopPropagation(); }
+            }}
+            className="rounded-xl border border-border bg-card shadow-none transition-colors duration-150 focus-within:border-primary/60 has-[textarea:focus]:border-primary/60 [&>[data-slot=input-group]]:has-disabled:opacity-100"
             accept={acceptsImages ? COMPOSER_IMAGE_MEDIA_TYPES.join(',') : undefined}
             maxFiles={acceptsImages ? undefined : 0}
             onSubmit={(msg: PromptInputMessage) => {
@@ -222,6 +231,11 @@ export function SessionComposerBox({
             }
             disabled={hasPendingInteraction || !canSend}
           />
+          {voiceState === 'failed' && (
+            <p role="status" className="w-full px-3 py-1 text-sm text-muted-foreground">
+              {t('chat:voice.retained')}
+            </p>
+          )}
           <PromptInputFooter className="items-center gap-2 px-2 py-1.5">
             <div className="flex min-w-0 items-center gap-2">
               {showPermissionMode && (
@@ -254,6 +268,13 @@ export function SessionComposerBox({
               )}
             </div>
             <div className="flex shrink-0 items-center gap-1">
+              <ComposerSpeechInput
+                key={sessionId}
+                sessionId={sessionId}
+                disabled={!canSend || hasPendingInteraction || isInterruptSettling}
+                onStateChange={setVoiceState}
+                onTranscriptionChange={(text) => setDraft(draft ? `${draft}${/\s$/.test(draft) ? '' : ' '}${text}` : text)}
+              />
               <ComposerSubmit
                 data-testid="composer-submit"
                 aria-label={submitLabel}
@@ -261,7 +282,7 @@ export function SessionComposerBox({
                 className="size-8 rounded-lg bg-primary text-primary-foreground hover:bg-astra-2 disabled:bg-secondary disabled:text-muted-foreground"
                 hasText={Boolean(draft.trim())}
                 acceptsImages={acceptsImages}
-                blocked={!canSend || hasPendingInteraction || isInterruptSettling}
+                blocked={!canSend || hasPendingInteraction || isInterruptSettling || voiceBusy}
                 status="ready"
               />
               {isBusy && (

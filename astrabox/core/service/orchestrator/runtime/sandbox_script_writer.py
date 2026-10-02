@@ -10,6 +10,10 @@ import uuid
 from typing import Any
 
 from astrabox.common.utils.errors import APIError
+from astrabox.core.service.orchestrator.runtime.conversation_identity import (
+    identity_path_to_source,
+    normalize_runtime_identity,
+)
 
 _SCRIPT_COMMAND_CHUNK_SIZE = 16_000
 
@@ -46,25 +50,14 @@ def _python_heredoc_command(script: str) -> str:
     return "python - <<'PY'\n" + textwrap.dedent(script).strip() + "\nPY"
 
 
-def _write_text_file_commands(path: str, content: str, *, mode: int) -> list[str]:
+def _write_text_file_commands(path: str, content: str) -> list[str]:
     data_b64 = base64.b64encode(content.encode("utf-8")).decode("ascii")
     chunks = [
         data_b64[index : index + _SCRIPT_COMMAND_CHUNK_SIZE]
         for index in range(0, len(data_b64), _SCRIPT_COMMAND_CHUNK_SIZE)
-    ]
-    commands = [
-        _python_heredoc_command(
-            f"""
-from pathlib import Path
-
-path = {json.dumps(path)}
-target = Path(path)
-target.parent.mkdir(parents=True, exist_ok=True)
-target.write_bytes(b"")
-"""
-        )
-    ]
-    for chunk in chunks:
+    ] or [""]
+    commands = []
+    for index, chunk in enumerate(chunks):
         commands.append(
             _python_heredoc_command(
                 f"""
@@ -73,25 +66,11 @@ from pathlib import Path
 
 path = {json.dumps(path)}
 chunk = {json.dumps(chunk)}
-with Path(path).open("ab") as handle:
+with Path(path).open({json.dumps('wb' if index == 0 else 'ab')}) as handle:
     handle.write(base64.b64decode(chunk.encode("ascii")))
 """
             )
         )
-    commands.append(
-        _python_heredoc_command(
-            f"""
-import json
-import os
-from pathlib import Path
-
-path = {json.dumps(path)}
-target = Path(path)
-os.chmod(target, {int(mode)})
-print(json.dumps({{"path": path, "bytes": target.stat().st_size}}))
-"""
-        )
-    )
     return commands
 
 
@@ -145,29 +124,12 @@ print(json.dumps({{"lock": lock_path, "released": True}}))
     )
 
 
-def _atomic_replace_text_file_command(*, temp_path: str, target_path: str, mode: int) -> str:
-    return _python_heredoc_command(
-        f"""
-import json
-import os
-from pathlib import Path
-
-temp_path = {json.dumps(temp_path)}
-target_path = {json.dumps(target_path)}
-target = Path(target_path)
-target.parent.mkdir(parents=True, exist_ok=True)
-os.chmod(temp_path, {int(mode)})
-os.replace(temp_path, target_path)
-print(json.dumps({{"path": target_path, "bytes": target.stat().st_size}}))
-"""
-    )
-
-
-def _verify_text_file_command(path: str, content: str) -> str:
+def _publish_text_file_command(
+    *, temp_path: str, target_path: str, content: str, mode: int
+) -> str:
     data = content.encode("utf-8")
     expected_json = json.dumps(
         {
-            "path": path,
             "size": len(data),
             "sha256": hashlib.sha256(data).hexdigest(),
         },
@@ -177,20 +139,31 @@ def _verify_text_file_command(path: str, content: str) -> str:
         f"""
 import hashlib
 import json
+import os
 import sys
 from pathlib import Path
 
 expected = json.loads({json.dumps(expected_json)})
-target = Path(expected["path"])
-if not target.is_file():
-    print(json.dumps({{"ok": False, "error": "missing", "expected": expected}}))
-    sys.exit(1)
-data = target.read_bytes()
-actual = {{"path": str(target), "size": len(data), "sha256": hashlib.sha256(data).hexdigest()}}
-ok = actual["size"] == int(expected["size"]) and actual["sha256"] == str(expected["sha256"])
-print(json.dumps({{"ok": ok, "expected": expected, "actual": actual}}, ensure_ascii=False))
-if not ok:
-    sys.exit(1)
+temp_path = {json.dumps(temp_path)}
+target_path = {json.dumps(target_path)}
+
+def verify(path):
+    expected["path"] = path
+    target = Path(path)
+    if not target.is_file():
+        print(json.dumps({{"ok": False, "error": "missing", "expected": expected}}))
+        sys.exit(1)
+    data = target.read_bytes()
+    actual = {{"path": path, "size": len(data), "sha256": hashlib.sha256(data).hexdigest()}}
+    ok = actual["size"] == expected["size"] and actual["sha256"] == expected["sha256"]
+    print(json.dumps({{"ok": ok, "expected": expected, "actual": actual}}, ensure_ascii=False))
+    if not ok:
+        sys.exit(1)
+
+os.chmod(temp_path, {int(mode)})
+verify(temp_path)
+os.replace(temp_path, target_path)
+verify(target_path)
 """
     )
 
@@ -200,10 +173,24 @@ async def install_verified_text_script(
     *,
     path: str,
     content: str,
+    runtime_identity: dict[str, Any] | None,
     mode: int = 0o755,
     error_code: str,
     error_message: str,
 ) -> None:
+    """Publish a runtime-visible path through the box command channel.
+
+    Identity owns the workspace mapping for both cold and prepared placements.
+    A null identity explicitly addresses the box filesystem directly.
+    """
+
+    if runtime_identity is not None and normalize_runtime_identity(runtime_identity) is None:
+        raise APIError(
+            code=error_code,
+            message=f"{error_message}: runtime identity is incomplete",
+            status_code=500,
+        )
+    path = identity_path_to_source(runtime_identity, path)
     target_sandbox = _underlying_sandbox(sandbox)
     commands = getattr(target_sandbox, "commands", None)
     run_fn = getattr(commands, "run", None) if commands is not None else None
@@ -224,36 +211,25 @@ async def install_verified_text_script(
                 f"{getattr(lock_result, 'error', None)}; output={output[:1000]!r}"
             )
         lock_acquired = True
-        for command in _write_text_file_commands(temp_path, content, mode=mode):
+        for command in _write_text_file_commands(temp_path, content):
             result = await run_fn(command)
             if getattr(result, "error", None):
                 output = _extract_command_log_text(result)
                 raise RuntimeError(
                     f"{getattr(result, 'error', None)}; output={output[:1000]!r}"
                 )
-        verify_result = await run_fn(_verify_text_file_command(temp_path, content))
-        if getattr(verify_result, "error", None):
-            output = _extract_command_log_text(verify_result)
-            raise RuntimeError(
-                f"{getattr(verify_result, 'error', None)}; output={output[:1000]!r}"
-            )
-        replace_result = await run_fn(
-            _atomic_replace_text_file_command(
+        publish_result = await run_fn(
+            _publish_text_file_command(
                 temp_path=temp_path,
                 target_path=path,
+                content=content,
                 mode=mode,
             )
         )
-        if getattr(replace_result, "error", None):
-            output = _extract_command_log_text(replace_result)
+        if getattr(publish_result, "error", None):
+            output = _extract_command_log_text(publish_result)
             raise RuntimeError(
-                f"{getattr(replace_result, 'error', None)}; output={output[:1000]!r}"
-            )
-        verify_result = await run_fn(_verify_text_file_command(path, content))
-        if getattr(verify_result, "error", None):
-            output = _extract_command_log_text(verify_result)
-            raise RuntimeError(
-                f"{getattr(verify_result, 'error', None)}; output={output[:1000]!r}"
+                f"{getattr(publish_result, 'error', None)}; output={output[:1000]!r}"
             )
     except Exception as exc:
         raise APIError(

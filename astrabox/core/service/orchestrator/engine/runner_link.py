@@ -22,7 +22,7 @@ from websockets.asyncio.client import connect as websocket_connect
 from websockets.exceptions import ConnectionClosed
 
 from astrabox.common.logger.logger_factory import get_logger
-from astrabox.core.service.orchestrator.engine.base import EngineStreamDetached
+from astrabox.core.service.orchestrator.engine.base import EngineOutputAlreadyObserved, EngineStreamDetached
 
 logger = get_logger(__name__)
 
@@ -425,6 +425,7 @@ class RunnerLink:
         last_seen_seq: int,
         required_option_keys: Collection[str] | None = None,
         permission_mode: str | None = None,
+        observe_only: bool = False,
     ) -> dict[str, Any]:
         if (
             isinstance(last_seen_seq, bool)
@@ -443,7 +444,7 @@ class RunnerLink:
             )
         )
         return await self._open_session({
-            "op": "attach",
+            "op": "observe" if observe_only else "attach",
             "activation_token": self._activation_token,
             "session_id": session_id,
             "last_seen_seq": last_seen_seq,
@@ -458,7 +459,7 @@ class RunnerLink:
         self._gap_received = False
         requested_cursor = (
             int(frame["last_seen_seq"])
-            if frame["op"] == "attach"
+            if frame["op"] in {"attach", "observe"}
             else 0
         )
         # Install the expectation before the opening frame goes out. The
@@ -852,7 +853,11 @@ class RunnerLink:
                 self._prepared.set_exception(RunnerLinkError(detail))
                 return
             if self._hello is not None and not self._hello.done():
-                self._hello.set_exception(RunnerLinkError(detail))
+                self._hello.set_exception(
+                    EngineOutputAlreadyObserved(detail)
+                    if frame.get("code") == "OUTPUT_ALREADY_OBSERVED"
+                    else RunnerLinkError(detail)
+                )
                 return
             raise RunnerLinkError(detail)
         if op == "answer_ack":

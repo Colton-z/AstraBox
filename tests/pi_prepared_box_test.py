@@ -126,7 +126,11 @@ def _preparation_context(
         sandbox=sandbox or _box(_models_config("deepseek-chat")),
         sandbox_id="box-77",
         cwd="/workspace",
-        runtime_identity={"workspace_dir": "/workspace", "sandbox_id": "box-77"},
+        runtime_identity={
+            "workspace_dir": "/workspace", "sandbox_id": "box-77",
+            "linux_user": "user", "home_dir": "/home/user",
+            "sandbox_tenancy": "conversation",
+        },
         model_access=selected_manager.resolve_model_access(selected.model_config),
         model_credential="placeholder",
         runtime_env={},
@@ -429,7 +433,10 @@ def test_preparation_places_the_agents_context_before_parking_the_child(
     monkeypatch.setattr(pi, "_park_pi_child", AsyncMock(return_value="pty-parked"))
     installed: list[tuple[str, str]] = []
 
-    async def _install(sandbox: Any, *, cwd: str, instructions: str) -> None:
+    async def _install(
+        sandbox: Any, *, cwd: str, instructions: str,
+        runtime_identity: dict[str, Any] | None,
+    ) -> None:
         assert pi._park_pi_child.await_count == 0, (  # type: ignore[attr-defined]
             "a child parked before this has already read the file it needs"
         )

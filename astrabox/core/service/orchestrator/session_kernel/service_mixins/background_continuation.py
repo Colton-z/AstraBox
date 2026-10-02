@@ -34,11 +34,17 @@ from astrabox.core.service.orchestrator.message_blocks import (
 logger = get_logger(__name__)
 
 _BACKGROUND_CONTINUATION_CONCURRENCY = 5
-# How many opened manifests one pass reads, newest first, while looking for
-# ones that are still open. Manifests are appended and never updated, so every
-# settled one stays in the journal ahead of any older open one; the ceiling
-# bounds the read amplification of a long history and is logged when hit.
+# Bound each pass's reads; its cursor continues through older history next time.
 _BACKGROUND_MANIFEST_SCAN_CEILING = 500
+_ManifestPosition = tuple[str, int, str]
+
+
+def _manifest_position(event: dict[str, Any]) -> _ManifestPosition:
+    return (
+        str(event.get("occurred_at") or ""),
+        int(event["event_seq"]),
+        str(event["session_id"]),
+    )
 
 
 def _discard_settled_child_run(
@@ -73,6 +79,8 @@ class BackgroundContinuationMixin:
     The child-run view reads these facts in their own engine scope, not as
     parent assistant speech. This mixin also owns the session status probe.
     """
+
+    _background_manifest_scan_cursor: _ManifestPosition | None = None
 
     @staticmethod
     def _background_materialized_causation_id(opened_event: dict[str, Any]) -> str:
@@ -131,20 +139,28 @@ class BackgroundContinuationMixin:
         self,
         *,
         limit: int = 50,
-        skip: int = 0,
+        before: _ManifestPosition | None = None,
     ) -> list[dict[str, Any]]:
         collection = await get_async_collection(SESSION_EVENTS_COLLECTION)
+        query: dict[str, Any] = {
+            "channel": "conversation",
+            "event_type": "turn.background_tasks_opened",
+        }
+        if before is not None:
+            occurred_at, event_seq, session_id = before
+            query["$or"] = [
+                {"occurred_at": {"$lt": occurred_at}},
+                {"occurred_at": occurred_at, "event_seq": {"$lt": event_seq}},
+                {
+                    "occurred_at": occurred_at, "event_seq": event_seq,
+                    "session_id": {"$lt": session_id},
+                },
+            ]
 
         async def _list() -> list[dict[str, Any]]:
             cursor = (
-                collection.find(
-                    {
-                        "channel": "conversation",
-                        "event_type": "turn.background_tasks_opened",
-                    }
-                )
-                .sort([("occurred_at", -1), ("event_seq", -1)])
-                .skip(max(0, int(skip)))
+                collection.find(query)
+                .sort([("occurred_at", -1), ("event_seq", -1), ("session_id", -1)])
                 .limit(max(1, int(limit)))
             )
             return [doc async for doc in cursor]
@@ -223,22 +239,24 @@ class BackgroundContinuationMixin:
         *,
         limit: int = 50,
     ) -> list[dict[str, Any]]:
-        """The newest ``limit`` opened manifests that have no materialized
-        counterpart yet.
+        """Find open manifests without starving older work behind settled history.
 
-        A manifest is settled by a second event, not by an update to the
-        first, so the newest page of opened manifests is mostly settled ones
-        once a deployment has run for a while; reading only that page would
-        leave an older open manifest — a user's background result — waiting
-        behind fifty finished ones forever. The scan pages past settled
-        manifests until it has ``limit`` open ones or reaches the ceiling.
+        Resume below the last inspected key after a bounded pass, including
+        when the open-work limit is reached. Wrap only at the end of history.
+        Newer inserts and deletion of prior pages cannot move this boundary.
+        A worker restart may repeat reads, but materialization remains journaled
+        and idempotent; the cursor is only a scheduling hint.
         """
+        limit = max(1, int(limit))
         open_events: list[dict[str, Any]] = []
         seen: set[tuple[str, int]] = set()
         scanned = 0
+        before = getattr(self, "_background_manifest_scan_cursor", None)
         while len(open_events) < limit and scanned < _BACKGROUND_MANIFEST_SCAN_CEILING:
-            page = await self._list_background_task_opened_events(limit=limit, skip=scanned)
+            page_size = min(limit, _BACKGROUND_MANIFEST_SCAN_CEILING - scanned)
+            page = await self._list_background_task_opened_events(limit=page_size, before=before)
             if not page:
+                self._background_manifest_scan_cursor = None
                 break
             scanned += len(page)
             for opened_event in page:
@@ -246,20 +264,17 @@ class BackgroundContinuationMixin:
                 if key in seen:
                     continue
                 seen.add(key)
-                if await self._get_background_materialized_event(opened_event) is not None:
+                materialized = await self._get_background_materialized_event(opened_event)
+                before = _manifest_position(opened_event)
+                self._background_manifest_scan_cursor = before
+                if materialized is not None:
                     continue
                 open_events.append(opened_event)
                 if len(open_events) >= limit:
                     break
-            if len(page) < limit:
+            if len(page) < page_size and before == _manifest_position(page[-1]):
+                self._background_manifest_scan_cursor = None
                 break
-        if scanned >= _BACKGROUND_MANIFEST_SCAN_CEILING and len(open_events) < limit:
-            logger.warning(
-                "background continuation: scan ceiling reached scanned=%s open=%s; "
-                "older open manifests wait for a later pass",
-                scanned,
-                len(open_events),
-            )
         return open_events
 
     async def _materialize_background_continuations_once(self, *, limit: int = 50) -> int:
@@ -320,17 +335,6 @@ class BackgroundContinuationMixin:
                 opened_event,
                 "conversation_not_idle",
                 detail=f"conversation_state={conversation_state or '<none>'}",
-            )
-
-        existing_message = await self._message_view.get_assistant_message_for_turn(
-            session_id,
-            turn_id=parent_turn_id,
-        )
-        if not isinstance(existing_message, dict):
-            return self._hold_background_continuation(
-                opened_event,
-                "parent_message_missing",
-                level="warning",
             )
 
         session = await self._sessions_repo.get_session(session_id)

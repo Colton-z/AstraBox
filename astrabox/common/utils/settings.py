@@ -310,6 +310,15 @@ class AstraBoxRuntimeSettings(BaseSettings):
         ),
     )
 
+    # Ordered gateway route names offered by the voice-input model picker.
+    # Empty keeps voice input disabled until a transcription route is configured.
+    speech_input_models: list[str] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices(
+            "ASTRABOX_SPEECH_INPUT_MODELS", AliasPath("astrabox", "speech_input", "models")
+        ),
+    )
+
     # --- title model -------------------------------------------------------
     title_model_enabled: bool = Field(
         default=True,

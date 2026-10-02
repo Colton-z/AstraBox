@@ -1390,6 +1390,59 @@ class SessionRepository:
 
         return await run_mongo_with_retry("sessions.list_sessions_by_owner", _list)
 
+    async def list_agent_runtime_references(
+        self, agent_ids: list[str], *, transaction: Any,
+    ) -> list[dict[str, Any]]:
+        """Cleanup references include hidden and deleted conversation rows.
+
+        These records protect runtime configuration until resource disposal is
+        confirmed. Pagination or the usual user-visible deletion filter would
+        silently omit owners that still have a sandbox to reclaim.
+        """
+        if not agent_ids:
+            return []
+        collection = transaction.collection(self._collection_name)
+        cursor = collection.find(
+            {"agent_id": {"$in": agent_ids}},
+            projection={
+                "agent_id": 1, "state": 1, "sandbox_id": 1, "undestroyed_sandbox_ids": 1,
+                "startup_allocation": 1, "_retained_startup_allocations": 1,
+            },
+        )
+        return [doc async for doc in cursor]
+
+    async def list_assistant_runtime_references(
+        self, assistant_ids: list[str], *, transaction: Any,
+    ) -> list[dict[str, Any]]:
+        """Include hidden materializers and deleted Assistant conversation resources."""
+        if not assistant_ids:
+            return []
+        cursor = transaction.collection(self._collection_name).find(
+            {
+                "workspace_ref.kind": "assistant",
+                "$or": [
+                    {"workspace_ref.assistant_id": {"$in": assistant_ids}},
+                    {"owner_id": {"$in": assistant_ids}},
+                ],
+            },
+            projection={
+                "workspace_ref": 1, "owner_id": 1, "state": 1,
+                "sandbox_id": 1, "undestroyed_sandbox_ids": 1,
+                "startup_allocation": 1, "_retained_startup_allocations": 1,
+            },
+        )
+        references = []
+        for_session = set(assistant_ids)
+        async for doc in cursor:
+            # Match resolve_session_harness: an explicit workspace identity
+            # wins over owner_id; owner_id alone is not an Assistant binding.
+            assistant_id = str(
+                (doc.get("workspace_ref") or {}).get("assistant_id") or doc.get("owner_id") or ""
+            ).strip()
+            if assistant_id in for_session:
+                references.append({**doc, "assistant_id": assistant_id})
+        return references
+
     async def list_sessions_by_agent(
         self,
         agent_id: str,

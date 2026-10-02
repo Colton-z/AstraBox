@@ -223,3 +223,28 @@ async def test_the_original_receipt_still_reports_its_anchor() -> None:
     assert committed[0]["engine_turn_id"] == "engine-turn-1"
     acks = [e for e in events if e.get("type") == "ack"]
     assert acks and acks[0]["engine_turn_id"] == "engine-turn-1"
+
+
+async def test_native_terminal_cursor_survives_each_engine_outcome() -> None:
+    for outcome in ("stop", "cancelled", "error"):
+        cursor = {"sessionId": "sdk-session", "seq": 27}
+
+        class Client(_ContinuationEngineClient):
+            async def iter_turn_events(self, receipt):
+                self.iterated_receipts.append(receipt)
+                yield emission_from_translated_frame({
+                    "type": "result", "finishReason": outcome,
+                    "__engine_sequence_number": 42, "__engine_output_cursor": cursor,
+                    **({"error": {"code": "native-failure", "message": "failed"}} if outcome == "error" else {}),
+                })
+
+        receipt = SimpleNamespace(engine_turn_id="engine-turn-1", engine_session_key="sdk-session",
+                                  input_id=None, input_consumed=True)
+        client = Client(receipt)
+        events = await _drive(client)
+        terminal = next(e for e in events if e["type"] == ("error" if outcome == "error" else "result"))
+        data = terminal if outcome == "error" else terminal["data"]
+        assert data["engine_output_cursor"] == cursor
+        assert data["engine_sequence_number"] == 42
+        assert data["engine_turn_id"] == "engine-turn-1"
+        assert client.iterated_receipts == [receipt]

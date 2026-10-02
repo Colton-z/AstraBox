@@ -6,6 +6,8 @@ import posixpath
 import shlex
 from pathlib import PurePosixPath
 from typing import Any
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 from opensandbox.models.filesystem import DirectoryListEntry, MoveEntry, WriteEntry
 
@@ -148,8 +150,6 @@ class _MappedRootFilesystem:
 
 
 class SessionFileService:
-    _SANDBOX_CACHE_LIMIT = 64
-
     def __init__(
         self,
         *,
@@ -164,7 +164,6 @@ class SessionFileService:
         self._agent_repo = agent_repo
         self._runtime_manager = runtime_manager
         self._assistant_workspace_service = assistant_workspace_service
-        self._connected_sandbox_by_key: dict[tuple[str, str], Any] = {}
 
     async def list_entries(
         self,
@@ -173,26 +172,26 @@ class SessionFileService:
         *,
         path: str | None = None,
     ) -> dict[str, Any]:
-        session, sandbox, root_path = await self._resolve_session_context(user, session_id)
-        current_path = self._resolve_client_path(root_path, path)
-        filesystem = self._resolve_filesystem(sandbox, session.get("runtime_identity"))
-        await self._assert_path_resolves_within_root(
-            filesystem,
-            root_path=root_path,
-            target_path=current_path,
-            expect_directory=True,
-        )
-        payload = await self._list_entries_via_filesystem(
-            filesystem,
-            current_path=current_path,
-        )
-        return {
-            "root_path": root_path,
-            "current_path": current_path,
-            "parent_path": self._parent_path(root_path, current_path),
-            "entries": payload["entries"],
-            "session_kind": require_session_kind(session.get("session_kind")),
-        }
+        async with self._resolve_session_context(user, session_id) as (session, sandbox, root_path):
+            current_path = self._resolve_client_path(root_path, path)
+            filesystem = self._resolve_filesystem(sandbox, session.get("runtime_identity"))
+            await self._assert_path_resolves_within_root(
+                filesystem,
+                root_path=root_path,
+                target_path=current_path,
+                expect_directory=True,
+            )
+            payload = await self._list_entries_via_filesystem(
+                filesystem,
+                current_path=current_path,
+            )
+            return {
+                "root_path": root_path,
+                "current_path": current_path,
+                "parent_path": self._parent_path(root_path, current_path),
+                "entries": payload["entries"],
+                "session_kind": require_session_kind(session.get("session_kind")),
+            }
 
     async def upload_files(
         self,
@@ -208,68 +207,68 @@ class SessionFileService:
                 message="files are required",
                 status_code=400,
             )
-        session, sandbox, root_path = await self._resolve_session_context(user, session_id)
-        target_dir = self._resolve_client_path(root_path, path)
-        filesystem = self._resolve_filesystem(sandbox, session.get("runtime_identity"))
-        await self._assert_path_resolves_within_root(
-            filesystem,
-            root_path=root_path,
-            target_path=target_dir,
-            expect_directory=True,
-        )
-        uploaded: list[dict[str, Any]] = []
-        for upload in files:
-            filename = PurePosixPath(str(getattr(upload, "filename", "") or "").strip()).name
-            if not filename:
-                raise APIError(
-                    code="INVALID_REQUEST",
-                    message="upload filename is required",
-                    status_code=400,
-                )
-            destination = self._join_and_validate(target_dir, filename, root_path=root_path)
+        async with self._resolve_session_context(user, session_id) as (session, sandbox, root_path):
+            target_dir = self._resolve_client_path(root_path, path)
+            filesystem = self._resolve_filesystem(sandbox, session.get("runtime_identity"))
             await self._assert_path_resolves_within_root(
                 filesystem,
                 root_path=root_path,
-                target_path=destination,
-                allow_missing_leaf=True,
+                target_path=target_dir,
+                expect_directory=True,
             )
-            file_obj = getattr(upload, "file", None)
-            if file_obj is None:
-                raise APIError(
-                    code="INVALID_REQUEST",
-                    message=f"upload file handle missing: {filename}",
-                    status_code=400,
+            uploaded: list[dict[str, Any]] = []
+            for upload in files:
+                filename = PurePosixPath(str(getattr(upload, "filename", "") or "").strip()).name
+                if not filename:
+                    raise APIError(
+                        code="INVALID_REQUEST",
+                        message="upload filename is required",
+                        status_code=400,
+                    )
+                destination = self._join_and_validate(target_dir, filename, root_path=root_path)
+                await self._assert_path_resolves_within_root(
+                    filesystem,
+                    root_path=root_path,
+                    target_path=destination,
+                    allow_missing_leaf=True,
                 )
-            try:
-                file_obj.seek(0)
-            except Exception:
-                pass
-            ownership = self._filesystem_ownership(session)
-            await self._filesystem_call(
-                "file upload",
-                filesystem.write_file(
-                    destination,
-                    file_obj,
-                    mode=_FILESYSTEM_FILE_MODE,
-                    owner=ownership.get("owner"),
-                    group=ownership.get("group"),
-                ),
-                path=destination,
-            )
-            uploaded.append(
-                {
-                    "path": destination,
-                    "name": filename,
-                    "kind": "file",
-                }
-            )
-        return {
-            "root_path": root_path,
-            "current_path": target_dir,
-            "parent_path": self._parent_path(root_path, target_dir),
-            "entries": uploaded,
-            "uploaded_count": len(uploaded),
-        }
+                file_obj = getattr(upload, "file", None)
+                if file_obj is None:
+                    raise APIError(
+                        code="INVALID_REQUEST",
+                        message=f"upload file handle missing: {filename}",
+                        status_code=400,
+                    )
+                try:
+                    file_obj.seek(0)
+                except Exception:
+                    pass
+                ownership = self._filesystem_ownership(session)
+                await self._filesystem_call(
+                    "file upload",
+                    filesystem.write_file(
+                        destination,
+                        file_obj,
+                        mode=_FILESYSTEM_FILE_MODE,
+                        owner=ownership.get("owner"),
+                        group=ownership.get("group"),
+                    ),
+                    path=destination,
+                )
+                uploaded.append(
+                    {
+                        "path": destination,
+                        "name": filename,
+                        "kind": "file",
+                    }
+                )
+            return {
+                "root_path": root_path,
+                "current_path": target_dir,
+                "parent_path": self._parent_path(root_path, target_dir),
+                "entries": uploaded,
+                "uploaded_count": len(uploaded),
+            }
 
     async def create_directory(
         self,
@@ -284,37 +283,37 @@ class SessionFileService:
                 message="path is required",
                 status_code=400,
             )
-        session, sandbox, root_path = await self._resolve_session_context(user, session_id)
-        target_path = self._resolve_client_path(root_path, path)
-        filesystem = self._resolve_filesystem(sandbox, session.get("runtime_identity"))
-        await self._assert_path_resolves_within_root(
-            filesystem,
-            root_path=root_path,
-            target_path=target_path,
-            expect_directory=True,
-            allow_missing_leaf=True,
-        )
-        ownership = self._filesystem_ownership(session)
-        await self._filesystem_call(
-            "directory creation",
-            filesystem.create_directories(
-                [
-                    WriteEntry(
-                        path=target_path,
-                        mode=_FILESYSTEM_DIRECTORY_MODE,
-                        owner=ownership.get("owner"),
-                        group=ownership.get("group"),
-                    )
-                ]
-            ),
-            path=target_path,
-        )
-        return {
-            "root_path": root_path,
-            "current_path": target_path,
-            "parent_path": self._parent_path(root_path, target_path),
-            "path": target_path,
-        }
+        async with self._resolve_session_context(user, session_id) as (session, sandbox, root_path):
+            target_path = self._resolve_client_path(root_path, path)
+            filesystem = self._resolve_filesystem(sandbox, session.get("runtime_identity"))
+            await self._assert_path_resolves_within_root(
+                filesystem,
+                root_path=root_path,
+                target_path=target_path,
+                expect_directory=True,
+                allow_missing_leaf=True,
+            )
+            ownership = self._filesystem_ownership(session)
+            await self._filesystem_call(
+                "directory creation",
+                filesystem.create_directories(
+                    [
+                        WriteEntry(
+                            path=target_path,
+                            mode=_FILESYSTEM_DIRECTORY_MODE,
+                            owner=ownership.get("owner"),
+                            group=ownership.get("group"),
+                        )
+                    ]
+                ),
+                path=target_path,
+            )
+            return {
+                "root_path": root_path,
+                "current_path": target_path,
+                "parent_path": self._parent_path(root_path, target_path),
+                "path": target_path,
+            }
 
     async def move_path(
         self,
@@ -330,34 +329,34 @@ class SessionFileService:
                 message="src_path and dest_path are required",
                 status_code=400,
             )
-        session, sandbox, root_path = await self._resolve_session_context(user, session_id)
-        src_abs = self._resolve_client_path(root_path, src_path)
-        dest_abs = self._resolve_client_path(root_path, dest_path)
-        self._assert_not_session_root(src_abs, root_path, operation="move")
-        self._assert_not_session_root(dest_abs, root_path, operation="move")
-        filesystem = self._resolve_filesystem(sandbox, session.get("runtime_identity"))
-        await self._assert_path_resolves_within_root(
-            filesystem,
-            root_path=root_path,
-            target_path=src_abs,
-            allow_symlink_leaf=True,
-        )
-        await self._assert_path_resolves_within_root(
-            filesystem,
-            root_path=root_path,
-            target_path=dest_abs,
-            allow_missing_leaf=True,
-        )
-        await self._filesystem_call(
-            "file move",
-            filesystem.move_files([MoveEntry(source=src_abs, destination=dest_abs)]),
-            path=src_abs,
-        )
-        return {
-            "root_path": root_path,
-            "src_path": src_abs,
-            "dest_path": dest_abs,
-        }
+        async with self._resolve_session_context(user, session_id) as (session, sandbox, root_path):
+            src_abs = self._resolve_client_path(root_path, src_path)
+            dest_abs = self._resolve_client_path(root_path, dest_path)
+            self._assert_not_session_root(src_abs, root_path, operation="move")
+            self._assert_not_session_root(dest_abs, root_path, operation="move")
+            filesystem = self._resolve_filesystem(sandbox, session.get("runtime_identity"))
+            await self._assert_path_resolves_within_root(
+                filesystem,
+                root_path=root_path,
+                target_path=src_abs,
+                allow_symlink_leaf=True,
+            )
+            await self._assert_path_resolves_within_root(
+                filesystem,
+                root_path=root_path,
+                target_path=dest_abs,
+                allow_missing_leaf=True,
+            )
+            await self._filesystem_call(
+                "file move",
+                filesystem.move_files([MoveEntry(source=src_abs, destination=dest_abs)]),
+                path=src_abs,
+            )
+            return {
+                "root_path": root_path,
+                "src_path": src_abs,
+                "dest_path": dest_abs,
+            }
 
     async def delete_paths(
         self,
@@ -372,52 +371,52 @@ class SessionFileService:
                 message="paths are required",
                 status_code=400,
             )
-        session, sandbox, root_path = await self._resolve_session_context(user, session_id)
-        abs_paths = [self._resolve_client_path(root_path, item) for item in paths]
-        filesystem = self._resolve_filesystem(sandbox, session.get("runtime_identity"))
-        file_paths: list[str] = []
-        directory_paths: list[str] = []
-        for abs_path in abs_paths:
-            self._assert_not_session_root(abs_path, root_path, operation="delete")
-            info = await self._assert_path_resolves_within_root(
-                filesystem,
-                root_path=root_path,
-                target_path=abs_path,
-                allow_missing_leaf=True,
-                allow_symlink_leaf=True,
-            )
-            # Deletion is a convergence command: a retry after a lost response
-            # succeeds once every requested target is absent. Existing parent
-            # components were still walked above, so a symlink cannot turn the
-            # missing leaf into an escape from the session root.
-            if info is None:
-                continue
-            if self._entry_type(info) == "directory":
-                directory_paths.append(abs_path)
-            else:
-                file_paths.append(abs_path)
-        if file_paths:
-            await self._filesystem_call(
-                "file deletion",
-                filesystem.delete_files(list(dict.fromkeys(file_paths))),
-            )
-        if directory_paths:
-            # Deepest-first also handles callers that selected both a directory
-            # and one of its descendants.
-            directories = sorted(
-                dict.fromkeys(directory_paths),
-                key=lambda item: item.count("/"),
-                reverse=True,
-            )
-            await self._filesystem_call(
-                "directory deletion",
-                filesystem.delete_directories(directories),
-            )
-        return {
-            "root_path": root_path,
-            "paths": abs_paths,
-            "deleted_count": len(set(file_paths + directory_paths)),
-        }
+        async with self._resolve_session_context(user, session_id) as (session, sandbox, root_path):
+            abs_paths = [self._resolve_client_path(root_path, item) for item in paths]
+            filesystem = self._resolve_filesystem(sandbox, session.get("runtime_identity"))
+            file_paths: list[str] = []
+            directory_paths: list[str] = []
+            for abs_path in abs_paths:
+                self._assert_not_session_root(abs_path, root_path, operation="delete")
+                info = await self._assert_path_resolves_within_root(
+                    filesystem,
+                    root_path=root_path,
+                    target_path=abs_path,
+                    allow_missing_leaf=True,
+                    allow_symlink_leaf=True,
+                )
+                # Deletion is a convergence command: a retry after a lost response
+                # succeeds once every requested target is absent. Existing parent
+                # components were still walked above, so a symlink cannot turn the
+                # missing leaf into an escape from the session root.
+                if info is None:
+                    continue
+                if self._entry_type(info) == "directory":
+                    directory_paths.append(abs_path)
+                else:
+                    file_paths.append(abs_path)
+            if file_paths:
+                await self._filesystem_call(
+                    "file deletion",
+                    filesystem.delete_files(list(dict.fromkeys(file_paths))),
+                )
+            if directory_paths:
+                # Deepest-first also handles callers that selected both a directory
+                # and one of its descendants.
+                directories = sorted(
+                    dict.fromkeys(directory_paths),
+                    key=lambda item: item.count("/"),
+                    reverse=True,
+                )
+                await self._filesystem_call(
+                    "directory deletion",
+                    filesystem.delete_directories(directories),
+                )
+            return {
+                "root_path": root_path,
+                "paths": abs_paths,
+                "deleted_count": len(set(file_paths + directory_paths)),
+            }
 
     async def download_file(
         self,
@@ -432,27 +431,27 @@ class SessionFileService:
                 message="path is required",
                 status_code=400,
             )
-        session, sandbox, root_path = await self._resolve_session_context(user, session_id)
-        target_path = self._resolve_client_path(root_path, path)
-        filesystem = self._resolve_filesystem(sandbox, session.get("runtime_identity"))
-        info = await self._assert_path_resolves_within_root(
-            filesystem,
-            root_path=root_path,
-            target_path=target_path,
-        )
-        if self._entry_type(info) == "directory":
-            raise APIError(
-                code="INVALID_REQUEST",
-                message=f"not a file: {target_path}",
-                status_code=400,
+        async with self._resolve_session_context(user, session_id) as (session, sandbox, root_path):
+            target_path = self._resolve_client_path(root_path, path)
+            filesystem = self._resolve_filesystem(sandbox, session.get("runtime_identity"))
+            info = await self._assert_path_resolves_within_root(
+                filesystem,
+                root_path=root_path,
+                target_path=target_path,
             )
-        filename = PurePosixPath(target_path).name or "download"
-        content = await self._read_file_bytes(
-            filesystem,
-            target_path,
-            known_size=self._entry_size(info),
-        )
-        return content, filename
+            if self._entry_type(info) == "directory":
+                raise APIError(
+                    code="INVALID_REQUEST",
+                    message=f"not a file: {target_path}",
+                    status_code=400,
+                )
+            filename = PurePosixPath(target_path).name or "download"
+            content = await self._read_file_bytes(
+                filesystem,
+                target_path,
+                known_size=self._entry_size(info),
+            )
+            return content, filename
 
     async def list_entries_for_session(
         self,
@@ -465,25 +464,25 @@ class SessionFileService:
         Used by the share path: the caller verified a capability token and the
         session's share config, so no owner check is performed here.
         """
-        session, sandbox, root_path = await self._resolve_session_context(
+        async with self._resolve_session_context(
             None, str(session.get("session_id") or ""), prefetched_session=session
-        )
-        current_path = self._resolve_client_path(root_path, path)
-        filesystem = self._resolve_filesystem(sandbox, session.get("runtime_identity"))
-        await self._assert_path_resolves_within_root(
-            filesystem,
-            root_path=root_path,
-            target_path=current_path,
-            expect_directory=True,
-        )
-        payload = await self._list_entries_via_filesystem(filesystem, current_path=current_path)
-        return {
-            "root_path": root_path,
-            "current_path": current_path,
-            "parent_path": self._parent_path(root_path, current_path),
-            "entries": payload["entries"],
-            "session_kind": require_session_kind(session.get("session_kind")),
-        }
+        ) as (session, sandbox, root_path):
+            current_path = self._resolve_client_path(root_path, path)
+            filesystem = self._resolve_filesystem(sandbox, session.get("runtime_identity"))
+            await self._assert_path_resolves_within_root(
+                filesystem,
+                root_path=root_path,
+                target_path=current_path,
+                expect_directory=True,
+            )
+            payload = await self._list_entries_via_filesystem(filesystem, current_path=current_path)
+            return {
+                "root_path": root_path,
+                "current_path": current_path,
+                "parent_path": self._parent_path(root_path, current_path),
+                "entries": payload["entries"],
+                "session_kind": require_session_kind(session.get("session_kind")),
+            }
 
     async def download_file_for_session(
         self,
@@ -494,37 +493,38 @@ class SessionFileService:
         """Read-only file download for an already-authorized session doc (share path)."""
         if not str(path or "").strip():
             raise APIError(code="INVALID_REQUEST", message="path is required", status_code=400)
-        resolved_session, sandbox, root_path = await self._resolve_session_context(
+        async with self._resolve_session_context(
             None, str(session.get("session_id") or ""), prefetched_session=session
-        )
-        target_path = self._resolve_client_path(root_path, path)
-        filesystem = self._resolve_filesystem(
-            sandbox, resolved_session.get("runtime_identity")
-        )
-        info = await self._assert_path_resolves_within_root(
-            filesystem, root_path=root_path, target_path=target_path
-        )
-        if self._entry_type(info) == "directory":
-            raise APIError(
-                code="INVALID_REQUEST",
-                message=f"not a file: {target_path}",
-                status_code=400,
+        ) as (resolved_session, sandbox, root_path):
+            target_path = self._resolve_client_path(root_path, path)
+            filesystem = self._resolve_filesystem(
+                sandbox, resolved_session.get("runtime_identity")
             )
-        filename = PurePosixPath(target_path).name or "download"
-        content = await self._read_file_bytes(
-            filesystem,
-            target_path,
-            known_size=self._entry_size(info),
-        )
-        return content, filename
+            info = await self._assert_path_resolves_within_root(
+                filesystem, root_path=root_path, target_path=target_path
+            )
+            if self._entry_type(info) == "directory":
+                raise APIError(
+                    code="INVALID_REQUEST",
+                    message=f"not a file: {target_path}",
+                    status_code=400,
+                )
+            filename = PurePosixPath(target_path).name or "download"
+            content = await self._read_file_bytes(
+                filesystem,
+                target_path,
+                known_size=self._entry_size(info),
+            )
+            return content, filename
 
+    @asynccontextmanager
     async def _resolve_session_context(
         self,
         user: UserContext,
         session_id: str,
         *,
         prefetched_session: dict[str, Any] | None = None,
-    ) -> tuple[dict[str, Any], Any, str]:
+    ) -> AsyncIterator[tuple[dict[str, Any], Any, str]]:
         # ``prefetched_session`` lets an already-authorized caller (e.g. the
         # share path, which verified a capability token instead of ownership)
         # skip the owner check. Normal callers pass user/session_id and the
@@ -532,23 +532,14 @@ class SessionFileService:
         session = prefetched_session or await self._must_get_owned_session(user, session_id)
         session = await self._resolve_effective_runtime_session(session)
         sandbox_id = str(session.get("sandbox_id") or "").strip()
-        runtime = self._runtime_manager.get_runtime(session_id, sandbox_id=sandbox_id)
-        sandbox = None
-        if runtime is not None:
-            sandbox = getattr(runtime, "sandbox", None)
-            if sandbox is None and getattr(runtime, "agent", None) is not None:
-                try:
-                    sandbox = runtime.agent.sandbox()
-                except Exception:
-                    sandbox = None
-        if sandbox is None:
-            if not sandbox_id:
-                raise APIError(
-                    code="AGENT_RUNTIME_ERROR",
-                    message="sandbox not available for file operations",
-                    status_code=409,
-                )
-            sandbox = await self._get_or_connect_sandbox(session_id, sandbox_id)
+        if not sandbox_id:
+            raise APIError(
+                code="AGENT_RUNTIME_ERROR",
+                message="sandbox not available for file operations",
+                status_code=409,
+            )
+        if session.get("sandbox_parked_at"):
+            await self._runtime_manager.wake_parked_session(session)
 
         session_kind = require_session_kind(session.get("session_kind"))
         engine_session_key = str(session.get("engine_session_key") or "").strip() or None
@@ -562,23 +553,29 @@ class SessionFileService:
                 session = {**session, "runtime_identity": runtime_identity}
         identity_root = identity_file_root_dir(runtime_identity)
         if identity_root:
-            return session, sandbox, self._normalize_absolute_path(identity_root)
-        engine_root = self._derive_engine_specific_root_path(session)
-        if engine_root:
-            return session, sandbox, self._normalize_absolute_path(engine_root)
-        if session_kind == "agent_chat":
+            root_path = self._normalize_absolute_path(identity_root)
+        elif engine_root := self._derive_engine_specific_root_path(session):
+            root_path = self._normalize_absolute_path(engine_root)
+        elif session_kind == "agent_chat":
             raise APIError(
                 code="CONVERSATION_IDENTITY_REQUIRED",
                 message="agent_chat file operations require immutable runtime_identity.file_root_dir",
                 status_code=409,
             )
-        root_path = await self._resolve_session_root_path(
-            session_id,
-            sandbox_id=sandbox_id,
-            session_kind=session_kind,
-            engine_session_key=engine_session_key,
-        )
-        return session, sandbox, root_path
+        else:
+            root_path = await self._resolve_session_root_path(
+                session_id,
+                sandbox_id=sandbox_id,
+                session_kind=session_kind,
+                engine_session_key=engine_session_key,
+            )
+        # A resume keeps the ID but replaces the endpoint. Resolve it for each
+        # operation, including when another worker or a turn resumed the box.
+        sandbox = await self._runtime_manager.connect_sandbox_only(sandbox_id)
+        try:
+            yield session, sandbox, root_path
+        finally:
+            await sandbox.close()
 
     @staticmethod
     def _planned_assistant_identity(
@@ -637,31 +634,6 @@ class SessionFileService:
             persist=False,
         )
         return reconciled
-
-    async def _get_or_connect_sandbox(self, session_id: str, sandbox_id: str) -> Any:
-        cache_key = (session_id, sandbox_id)
-        cached = self._connected_sandbox_by_key.get(cache_key)
-        if cached is not None:
-            return cached
-
-        sandbox = await self._runtime_manager.connect_sandbox_only(sandbox_id)
-        self._remember_connected_sandbox(cache_key, sandbox)
-        return sandbox
-
-    def _remember_connected_sandbox(self, cache_key: tuple[str, str], sandbox: Any) -> None:
-        session_id, sandbox_id = cache_key
-        stale_keys = [
-            key
-            for key in self._connected_sandbox_by_key
-            if key[0] == session_id and key[1] != sandbox_id
-        ]
-        for key in stale_keys:
-            self._connected_sandbox_by_key.pop(key, None)
-
-        self._connected_sandbox_by_key[cache_key] = sandbox
-        while len(self._connected_sandbox_by_key) > self._SANDBOX_CACHE_LIMIT:
-            oldest_key = next(iter(self._connected_sandbox_by_key))
-            self._connected_sandbox_by_key.pop(oldest_key, None)
 
     async def _must_get_owned_session(
         self,

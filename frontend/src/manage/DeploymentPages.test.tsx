@@ -161,6 +161,7 @@ beforeAll(async () => {
   await i18n.changeLanguage('en');
 });
 beforeEach(() => {
+  for (const provider of channelProviders) delete provider.can_configure_execution_user;
   deployment = {
     deployment_id: 'deployment-1',
     agent_id: 'agent-1',
@@ -499,5 +500,33 @@ describe('Deployment management', () => {
     runs = [{ ...runs[0], status: 'COMPLETED' }];
 
     await screen.findByText('COMPLETED', {}, { timeout: 3_000 });
+  });
+});
+
+
+describe('channel execution accounts', () => {
+  it('lets an administrator change the execution account through the channel editor', async () => {
+    channelProviders[0].can_configure_execution_user = true;
+    deployment = {
+      ...deployment, scene: 'channel:generic_json', name: undefined, schedule: undefined,
+      execution_user_id: 'alice', channel_config: {},
+    };
+    renderDetail();
+    const account = await screen.findByRole('textbox', { name: 'Execution account user ID' });
+    expect((account as HTMLInputElement).value).toBe('alice');
+    fireEvent.change(account, { target: { value: 'bob' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(updateCalls).toHaveLength(1));
+    expect(updateCalls[0].patch.execution_user_id).toBe('bob');
+  });
+
+  it('shows a delegated account without offering a non-administrator an editor', async () => {
+    deployment = {
+      ...deployment, scene: 'channel:generic_json', name: undefined, schedule: undefined,
+      execution_user_id: 'alice', channel_config: {},
+    };
+    renderDetail();
+    await screen.findByText('alice');
+    expect(screen.queryByRole('textbox', { name: 'Execution account user ID' })).toBeNull();
   });
 });

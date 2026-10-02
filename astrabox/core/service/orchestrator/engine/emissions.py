@@ -24,6 +24,7 @@ class SessionMessageFact:
 
     message_id: str
     content: str
+    is_response: bool = True
 
     def __post_init__(self) -> None:
         if not self.message_id.strip() or not self.content.strip():
@@ -69,6 +70,16 @@ class EngineEmission(Mapping[str, Any]):
         if isinstance(value, int) and not isinstance(value, bool):
             return value
         return None
+
+    @property
+    def engine_output_cursor(self) -> dict[str, Any] | None:
+        """Adapter-owned resume state, kept outside the public UI payload."""
+        value = self.frame.get("__engine_output_cursor")
+        if value is None:
+            return None
+        if not isinstance(value, dict):
+            raise ValueError("engine output cursor must be an object")
+        return deepcopy(value)
 
 
 def _copied_frame(frame: Mapping[str, Any]) -> dict[str, Any]:
@@ -148,8 +159,11 @@ class BackgroundTasksOpened(EngineEmission):
 
     frame: dict[str, Any]
     manifest: dict[str, Any]
+    manifest_id: str
 
     def __post_init__(self) -> None:
+        if not self.manifest_id.strip():
+            raise ValueError("background-task manifest requires an adapter identity")
         object.__setattr__(self, "frame", _copied_frame(self.frame))
         object.__setattr__(self, "manifest", deepcopy(self.manifest))
 
@@ -280,7 +294,8 @@ def emission_from_translated_frame(
         manifest = copied.get("manifest")
         if not isinstance(manifest, dict):
             raise ValueError("background-tasks-opened requires a manifest object")
-        return BackgroundTasksOpened(copied, manifest)
+        manifest_id = str(copied.get("manifest_id") or "").strip()
+        return BackgroundTasksOpened(copied, manifest, manifest_id)
 
     if category == "response_completed":
         if frame_type != "response-result":

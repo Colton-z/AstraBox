@@ -337,6 +337,9 @@ class AgentService:
         return environment is not None and environment.get("enabled") is not False
 
     async def _prepared_runtime_status(self, agent: dict[str, Any]) -> dict[str, Any]:
+        from astrabox.core.service.orchestrator.agent.prepared_slots import (
+            _manifest_is_reapable, prepared_slot_matches_resident,
+        )
         from astrabox.core.service.orchestrator.runtime.runtime_profile import (
             resolve_sandbox_tenancy,
         )
@@ -401,19 +404,32 @@ class AgentService:
                 ),
             }
         state = str(manifest.get("state") or "").strip() or None
-        ready = (
-            enabled and state == "prepared"
-            and manifest.get("runtime_generation") == agent.get("_prepared_runtime_generation")
+        generation = str(agent.get("_prepared_runtime_generation") or "")
+        unavailable = _manifest_is_reapable(
+            manifest, current_runtime_generation=generation,
+        )
+        binding_current = prepared_slot_matches_resident(manifest, agent)
+        ready = enabled and state == "prepared" and unavailable is None and binding_current
+        # With matching state and generation, only the preparation age can
+        # invalidate a published slot. Renewal lead does not shorten its TTL.
+        expired = (
+            state == "prepared"
+            and manifest.get("runtime_generation") == generation
+            and unavailable is not None
         )
         return {
             "enabled": enabled,
             "ready": ready,
             "prepared_count": 1 if ready else 0,
-            "state": state,
+            "state": (
+                "preparing" if state == "prepared" and not binding_current
+                else "expired" if expired else state
+            ),
             "placement": str(manifest.get("placement") or "").strip() or None,
             "runtime_generation": (str(agent.get("_runtime_generation") or "").strip() or None),
             "client_pool_name": pool_name or None,
             "sandbox_id": str(manifest.get("sandbox_id") or "").strip() or None,
+            "prepared_at": str(manifest.get("prepared_at") or "").strip() or None,
             "last_error": (
                 str(agent.get("_prepared_runtime_error") or "").strip() or None
             ),
@@ -802,6 +818,24 @@ class AgentService:
         )
         if harness is None:
             raise APIError(code="TEMPLATE_NOT_ALLOWED", message="agent not found", status_code=403)
+        return await self._create_conversation(user, agent_id, agent, idempotency_key=idempotency_key)
+
+    async def start_integration_conversation(
+        self, user: UserContext, agent_id: str,
+    ) -> dict[str, Any]:
+        """Start an authenticated, manager-configured channel as its delegated user.
+
+        Channel configuration owns delegation authorization. This internal entry
+        grants use of that Agent without granting the execution user any roles
+        or changing the browser's Agent visibility checks.
+        """
+        agent = await self._must_access(agent_id)
+        return await self._create_conversation(user, agent_id, agent)
+
+    async def _create_conversation(
+        self, user: UserContext, agent_id: str, agent: dict[str, Any], *,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
         kernel = getattr(self._platform, "_session_kernel", None)
         if kernel is None:
             raise APIError(

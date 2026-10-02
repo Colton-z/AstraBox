@@ -322,7 +322,11 @@ export interface paths {
          */
         put: operations["upsert_admin_environment_api_v1_admin_environments__name__put"];
         post?: never;
-        delete?: never;
+        /**
+         * Delete Admin Environment
+         * @description Delete a preset only after checking its Agent and Assistant references.
+         */
+        delete: operations["delete_admin_environment_api_v1_admin_environments__name__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -1742,6 +1746,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{session_id}/file-changes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Session File Changes */
+        get: operations["get_session_file_changes_api_v1_sessions__session_id__file_changes_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{session_id}/files/delete": {
         parameters: {
             query?: never;
@@ -2031,6 +2052,24 @@ export interface paths {
         post: operations["create_share_api_v1_sessions__session_id__share_post"];
         /** Revoke Share */
         delete: operations["revoke_share_api_v1_sessions__session_id__share_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{session_id}/speech-input": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Speech Input Options */
+        get: operations["get_speech_input_options_api_v1_sessions__session_id__speech_input_get"];
+        put?: never;
+        /** Transcribe Session Speech */
+        post: operations["transcribe_session_speech_api_v1_sessions__session_id__speech_input_post"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -2373,6 +2412,18 @@ export interface components {
             sample_pending_tasks: components["schemas"]["AdminPendingTask"][];
             /** Task Count */
             task_count: number;
+        } & {
+            [key: string]: unknown;
+        };
+        /**
+         * AdminDeletedEnvironment
+         * @description The identity of the preset removed by an administrator.
+         */
+        AdminDeletedEnvironment: {
+            /** Deleted */
+            deleted: boolean;
+            /** Name */
+            name: string;
         } & {
             [key: string]: unknown;
         };
@@ -3111,6 +3162,8 @@ export interface components {
             last_error?: string | null;
             /** Placement */
             placement?: string | null;
+            /** Prepared At */
+            prepared_at?: string | null;
             /** Prepared Count */
             prepared_count: number;
             /** Ready */
@@ -3230,6 +3283,14 @@ export interface components {
             /** Code */
             code: string;
             data: components["schemas"]["AdminApiWorkspaceResult"];
+            /** Message */
+            message: string;
+        };
+        /** ApiEnvelope[AdminDeletedEnvironment] */
+        ApiEnvelope_AdminDeletedEnvironment_: {
+            /** Code */
+            code: string;
+            data: components["schemas"]["AdminDeletedEnvironment"];
             /** Message */
             message: string;
         };
@@ -3689,6 +3750,14 @@ export interface components {
             /** Message */
             message: string;
         };
+        /** ApiEnvelope[SessionFileChanges] */
+        ApiEnvelope_SessionFileChanges_: {
+            /** Code */
+            code: string;
+            data: components["schemas"]["SessionFileChanges"];
+            /** Message */
+            message: string;
+        };
         /** ApiEnvelope[SessionFileListing] */
         ApiEnvelope_SessionFileListing_: {
             /** Code */
@@ -3790,6 +3859,22 @@ export interface components {
             /** Code */
             code: string;
             data: components["schemas"]["SharedSession"];
+            /** Message */
+            message: string;
+        };
+        /** ApiEnvelope[SpeechInputOptions] */
+        ApiEnvelope_SpeechInputOptions_: {
+            /** Code */
+            code: string;
+            data: components["schemas"]["SpeechInputOptions"];
+            /** Message */
+            message: string;
+        };
+        /** ApiEnvelope[SpeechInputTranscript] */
+        ApiEnvelope_SpeechInputTranscript_: {
+            /** Code */
+            code: string;
+            data: components["schemas"]["SpeechInputTranscript"];
             /** Message */
             message: string;
         };
@@ -4160,6 +4245,13 @@ export interface components {
             /** State */
             state: string;
         };
+        /** Body_transcribe_session_speech_api_v1_sessions__session_id__speech_input_post */
+        Body_transcribe_session_speech_api_v1_sessions__session_id__speech_input_post: {
+            /** File */
+            file: string;
+            /** Model */
+            model: string;
+        };
         /** Body_upload_session_files_api_v1_sessions__session_id__files_upload_post */
         Body_upload_session_files_api_v1_sessions__session_id__files_upload_post: {
             /** Files */
@@ -4504,6 +4596,8 @@ export interface components {
             deployment_id: string;
             /** Enabled */
             enabled?: boolean | null;
+            /** Execution User Id */
+            execution_user_id?: string | null;
             /** Prompt Prefix */
             prompt_prefix?: string | null;
             /** Scene */
@@ -4953,6 +5047,29 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        /** SessionFileChangeMessage */
+        SessionFileChangeMessage: {
+            /** Message Id */
+            message_id: string;
+            /** Parts */
+            parts: {
+                [key: string]: unknown;
+            }[];
+        };
+        /** SessionFileChangeTurn */
+        SessionFileChangeTurn: {
+            /** Messages */
+            messages: components["schemas"]["SessionFileChangeMessage"][];
+            /** Turn Id */
+            turn_id: string;
+        };
+        /** SessionFileChanges */
+        SessionFileChanges: {
+            /** Through Seq */
+            through_seq: number;
+            /** Turns */
+            turns: components["schemas"]["SessionFileChangeTurn"][];
+        };
         /**
          * SessionFileEntry
          * @description One directory member.
@@ -5363,6 +5480,20 @@ export interface components {
             share_allow_download: boolean;
             /** Title */
             title?: string | null;
+        };
+        /** SpeechInputOptions */
+        SpeechInputOptions: {
+            /** Max Audio Bytes */
+            max_audio_bytes: number;
+            /** Max Recording Seconds */
+            max_recording_seconds: number;
+            /** Models */
+            models: string[];
+        };
+        /** SpeechInputTranscript */
+        SpeechInputTranscript: {
+            /** Text */
+            text: string;
         };
         /**
          * StartConversationRequest
@@ -6345,6 +6476,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_dict_str__Any__"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_admin_environment_api_v1_admin_environments__name__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_AdminDeletedEnvironment_"];
                 };
             };
             /** @description Validation Error */
@@ -9036,6 +9198,39 @@ export interface operations {
             };
         };
     };
+    get_session_file_changes_api_v1_sessions__session_id__file_changes_get: {
+        parameters: {
+            query?: {
+                after_seq?: number;
+            };
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_SessionFileChanges_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     delete_session_files_api_v1_sessions__session_id__files_delete_post: {
         parameters: {
             query?: never;
@@ -9617,6 +9812,72 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_ShareRevoked_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_speech_input_options_api_v1_sessions__session_id__speech_input_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_SpeechInputOptions_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    transcribe_session_speech_api_v1_sessions__session_id__speech_input_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_transcribe_session_speech_api_v1_sessions__session_id__speech_input_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_SpeechInputTranscript_"];
                 };
             };
             /** @description Validation Error */

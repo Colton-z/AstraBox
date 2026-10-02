@@ -396,6 +396,7 @@ async def activate_runtime(context: EngineStartupContext) -> SessionRuntime:
                 consumer_carrier=carrier,
                 event_sink=context.event_sink,
                 resident_output_sink=context.resident_output_sink,
+                observe_only=context.attach_mode == "observe",
             )
             logger.info(
                 "runtime reattached (%s): session=%s sandbox=%s resume=%s",
@@ -1040,6 +1041,7 @@ async def _attach_runner_engine_client(
     consumer_carrier: str | None = None,
     event_sink: EngineEventSink | None = None,
     resident_output_sink: ResidentOutputSink | None = None,
+    observe_only: bool = False,
 ) -> tuple[Any, str]:
     """Attach to the box's live runner, or configure a relaunched one.
 
@@ -1080,6 +1082,7 @@ async def _attach_runner_engine_client(
         await link.attach(
             session_id,
             last_seen_seq=0,
+            observe_only=observe_only,
             required_option_keys=sdk_options.keys(),
             permission_mode=str(sdk_options.get("permission_mode") or "default"),
         )
@@ -1101,6 +1104,8 @@ async def _attach_runner_engine_client(
     except Exception as attach_exc:
         with contextlib.suppress(Exception):
             await link.close()
+        if observe_only:
+            raise
         logger.info(
             "runner attach refused, configuring with resume: session=%s err=%s",
             session_id,

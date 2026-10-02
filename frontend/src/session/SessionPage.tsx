@@ -181,7 +181,6 @@ export function SessionPage({
       loadOlderHistory={effectiveHistory.loadOlder}
       refresh={lifecycle.refresh}
       refreshAuthoritativeHistory={effectiveHistory.refetch}
-      observePendingInteraction={lifecycle.observePendingInteraction}
       clearPendingInteraction={lifecycle.clearPendingInteraction}
       interrupt={lifecycle.interrupt}
       terminate={lifecycle.terminate}
@@ -215,7 +214,6 @@ function SessionPageReady({
   loadOlderHistory,
   refresh,
   refreshAuthoritativeHistory,
-  observePendingInteraction,
   clearPendingInteraction,
   interrupt,
   terminate,
@@ -243,9 +241,6 @@ function SessionPageReady({
   loadOlderHistory: () => Promise<void>;
   refresh: (options?: { force?: boolean }) => Promise<any>;
   refreshAuthoritativeHistory: ReturnType<typeof useFirstPageMessages>['refetch'];
-  observePendingInteraction: ReturnType<
-    typeof useSessionLifecycle
-  >['observePendingInteraction'];
   clearPendingInteraction: ReturnType<
     typeof useSessionLifecycle
   >['clearPendingInteraction'];
@@ -293,7 +288,6 @@ function SessionPageReady({
     permissionModeRef,
     refresh,
     refreshAuthoritativeHistory,
-    observePendingInteraction,
     clearPendingInteraction,
     interrupt,
     recover,
@@ -392,7 +386,7 @@ function SessionPageReady({
   const {
     rightPanelCaps, fileChanges, rightTab, setRightTab, selectedDiffFile, setSelectedDiffFile,
     uniqueChangedFiles, runtimeAccessReady, filesPanelEnabled, runtimeUnavailableMessage,
-    terminalCwd, setTerminalCwd,
+    terminalCwd, setTerminalCwd, fileChangesLoading, fileChangesError, refreshFileChanges,
   } = useSessionRightPanelState({
     session,
     messages,
@@ -537,6 +531,7 @@ function SessionPageReady({
           />
         ) : (
           <SessionComposerBox
+            sessionId={sessionId}
             displayedQueue={displayedQueue}
             removeQueueItem={removeQueueItem}
             retryQueueItem={retryQueueItem}
@@ -593,6 +588,9 @@ function SessionPageReady({
         selectedChildRunId={selectedChildRunId}
         setSelectedChildRunId={setSelectedChildRunId}
         fileChanges={fileChanges}
+        fileChangesLoading={fileChangesLoading}
+        fileChangesError={fileChangesError}
+        refreshFileChanges={refreshFileChanges}
         selectedDiffFile={selectedDiffFile}
         setSelectedDiffFile={setSelectedDiffFile}
       />

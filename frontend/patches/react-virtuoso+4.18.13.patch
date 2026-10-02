@@ -1,0 +1,32 @@
+diff --git a/node_modules/react-virtuoso/dist/index.mjs b/node_modules/react-virtuoso/dist/index.mjs
+index faf06c7..9c3de61 100644
+--- a/node_modules/react-virtuoso/dist/index.mjs
++++ b/node_modules/react-virtuoso/dist/index.mjs
+@@ -2075,14 +2075,21 @@ const rr = oo(() => /iP(ad|od|hone)/i.test(navigator.userAgent) && /WebKit/i.tes
+     const I = Ct(
+       S(
+         d,
+-        D(l),
++        D(l, r),
+         kt(
+-          ([, x, C, k], [{ bottom: u, items: p, offsetBottom: b, totalCount: z }, F]) => {
+-            const O = u + b;
+-            let V = 0;
+-            return C === z && x.length > 0 && p.length > 0 && (p[0].originalIndex === 0 && x[0].originalIndex === 0 || (V = O - k, V !== 0 && (V += F))), [V, p, z, O];
++          ([, previousItems, previousCount], [{ items, totalCount }, lastJump, scrollTop]) => {
++            let delta = 0;
++            if (previousCount === totalCount) {
++              const anchor = previousItems.find((item) => item.offset + item.size > scrollTop);
++              const nextAnchor = anchor && items.find((item) => item.index === anchor.index);
++              if (nextAnchor) {
++                delta = nextAnchor.offset - anchor.offset;
++                if (delta !== 0) delta += lastJump;
++              }
++            }
++            return [delta, items, totalCount];
+           },
+-          [0, [], 0, 0]
++          [0, [], 0]
+         ),
+         W(([x]) => x !== 0),
+         D(r, c, o, s, y, R),

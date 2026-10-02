@@ -120,7 +120,8 @@ class _DurableSemanticFrameCoalescer:
             "__source_sandbox_seq",
             "__source_frame_index",
             "__remote_cursor_seq",
+            "__engine_sequence_number",
+            "__engine_output_cursor",
         ):
             if key in source:
                 target[key] = source[key]
-

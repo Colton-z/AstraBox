@@ -28,6 +28,7 @@ from collections.abc import Iterator
 from typing import Any
 
 from astrabox.core.service.orchestrator.engine.emissions import public_ui_frame
+from astrabox.core.service.orchestrator.engine.deepseek_harness_replay import DshOutputReplay
 
 from astrabox.core.service.orchestrator.engine.file_changes import (
     ContentDiff, ExcerptDiff, FileChange, file_changes_frame,
@@ -161,8 +162,13 @@ class DeepSeekHarnessTurnTranslator:
     produced the ``result`` frame and nothing may follow it.
     """
 
-    def __init__(self, *, session_id: str) -> None:
+    def __init__(
+        self, *, session_id: str, committed_frames: tuple[dict[str, Any], ...] = (),
+        expected_turn: int | None = None,
+    ) -> None:
         self._session_id = session_id
+        self._output_replay = DshOutputReplay(session_id, committed_frames)
+        self._expected_turn = expected_turn
         #: content-block index → the open stream part ({"kind", "id"}).
         self._open_blocks: dict[int, dict[str, str]] = {}
         self._last_usage: dict[str, Any] | None = None
@@ -172,6 +178,29 @@ class DeepSeekHarnessTurnTranslator:
         self._assistant_revision: int | None = None
         self._assistant_attempt: dict[str, Any] | None = None
         self._attempt_identity = ""
+        self._durable_sequence: int | None = None
+
+    def publishable_frames(self, frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Rebuild native state while publishing only uncommitted output."""
+        return [item for frame in frames for item in self._output_replay.accept(frame)]
+
+    @property
+    def output_cursor(self) -> dict[str, Any] | None:
+        """Native replay positions, without copying the accumulated stream."""
+        if self._durable_sequence is None:
+            return None
+        cursor: dict[str, Any] = {
+            "sessionId": self._session_id, "seq": self._durable_sequence,
+        }
+        if self._assistant_revision is not None:
+            stream: dict[str, Any] = {"revision": self._assistant_revision}
+            if self._assistant_attempt is not None:
+                stream["activeAttempt"] = {
+                    key: self._assistant_attempt[key]
+                    for key in ("attemptId", "startedAfterSeq", "turn", "step", "nextIndex")
+                }
+            cursor["assistantStream"] = stream
+        return cursor
 
     # ── stream-block identity ────────────────────────────────────────────
     def _block_id(self, kind: str, event: dict[str, Any], index: int) -> str:
@@ -186,11 +215,16 @@ class DeepSeekHarnessTurnTranslator:
                 "session event arrived after turn/end settled the turn"
             )
         event_type = str(event.get("type") or "").strip()
+        sequence = event.get("seq")
+        if isinstance(sequence, int) and not isinstance(sequence, bool):
+            self._durable_sequence = sequence
         data = event.get("data")
         if not isinstance(data, dict):
             raise DeepSeekHarnessProtocolError(
                 f"session event {event_type!r} has no data object"
             )
+        if event_type == "turn/start" and self._expected_turn is not None and data.get("turn") != self._expected_turn:
+            raise DeepSeekHarnessProtocolError("native replay opened a different turn from the committed response")
 
         if event_type in {"assistant/message", "assistant/attempt"}:
             yield from self._translate_assistant_settlement(event, data)
@@ -220,8 +254,14 @@ class DeepSeekHarnessTurnTranslator:
             return
         yield raw_event_frame(event_type, event)
 
-    def restore_assistant_stream(self, baseline: dict[str, Any]) -> Iterator[dict[str, Any]]:
+    def restore_assistant_stream(
+        self, baseline: dict[str, Any], *, through_sequence: int | None = None,
+    ) -> Iterator[dict[str, Any]]:
         """Accept the supplier's same-cut cursorless stream opening."""
+        if through_sequence is not None:
+            if isinstance(through_sequence, bool) or not isinstance(through_sequence, int) or through_sequence < -1:
+                raise DeepSeekHarnessProtocolError("assistant baseline has an invalid durable cursor")
+            self._durable_sequence = through_sequence
         revision = _stream_integer(baseline.get("revision"), "baseline revision")
         self._assistant_revision = revision
         active = baseline.get("activeAttempt")

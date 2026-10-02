@@ -427,6 +427,7 @@ async def test_reconnect_keeps_only_last_fifo_response_and_records_background_ma
                     "__engine_sequence_number": 4,
                 },
                 manifest=manifest,
+                manifest_id="launch-1",
             ),
             TurnTerminal(
                 {
@@ -473,3 +474,33 @@ async def test_reconnect_keeps_only_last_fifo_response_and_records_background_ma
         **manifest,
     }
     assert "private-control" not in repr(host._session_events_repo.frames)
+
+
+@pytest.mark.asyncio
+async def test_reconnect_records_each_launch_even_without_a_parent_terminal() -> None:
+    from astrabox.core.service.orchestrator.session_kernel.engine_emission_projection import (
+        record_engine_background_tasks_opened,
+    )
+    manifests = [{"engine_refs": ["child-1"]}, {"engine_refs": ["child-2"]}]
+    host = _Harness([
+        BackgroundTasksOpened(
+            {"type": "background-tasks-opened", "__engine_sequence_number": index + 1},
+            manifest=manifest, manifest_id=f"launch-{index + 1}",
+        ) for index, manifest in enumerate(manifests)
+    ])
+    with patch.object(durable_recovery_assistant, "get_engine_adapter", return_value=SimpleNamespace()):
+        result = await host._recover_engine_via_anchor(
+            session={"session_id": "session-1", "session_kind": "agent_chat", "sandbox_id": "sandbox-1", "engine_kind": "test_engine"},
+            snapshot=host._session_snapshots_repo.snapshot,
+        )
+    assert result is None
+    opened = [event for event in host._session_events_repo.events if event['event_type'] == 'turn.background_tasks_opened']
+    assert [event['payload']['engine_refs'] for event in opened] == [['child-1'], ['child-2']]
+    assert not any(event['event_type'] in {'turn.completed', 'turn.failed'} for event in host._session_events_repo.events)
+    # A replacement worker replaying the same native activation cannot open it twice.
+    await record_engine_background_tasks_opened(
+        session_events_repo=host._session_events_repo, session_id='session-1', turn_id='turn-1',
+        command_id='replacement-command', correlation_id='replacement-command', engine_kind='test_engine',
+        manifest=manifests[0], manifest_id='launch-1',
+    )
+    assert len(host._session_events_repo.events) == len(opened)

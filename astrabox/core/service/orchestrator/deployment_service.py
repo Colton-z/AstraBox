@@ -6,7 +6,8 @@ an authenticated webhook or a registered channel provider. Every path starts a
 normal Session and uses the existing turn authority.
 
 Identity: each webhook is bound to one agent instance; the conversation runs as
-that agent's creator (``agent.user_id``). Auth on the inbound endpoint is the
+that agent's creator (``agent.user_id``). Channel bindings can delegate to an
+administrator-configured execution account. Auth on the inbound endpoint is the
 webhook signature itself (HMAC scene: HMAC-SHA256(secret, timestamp); scheduler:
 the deployment's issued secret), not a login session.
 
@@ -177,6 +178,32 @@ class DeploymentService:
         rows = await self._deployment_repo.list_by_agent(agent_id)
         return [self._sanitize(row) for row in rows]
 
+    @staticmethod
+    def _validate_execution_user(
+        value: Any, *, actor: UserContext | None, is_channel: bool,
+        previous: str = "",
+    ) -> str:
+        """Only an administrator may delegate a channel to another account."""
+        if not is_channel or not isinstance(value, str):
+            raise APIError(
+                code="INVALID_REQUEST",
+                message="execution_user_id must be a string on a channel deployment",
+                status_code=400,
+            )
+        user_id = value.strip()
+        if user_id and not user_id.isprintable():
+            raise APIError(
+                code="INVALID_REQUEST", message="execution_user_id contains control characters",
+                status_code=400,
+            )
+        if user_id != previous and not is_platform_admin(getattr(actor, "roles", [])):
+            raise APIError(
+                code="FORBIDDEN",
+                message="only an administrator may change the channel execution account",
+                status_code=403,
+            )
+        return user_id
+
     async def list_manageable(self, user: UserContext) -> list[dict[str, Any]]:
         """List the caller's Deployments without one request per Agent."""
 
@@ -212,6 +239,8 @@ class DeploymentService:
         credentials: Any = None,
         callback_base_url: str | None = None,
         schedule: Any = None,
+        execution_user_id: Any = None,
+        actor: UserContext | None = None,
     ) -> dict[str, Any]:
         scene = str(scene or "").strip()
         channel_name = channel_scene_name(scene)
@@ -255,6 +284,9 @@ class DeploymentService:
         resolved_policy = self._validate_attention_policy(
             attention_policy, is_channel=channel_name is not None
         )
+        execution_user = self._validate_execution_user(
+            execution_user_id, actor=actor, is_channel=channel_name is not None,
+        ) if execution_user_id is not None else ""
         deployment_id = uuid.uuid4().hex
         doc = {
             "deployment_id": deployment_id,
@@ -269,6 +301,7 @@ class DeploymentService:
         }
         normalized_credentials: dict[str, Any] | None = None
         if channel_provider is not None:
+            doc["execution_user_id"] = execution_user
             descriptor = channel_provider.describe()
             if descriptor.credential_fields and str(secret or "").strip():
                 raise APIError(
@@ -391,6 +424,7 @@ class DeploymentService:
         *,
         agent_id: str,
         patch: dict[str, Any],
+        actor: UserContext | None = None,
     ) -> dict[str, Any]:
         # Resolve visibility before validating the patch so missing, deleted and
         # foreign ids remain indistinguishable.  The repository repeats the
@@ -406,9 +440,16 @@ class DeploymentService:
             "credentials",
             "name",
             "schedule",
+            "execution_user_id",
         }
         updates = {k: v for k, v in patch.items() if k in allowed}
         existing_scene = str(existing.get("scene") or "")
+        if "execution_user_id" in updates:
+            updates["execution_user_id"] = self._validate_execution_user(
+                updates["execution_user_id"], actor=actor,
+                is_channel=channel_scene_name(existing_scene) is not None,
+                previous=str(existing.get("execution_user_id") or ""),
+            )
         if "scene" in updates:
             next_scene = str(updates["scene"] or "").strip()
             if next_scene != existing_scene and SCENE_SCHEDULE in {

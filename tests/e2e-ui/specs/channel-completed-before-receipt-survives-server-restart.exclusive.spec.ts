@@ -194,15 +194,15 @@ test('a channel turn completed before its runner receipt recovers after backend 
     expect(responseWindow(finalGate, held.input_id)).toEqual(beforeWindow);
     const outboxes = documentsByField('channel_outbox', '$.session_id', sessionId);
     expect(outboxes).toHaveLength(2);
-    expect(outboxes.filter((row) => row.turn_id === turnId)).toEqual([
-      expect.objectContaining({ command_id: held.command_id, state: 'DELIVERED' }),
-    ]);
     const history = await api.getMessages(sessionId, 50);
     expect(history.has_more).toBe(false);
     expect(history.messages.filter((row) => row.role === 'user').map(messageText)).toEqual([baselinePrompt, prompt]);
     const replies = history.messages.filter((row) => row.role === 'assistant');
     expect(replies).toHaveLength(2);
     expect(replies[1].turn_id).toBe(turnId);
+    expect(outboxes.filter((row) => row.turn_id === turnId)).toEqual([
+      expect.objectContaining({ response_id: replies[1].message_id, state: 'DELIVERED' }),
+    ]);
     expect(messageText(replies[1])).toBe(originalAnswer);
     expect(recipient.deliveries.map((row) => row.text)).toEqual(replies.map((row) => messageText(row).trim()));
     await openSessionView(page, sessionId);

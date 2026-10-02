@@ -191,6 +191,33 @@ def _is_terminal_task_lifecycle(lifecycle: dict[str, str]) -> bool:
     )
 
 
+def background_task_opening(raw_items: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Declare this successful launch before its parent response can disappear."""
+    if not raw_items:
+        return None
+    receipt = claude_tool_receipt(raw_items[-1])
+    if receipt is None:
+        return None
+    manifest = build_background_task_manifest(raw_items)
+    if manifest is None:
+        return None
+    activation = receipt[0]
+    agent_id = manifest["activation_to_engine_ref"].get(activation)
+    if not agent_id:
+        return None
+    return {
+        "type": "background-tasks-opened",
+        "manifest_id": activation,
+        "manifest": {
+            "transcript_refs": [agent_id],
+            "engine_refs": [agent_id],
+            "transcript_to_engine_ref": {agent_id: agent_id},
+            "control_to_engine_ref": {agent_id: agent_id},
+            "activation_to_engine_ref": {activation: agent_id},
+        },
+    }
+
+
 def build_background_task_manifest(raw_items: list[dict[str, Any]]) -> dict[str, Any] | None:
     """Declare the detached Claude children this turn left open.
 

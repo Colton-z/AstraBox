@@ -22,15 +22,6 @@ from astrabox.core.service.orchestrator.session_kernel.workers.turn.worker impor
 from astrabox.core.service.orchestrator.turn_service import TurnService
 
 
-def _bound_runtime() -> SimpleNamespace:
-    return SimpleNamespace(
-        engine_client=object(),
-        engine_kind="test_engine",
-        engine_manifest=EngineCapabilityManifest(engine_kind="test_engine"),
-        conversation_bound=True,
-    )
-
-
 def _controllable_runtime() -> SimpleNamespace:
     client = SimpleNamespace(
         stop_child_run=AsyncMock(),
@@ -49,42 +40,6 @@ def _controllable_runtime() -> SimpleNamespace:
         interrupting=False,
         permission_mode=None,
         permission_mode_verified=False,
-    )
-
-
-@pytest.mark.asyncio
-async def test_control_acquisition_reattaches_when_the_process_cache_is_empty() -> None:
-    runtime = _bound_runtime()
-    manager = SimpleNamespace(
-        get_runtime=Mock(return_value=None),
-        ensure_runtime_lightweight=AsyncMock(return_value=runtime),
-    )
-    ensure = RuntimeEnsure.__new__(RuntimeEnsure)
-    ensure._runtime_manager = manager
-    ensure._agent_config = SimpleNamespace(
-        resolve_session_harness=AsyncMock(return_value=SimpleNamespace())
-    )
-    ensure._plan_runtime_attach_for_turn = Mock(return_value="adapter-plan")
-    session = {
-        "session_id": "session-1",
-        "session_kind": "assistant_chat",
-        "sandbox_id": "sandbox-1",
-        "engine_session_key": "native-session-1",
-        "permission_mode": "native-mode",
-    }
-
-    acquired = await ensure.acquire_engine_control_runtime(session)
-
-    assert acquired is runtime
-    manager.ensure_runtime_lightweight.assert_awaited_once_with(
-        "session-1",
-        ensure._agent_config.resolve_session_harness.return_value,
-        sandbox_id="sandbox-1",
-        engine_session_key="native-session-1",
-        permission_mode="native-mode",
-        session_kind="assistant_chat",
-        workspace_plan="adapter-plan",
-        runtime_identity=None,
     )
 
 

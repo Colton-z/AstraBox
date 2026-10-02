@@ -136,9 +136,10 @@ class _BatchHarness(BackgroundContinuationMixin):
         self,
         *,
         limit: int = 50,
-        skip: int = 0,
+        before: tuple[str, int, str] | None = None,
     ) -> list[dict[str, Any]]:
-        return [dict(event) for event in self._opened_events[skip:skip + limit]]
+        assert before is None
+        return [dict(event) for event in self._opened_events[:limit]]
 
     async def _get_background_materialized_event(
         self,
@@ -176,16 +177,17 @@ class _ScanHarness(BackgroundContinuationMixin):
         ]
         self._open_seqs = set(open_seqs)
         self.materialized: list[int] = []
-        self.pages: list[tuple[int, int]] = []
+        self.pages: list[tuple[int, tuple[str, int, str] | None]] = []
 
     async def _list_background_task_opened_events(
         self,
         *,
         limit: int = 50,
-        skip: int = 0,
+        before: tuple[str, int, str] | None = None,
     ) -> list[dict[str, Any]]:
-        self.pages.append((limit, skip))
-        return [dict(event) for event in self._opened_events[skip:skip + limit]]
+        self.pages.append((limit, before))
+        return [dict(event) for event in self._opened_events
+                if before is None or ("", event["event_seq"], "sess") < before][:limit]
 
     async def _get_background_materialized_event(
         self,
@@ -210,13 +212,46 @@ class BackgroundContinuationScanTests(unittest.IsolatedAsyncioTestCase):
         harness = _ScanHarness(newest_seq=60, open_seqs={3})
         assert await harness._materialize_background_continuations_once(limit=50) == 1
         assert harness.materialized == [3]
-        assert harness.pages == [(50, 0), (50, 50)]
+        assert harness.pages == [(50, None), (50, ("", 11, "sess"))]
 
     async def test_the_scan_stops_once_it_holds_a_full_page_of_open_manifests(self) -> None:
         harness = _ScanHarness(newest_seq=120, open_seqs=set(range(1, 121)))
         assert await harness._materialize_background_continuations_once(limit=50) == 50
         assert harness.materialized == list(range(120, 70, -1))
-        assert harness.pages == [(50, 0)]
+        assert harness.pages == [(50, None)]
+
+    async def test_settled_history_beyond_the_scan_ceiling_does_not_starve_an_open_result(self) -> None:
+        harness = _ScanHarness(newest_seq=560, open_seqs={3})
+        assert await harness._materialize_background_continuations_once() == 0
+        assert len(harness.pages) == 10
+        assert await harness._materialize_background_continuations_once() == 1
+        assert harness.materialized == [3]
+
+    async def test_newer_insertions_and_deleted_history_do_not_shift_the_scan_boundary(self) -> None:
+        harness = _ScanHarness(newest_seq=560, open_seqs={3})
+        assert await harness._materialize_background_continuations_once() == 0
+        harness._opened_events = [
+            {"session_id": "sess", "turn_id": f"turn-{seq}", "event_seq": seq}
+            for seq in range(1100, 560, -1)
+        ] + [event for event in harness._opened_events if event["event_seq"] <= 60]
+        assert await harness._materialize_background_continuations_once() == 1
+        assert harness.materialized == [3]
+
+    async def test_open_work_limit_rotates_and_then_revisits_still_open_manifests(self) -> None:
+        harness = _ScanHarness(newest_seq=120, open_seqs=set(range(1, 121)))
+        assert await harness._materialize_background_continuations_once() == 50
+        assert await harness._materialize_background_continuations_once() == 50
+        assert await harness._materialize_background_continuations_once() == 20
+        assert harness.materialized == list(range(120, 0, -1))
+        assert await harness._materialize_background_continuations_once() == 50
+        assert harness.materialized[120:] == list(range(120, 70, -1))
+
+    async def test_reaching_the_open_limit_inside_a_short_page_preserves_its_unread_tail(self) -> None:
+        harness = _ScanHarness(newest_seq=5, open_seqs={5, 4, 2, 1})
+        assert await harness._materialize_background_continuations_once(limit=3) == 3
+        assert harness.materialized == [5, 4, 2]
+        assert await harness._materialize_background_continuations_once(limit=3) == 1
+        assert harness.materialized == [5, 4, 2, 1]
 
 
 class BackgroundContinuationBatchTests(unittest.IsolatedAsyncioTestCase):

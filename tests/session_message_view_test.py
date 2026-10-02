@@ -6,13 +6,17 @@ from unittest.mock import AsyncMock
 import pytest
 
 import astrabox.core.service.orchestrator.engine.claude_code  # noqa: F401  (self-registers)
+from astrabox.core.service.orchestrator.engine.frame_scope import mark_engine_public_ui_frame
 from astrabox.core.service.orchestrator.session_message_view import (
     SessionMessageView,
     project_session_messages,
 )
+from astrabox.persistence.repository.session_event_repository import (
+    RESIDENT_OUTPUT_SOURCE_KIND, SessionEventRepository,
+)
 
 
-class _PagedSessionEvents:
+class _PagedSessionEvents(SessionEventRepository):
     def __init__(self, events: list[dict], frames: list[dict]) -> None:
         self.events = events
         self.frames = frames
@@ -24,7 +28,7 @@ class _PagedSessionEvents:
         self.event_calls.append(dict(kwargs))
         rows = list(self.events)
         event_types = kwargs.get("event_types")
-        if isinstance(event_types, (set, frozenset)):
+        if isinstance(event_types, (set, frozenset, tuple)):
             rows = [row for row in rows if row["event_type"] in event_types]
         turn_id = kwargs.get("turn_id")
         if isinstance(turn_id, str):
@@ -44,6 +48,12 @@ class _PagedSessionEvents:
         assert session_id == "session-1"
         self.frame_calls.append(dict(kwargs))
         rows = list(self.frames)
+        source_kind = kwargs.get("source_kind")
+        if source_kind is not None:
+            rows = [row for row in rows if row.get("source_kind") == source_kind]
+        frame_types = kwargs.get("frame_types")
+        if isinstance(frame_types, (set, frozenset, tuple)):
+            rows = [row for row in rows if row["payload"]["type"] in frame_types]
         turn_id = kwargs.get("turn_id")
         turn_ids = kwargs.get("turn_ids")
         if isinstance(turn_id, str):
@@ -52,7 +62,10 @@ class _PagedSessionEvents:
             rows = [row for row in rows if row["turn_id"] in turn_ids]
         after_seq = int(kwargs.get("after_seq") or -1)
         rows = [row for row in rows if int(row["frame_seq"]) > after_seq]
-        rows.sort(key=lambda row: int(row["frame_seq"]))
+        before_seq = kwargs.get("before_seq")
+        if isinstance(before_seq, int):
+            rows = [row for row in rows if int(row["frame_seq"]) < before_seq]
+        rows.sort(key=lambda row: int(row["frame_seq"]), reverse=bool(kwargs.get("newest_first")))
         return rows[: int(kwargs.get("limit") or 500)]
 
 
@@ -203,10 +216,7 @@ async def test_view_pages_the_derived_messages_and_has_no_write_api() -> None:
         _frame(2, "turn-1", {"type": "text-delta", "delta": "one"}),
         _frame(5, "turn-2", {"type": "text-delta", "delta": "two"}),
     ]
-    repo = SimpleNamespace(
-        list_events=AsyncMock(return_value=events),
-        list_frames=AsyncMock(return_value=frames),
-    )
+    repo = _PagedSessionEvents(events, frames)
     view = SessionMessageView(repo)
 
     page, has_more = await view.list_page("session-1", limit=2)
@@ -257,8 +267,9 @@ async def test_page_reads_only_the_tail_needed_for_a_long_session() -> None:
     assert len(repo.event_calls) == 1
     assert repo.event_calls[0]["newest_first"] is True
     assert repo.event_calls[0]["limit"] == 20
-    assert len(repo.frame_calls) == 1
-    assert len(repo.frame_calls[0]["turn_ids"]) < 60
+    history_reads = [call for call in repo.frame_calls if call.get("turn_ids")]
+    assert len(history_reads) == 1
+    assert len(history_reads[0]["turn_ids"]) < 60
 
 
 @pytest.mark.asyncio
@@ -687,3 +698,166 @@ async def test_block_pages_never_settle_past_an_event_the_scan_has_not_read() ->
             break
         before = page["next_before"]
     assert walked == expected_ids
+
+
+def _file_part(call_id: str, path: str) -> dict:
+    return {
+        'type': 'data-file-changes', 'id': f'file-changes:{call_id}',
+        'data': {
+            'toolCallId': call_id, 'toolName': 'Write',
+            'files': [{'path': path, 'diff': {'format': 'contents', 'before': '', 'after': 'kept\n'}}],
+        },
+    }
+
+
+async def test_file_changes_include_early_history_and_only_reread_new_terminals() -> None:
+    events = [_event(i * 10 + 5, 'turn.completed', turn_id=f'turn-{i}') for i in range(105)]
+    frames = [
+        _frame(1, 'turn-0', mark_engine_public_ui_frame(_file_part('early', '/workspace/early.txt'))),
+        _frame(1041, 'turn-104', mark_engine_public_ui_frame(_file_part('late', '/workspace/late.txt'))),
+    ]
+    repo = _PagedSessionEvents(events, frames)
+    view = SessionMessageView(repo)
+    first = await view.file_changes('session-1')
+    parts = [part for turn in first['turns'] for message in turn['messages'] for part in message['parts']]
+    assert parts == [_file_part('early', '/workspace/early.txt'), _file_part('late', '/workspace/late.txt')]
+    assert len(first['turns']) == 105
+    assert [turn['turn_id'] for turn in first['turns']] == [f'turn-{i}' for i in range(105)]
+    assert first['through_seq'] == 1045
+    assert all(call['limit'] <= 100 for call in repo.event_calls if not call.get('newest_first'))
+
+    repo.event_calls.clear()
+    repo.frame_calls.clear()
+    repo.events.append(_event(1055, 'turn.completed', turn_id='turn-105'))
+    repo.frames.append(_frame(1051, 'turn-105', mark_engine_public_ui_frame(_file_part('next', '/workspace/next.txt'))))
+    delta = await view.file_changes('session-1', after_seq=first['through_seq'])
+    assert [turn['turn_id'] for turn in delta['turns']] == ['turn-105']
+    assert delta['through_seq'] == 1055
+    assert all(call['turn_ids'] == frozenset({'turn-105'}) for call in repo.frame_calls)
+    assert all(call['after_seq'] >= 1045 for call in repo.event_calls if not call.get('newest_first'))
+
+
+async def test_file_changes_use_canonical_recovery_blocks_and_replace_empty_turns() -> None:
+    part = _file_part('native', '/workspace/recovered.txt')
+    repo = _PagedSessionEvents([
+        _event(5, 'turn.recovered', turn_id='turn-1', payload={
+            'blocks': [{'type': 'ui_data', 'part': part}],
+        }),
+    ], [])
+    view = SessionMessageView(repo)
+    first = await view.file_changes('session-1')
+    assert first['turns'] == [{'turn_id': 'turn-1', 'messages': [{'message_id': 'turn-1', 'parts': [part]}]}]
+    repo.events.append(_event(9, 'turn.recovered', turn_id='turn-1', payload={'assistant_text': 'corrected'}))
+    delta = await view.file_changes('session-1', after_seq=5)
+    assert delta['turns'] == [{'turn_id': 'turn-1', 'messages': []}]
+
+
+async def test_file_changes_do_not_invent_a_diff_from_failed_tool_arguments() -> None:
+    repo = _PagedSessionEvents([
+        _event(5, 'turn.failed', turn_id='turn-1', payload={'error_text': 'tool refused'}),
+    ], [_frame(1, 'turn-1', {
+        'type': 'tool-input-available', 'toolCallId': 'failed', 'toolName': 'Write',
+        'input': {'file_path': '/workspace/not-written', 'content': 'not present'},
+    })])
+    assert (await SessionMessageView(repo).file_changes('session-1'))['turns'] == [
+        {'turn_id': 'turn-1', 'messages': []},
+    ]
+
+
+async def test_file_change_read_keeps_one_checkpoint_while_new_work_arrives() -> None:
+    class ArrivingEvents(_PagedSessionEvents):
+        async def list_events(self, session_id: str, **kwargs: object) -> list[dict]:
+            rows = await super().list_events(session_id, **kwargs)
+            if kwargs.get('newest_first'):
+                self.events.append(_event(15, 'turn.completed', turn_id='turn-2'))
+                self.frames.append(_frame(11, 'turn-2', mark_engine_public_ui_frame(_file_part('later', '/workspace/later'))))
+            return rows
+
+    repo = ArrivingEvents([_event(5, 'turn.completed', turn_id='turn-1')], [
+        _frame(1, 'turn-1', mark_engine_public_ui_frame(_file_part('first', '/workspace/first'))),
+    ])
+    result = await SessionMessageView(repo).file_changes('session-1')
+    assert result['through_seq'] == 5
+    assert [turn['turn_id'] for turn in result['turns']] == ['turn-1']
+    assert result['turns'][0]['messages'][0]['parts'] == [_file_part('first', '/workspace/first')]
+    assert all(call['before_seq'] == 6 for call in repo.frame_calls)
+
+
+@pytest.mark.parametrize('cursor', [-1, 6])
+async def test_file_change_cursor_outside_the_owned_history_is_refused(cursor: int) -> None:
+    from astrabox.core.service.orchestrator.session_message_view import FileChangeCursorError
+    repo = _PagedSessionEvents([_event(5, 'turn.completed', turn_id='turn-1')], [])
+    with pytest.raises(FileChangeCursorError):
+        await SessionMessageView(repo).file_changes('session-1', after_seq=cursor)
+    assert repo.frame_calls == []
+
+
+async def test_file_change_scan_refuses_a_nonadvancing_repository() -> None:
+    repo = _PagedSessionEvents([_event(5, 'turn.completed', turn_id='turn-1')], [])
+    original = repo.list_events
+
+    async def stuck(session_id: str, **kwargs: object) -> list[dict]:
+        if not kwargs.get('newest_first'):
+            return [_event(0, 'turn.completed', turn_id='turn-1')]
+        return await original(session_id, **kwargs)
+
+    repo.list_events = stuck
+    with pytest.raises(RuntimeError, match='did not advance'):
+        await SessionMessageView(repo).file_changes('session-1')
+
+
+async def test_file_change_read_checks_ownership_before_reading_history() -> None:
+    from astrabox.common.utils.errors import APIError
+    from astrabox.core.service.orchestrator.platform_service import AgentPlatformService
+    target = SimpleNamespace(
+        ensure_bootstrap=AsyncMock(),
+        _session_service=SimpleNamespace(must_get_owned_session=AsyncMock(
+            side_effect=APIError(code='SESSION_NOT_FOUND', message='not found', status_code=404),
+        )),
+        _session_message_view=SimpleNamespace(file_changes=AsyncMock()),
+    )
+    with pytest.raises(APIError):
+        await AgentPlatformService.get_file_changes(target, object(), 'session-1')
+    target._session_message_view.file_changes.assert_not_called()
+
+
+def test_unfinished_resident_blocks_survive_a_later_input_and_settle_once() -> None:
+    frames = [
+        _frame(1, "native:3", {"type": "start", "messageId": "native:3"}),
+        _frame(2, "native:3", {"type": "reasoning-delta", "id": "r", "delta": "checking"}),
+        _frame(3, "native:3", {"type": "text-delta", "id": "t", "delta": "before tool"}),
+        _frame(4, "native:3", {"type": "tool-input-available", "toolCallId": "call-1",
+                               "toolName": "bash", "input": {"command": "pwd"}}),
+    ]
+    for frame in frames:
+        frame["source_kind"] = RESIDENT_OUTPUT_SOURCE_KIND
+    accepted = _event(5, "command.accepted", turn_id="next-input", payload={
+        "command_type": "StartTurn", "input_id": "input-2", "content": "next question",
+    })
+    expected = [
+        {"type": "thinking", "thinking": "checking"},
+        {"type": "text", "text": "before tool"},
+        {"type": "tool_use", "name": "bash", "input": {"command": "pwd"}, "id": "call-1"},
+    ]
+    partial = project_session_messages(events=[accepted], frames=frames)
+    assert len(partial) == 1
+    assert partial[0]["message_id"] == "native:3"
+    assert partial[0]["blocks"] == expected
+
+    consumed = _event(6, "input.consumed", turn_id="next-input", payload={
+        "input_id": "input-2", "response_message_id": "native:4", "content": "next question",
+    })
+    later = _event(8, "turn.completed", turn_id="next-input", payload={"assistant_text": "next answer"})
+    frames.append(_frame(7, "next-input", {"type": "text-delta", "id": "n", "delta": "next answer"}))
+    messages = project_session_messages(events=[accepted, consumed, later], frames=frames)
+    original = [row for row in messages if row["message_id"] == "native:3"]
+    assert len(original) == 1
+    assert original[0]["blocks"] == expected
+    assert [row["content"] for row in messages] == ["before tool", "next question", "next answer"]
+
+    terminal = _event(10, "turn.completed", turn_id="native:3", payload={
+        "assistant_text": "before tool", "blocks": expected,
+    })
+    settled = project_session_messages(events=[accepted, consumed, later, terminal], frames=frames)
+    assert len(settled) == 3
+    assert [row["blocks"] for row in settled if row["message_id"] == "native:3"] == [expected]

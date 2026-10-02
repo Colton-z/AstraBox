@@ -85,6 +85,15 @@ class AdminEnvironmentModels(BaseModel):
     models: list[str]
 
 
+class AdminDeletedEnvironment(BaseModel):
+    """The identity of the preset removed by an administrator."""
+
+    model_config = ConfigDict(extra="allow")
+
+    name: str
+    deleted: bool
+
+
 class AdminOverviewProcessHealth(BaseModel):
     """The overview's four-number digest of :class:`AdminProcessHealth`."""
 
@@ -389,6 +398,17 @@ async def upsert_admin_environment(
     user = await _resolve_user(request)
     result = await _svc().upsert_environment_config(user, name, payload)
     return success_response(result)
+
+
+@router.delete(
+    "/api/v1/admin/environments/{name}",
+    response_model=ApiEnvelope[AdminDeletedEnvironment],
+    response_model_exclude_unset=True,
+)
+async def delete_admin_environment(name: str, request: Request):
+    """Delete a preset only after checking its Agent and Assistant references."""
+    user = await _resolve_user(request)
+    return success_response(await _svc().delete_environment_config(user, name))
 
 
 @router.get(

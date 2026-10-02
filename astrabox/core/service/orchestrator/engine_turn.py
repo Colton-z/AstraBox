@@ -485,6 +485,7 @@ async def iter_engine_client_events(
             terminal_usage: dict[str, Any] | None = None
             terminal_error_payload: dict[str, Any] | None = None
             terminal_engine_sequence_number: int | None = None
+            terminal_output_cursor: dict[str, Any] | None = None
             terminal_closes_interaction = False
             interaction_emitted = False
             first_engine_frame = True
@@ -548,6 +549,7 @@ async def iter_engine_client_events(
                         "type": "background_tasks_opened",
                         "engine_kind": engine_kind,
                         "manifest": dict(emission.manifest),
+                        "manifest_id": emission.manifest_id,
                     }
                     continue
 
@@ -675,6 +677,7 @@ async def iter_engine_client_events(
                             "native conversation key"
                         )
                     terminal_engine_sequence_number = emission.engine_sequence_number
+                    terminal_output_cursor = emission.engine_output_cursor
                     terminal_finish_reason = emission.finish_reason
                     terminal_outcome = emission.outcome
                     terminal_native_reason = emission.native_reason
@@ -793,6 +796,12 @@ async def iter_engine_client_events(
                     "turn_id": turn_id,
                     "code": err_code,
                     "message": err_message,
+                    "engine_kind": engine_kind,
+                    "engine_turn_id": engine_turn_id_str,
+                    **({"engine_sequence_number": terminal_engine_sequence_number}
+                       if terminal_engine_sequence_number is not None else {}),
+                    **({"engine_output_cursor": terminal_output_cursor}
+                       if terminal_output_cursor is not None else {}),
                     **(
                         {"terminal_reason": terminal_native_reason}
                         if terminal_native_reason
@@ -823,6 +832,8 @@ async def iter_engine_client_events(
                             if terminal_engine_sequence_number is not None
                             else {}
                         ),
+                        **({"engine_output_cursor": terminal_output_cursor}
+                           if terminal_output_cursor is not None else {}),
                         **(
                             {"session_id": engine_session_key}
                             if engine_session_key
@@ -868,6 +879,8 @@ async def iter_engine_client_events(
             }
             if terminal_engine_sequence_number is not None:
                 result_data["engine_sequence_number"] = terminal_engine_sequence_number
+            if terminal_output_cursor is not None:
+                result_data["engine_output_cursor"] = terminal_output_cursor
             if engine_session_key:
                 result_data["session_id"] = engine_session_key
             if terminal_usage:

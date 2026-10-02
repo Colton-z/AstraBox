@@ -167,3 +167,8 @@ def test_private_or_session_frames_cannot_become_public() -> None:
 
     assert isinstance(raw, PrivateDiagnostic)
     assert isinstance(child, ChildResourceFact)
+
+
+def test_background_opening_requires_a_replay_identity() -> None:
+    with pytest.raises(ValueError, match="adapter identity"):
+        emission_from_translated_frame({"type": "background-tasks-opened", "manifest": {}})

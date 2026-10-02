@@ -59,6 +59,7 @@ from astrabox.persistence.repository.interaction_snapshot_repository import (
     InteractionSnapshotRepository,
 )
 from astrabox.persistence.repository.session_event_repository import (
+    RESIDENT_OUTPUT_SOURCE_KIND,
     SessionEventRepository,
 )
 from astrabox.persistence.repository.session_repository import SessionRepository
@@ -67,12 +68,6 @@ from astrabox.persistence.repository.session_snapshot_repository import (
 )
 
 logger = get_logger(__name__)
-
-#: How a resident frame row names its writer. Read nowhere as a branch; it is
-#: the operator's answer to "which lane wrote this row" beside the worker's
-#: ``sandbox_transcript`` / ``transcript_mirror`` and recovery's
-#: ``turn_recovery``.
-RESIDENT_OUTPUT_SOURCE_KIND = "resident_engine_output"
 
 _TERMINAL_EVENT_TYPES = frozenset({"turn.completed", "turn.failed", "turn.recovered"})
 #: Frames whose meaning is their durable position: a reload closes the
@@ -215,19 +210,71 @@ class PlatformResidentOutputSink:
         self,
         *,
         engine_kind: str,
+        sandbox_id: str | None = None,
+        engine_session_key: str | None = None,
     ) -> ResidentOutputCheckpoint:
         engine_kind = self._bind_engine_kind(engine_kind)
+        high_water_sequence = await self._journal.get_max_engine_sequence(
+            self._session_id, engine_kind=engine_kind,
+        )
         snapshot = await self._snapshots.get_snapshot(self._session_id)
-        response_id = resident_engine_turn_id(snapshot)
+        snapshot_response_id = resident_engine_turn_id(snapshot)
+        open_start = await self._journal.get_open_resident_response(
+            self._session_id, engine_kind=engine_kind,
+        )
+        response_id = str(open_start["turn_id"]) if open_start is not None else snapshot_response_id
+        before_response = int(open_start["frame_seq"]) if open_start is not None else None
+        async def replay_boundary(before_seq: int | None = None) -> tuple[str | None, int | None, dict[str, Any] | None]:
+            if not sandbox_id or not engine_session_key:
+                return None, None, None
+            dispatches = await self._journal.list_events(
+                self._session_id, event_type="dispatch.confirmed",
+                before_seq=before_seq, newest_first=True, limit=1,
+            )
+            if dispatches:
+                dispatch = dispatches[0]
+                context = (dispatch.get("payload") or {}).get("recovery_context") or {}
+                anchor = context.get("engine_anchor") or {}
+                if (
+                    context.get("sandbox_id") == sandbox_id
+                    and anchor.get("engine_kind") == engine_kind
+                    and anchor.get("engine_session_key") == engine_session_key
+                ):
+                    engine_turn_id = str(anchor.get("engine_turn_id") or "").strip() or None
+                    terminals = await self._journal.list_frames(
+                        self._session_id, after_seq=int(dispatch["event_seq"]),
+                        before_seq=before_seq,
+                        engine_kind=engine_kind, frame_types=("data-result", "finish", "error"),
+                        newest_first=True, limit=1,
+                    )
+                    if terminals:
+                        cursor = terminals[0].get("engine_output_cursor")
+                        sequence = terminals[0].get("engine_sequence_number")
+                        return (
+                            engine_turn_id,
+                            sequence if isinstance(sequence, int) and not isinstance(sequence, bool) else None,
+                            dict(cursor) if isinstance(cursor, dict) else None,
+                        )
+                    return engine_turn_id, None, None
+            return None, None, None
+
+        engine_turn_id, replay_after_sequence, replay_output_cursor = await replay_boundary()
+        open_response_replay_cursor = None
+        if before_response is not None:
+            _, _, open_response_replay_cursor = await replay_boundary(before_response)
         conversation_state = str((snapshot or {}).get("conversation_state") or "").strip()
         if response_id is None:
             return ResidentOutputCheckpoint(
                 external_turn_active=(
                     conversation_state in _PLATFORM_ACTIVE_CONVERSATION_STATES
                 ),
+                engine_turn_id=engine_turn_id,
+                replay_after_sequence=replay_after_sequence,
+                replay_output_cursor=replay_output_cursor,
+                high_water_sequence=high_water_sequence,
             )
         anchor = (snapshot or {}).get("current_turn_engine_anchor") or {}
-        anchor_kind = str(anchor.get("engine_kind") or "").strip()
+        anchor_kind = str((open_start or {}).get("engine_kind") or anchor.get("engine_kind") or "").strip()
         if anchor_kind != engine_kind:
             raise RuntimeError(
                 "resident response is anchored on another engine: "
@@ -239,7 +286,11 @@ class PlatformResidentOutputSink:
         after_sequence: int | None = None
         live_sequence_after: int | None = None
         committed: list[dict[str, Any]] = []
+        output_cursor: dict[str, Any] | None = None
         for frame in frames:
+            cursor = frame.get("engine_output_cursor")
+            if isinstance(cursor, dict):
+                output_cursor = dict(cursor)
             sequence = frame.get("engine_sequence_number")
             if isinstance(sequence, int) and not isinstance(sequence, bool):
                 boundary_sequence = (
@@ -260,7 +311,7 @@ class PlatformResidentOutputSink:
                 "frame_seq": frame.get("frame_seq"),
                 "payload": dict(payload),
             }
-            for key in ("engine_sequence_number", "engine_block_index", "live_seq"):
+            for key in ("engine_sequence_number", "engine_block_index", "live_seq", "engine_output_cursor"):
                 if key in frame:
                     row[key] = frame[key]
             committed.append(row)
@@ -270,10 +321,17 @@ class PlatformResidentOutputSink:
         self._live_seq = (live_sequence_after + 1) if live_sequence_after is not None else 0
         return ResidentOutputCheckpoint(
             open_response_id=response_id,
+            open_response_owns_slot=response_id == snapshot_response_id,
             boundary_sequence=boundary_sequence,
             after_sequence=after_sequence,
             committed_frames=tuple(committed),
             external_turn_active=False,
+            engine_turn_id=engine_turn_id,
+            replay_after_sequence=replay_after_sequence,
+            output_cursor=output_cursor,
+            replay_output_cursor=replay_output_cursor,
+            open_response_replay_cursor=open_response_replay_cursor,
+            high_water_sequence=high_water_sequence,
         )
 
     # ── open ─────────────────────────────────────────────────────────────
@@ -455,6 +513,7 @@ class PlatformResidentOutputSink:
                     correlation_id=handle.response_id,
                     engine_kind=engine_kind,
                     manifest=dict(emission.manifest),
+                    manifest_id=emission.manifest_id,
                 )
                 continue
             raise ValueError(
@@ -673,7 +732,11 @@ class PlatformResidentOutputSink:
             status = "COMPLETED"
         finish_seq = await self._append_frames(
             response_id,
-            [terminal_payload],
+            [{
+                **terminal_payload,
+                **({"__engine_output_cursor": terminal.engine_output_cursor}
+                   if terminal.engine_output_cursor is not None else {}),
+            }],
             engine_sequence_number=engine_sequence_number,
         )
         terminal_frame: dict[str, Any] = {
@@ -798,6 +861,9 @@ class PlatformResidentOutputSink:
             frame_seq = starting_seq + offset
             live_seq = frame_payload.pop("__live_seq", None)
             block_index = frame_payload.pop(BLOCK_INDEX_FIELD, None)
+            output_cursor = frame_payload.pop("__engine_output_cursor", None)
+            if output_cursor is not None and not isinstance(output_cursor, dict):
+                raise ValueError("engine output cursor must be an object")
             doc: dict[str, Any] = {
                 "session_id": self._session_id,
                 "turn_id": turn_id,
@@ -825,6 +891,8 @@ class PlatformResidentOutputSink:
                 broker_event["source_cursor"] = {"live_seq": live_seq}
             if isinstance(block_index, int) and not isinstance(block_index, bool):
                 doc["engine_block_index"] = block_index
+            if output_cursor is not None:
+                doc["engine_output_cursor"] = output_cursor
             docs.append(doc)
             broker_events.append(broker_event)
         await self._journal.append_frames(docs)

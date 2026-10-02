@@ -15,9 +15,12 @@ from __future__ import annotations
 
 import logging
 from typing import Any
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
+import astrabox.core.service.orchestrator.engine.claude_code  # noqa: F401
 from astrabox.core.service.orchestrator.session_kernel.service_mixins.background_continuation import (
     BackgroundContinuationMixin,
 )
@@ -42,19 +45,6 @@ class _Snapshots:
         return None if self._state is None else {"conversation_state": self._state}
 
 
-class _Messages:
-    def __init__(self, message: dict[str, Any] | None) -> None:
-        self._message = message
-
-    async def get_assistant_message_for_turn(
-        self,
-        session_id: str,
-        *,
-        turn_id: str,
-    ) -> dict[str, Any] | None:
-        return self._message
-
-
 class _Journal:
     async def list_events(self, *args: Any, **kwargs: Any) -> list[dict[str, Any]]:
         return []
@@ -71,10 +61,9 @@ class _Harness(BackgroundContinuationMixin):
         self,
         *,
         conversation_state: str | None = "IDLE",
-        parent_message: dict[str, Any] | None = None,
     ) -> None:
         self._session_snapshots_repo = _Snapshots(conversation_state)
-        self._message_view = _Messages(parent_message)
+        self._sessions_repo = SimpleNamespace(get_session=AsyncMock(return_value=None))
         self._session_events_repo = _Journal()
 
 
@@ -100,18 +89,21 @@ async def test_a_manifest_held_because_a_turn_is_running_says_so(
     assert "session=sess-1" in line and "opened_event_seq=11" in line
 
 
-async def test_a_manifest_whose_parent_message_is_gone_says_so_at_warning(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """Distinct from the state gates: this one cannot resolve by waiting."""
-    harness = _Harness(conversation_state="IDLE", parent_message=None)
-
-    with caplog.at_level(logging.INFO, logger=_LOGGER):
-        assert await _run(harness) is False
-
-    held = [r for r in caplog.records if "gate=parent_message_missing" in r.getMessage()]
-    assert held, [r.getMessage() for r in caplog.records]
-    assert held[0].levelno == logging.WARNING
+async def test_a_completed_child_materializes_without_a_parent_reply() -> None:
+    harness = _Harness()
+    harness._sessions_repo.get_session.return_value = {
+        "session_id": "sess-1", "session_kind": "agent_chat", "engine_kind": "claude_code",
+    }
+    harness._message_view = SimpleNamespace(get_assistant_message_for_turn=AsyncMock(
+        side_effect=AssertionError("a lost parent's message is not child completion authority"),
+    ))
+    projection = {"blocks": [{"type": "subagent", "engine_ref": "native-child"}]}
+    harness._collect_background_continuation_projection = AsyncMock(return_value=projection)
+    claim = AsyncMock(return_value=({"event_seq": 12}, True))
+    harness._session_events_repo.try_claim_event = claim
+    assert await _run(harness) is True
+    assert claim.call_args.args[0]["payload"]["blocks"] == projection["blocks"]
+    harness._message_view.get_assistant_message_for_turn.assert_not_awaited()
 
 
 async def test_a_malformed_manifest_row_says_so_without_touching_a_repository() -> None:
@@ -155,7 +147,7 @@ async def test_a_manifest_that_moves_to_another_gate_reports_the_new_one(
         for record in caplog.records
         if "gate=" in record.getMessage()
     ]
-    assert gates == ["conversation_not_idle", "parent_message_missing"]
+    assert gates == ["conversation_not_idle", "session_row_missing"]
 
 
 async def test_two_manifests_in_one_session_are_reported_separately(

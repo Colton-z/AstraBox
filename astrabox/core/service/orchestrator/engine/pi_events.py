@@ -16,7 +16,9 @@ Vocabulary boundaries this translator enforces:
   ``willRetry``: when the loop failed and the auto-retry will re-run it, more
   content follows, so ``agent_end`` is not a terminal either. Pi emits
   ``agent_settled`` exactly when the loop is genuinely at rest, and that is
-  the only event that produces the platform ``result`` frame.
+  the event that ends the platform's active input stream. A resident reply
+  can finish earlier when a queued user message starts: Pi drains follow-ups
+  after the preceding answer finishes, inside the same agent run.
 * **Committed messages are not re-emitted.** ``message_end`` carries the
   finished assistant message whose text already streamed as deltas. Emitting
   it would write the reply body twice. It is read for its stop reason and
@@ -110,8 +112,8 @@ def _usage_frame(usage: Any) -> dict[str, Any] | None:
 class PiTurnTranslator:
     """Reduce one driven turn's pi event stream to AI SDK frames.
 
-    One instance per driven turn. ``terminal_seen`` flips when
-    ``agent_settled`` produced the ``result`` frame and nothing may follow it.
+    One instance per response. ``terminal_seen`` flips at session settlement
+    or a resident answer's handoff to a queued user input.
     """
 
     def __init__(self, *, session_id: str) -> None:
@@ -138,7 +140,7 @@ class PiTurnTranslator:
     def translate(self, event: dict[str, Any]) -> Iterator[dict[str, Any]]:
         if self.terminal_seen:
             raise PiProtocolError(
-                "pi event arrived after agent_settled settled the turn"
+                "pi event arrived after agent_settled or a queued-input handoff finished the response"
             )
         event_type = str(event.get("type") or "").strip()
         if not event_type:
@@ -177,7 +179,7 @@ class PiTurnTranslator:
             yield from self._translate_agent_end(event)
             return
         if event_type == "agent_settled":
-            yield self._translate_settled()
+            yield self._finish_response()
             return
         if event_type in _DROPPED_EVENT_TYPES:
             return
@@ -349,7 +351,25 @@ class PiTurnTranslator:
 
         yield raw_event_frame("agent_end", event)
 
-    def _translate_settled(self) -> dict[str, Any]:
+    def finish_before_follow_up(self, event: dict[str, Any]) -> dict[str, Any] | None:
+        """Finish a resident answer when Pi starts consuming a queued user input.
+
+        Pi's follow-up queue drains after its tool loop and final answer,
+        before agent_end or agent_settled. A user message after that answer
+        is the native boundary; a prompt ACK alone is only queue acceptance.
+        Initial context and mid-tool messages do not finish a response.
+        """
+
+        message = event.get("message")
+        if (
+            event.get("type") != "message_start"
+            or not isinstance(message, dict) or message.get("role") != "user"
+            or self._last_stop_reason not in {"stop", "length"}
+        ):
+            return None
+        return self._finish_response()
+
+    def _finish_response(self) -> dict[str, Any]:
         stop_reason = self._last_stop_reason
         if stop_reason is None:
             raise PiProtocolError(

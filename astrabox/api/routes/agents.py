@@ -202,6 +202,7 @@ class AgentPreparedRuntimeStatus(BaseModel):
     runtime_generation: str | None = None
     client_pool_name: str | None = None
     sandbox_id: str | None = None
+    prepared_at: str | None = None
     last_error: str | None = None
 
 

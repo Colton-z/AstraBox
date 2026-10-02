@@ -67,6 +67,10 @@ def build_engine_output_checkpoint(
     return EngineOutputCheckpoint(
         after_sequence=after_sequence,
         committed_frames=tuple(dict(frame) for frame in frames),
+        output_cursor=next((
+            dict(frame["engine_output_cursor"]) for frame in reversed(frames)
+            if isinstance(frame.get("engine_output_cursor"), dict)
+        ), None),
     )
 
 
@@ -283,7 +287,6 @@ class DurableEngineRecoveryMixin:
         ] = []
         terminal: TurnTerminal | None = None
         interaction: InteractionRequested | None = None
-        background_manifest: dict[str, Any] | None = None
         last_sequence_number = starting_after
         interaction_sequence_number: int | None = None
         emission_index = 0
@@ -337,12 +340,16 @@ class DurableEngineRecoveryMixin:
                     recovered_frames.append(emission)
                     continue
                 if isinstance(emission, BackgroundTasksOpened):
-                    manifest = dict(emission.manifest)
-                    if background_manifest is not None and manifest != background_manifest:
-                        raise RuntimeError(
-                            "engine reconnect declared conflicting background-task manifests"
-                        )
-                    background_manifest = manifest
+                    await record_engine_background_tasks_opened(
+                        session_events_repo=self._session_events_repo,
+                        session_id=session_id,
+                        turn_id=turn_id,
+                        command_id=command_id,
+                        correlation_id=command_id,
+                        engine_kind=engine_kind,
+                        manifest=dict(emission.manifest),
+                        manifest_id=emission.manifest_id,
+                    )
                     continue
                 if not isinstance(
                     emission,
@@ -426,7 +433,6 @@ class DurableEngineRecoveryMixin:
             engine_kind=engine_kind,
             engine_turn_id=engine_turn_id,
             terminal=terminal,
-            background_manifest=background_manifest,
         )
 
     @staticmethod
@@ -645,7 +651,7 @@ class DurableEngineRecoveryMixin:
         """
         if not frames:
             return
-        selected_frames: list[tuple[dict[str, Any], int | None, str]] = []
+        selected_frames: list[tuple[dict[str, Any], int | None, str, dict[str, Any] | None]] = []
         for emission in frames:
             if isinstance(emission, ResponseCompleted):
                 payload = {
@@ -659,6 +665,8 @@ class DurableEngineRecoveryMixin:
                     payload = mark_engine_public_ui_frame(payload)
             engine_sequence_number = emission.engine_sequence_number
             payload.pop("__engine_sequence_number", None)
+            output_cursor = emission.engine_output_cursor
+            payload.pop("__engine_output_cursor", None)
             if (
                 starting_after is not None
                 and engine_sequence_number is not None
@@ -673,7 +681,7 @@ class DurableEngineRecoveryMixin:
                 raise RuntimeError(
                     f"{type(emission).__name__} cannot be Session scoped"
                 )
-            selected_frames.append((payload, engine_sequence_number, scope))
+            selected_frames.append((payload, engine_sequence_number, scope, output_cursor))
         if not selected_frames:
             return
         frame_seq = await self._session_events_repo.allocate_session_frame_seq(
@@ -681,7 +689,7 @@ class DurableEngineRecoveryMixin:
             count=len(selected_frames),
         )
         docs: list[dict[str, Any]] = []
-        for payload, engine_sequence_number, scope in selected_frames:
+        for payload, engine_sequence_number, scope, output_cursor in selected_frames:
             normalized = (
                 self._normalize_recovered_ai_sdk_frame(
                     payload,
@@ -705,6 +713,8 @@ class DurableEngineRecoveryMixin:
             }
             if engine_sequence_number is not None:
                 doc["engine_sequence_number"] = int(engine_sequence_number)
+            if output_cursor is not None:
+                doc["engine_output_cursor"] = output_cursor
             docs.append(doc)
             frame_seq += 1
         if not docs:
@@ -727,7 +737,6 @@ class DurableEngineRecoveryMixin:
         engine_kind: str,
         engine_turn_id: str,
         terminal: TurnTerminal,
-        background_manifest: dict[str, Any] | None,
     ) -> dict[str, Any] | None:
         """Persist an engine turn terminal and clear the platform busy state.
 
@@ -752,6 +761,8 @@ class DurableEngineRecoveryMixin:
                 PublicUIFrame(
                     {
                         "type": "data-result",
+                        **({"__engine_output_cursor": terminal.engine_output_cursor}
+                           if terminal.engine_output_cursor is not None else {}),
                         "data": (
                             {"usage": dict(terminal.usage)}
                             if terminal.usage is not None
@@ -863,16 +874,6 @@ class DurableEngineRecoveryMixin:
                 outcome,
                 terminal.native_reason,
             )
-            if outcome != "failed" and background_manifest is not None:
-                await record_engine_background_tasks_opened(
-                    session_events_repo=self._session_events_repo,
-                    session_id=session_id,
-                    turn_id=turn_id,
-                    command_id=command_id,
-                    correlation_id=command_id,
-                    engine_kind=engine_kind,
-                    manifest=background_manifest,
-                )
         return result
 
     async def _settle_engine_turn_transcript_pending(

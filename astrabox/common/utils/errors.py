@@ -179,6 +179,11 @@ def make_api_error(
 
 for _code, _status, _category, _retryable, _owner in (
     ("INVALID_REQUEST", 400, "request", False, "client"),
+    ("SPEECH_INPUT_NOT_CONFIGURED", 503, "configuration", False, "platform"),
+    ("SPEECH_INPUT_INVALID_AUDIO", 415, "request", False, "client"),
+    ("SPEECH_INPUT_TOO_LARGE", 413, "request", False, "client"),
+    ("SPEECH_INPUT_FAILED", 502, "model", True, "platform"),
+    ("SPEECH_INPUT_TIMEOUT", 504, "model", True, "platform"),
     ("CHANNEL_PROVIDER_UNKNOWN", 400, "request", False, "client"),
     ("CHANNEL_CONFIG_INVALID", 400, "request", False, "client"),
     ("CHANNEL_CREDENTIALS_INVALID", 400, "request", False, "client"),
@@ -186,6 +191,8 @@ for _code, _status, _category, _retryable, _owner in (
     ("CHANNEL_BAD_PAYLOAD", 400, "request", False, "client"),
     ("CHANNEL_CALLBACK_NOT_FOUND", 404, "request", False, "client"),
     ("CHANNEL_CALLBACK_PATH_REQUIRED", 404, "request", False, "client"),
+    ("CHANNEL_REFERENCE_OWNER_MISMATCH", 409, "state", False, "client"),
+    ("CHANNEL_SESSION_OWNER_MISMATCH", 409, "state", False, "client"),
     ("NOT_A_CHANNEL", 409, "state", False, "client"),
     ("DEPLOYMENT_UNAUTHORIZED", 401, "auth", False, "client"),
     ("DEPLOYMENT_MISCONFIGURED", 409, "state", False, "platform"),
@@ -302,6 +309,9 @@ for _code, _status, _category, _retryable, _owner in (
     ("PERSISTENCE_UNAVAILABLE", 503, "persistence", True, "mongo"),
     ("PERSISTENCE_OPERATION_FAILED", 500, "persistence", False, "mongo"),
     ("PERSISTENCE_ERROR", 500, "persistence", False, "mongo"),
+    ("ENVIRONMENT_NOT_FOUND", 404, "request", False, "client"),
+    ("ENVIRONMENT_IN_USE", 409, "configuration.environment", False, "template"),
+    ("ENVIRONMENT_DELETE_UNSUPPORTED", 503, "configuration.persistence", False, "platform"),
     # Optional engine protocols are requested by the caller. An engine that
     # does not declare one is healthy; the requested operation is unavailable.
     ("ENGINE_CAPABILITY_UNAVAILABLE", 409, "request", False, "client"),
@@ -450,6 +460,7 @@ for _code, _status, _category, _retryable, _owner in (
     ),
     ("SIDECAR_ATTACH_IDENTITY_INVALID", 409, "runtime.attach", True, "runtime"),
     ("SIDECAR_ATTACH_IDENTITY_MISMATCH", 409, "runtime.attach", True, "runtime"),
+    ("SANDBOX_ISOLATED_SESSION_NOT_FOUND", 409, "runtime.attach", False, "runtime"),
     ("TURN_PREPARATION_FAILED", 502, "runtime.preparation", True, "runtime"),
     # Starting, reattaching, or adopting the Assistant profile's resident
     # Hermes gateway failed. The same start is valid once the sandbox answers.

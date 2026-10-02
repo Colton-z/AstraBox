@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import { mutate } from 'swr';
 
 import i18n from '@/i18n';
 import {
   adminDescribeSandboxIdleAction,
+  deleteAdminEnvironment,
   getEnvironmentSchema,
   listAdminEnvironments,
   upsertAdminEnvironment,
@@ -14,6 +16,7 @@ import type { EnvironmentConfig, FormSchema } from '@/types';
 import { ErrorNote } from '@/components/shell';
 import {
   ConsoleEditSections,
+  ConsoleDangerButton,
   ConsoleFact,
   ConsoleFactRail,
   ConsoleRecordLoading,
@@ -29,6 +32,7 @@ import {
 import { envDisplayName, formatDateTime } from './environmentConfig';
 import { buildEnvEditSections } from './environmentEditConfig';
 import { useFrontendReleaseHold } from '@/hooks/useFrontendReleaseHold';
+import { MANAGE_NAV_COUNT_KEYS } from './navCounts';
 
 /** The edit helpers speak plain records; a typed draft is one. */
 const draftRecordOf = (v: unknown) => (v ?? null) as Record<string, unknown> | null;
@@ -47,6 +51,8 @@ const draftRecordOf = (v: unknown) => (v ?? null) as Record<string, unknown> | n
 export default function EnvironmentDetailPage() {
   const { name = '' } = useParams();
   const { t } = useTranslation();
+  const navigate = useNavigate();
+  const [deleting, setDeleting] = useState(false);
 
   const [record, setRecord] = useState<EnvironmentConfig | null>(null);
   const [schema, setSchema] = useState<FormSchema | null>(null);
@@ -202,6 +208,28 @@ export default function EnvironmentDetailPage() {
             ? { tone: 'done', label: t('common:enabled') }
             : { tone: 'idle', label: t('common:disabled') }
       }
+      actions={
+        <ConsoleDangerButton
+          disabled={deleting || savingSection !== null}
+          confirm={{
+            title: t('manage:environments.confirm_delete', { name: envDisplayName(record) }),
+            action: <span data-testid="environment-delete">{t('common:confirm_delete')}</span>,
+            onConfirm: () => {
+              setDeleting(true);
+              setSaveError('');
+              void deleteAdminEnvironment(record.name)
+                .then(() => {
+                  void mutate(MANAGE_NAV_COUNT_KEYS.environments);
+                  navigate('/manage/environments');
+                })
+                .catch((e: Error) => setSaveError(e.message))
+                .finally(() => setDeleting(false));
+            },
+          }}
+        >
+          {t('common:delete')}
+        </ConsoleDangerButton>
+      }
       rail={
         <ConsoleFactRail>
           <ConsoleFact
@@ -233,7 +261,7 @@ export default function EnvironmentDetailPage() {
           note: t('manage:environments.card_note'),
           dirty: isDirty(section.fields),
           blocked:
-            section.fields.some((f) => invalidKeys.has(f.key)) || missingRequired.length > 0,
+            deleting || section.fields.some((f) => invalidKeys.has(f.key)) || missingRequired.length > 0,
           blockedReason:
             missingRequired.length > 0
               ? t('manage:console.blocked_by_required', {

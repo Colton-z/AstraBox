@@ -9,13 +9,14 @@ task never completes at all.
 
 from __future__ import annotations
 
+from astrabox.core.service.orchestrator.session_kernel.service_mixins.session_output import _TailFrameState
+
 import asyncio
 import unittest
 from typing import Any
 
 from astrabox.core.service.orchestrator.session_kernel.service_mixins.turn_dispatch import (
     TurnDispatchStreamingMixin,
-    _TailFrameState,
 )
 
 _SID = "session-1"

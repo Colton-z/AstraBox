@@ -6,7 +6,7 @@ import type { AgentPreparedRuntimeStatus } from '@/types';
 import { Button } from '@/components/ui/button';
 import { ErrorNote } from '@/components/shell';
 import { useKeepCurrent, type ReloadContext } from '@/hooks/useKeepCurrent';
-import { ConsoleFieldRow } from './console';
+import { ConsoleCard, ConsoleFieldRow, formatDateTimeSeconds } from './console';
 
 export function AgentPrewarmStatus({ agentId, savedAt, enabled, dirty }: {
   agentId: string;
@@ -45,10 +45,11 @@ export function AgentPrewarmStatus({ agentId, savedAt, enabled, dirty }: {
     }
   };
   const state = !status ? 'loading' : !status.enabled ? 'disabled'
-    : status.ready ? 'ready' : status.last_error ? 'failed' : 'preparing';
+    : status.ready ? 'ready' : status.last_error ? 'failed'
+      : status.state === 'expired' ? 'expired' : 'preparing';
 
   return (
-    <ConsoleFieldRow label={t('manage:prewarm.label')} help={t('manage:prewarm.help')}>
+    <ConsoleCard title={t('manage:prewarm.label')} intro={t('manage:prewarm.help')}>
       <div className="flex flex-col gap-2" data-testid="agent-prewarm-status">
         <div className="flex flex-wrap items-center gap-3">
           <span data-testid="prewarm-state">{t(`manage:prewarm.${state}`)}</span>
@@ -64,10 +65,22 @@ export function AgentPrewarmStatus({ agentId, savedAt, enabled, dirty }: {
             {t('common:refresh')}
           </Button>
         </div>
+        {status?.sandbox_id && (
+          <ConsoleFieldRow label={t('common:sandbox')}>
+            <span className="font-mono select-text">{status.sandbox_id}</span>
+          </ConsoleFieldRow>
+        )}
+        {status?.prepared_at && Number.isFinite(Date.parse(status.prepared_at)) && (
+          <ConsoleFieldRow label={t('manage:prewarm.prepared_at')}>
+            <time dateTime={status.prepared_at} className="tabular-nums">
+              {formatDateTimeSeconds(status.prepared_at)}
+            </time>
+          </ConsoleFieldRow>
+        )}
         {dirty && <p className="text-sm text-muted-foreground">{t('manage:prewarm.save_first')}</p>}
         {status?.last_error && <ErrorNote>{status.last_error}</ErrorNote>}
         {error && <ErrorNote>{error}</ErrorNote>}
       </div>
-    </ConsoleFieldRow>
+    </ConsoleCard>
   );
 }

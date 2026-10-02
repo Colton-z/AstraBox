@@ -23,6 +23,7 @@ from astrabox.core.service.orchestrator.engine_turn import (
     iter_engine_client_events,
 )
 from astrabox.core.service.orchestrator.engine.base import (
+    EngineOutputAlreadyObserved,
     EngineChildResourceReconciler,
     EngineChildRunControl,
     EngineClient,
@@ -821,6 +822,22 @@ class TurnService:
 
     async def _ensure_runtime_lightweight_for_session(self, session: dict[str, Any]):
         return await self._runtime_ensure._ensure_runtime_lightweight_for_session(session)
+
+    async def observe_existing_engine_output(self, session: dict[str, Any]) -> None:
+        """Reconnect a channel observer without replacing another live host."""
+        if (
+            session.get("state") != "READY"
+            or not session.get("sandbox_id")
+            or session.get("runtime_unavailable")
+        ):
+            return
+        adapter = get_engine_adapter(resolve_session_engine_kind(session))
+        if not adapter.supports_unowned_output_attach():
+            return
+        try:
+            await self._runtime_ensure.acquire_engine_control_runtime(session, observe_only=True)
+        except EngineOutputAlreadyObserved:
+            return
 
     async def acquire_engine_control_runtime(
         self,

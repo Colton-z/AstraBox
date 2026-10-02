@@ -840,16 +840,21 @@ async def test_a_users_token_carries_the_users_role_not_the_scopes_it_asked_for(
 
 
 @pytest.mark.parametrize(
-    ("groups", "path", "outcome"),
+    ("groups", "method", "path", "outcome"),
     [
-        ([], "/api/v1/admin/system/overview", "ADMIN_ROLE_REQUIRED"),
-        ([], "/api/v1/agents", "reached"),
-        (["astrabox/astrabox-admin"], "/api/v1/admin/system/overview", "reached"),
+        ([], "GET", "/api/v1/admin/system/overview", "ADMIN_ROLE_REQUIRED"),
+        ([], "GET", "/api/v1/agents", "reached"),
+        (["astrabox/astrabox-admin"], "GET", "/api/v1/admin/system/overview", "reached"),
+        ([], "DELETE", "/api/v1/admin/environments/research", "ADMIN_ROLE_REQUIRED"),
+        (["astrabox/astrabox-admin"], "DELETE", "/api/v1/admin/environments/research", "reached"),
     ],
-    ids=["member-admin-route", "member-own-route", "administrator-admin-route"],
+    ids=[
+        "member-admin-route", "member-own-route", "administrator-admin-route",
+        "member-environment-delete", "administrator-environment-delete",
+    ],
 )
 async def test_the_admin_surface_follows_the_users_groups_not_the_tokens_scopes(
-    monkeypatch: pytest.MonkeyPatch, groups: list[str], path: str, outcome: str
+    monkeypatch: pytest.MonkeyPatch, groups: list[str], method: str, path: str, outcome: str
 ) -> None:
     from astrabox.web.identity_middleware import WebIdentityMiddleware
 
@@ -869,7 +874,7 @@ async def test_the_admin_surface_follows_the_users_groups_not_the_tokens_scopes(
     await WebIdentityMiddleware(app, resolver)(
         {
             "type": "http",
-            "method": "GET",
+            "method": method,
             "path": path,
             "headers": [(b"authorization", f"Bearer {token}".encode())],
         },

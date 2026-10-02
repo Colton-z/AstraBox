@@ -97,7 +97,6 @@ export interface UseSessionChatProps {
     sessionFrameSeq: number | null;
     pendingInteraction: PendingInteraction | null;
   }>;
-  observePendingInteraction: (interaction: PendingInteraction) => void;
   clearPendingInteraction: (interactionId: string) => boolean;
   interrupt: () => Promise<void>;
   recover: () => Promise<void>;
@@ -264,7 +263,7 @@ export function useSessionChat(props: UseSessionChatProps): UseSessionChatReturn
     sessionId, session, durableRecords, initialMessages, overlay, sessionFrameSeq, needsResume,
     lifecycleState, liveSubscriptionEnabled, pendingInteraction, permissionModeRef,
     refresh, refreshAuthoritativeHistory, interrupt, recover,
-    observePendingInteraction, clearPendingInteraction,
+    clearPendingInteraction,
   } = props;
 
   const { t } = useTranslation();
@@ -719,7 +718,12 @@ export function useSessionChat(props: UseSessionChatProps): UseSessionChatReturn
         if (!nextPendingInteraction) {
           throw new Error('SDK data-interaction is malformed');
         }
-        observePendingInteraction(nextPendingInteraction);
+        // Replayed frames can name an already answered question. The backend
+        // commits the active interaction before emitting its frame, so read
+        // that authority without replacing a newer question or its draft.
+        void refresh({ force: true }).catch((err) => {
+          console.error('[useSessionChat] interaction refresh failed:', err);
+        });
         return;
       }
       const cur = part as ResumeCursorChunk;

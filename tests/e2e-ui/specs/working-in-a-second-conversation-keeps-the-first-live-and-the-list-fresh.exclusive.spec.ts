@@ -109,7 +109,7 @@ import {
 /**
  * The backend's own release ceiling, restated so this spec can respect it.
  *
- * `_FRAME_HOLD_RELEASE_TIMEOUT_SECONDS = 120.0` (`e2e_faults.py:44`): a hold not
+ * `_HOLD_RELEASE_TIMEOUT_SECONDS = 120.0` (`e2e_faults.py:44`): a hold not
  * released inside it raises in the worker and FAILS A's turn, which would paint
  * this spec red for a reason that has nothing to do with the journey. The safety
  * margin covers the gap between the worker consuming the declaration and this
@@ -338,7 +338,7 @@ async function readRowCaughtUp(row: Locator, state: string, budgetMs: number): P
 // and the fault-file removal are registered BEFORE `trackSessions()` because a
 // DELETE against a still-STREAMING session answers SESSION_BUSY: without this
 // ordering a failure partway through the held window would leave two orphans.
-// Removing the declaration is itself a release (`_wait_for_turn_frame_release`
+// Removing the declaration is itself a release (`_wait_for_hold_release`
 // returns on FileNotFoundError), so it must never outlive this test.
 let heldSessionId = '';
 let secondSessionId = '';
@@ -442,7 +442,7 @@ test('working in a second conversation keeps the first turn live and the convers
         + 'The held window is the budget for the whole middle of this journey — B\'s send, '
         + 'the return to A, B\'s terminal, B\'s generated title and the sidebar poll. Tune the '
         + 'ASTRABOX_E2E_SECOND_CONVERSATION_* budgets down, or raise the backend\'s '
-        + '_FRAME_HOLD_RELEASE_TIMEOUT_SECONDS (astrabox/testing/e2e_faults.py:44) — do not '
+        + '_HOLD_RELEASE_TIMEOUT_SECONDS (astrabox/testing/e2e_faults.py:44) — do not '
         + 'let the hold expire, which fails A\'s turn for a reason this spec is not about.',
       );
     }

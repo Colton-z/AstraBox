@@ -71,7 +71,7 @@ if (( ${#parallel_nodes[@]} || ${#restart_nodes[@]} )); then
   }
   declare -A selected_node_lookup=()
   for node in "${parallel_nodes[@]}" "${restart_nodes[@]}"; do
-    [[ "$node" == tests/e2e/test_*.py::* ]] || {
+    [[ "$node" == tests/e2e/test_*.py::* || "$node" == tests/e2e/*_test.py::* ]] || {
       printf 'invalid selected Python node: %s\n' "$node" >&2
       exit 64
     }

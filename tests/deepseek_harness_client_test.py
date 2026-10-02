@@ -535,6 +535,7 @@ async def test_a_recorded_turn_opens_with_consumption_and_closes_with_one_result
         "type": "result",
         "finishReason": "stop",
         "__engine_terminal_reason": "completed",
+        "__engine_output_cursor": {"sessionId": _NATIVE_ID, "seq": 24},
     } | {
         k: v for k, v in frames[-1].items() if k == "usage"
     }

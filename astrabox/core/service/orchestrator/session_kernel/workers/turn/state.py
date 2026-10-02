@@ -52,7 +52,6 @@ class _BridgeRunState:
     accumulated_thinking_parts: list[str] = field(default_factory=list)
     accumulated_tool_uses: dict[str, dict[str, Any]] = field(default_factory=dict)
     accumulated_tool_results: dict[str, dict[str, Any]] = field(default_factory=dict)
-    background_tasks_opened: dict[str, Any] | None = None
     max_observed_sandbox_seq: int | None = None
     parent_mirror_seq_applied: int | None = None
 

@@ -27,11 +27,13 @@ it asks for, next to nothing else.
 from __future__ import annotations
 
 import filecmp
+import json
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
+import tomllib
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -53,6 +55,14 @@ def main() -> int:
     for required in (SNAPSHOT, COMMITTED_CLIENT):
         if not required.is_file():
             return _fail(f"{required.relative_to(REPO_ROOT)} is missing")
+
+    source_version = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())["project"]["version"]
+    snapshot_version = json.loads(SNAPSHOT.read_text()).get("info", {}).get("version")
+    if snapshot_version != source_version:
+        return _fail(
+            f"OpenAPI version {snapshot_version!r} differs from pyproject.toml {source_version!r}; "
+            "regenerate the snapshot using an installation of the current source version"
+        )
 
     if not GENERATOR_CLI.is_file():
         return _fail(

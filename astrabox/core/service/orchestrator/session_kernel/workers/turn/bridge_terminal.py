@@ -191,6 +191,7 @@ async def _append_terminal_signal(
     publish: bool = True,
     require_durable_queue_clean: bool = True,
     publish_live_first: bool = False,
+    engine_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     session_id = ctx.session_id
     command_id = ctx.command_id
@@ -251,6 +252,12 @@ async def _append_terminal_signal(
                 publish=publish,
                 require_durable_queue_clean=require_durable_queue_clean,
             )
+    if engine_metadata is not None:
+        payload_doc.update({
+            f"__{key}": engine_metadata[key]
+            for key in ("engine_kind", "engine_turn_id", "engine_sequence_number", "engine_output_cursor")
+            if key in engine_metadata
+        })
     if publish_live_first:
         bridge_journal._raise_durable_frame_writer_error(state)
         live_seq = state.live_frame_seq
@@ -395,7 +402,6 @@ async def _project_turn_terminal(
     command_id = ctx.command_id
     correlation_id = ctx.correlation_id
     _build_terminal_assistant_blocks = ctx.build_terminal_assistant_blocks
-    _record_background_task_manifest_if_needed = ctx.record_background_task_manifest_if_needed
     # turn_failed decouples the turn lifecycle (COMPLETED/FAILED) from the
     # session lifecycle (``session_state``: READY / RECOVERY_REQUIRED / ...).
     # A turn can fail while the conversation stays READY (e.g. the engine
@@ -603,8 +609,6 @@ async def _project_turn_terminal(
                 exc,
             )
     state.turn_settled = True
-    if not turn_failed and session_state == SessionState.READY.value:
-        await _record_background_task_manifest_if_needed()
     if (
         not turn_failed
         and session_state == SessionState.READY.value

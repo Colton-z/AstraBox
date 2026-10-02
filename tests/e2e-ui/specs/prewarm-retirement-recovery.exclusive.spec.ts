@@ -217,7 +217,9 @@ test('failed pool retirement retains its address and error, then recovers withou
 
   await page.addInitScript(() => localStorage.setItem('astrabox-lang', 'en'));
   await page.goto(appPath(`/manage/agents/${agent.agent_id}`));
-  await expect(page.getByTestId('prewarm-state')).toHaveText('Ready');
+  await expect(page.getByTestId('prewarm-state')).toHaveText(
+    'The next conversation starts warm while this capacity remains available.',
+  );
 
   let restoreRequired = true;
   try {
@@ -298,7 +300,7 @@ test('failed pool retirement retains its address and error, then recovers withou
   expect(stillLive.state).toBe('READY');
   expect(await api.downloadFileText(sessionId, `/workspace/${markerFile}`, 10_000)).toBe(markerText);
   await page.reload();
-  await expect(page.getByTestId('prewarm-state')).toHaveText('Disabled');
+  await expect(page.getByTestId('prewarm-state')).toHaveText('Warm start is off for this Agent.');
   await expect(page.getByTestId('agent-prewarm-status').getByRole('alert')).toHaveCount(0);
   await test.info().attach('retirement-recovered', {
     body: JSON.stringify({ address: agentRetirement(agent.agent_id), status: recoveredStatus, supplier: recovered, sessionId, liveBox }),

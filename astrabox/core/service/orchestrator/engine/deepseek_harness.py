@@ -40,6 +40,7 @@ from astrabox.core.service.orchestrator.engine.base import (
     EngineKind,
     EnginePreparationContext,
     EngineStartupContext,
+    ResidentOutputCheckpoint,
     initialize_engine_client,
 )
 from astrabox.core.service.orchestrator.engine.capabilities import (
@@ -255,7 +256,8 @@ def _slot_spawn_fingerprint(template: Any, *, base_url: str) -> str:
 
 
 async def _install_agent_instructions(
-    sandbox: Any, *, cwd: str, instructions: str
+    sandbox: Any, *, cwd: str, instructions: str,
+    runtime_identity: dict[str, Any] | None,
 ) -> None:
     """Place the Agent's instructions where the harness already looks.
 
@@ -275,6 +277,7 @@ async def _install_agent_instructions(
         sandbox,
         path=f"{cwd.rstrip('/')}/{DSH_AGENT_INSTRUCTIONS_FILE}",
         content=instructions if instructions.endswith("\n") else instructions + "\n",
+        runtime_identity=runtime_identity,
         mode=0o644,
         error_code="AGENT_RUNTIME_ERROR",
         error_message="failed to install the deepseek_harness agent instructions",
@@ -310,6 +313,8 @@ async def _publish_runtime(
     prepare_engine_input: Any = None,
     resident_output_sink: Any = None,
     event_sink: Any = None,
+    output_checkpoint: ResidentOutputCheckpoint | None = None,
+    initial_sequence: int = 0,
 ) -> SessionRuntime:
     """One live link → one conversation-bound, published SessionRuntime.
 
@@ -330,6 +335,8 @@ async def _publish_runtime(
         session_create=session_create,
         resident_output_sink=resident_output_sink,
         event_sink=event_sink,
+        output_checkpoint=output_checkpoint,
+        initial_sequence=initial_sequence,
     )
     engine_manifest = await initialize_engine_client(
         engine_client,
@@ -386,11 +393,16 @@ async def _publish_runtime(
         # before the runtime is published and finds no engine client.
         # ``hermes.py`` sets the same flag.
         setattr(runtime, "permission_mode_verified", True)
+    if output_checkpoint is not None:
+        engine_client.observe_output()
     return runtime
 
 
 class DeepSeekHarnessEngineAdapter(EngineAdapter):
     """EngineAdapter for the DeepSeek Harness web profile's API."""
+
+    def supports_unowned_output_attach(self) -> bool:
+        return True
 
     def durable_child_resource_facts(
         self, raw_messages: list[dict[str, Any]]
@@ -530,15 +542,11 @@ class DeepSeekHarnessEngineAdapter(EngineAdapter):
         template = context.template
         identity = context.runtime_identity
         base_url = str(getattr(context.model_access, "base_url", "") or "").strip()
-        source_cwd = (
-            str(identity.get("workspace_source_dir") or "").strip()
-            if context.placement == "shared_slot"
-            else context.cwd
-        )
         instructions = str(getattr(template, "system", None) or "").strip()
-        if instructions and source_cwd:
+        if instructions:
             await _install_agent_instructions(
-                context.sandbox, cwd=source_cwd, instructions=instructions
+                context.sandbox, cwd=context.cwd, instructions=instructions,
+                runtime_identity=identity,
             )
         link = await DshApiLink.connect(
             context.sandbox,
@@ -629,17 +637,40 @@ class DeepSeekHarnessEngineAdapter(EngineAdapter):
                 status_code=409,
             )
         sandbox = context.sandbox
+        observe_only = context.attach_mode == "observe"
         link: DeepSeekHarnessLink | None = None
         try:
             instructions = str(getattr(template, "system", None) or "").strip()
-            if instructions and not is_prepared:
+            if instructions and not is_prepared and not observe_only:
                 await _install_agent_instructions(
-                    sandbox, cwd=context.cwd, instructions=instructions
+                    sandbox, cwd=context.cwd, instructions=instructions,
+                    runtime_identity=context.runtime_identity,
                 )
             link = await DshApiLink.connect(
                 sandbox,
                 port=_conversation_gateway_port(context.runtime_identity),
                 launch_url_path=f"{(context.runtime_identity or {}).get('home_dir') or SANDBOX_IMAGE_WORKLOAD_HOME}/.deepseek-harness/web-url",
+                observe_only=observe_only,
+            )
+            output_checkpoint = None
+            if observe_only and context.resident_output_sink is None:
+                raise RuntimeError("deepseek_harness output attachment requires the Session journal")
+            if context.resume_session_key and context.resident_output_sink is not None:
+                # Ownership precedes the journal cut: a competing reader must
+                # be refused before a checkpoint can become stale behind it.
+                output_checkpoint = await context.resident_output_sink.restore_resident_output(
+                    engine_kind=ENGINE_KIND, sandbox_id=context.sandbox_id,
+                    engine_session_key=context.resume_session_key,
+                )
+            # A control request can attach before a Web or channel reader.
+            # Resume its existing output too; a newly prepared Session has
+            # neither an open response nor a matching replay boundary yet.
+            resume_output = observe_only or (
+                output_checkpoint is not None
+                and (
+                    bool(output_checkpoint.open_response_id)
+                    or output_checkpoint.replay_output_cursor is not None
+                )
             )
             return await _publish_runtime(
                 session_id=context.session_id,
@@ -652,14 +683,16 @@ class DeepSeekHarnessEngineAdapter(EngineAdapter):
                 ),
                 terminal_cwd=context.cwd,
                 runtime_identity=context.runtime_identity,
-                permission_mode=context.permission_mode,
-                model=str(
+                permission_mode=None if observe_only else context.permission_mode,
+                model=None if observe_only else str(
                     getattr(context.model_access, "model_name", "") or ""
                 ).strip()
                 or None,
                 gateway_base_url=base_url,
                 session_create=_session_create_options(template),
                 prepare_engine_input=context.prepare_engine_input,
+                output_checkpoint=output_checkpoint if resume_output else None,
+                initial_sequence=(output_checkpoint.high_water_sequence or 0) if output_checkpoint is not None else 0,
             )
         except BaseException:
             if link is not None:

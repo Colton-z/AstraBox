@@ -422,3 +422,29 @@ async def get_async_collection(collection_name: str) -> Any:
     return wrap_collection_with_retry(
         collection_name, db.get_collection(collection_name), run_mongo_with_retry
     )
+
+
+async def get_transaction_runner() -> Any:
+    """Offer native transactions only on a replica-set or sharded deployment.
+
+    Standalone Mongo remains usable for ordinary collection writes. Deletion
+    requiring a cross-collection atomic boundary is refused by the caller.
+    Authentication/network errors propagate rather than masquerade as an
+    unsupported topology. No capability result is cached across topology changes.
+    """
+    database = await _get_database()
+    if database is None:
+        return None
+    hello = await database.client.admin.command("hello")
+    if not (hello.get("setName") or hello.get("msg") == "isdbgrid"):
+        return None
+    if hello.get("logicalSessionTimeoutMinutes") is None:
+        return None
+    from .transaction import run_transaction
+
+    async def run(operation: Any) -> Any:
+        # Keep this database/client paired with the session it creates, even
+        # if ordinary collection retry refreshes the loop's cached client.
+        return await run_transaction(operation, database)
+
+    return run

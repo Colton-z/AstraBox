@@ -25,7 +25,7 @@ from astrabox.core.service.orchestrator.session_kernel.workers.lifecycle.recover
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.settings import load_astrabox_settings
-from astrabox.common.utils.time_utils import parse_iso
+from astrabox.common.utils.time_utils import parse_iso, utcnow_iso
 from astrabox.core.model import AgentView, SessionState
 
 from astrabox.core.service.orchestrator.runtime.config_resolver import (
@@ -1010,6 +1010,54 @@ class RemoteAgentRuntimeManager:
         backend = await self._resolve_sandbox_backend(sandbox_id)
         return await sandbox_for_name(backend).resume(sandbox_id)
 
+    async def wake_parked_session(self, session: dict[str, Any]) -> None:
+        """Wake a parked binding and discard its pre-pause transport address.
+
+        File requests and turns share the session lock in this process. The
+        durable comparison protects a binding replaced by another worker while
+        the provider resumes compute; it never clears a newer parked mark.
+        """
+        if not session.get("sandbox_parked_at"):
+            return
+        session_id = str(session["session_id"])
+        sandbox_id = str(session.get("sandbox_id") or "")
+        async with self._get_session_lock(session_id):
+            current = await self._sessions_repo.get_session(session_id)
+            if not current or str(current.get("sandbox_id") or "") != sandbox_id:
+                raise APIError(
+                    code="AGENT_RUNTIME_ERROR",
+                    message="session sandbox binding changed before resume",
+                    status_code=409,
+                )
+            parked_at = current.get("sandbox_parked_at")
+            if not parked_at:
+                session["sandbox_parked_at"] = None
+                session["sandbox_endpoint"] = current.get("sandbox_endpoint")
+                return
+            if not await self.resume_sandbox_by_id(sandbox_id):
+                raise APIError(
+                    code="AGENT_RUNTIME_ERROR",
+                    message="parked sandbox did not resume",
+                    status_code=409,
+                )
+            updates = {
+                "sandbox_parked_at": None,
+                "sandbox_endpoint": None,
+                "sandbox_resumed_at": utcnow_iso(),
+            }
+            if not await self._sessions_repo.compare_and_update_session(
+                session_id,
+                expected={"sandbox_id": sandbox_id, "sandbox_parked_at": parked_at},
+                updates=updates,
+                touch_updated_at=False,
+            ):
+                raise APIError(
+                    code="AGENT_RUNTIME_ERROR",
+                    message="session sandbox binding changed during resume",
+                    status_code=409,
+                )
+            session.update(updates)
+
     @staticmethod
     def _normalize_sandbox_id(value: Any) -> str | None:
         normalized = str(value or "").strip()
@@ -1740,6 +1788,7 @@ class RemoteAgentRuntimeManager:
         session_kind: str,
         workspace_plan: RuntimeWorkspacePlan | None = None,
         runtime_identity: dict[str, Any] | None = None,
+        observe_only: bool = False,
     ) -> "SessionRuntime":
         """Return an existing in-memory runtime or create a lightweight one.
 
@@ -1803,7 +1852,7 @@ class RemoteAgentRuntimeManager:
                 engine_session_key=engine_session_key,
                 permission_mode=permission_mode,
                 runtime_identity=runtime_identity,
-                attach_mode="lightweight",
+                attach_mode="observe" if observe_only else "lightweight",
             )
             try:
                 self._raise_if_quiesced()
@@ -3142,7 +3191,7 @@ class RemoteAgentRuntimeManager:
                         summary["agent_box_leases_renewed"] += 1
             manifest = (row or {}).get(PREPARED_SLOT_FIELD)
             if isinstance(manifest, dict):
-                reason = prepared_slot_is_due_for_renewal(manifest)
+                reason = prepared_slot_is_due_for_renewal(manifest, agent=row)
                 if reason is None:
                     continue
                 counter = "prepared_slots_renewed"
@@ -3239,15 +3288,14 @@ class RemoteAgentRuntimeManager:
                         and probe.probe_status
                         == SANDBOX_LIFECYCLE_PROBE_NOT_FOUND
                     ):
-                        await repo.compare_and_update_agent(
+                        cleared = await repo.clear_resident_sandbox_binding(
                             agent_id,
-                            expected={"sandbox_id": sandbox_id},
-                            updates={
-                                "sandbox_id": None,
-                                "sandbox_backend": None,
-                                "_resident_sandbox_generation": None,
-                            },
+                            sandbox_id=sandbox_id,
+                            sandbox_backend=row_backend,
                         )
+                        if not cleared:
+                            summary["agent_boxes_kept"] += 1
+                            continue
                         summary["agent_boxes_reaped"] += 1
                         logger.info(
                             "agent-box reap: cleared dangling pointer "
@@ -3273,14 +3321,10 @@ class RemoteAgentRuntimeManager:
                     )
                     summary["agent_box_reap_failures"] += 1
                     continue
-                cleared = await repo.compare_and_update_agent(
+                cleared = await repo.clear_resident_sandbox_binding(
                     agent_id,
-                    expected={"sandbox_id": sandbox_id},
-                    updates={
-                        "sandbox_id": None,
-                        "sandbox_backend": None,
-                        "_resident_sandbox_generation": None,
-                    },
+                    sandbox_id=sandbox_id,
+                    sandbox_backend=row_backend or None,
                 )
                 if not cleared:
                     # A concurrent update points the row at another sandbox;
@@ -3477,6 +3521,92 @@ class RemoteAgentRuntimeManager:
                 )
         return summary
 
+    async def agent_box_has_other_recorded_occupants(
+        self, sandbox_id: str, *, excluding: str,
+    ) -> bool:
+        """Check durable ownership before pausing or destroying a shared box.
+
+        A pause keeps the current placement; destruction has already released
+        it. Share the Session, startup, prepared-slot and admission checks while
+        leaving the destroy-only live-process census to its caller.
+        Lookup errors propagate so either caller retains the box on uncertainty.
+        """
+        target = str(sandbox_id or "").strip()
+        if not target:
+            return True
+        bound = await self._sessions_repo.list_sessions_by_sandbox_id(target)
+        for row in bound:
+            if str((row or {}).get("session_id") or "").strip() != excluding:
+                return True
+        # Every startup allocated onto this box, not a bounded page of all
+        # of them: a startup missed here is a conversation joining a box
+        # that is then destroyed.
+        starting = await self._sessions_repo.list_startup_allocations_on_sandbox(
+            target
+        )
+        for row in starting:
+            if str((row or {}).get("session_id") or "").strip() == excluding:
+                continue
+            allocation = (row or {}).get("startup_allocation")
+            if not isinstance(allocation, dict):
+                continue
+            if str(allocation.get("sandbox_id") or "").strip() == target:
+                return True
+        # A prepared slot occupies the box without being a session at all:
+        # its whole purpose is to exist BEFORE a conversation claims it, so
+        # it is recorded on the Agent row and no session query can see it.
+        # Destroying the box under one throws away the prepared unit the next
+        # conversation was going to claim, and the loss shows up as a claim
+        # miss with nothing pointing back here.
+        from astrabox.core.service.orchestrator.agent.prepared_slots import (
+            PREPARED_SLOT_FIELD,
+        )
+        from astrabox.persistence.repository.agent_repository import (
+            AgentRepository,
+        )
+
+        # place_in_agent_box records admission before placement completes
+        # and startup_allocation is written. Consult that ledger to retain
+        # a box while a joiner is absent from the allocation records.
+        # young_admissions excludes entries past the ledger's grace period.
+        from astrabox.core.service.orchestrator.runtime.shared_sandbox_lease import (
+            young_admissions,
+        )
+
+        agent_repo = AgentRepository()
+        agent_rows: dict[str, dict[str, Any]] = {}
+        # A full box can stop being the Agent's preferred destination while
+        # a prepared slot still lives in it. The Session being released is
+        # the durable link back to that Agent; reading it directly avoids
+        # mistaking "not the current preferred box" for "not owned".
+        read_departing = getattr(
+            self._sessions_repo, "get_session_including_deleted", None
+        )
+        if excluding and callable(read_departing):
+            departing = await read_departing(excluding)
+            departing_agent_id = str(
+                (departing or {}).get("agent_id") or ""
+            ).strip()
+            if departing_agent_id:
+                departing_agent = await agent_repo.get_agent(departing_agent_id)
+                if isinstance(departing_agent, dict):
+                    agent_rows[departing_agent_id] = departing_agent
+        for agent in await agent_repo.list_agents_by_sandbox_id(target):
+            agent_id = str((agent or {}).get("agent_id") or "").strip()
+            if agent_id:
+                agent_rows[agent_id] = agent
+        for agent in agent_rows.values():
+            manifest = (agent or {}).get(PREPARED_SLOT_FIELD)
+            if isinstance(manifest, dict) and (
+                str(manifest.get("sandbox_id") or "").strip() == target
+            ):
+                return True
+            for admission in young_admissions(agent, target):
+                admitted = str(admission.get("session_id") or "").strip()
+                if admitted != excluding:
+                    return True
+        return False
+
     async def agent_box_has_other_occupants(
         self,
         sandbox_id: str,
@@ -3500,77 +3630,10 @@ class RemoteAgentRuntimeManager:
         if not target:
             return True
         try:
-            bound = await self._sessions_repo.list_sessions_by_sandbox_id(target)
-            for row in bound:
-                if str((row or {}).get("session_id") or "").strip() != excluding:
-                    return True
-            # Every startup allocated onto this box, not a bounded page of all
-            # of them: a startup missed here is a conversation joining a box
-            # that is then destroyed.
-            starting = await self._sessions_repo.list_startup_allocations_on_sandbox(
-                target
-            )
-            for row in starting:
-                if str((row or {}).get("session_id") or "").strip() == excluding:
-                    continue
-                allocation = (row or {}).get("startup_allocation")
-                if not isinstance(allocation, dict):
-                    continue
-                if str(allocation.get("sandbox_id") or "").strip() == target:
-                    return True
-            # A prepared slot occupies the box without being a session at all:
-            # its whole purpose is to exist BEFORE a conversation claims it, so
-            # it is recorded on the Agent row and no session query can see it.
-            # Destroying the box under one throws away the prepared unit the next
-            # conversation was going to claim, and the loss shows up as a claim
-            # miss with nothing pointing back here.
-            from astrabox.core.service.orchestrator.agent.prepared_slots import (
-                PREPARED_SLOT_FIELD,
-            )
-            from astrabox.persistence.repository.agent_repository import (
-                AgentRepository,
-            )
-
-            # place_in_agent_box records admission before placement completes
-            # and startup_allocation is written. Consult that ledger to retain
-            # a box while a joiner is absent from the allocation records.
-            # young_admissions excludes entries past the ledger's grace period.
-            from astrabox.core.service.orchestrator.runtime.shared_sandbox_lease import (
-                young_admissions,
-            )
-
-            agent_repo = AgentRepository()
-            agent_rows: dict[str, dict[str, Any]] = {}
-            # A full box can stop being the Agent's preferred destination while
-            # a prepared slot still lives in it. The Session being released is
-            # the durable link back to that Agent; reading it directly avoids
-            # mistaking "not the current preferred box" for "not owned".
-            read_departing = getattr(
-                self._sessions_repo, "get_session_including_deleted", None
-            )
-            if excluding and callable(read_departing):
-                departing = await read_departing(excluding)
-                departing_agent_id = str(
-                    (departing or {}).get("agent_id") or ""
-                ).strip()
-                if departing_agent_id:
-                    departing_agent = await agent_repo.get_agent(departing_agent_id)
-                    if isinstance(departing_agent, dict):
-                        agent_rows[departing_agent_id] = departing_agent
-            for agent in await agent_repo.list_agents_by_sandbox_id(target):
-                agent_id = str((agent or {}).get("agent_id") or "").strip()
-                if agent_id:
-                    agent_rows[agent_id] = agent
-            for agent in agent_rows.values():
-                manifest = (agent or {}).get(PREPARED_SLOT_FIELD)
-                if isinstance(manifest, dict) and (
-                    str(manifest.get("sandbox_id") or "").strip() == target
-                ):
-                    return True
-                for admission in young_admissions(agent, target):
-                    admitted = str(admission.get("session_id") or "").strip()
-                    if admitted != excluding:
-                        return True
+            if await self.agent_box_has_other_recorded_occupants(
+                target, excluding=excluding,
+            ):
+                return True
             # The provider census checks live isolated sessions directly,
             # including a prepared-slot claimant whose ownership records have
             # not yet caught up with its placement.

@@ -1,0 +1,23 @@
+[Unit]
+Description=AstraBox overlay snapshot differ for containerd
+After=containerd.service
+
+[Service]
+Type=simple
+User=root
+RuntimeDirectory=astrabox-snapshot-differ
+RuntimeDirectoryMode=0700
+ExecStartPre=/usr/bin/rm -f /run/astrabox-snapshot-differ/diff.sock
+ExecStart=/usr/local/libexec/astrabox-snapshot-differ --address=/run/astrabox-snapshot-differ/diff.sock --containerd-address=/run/containerd/containerd.sock
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=15
+PrivateMounts=true
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectHome=true
+ProtectSystem=strict
+RestrictAddressFamilies=AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

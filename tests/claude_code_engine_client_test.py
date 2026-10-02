@@ -209,6 +209,7 @@ class UserMessage:
 @dataclasses.dataclass
 class ResultMessage:
     subtype: str = "success"
+    is_error: bool = False
     session_id: str = "sdk-sess"
     result: str | None = None
     usage: dict[str, Any] | None = None
@@ -494,8 +495,9 @@ async def test_turn_streams_translated_frames_and_terminates_on_result(stack) ->
     assert client.engine_session_key == "sdk-sess"
 
 
+@pytest.mark.parametrize("parent_failed", [False, True])
 async def test_background_manifest_crosses_as_neutral_ids_not_vendor_messages(
-    stack,
+    stack, parent_failed: bool,
 ) -> None:
     _server, sdk, client = stack
     receipt = await _begin_delivery(client, "launch a background agent")
@@ -514,15 +516,22 @@ async def test_background_manifest_crosses_as_neutral_ids_not_vendor_messages(
             },
         )
     )
-    sdk.emit(ResultMessage(subtype="success"))
-
-    frames = [frame async for frame in client.iter_turn_events(receipt)]
+    stream = client.iter_turn_events(receipt)
+    frames = []
+    while not frames or frames[-1]["type"] != "tool-output-available":
+        frames.append(await asyncio.wait_for(anext(stream), timeout=2))
+    assert any(frame["type"] == "background-tasks-opened" for frame in frames), (
+        "custody must cross before the launch receipt, without waiting for Result"
+    )
+    sdk.emit(ResultMessage(subtype="error_during_execution" if parent_failed else "success", is_error=parent_failed))
+    frames.extend([frame async for frame in stream])
     manifest_frames = [
         frame for frame in frames if frame["type"] == "background-tasks-opened"
     ]
     assert manifest_frames == [
         {
             "type": "background-tasks-opened",
+            "manifest_id": "call_00_bg",
             "manifest": {
                 "transcript_refs": ["agent-session-bg"],
                 "engine_refs": ["agent-session-bg"],
@@ -542,6 +551,7 @@ async def test_background_manifest_crosses_as_neutral_ids_not_vendor_messages(
         index for index, frame in enumerate(frames) if frame["type"] == "result"
     )
     assert all("message" not in frame for frame in frames)
+    assert frames[-1].outcome == ("failed" if parent_failed else "completed")
 
 
 async def test_fifo_prompts_the_next_root_after_the_current_result(stack) -> None:

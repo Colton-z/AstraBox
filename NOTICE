@@ -53,10 +53,15 @@ This product depends on and gratefully acknowledges:
   MIT), and file-type (Sindre Sorhus and contributors, MIT) - released packages
   used by the Email adapter, authenticated gateway transport, and adapter
   compatibility layer. Matrix uses the official Satori adapter.
+- React Virtuoso (Petyo Ivanov, MIT License) - the web console's virtualized
+  transcript. The ESM build carries a scroll-anchoring patch in frontend/patches;
+  its license is distributed at /licenses/react-virtuoso.txt in the console.
 - shadcn/ui (shadcn, MIT License) - UI primitives vendored into the web console
   under frontend/src/components/ui/ (generated with the shadcn CLI, then adapted).
 - AI Elements (Vercel, Apache License 2.0) - agent/chat UI components vendored
-  into the web console under frontend/src/components/ai-elements/.
+  into the web console under frontend/src/components/ai-elements/; SpeechInput
+  is adapted under frontend/src/components/voice/ for gateway-based recording,
+  format handling, recording limits and cancellation.
 
 Agent programs installed in the published sandbox images. Each keeps its own
 license; AstraBox does not modify them.

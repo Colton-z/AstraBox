@@ -285,3 +285,7 @@ ENV ASTRABOX_WORKLOAD_USER=agent \
 # PI_IMAGE_ENTRYPOINT), so the two move together.
 ENTRYPOINT ["/opt/astrabox/boot.sh"]
 WORKDIR /workspace
+
+# Foreground commands wait for execd to drain their SSE stream. Match the
+# supplier's 200ms drain without changing command execution timeouts.
+ENV EXECD_API_GRACE_SHUTDOWN=200ms

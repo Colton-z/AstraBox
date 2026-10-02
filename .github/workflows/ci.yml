@@ -6,7 +6,8 @@ name: ci
 # turn (the `e2e` pytest mark + the Playwright suite are gated in e2e.yml). It
 # exercises exactly: ruff (lint), the comment-style gate, a workflow-syntax
 # parse, and mypy (typecheck) + the non-e2e pytest for the backend, plus
-# tsc --noEmit + vite build for the console web app.
+# tsc --noEmit + vite build for the console web app and Go unit tests for the
+# optional snapshot differ.
 
 on:
   push:
@@ -23,6 +24,19 @@ permissions:
   contents: read
 
 jobs:
+  snapshot-differ:
+    name: snapshot differ · Go unit tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26.8"
+          cache-dependency-path: tools/snapshot-differ/go.sum
+      - name: Compile and test the optional snapshot differ
+        working-directory: tools/snapshot-differ
+        run: go test ./...
+
   backend:
     name: backend · ruff + mypy + pytest (no docker, no secret)
     runs-on: ubuntu-latest
@@ -315,6 +329,9 @@ jobs:
           tests/postgresql_collection_conformance_test.py
           tests/postgresql_schema_migrations_test.py
           tests/postgresql_transcript_sequence_test.py
+          tests/sql_document_transaction_test.py
+          tests/environment_delete_test.py
+          tests/environment_delete_lifecycle_test.py
 
   # ── mongo-conformance ─────────────────────────────────────────────────────
   # `backend` (above) keeps its own "no Docker, no secret" contract; database
@@ -368,3 +385,47 @@ jobs:
           ASTRABOX_DB_BACKEND: mongo
           ASTRABOX_DB_URL: mongodb://localhost:27017/astrabox_ci
         run: python -m pytest -m mongo
+
+
+  mongo-transactions:
+    name: mongo-transactions · native replica-set acceptance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install Mongo and test dependencies
+        run: python -m pip install -e '.[mongo,dev]'
+      - name: Start an isolated transaction-capable MongoDB
+        run: |
+          docker run --detach --name astrabox-mongo-transactions \
+            --publish 127.0.0.1:27017:27017 \
+            --ulimit nofile=64000:64000 \
+            mongo:7 --replSet astrabox-test --bind_ip_all
+          for attempt in $(seq 1 30); do
+            if docker exec astrabox-mongo-transactions mongosh --quiet --eval 'db.adminCommand({ping: 1})' >/dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+          docker exec astrabox-mongo-transactions mongosh --quiet --eval \
+            'rs.initiate({_id: "astrabox-test", members: [{_id: 0, host: "localhost:27017"}]})'
+          for attempt in $(seq 1 30); do
+            if docker exec astrabox-mongo-transactions mongosh --quiet --eval \
+              'quit(db.hello().isWritablePrimary ? 0 : 1)'; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs astrabox-mongo-transactions
+          exit 1
+      - name: Verify native transaction behavior
+        env:
+          ASTRABOX_DB_BACKEND: mongo
+          ASTRABOX_DB_URL: mongodb://localhost:27017/astrabox_ci?replicaSet=astrabox-test
+        run: python -m pytest -m mongo_transaction
+      - name: Remove this job's MongoDB
+        if: always()
+        run: docker rm --force astrabox-mongo-transactions

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
@@ -291,19 +292,22 @@ async def test_environment_write_notifies_runtime_reconciliation_after_commit() 
 async def test_agent_manager_reads_platform_prepared_runtime_status(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    prepared_at = datetime.now(timezone.utc).isoformat()
     row = {
         "agent_id": "agent-1",
         "created_by": "owner-1",
         "visibility": "public",
         "prewarm_enabled": True,
+        "sandbox_id": "box-ready", "sandbox_backend": "fake",
         "_runtime_generation": "generation-new",
         "_prepared_runtime_generation": "generation-new",
         "_client_pool_name": "supplier-pool-new",
         "_prepared_slot": {
             "state": "prepared",
             "placement": "shared_slot",
-            "sandbox_id": "box-ready",
+            "sandbox_id": "box-ready", "sandbox_backend": "fake",
             "runtime_generation": "generation-new",
+            "prepared_at": prepared_at,
         },
     }
     service = _service(
@@ -327,8 +331,48 @@ async def test_agent_manager_reads_platform_prepared_runtime_status(
         "runtime_generation": "generation-new",
         "client_pool_name": "supplier-pool-new",
         "sandbox_id": "box-ready",
+        "prepared_at": prepared_at,
         "last_error": None,
     }
+
+
+@pytest.mark.parametrize("stamp", ["expired", "missing", "malformed", "naive", "renewal_due"])
+async def test_prepared_capacity_read_obeys_the_claim_expiry_boundary(
+    monkeypatch: pytest.MonkeyPatch, stamp: str,
+) -> None:
+    age = prepared_slots.PREPARED_SLOT_TTL_SECONDS + (60 if stamp == "expired" else -60)
+    prepared_at = (datetime.now(timezone.utc) - timedelta(seconds=age)).isoformat()
+    if stamp == "missing":
+        prepared_at = ""
+    elif stamp == "malformed":
+        prepared_at = "not-a-timestamp"
+    elif stamp == "naive":
+        prepared_at = "2026-09-28T09:00:00"
+    row = {
+        "agent_id": "agent-1", "created_by": "owner-1", "prewarm_enabled": True,
+        "sandbox_id": "box-ready", "sandbox_backend": "fake",
+        "_prepared_runtime_generation": "generation-new",
+        "_prepared_slot": {
+            "state": "prepared", "placement": "shared_slot", "sandbox_id": "box-ready",
+            "sandbox_backend": "fake",
+            "runtime_generation": "generation-new", "prepared_at": prepared_at,
+        },
+    }
+    repo = _Repo(row)
+    service = _service(repo, SimpleNamespace(agent_id="agent-1", sandbox_tenancy="agent"))
+    monkeypatch.setattr(runtime_generation_module, "runtime_generations",
+                        AsyncMock(return_value=("generation-new", "box-generation")))
+
+    status = await service.get_prepared_runtime_status(UserContext("owner-1"), "agent-1")
+
+    ready = stamp == "renewal_due"
+    assert status["ready"] is ready
+    assert status["prepared_count"] == int(ready)
+    assert status["state"] == ("prepared" if ready else "expired")
+    assert status["prepared_at"] == (prepared_at or None)
+    assert status["sandbox_id"] == "box-ready"
+    assert repo.updates == []
+    assert repo.compares == []
 
 
 @pytest.mark.parametrize("pool_name", [None, "supplier-pool-existing"])
@@ -378,3 +422,28 @@ async def test_regular_viewer_cannot_read_prepared_runtime_status() -> None:
         await service.get_prepared_runtime_status(UserContext("viewer-1"), "agent-1")
 
     assert caught.value.code == "FORBIDDEN"
+
+
+@pytest.mark.parametrize("binding", [
+    {}, {"sandbox_id": "replacement", "sandbox_backend": "fake"},
+    {"sandbox_id": "old-box", "sandbox_backend": "other-backend"},
+])
+async def test_detached_fresh_shared_capacity_is_not_advertised(
+    monkeypatch: pytest.MonkeyPatch, binding: dict[str, Any],
+) -> None:
+    row = {
+        "agent_id": "agent-1", "created_by": "owner-1", "prewarm_enabled": True,
+        "_prepared_runtime_generation": "generation", **binding,
+        "_prepared_slot": {
+            "state": "prepared", "placement": "shared_slot", "sandbox_id": "old-box",
+            "sandbox_backend": "fake", "runtime_generation": "generation",
+            "prepared_at": datetime.now(timezone.utc).isoformat(),
+        },
+    }
+    service = _service(_Repo(row), SimpleNamespace(agent_id="agent-1", sandbox_tenancy="agent"))
+    monkeypatch.setattr(runtime_generation_module, "runtime_generations",
+                        AsyncMock(return_value=("generation", "box-generation")))
+    result = await service.get_prepared_runtime_status(UserContext("owner-1"), "agent-1")
+    assert result["ready"] is False
+    assert result["prepared_count"] == 0
+    assert result["state"] == "preparing"

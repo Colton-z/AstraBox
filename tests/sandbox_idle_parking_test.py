@@ -29,8 +29,13 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
+import pytest
+
+from astrabox.common.utils.errors import APIError
 from astrabox.core.model import SessionState
+from astrabox.core.service.orchestrator.agent_config_service import AgentConfigService
 from astrabox.core.service.orchestrator.expiration_watcher import ExpirationWatcher
+from astrabox.core.service.orchestrator.platform_service import AgentPlatformService
 from astrabox.core.service.orchestrator.runtime_manager import RemoteAgentRuntimeManager
 from astrabox.common.utils.time_utils import utcnow_iso
 
@@ -95,6 +100,7 @@ class _FakeSessionsRepo:
         self.updates: list[dict[str, Any]] = []
         #: The row as a re-read would see it; None means "same as the candidate".
         self.fresh: dict[str, Any] | None = None
+        self.starting: list[dict[str, Any]] = []
 
     async def list_idle_reclaim_candidates(
         self, *, now_iso: str, after_session_id: str | None = None, limit: int = 50
@@ -127,6 +133,12 @@ class _FakeSessionsRepo:
             dict(self._candidates[0]) if self._candidates else None
         )
 
+    async def get_session_including_deleted(self, session_id: str) -> dict[str, Any] | None:
+        return next((dict(row) for row in self._candidates if row["session_id"] == session_id), None)
+
+    async def list_startup_allocations_on_sandbox(self, sandbox_id: str) -> list[dict[str, Any]]:
+        return [row for row in self.starting if row["startup_allocation"]["sandbox_id"] == sandbox_id]
+
     async def update_session(
         self, session_id: str, updates: dict[str, Any], *, touch_updated_at: bool = True
     ) -> bool:
@@ -139,6 +151,22 @@ class _FakeRuntimeManager:
         self.calls: list[str] = []
         self._renewed = renewed
         self._paused = paused
+        self.agent_rows: list[dict[str, Any]] = []
+
+    async def agent_box_has_other_recorded_occupants(self, sandbox_id: str, *, excluding: str) -> bool:
+        async def get_agent(agent_id: str) -> dict[str, Any] | None:
+            return next((row for row in self.agent_rows if row["agent_id"] == agent_id), None)
+
+        async def list_agents_by_sandbox_id(target: str) -> list[dict[str, Any]]:
+            return [row for row in self.agent_rows if row.get("sandbox_id") == target]
+
+        with patch(
+            "astrabox.persistence.repository.agent_repository.AgentRepository",
+            return_value=SimpleNamespace(get_agent=get_agent, list_agents_by_sandbox_id=list_agents_by_sandbox_id),
+        ):
+            return await RemoteAgentRuntimeManager.agent_box_has_other_recorded_occupants(
+                self, sandbox_id, excluding=excluding,  # type: ignore[arg-type]
+            )
 
     async def renew_sandbox_by_id(self, sandbox_id: str, ttl_seconds: int) -> Any:
         self.calls.append(f"renew:{ttl_seconds}")
@@ -194,11 +222,14 @@ def _watcher(
 ) -> tuple[ExpirationWatcher, _FakeSessionsRepo, _FakeRuntimeManager]:
     sessions_repo = _FakeSessionsRepo(candidates)
     runtime_manager = _FakeRuntimeManager(renewed=renewed, paused=paused)
+    runtime_manager._sessions_repo = sessions_repo
 
     async def _get_snapshot(session_id: str) -> dict[str, Any] | None:
         return dict(snapshot) if snapshot else None
 
-    async def _resolve_agent_harness(agent_id: str) -> Any:
+    async def _resolve_agent_harness(
+        agent_id: str, *, require_enabled_environment: bool = True
+    ) -> Any:
         if idle_hibernate_seconds is None:
             return None
         return SimpleNamespace(
@@ -221,7 +252,7 @@ def _watcher(
         _sandbox_lifecycle_service=_NoDeadSandboxCandidates(),
         _session_snapshots_repo=SimpleNamespace(get_snapshot=_get_snapshot),
         _agent_config=SimpleNamespace(resolve_agent_harness=_resolve_agent_harness),
-        _get_background_task_state=_get_background_task_state,
+        _session_kernel=SimpleNamespace(_get_background_task_state=_get_background_task_state),
     )
     watcher = ExpirationWatcher(platform_service=platform)
     settings = SimpleNamespace(
@@ -241,6 +272,88 @@ _CANDIDATE = {
     "agent_id": "a-1",
     "state": SessionState.READY.value,
 }
+
+
+@pytest.mark.parametrize("activity", ["idle", "active", "unreadable"])
+async def test_idle_watcher_uses_the_real_kernel_activity_reader(
+    activity: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Any,
+) -> None:
+    from astrabox.config.settings import get_settings
+
+    monkeypatch.setenv("ASTRABOX_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("ASTRABOX_DB_BACKEND", "sqlite")
+    monkeypatch.delenv("ASTRABOX_DB_URL", raising=False)
+    get_settings.cache_clear()
+    try:
+        platform = AgentPlatformService()
+        watcher, sessions, runtime = _watcher(candidates=[_CANDIDATE], snapshot=_IDLE_SNAPSHOT)
+        for name in ("_sessions_repo", "_runtime_manager", "_agent_config", "_session_snapshots_repo"):
+            setattr(platform, name, getattr(watcher._platform, name))
+        watcher._platform = platform
+        child_reader = AsyncMock(return_value=[{"active": activity == "active"}])
+        if activity == "unreadable":
+            child_reader.side_effect = RuntimeError("native activity unavailable")
+        platform._session_kernel._child_run_view = SimpleNamespace(list_child_runs=child_reader)
+        platform._session_kernel._session_events_repo = SimpleNamespace(list_events=AsyncMock(return_value=[]))
+
+        if activity == "unreadable":
+            with pytest.raises(RuntimeError, match="native activity unavailable"):
+                await watcher._sweep_idle_bindings()
+            assert runtime.calls == []
+            assert sessions.updates == []
+        else:
+            summary = await watcher._sweep_idle_bindings()
+            parked = activity == "idle"
+            assert summary["idle_parked"] == int(parked)
+            assert summary["idle_active"] == int(not parked)
+            assert runtime.calls == (["renew:604800", "pause", "evict"] if parked else [])
+            assert bool(sessions.updates) is parked
+        child_reader.assert_awaited_once_with("s-1")
+    finally:
+        get_settings.cache_clear()
+
+
+@pytest.mark.parametrize(
+    ("action", "state", "background", "parked"),
+    [
+        ("pause", "IDLE", None, True),
+        ("pause", "STREAMING", None, False),
+        ("pause", "IDLE", {"state": "running"}, False),
+        ("terminate", "IDLE", None, False),
+    ],
+)
+async def test_disabled_environment_keeps_existing_idle_policy_without_admitting_work(
+    action: str, state: str, background: dict[str, Any] | None, parked: bool,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    config = AgentConfigService(
+        agent_repo=SimpleNamespace(get_agent=AsyncMock(return_value={
+            "agent_id": "a-1", "name": "agent", "environment_name": "disabled",
+        })),
+        environment_repo=SimpleNamespace(get_any_by_name=AsyncMock(return_value={
+            "name": "disabled", "enabled": False,
+            "engine_kind": "claude_code", "idle_action": action,
+        })),
+        assistant_repo=object(),
+    )
+    watcher, sessions, runtime = _watcher(
+        candidates=[_CANDIDATE],
+        snapshot={"conversation_state": state, "updated_at": _LONG_AGO},
+        background_task_state=background,
+    )
+    watcher._platform._agent_config = config
+
+    summary = await watcher._sweep_idle_bindings()
+
+    assert summary["idle_parked"] == int(parked)
+    assert summary["idle_failed"] == 0
+    assert runtime.calls == (["renew:604800", "pause", "evict"] if parked else [])
+    assert bool(sessions.updates) is parked
+    assert "agent resolve failed" not in caplog.text
+    with pytest.raises(APIError) as refused:
+        await config.resolve_agent_harness("a-1")
+    assert refused.value.code == "AGENT_ENVIRONMENT_DISABLED"
+    assert refused.value.status_code == 409
 
 
 class ParkingScopeTests(unittest.IsolatedAsyncioTestCase):
@@ -452,6 +565,24 @@ class IdleJudgementTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(summary["idle_active"], 1)
         self.assertEqual(runtime_manager.calls, [])
 
+    async def test_a_recent_file_wake_restarts_the_idle_window(self) -> None:
+        watcher, _repo, runtime_manager = _watcher(
+            candidates=[{**_CANDIDATE, "sandbox_resumed_at": utcnow_iso()}],
+            snapshot=_IDLE_SNAPSHOT,
+        )
+        summary = await watcher.scan_once()
+        self.assertEqual(summary["idle_active"], 1)
+        self.assertEqual(runtime_manager.calls, [])
+
+    async def test_a_file_wake_does_not_exempt_the_box_from_later_parking(self) -> None:
+        watcher, _repo, runtime_manager = _watcher(
+            candidates=[{**_CANDIDATE, "sandbox_resumed_at": _LONG_AGO}],
+            snapshot=_IDLE_SNAPSHOT,
+        )
+        summary = await watcher.scan_once()
+        self.assertEqual(summary["idle_parked"], 1)
+        self.assertEqual(runtime_manager.calls, ["renew:604800", "pause", "evict"])
+
     async def test_an_unresolvable_agent_is_left_alone(self) -> None:
         # The box costs money, but reclaiming one on a guess costs files.
         watcher, _repo, runtime_manager = _watcher(
@@ -625,6 +756,78 @@ class SharedBoxParkingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(summary.get("idle_parked", 0), 0)
         self.assertEqual(runtime_manager.calls, [])
 
+    async def test_a_prepared_slot_without_a_session_row_prevents_parking(self) -> None:
+        watcher, repo, manager = _watcher(candidates=[_CANDIDATE], snapshot=_IDLE_SNAPSHOT)
+        manager.agent_rows = [{
+            "agent_id": "a-1", "sandbox_id": "sbx-1",
+            "_prepared_slot": {"sandbox_id": "sbx-1", "state": "prepared"},
+        }]
+        summary = await watcher.scan_once()
+        self.assertEqual(summary.get("idle_parked", 0), 0)
+        self.assertEqual(manager.calls, [])
+        self.assertEqual(repo.updates, [])
+
+    async def test_a_slot_in_the_previous_resident_box_still_prevents_parking(self) -> None:
+        watcher, repo, manager = _watcher(candidates=[_CANDIDATE], snapshot=_IDLE_SNAPSHOT)
+        manager.agent_rows = [{
+            "agent_id": "a-1", "sandbox_id": "new-resident",
+            "_prepared_slot": {"sandbox_id": "sbx-1", "state": "prepared"},
+        }]
+        summary = await watcher.scan_once()
+        self.assertEqual(summary.get("idle_parked", 0), 0)
+        self.assertEqual(manager.calls, [])
+        self.assertEqual(repo.updates, [])
+
+    async def test_an_unbound_startup_prevents_parking(self) -> None:
+        watcher, repo, manager = _watcher(candidates=[_CANDIDATE], snapshot=_IDLE_SNAPSHOT)
+        repo.starting = [{
+            "session_id": "joining", "startup_allocation": {"sandbox_id": "sbx-1"},
+        }]
+        summary = await watcher.scan_once()
+        self.assertEqual(summary.get("idle_parked", 0), 0)
+        self.assertEqual(manager.calls, [])
+        self.assertEqual(repo.updates, [])
+
+    async def test_a_joiner_before_startup_allocation_prevents_parking(self) -> None:
+        from astrabox.core.service.orchestrator.runtime.shared_sandbox_lease import BOX_ADMISSIONS
+
+        watcher, repo, manager = _watcher(candidates=[_CANDIDATE], snapshot=_IDLE_SNAPSHOT)
+        manager.agent_rows = [{
+            "agent_id": "a-1", "sandbox_id": "sbx-1",
+            BOX_ADMISSIONS: [{
+                "sandbox_id": "sbx-1", "session_id": "joining", "at": datetime.now(timezone.utc).timestamp(),
+            }],
+        }]
+        summary = await watcher.scan_once()
+        self.assertEqual(summary.get("idle_parked", 0), 0)
+        self.assertEqual(manager.calls, [])
+        self.assertEqual(repo.updates, [])
+
+    async def test_own_or_expired_admissions_do_not_prevent_parking(self) -> None:
+        from astrabox.core.service.orchestrator.runtime.shared_sandbox_lease import BOX_ADMISSIONS
+
+        watcher, _repo, manager = _watcher(candidates=[_CANDIDATE], snapshot=_IDLE_SNAPSHOT)
+        manager.agent_rows = [{
+            "agent_id": "a-1", "sandbox_id": "sbx-1",
+            BOX_ADMISSIONS: [
+                {"sandbox_id": "sbx-1", "session_id": "s-1", "at": datetime.now(timezone.utc).timestamp()},
+                {"sandbox_id": "sbx-1", "session_id": "departed", "at": 1},
+            ],
+        }]
+        summary = await watcher.scan_once()
+        self.assertEqual(summary["idle_parked"], 1)
+        self.assertEqual(manager.calls, ["renew:604800", "pause", "evict"])
+
+    async def test_destruction_still_checks_live_processes_after_owner_records(self) -> None:
+        _watcher_instance, _repo, manager = _watcher(candidates=[_CANDIDATE], snapshot=_IDLE_SNAPSHOT)
+        census = AsyncMock(return_value=2)
+        occupied = await RemoteAgentRuntimeManager.agent_box_has_other_occupants(
+            manager, "sbx-1", excluding="s-1",  # type: ignore[arg-type]
+            provider=SimpleNamespace(count_live_isolated_sessions=census),
+        )
+        self.assertTrue(occupied)
+        census.assert_awaited_once_with("sbx-1")
+
 
 class IdleActionGateTests(unittest.IsolatedAsyncioTestCase):
     async def test_terminate_parks_nothing(self) -> None:
@@ -719,14 +922,30 @@ class WakeTests(unittest.IsolatedAsyncioTestCase):
         calls: list[str] = []
         updates: list[dict[str, Any]] = []
 
+        from astrabox.core.service.orchestrator.runtime_manager import RemoteAgentRuntimeManager
+
+        stored = dict(session)
+
         class _Repo:
-            async def update_session(
-                self, session_id: str, upd: dict[str, Any], *, touch_updated_at: bool = True
+            async def get_session(self, session_id: str) -> dict[str, Any]:
+                return dict(stored)
+
+            async def compare_and_update_session(
+                self, session_id: str, *, expected: dict[str, Any],
+                updates: dict[str, Any], touch_updated_at: bool = True,
             ) -> bool:
-                updates.append(dict(upd))
+                assert all(stored.get(key) == value for key, value in expected.items())
+                stored.update(updates)
+                recorded_updates.append(dict(updates))
                 return True
 
-        class _Manager:
+        recorded_updates = updates
+
+        class _Manager(RemoteAgentRuntimeManager):
+            def __init__(self) -> None:
+                self._sessions_repo = _Repo()
+                self._session_locks = {}
+
             async def resume_sandbox_by_id(self, sandbox_id: str) -> bool:
                 calls.append(f"resume:{sandbox_id}")
                 return resumed

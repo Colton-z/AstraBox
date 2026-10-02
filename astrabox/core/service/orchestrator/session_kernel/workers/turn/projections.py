@@ -31,7 +31,6 @@ from astrabox.core.service.orchestrator.session_kernel.conversation_recovery imp
 )
 from astrabox.core.service.orchestrator.session_kernel.engine_emission_projection import (
     project_engine_interaction_opened,
-    record_engine_background_tasks_opened,
 )
 from astrabox.core.service.orchestrator.session_kernel.workers.turn import bridge_terminal
 from astrabox.core.service.orchestrator.session_kernel.workers.turn._fencing import (
@@ -500,32 +499,6 @@ class _TurnProjectionMixin:
                 projected_blocks,
                 authoritative_text=state.last_assistant_text,
             ),
-        )
-
-
-    async def _record_background_task_manifest_if_needed(self, state: _BridgeRunState, ctx: Any) -> None:
-        session_id = ctx.session_id
-        command_id = ctx.command_id
-        correlation_id = ctx.correlation_id
-        if not state.effective_turn_id or not command_id:
-            return
-        # The engine has already reduced its vendor events to this neutral id
-        # manifest. Core persists the declaration but never parses the raw
-        # vendor vocabulary that produced it.
-        manifest = state.background_tasks_opened
-        if not isinstance(manifest, dict):
-            return
-        engine_kind = str(manifest.get("engine_kind") or "").strip()
-        await record_engine_background_tasks_opened(
-            session_events_repo=self._session_events_repo,
-            session_id=session_id,
-            turn_id=state.effective_turn_id,
-            command_id=command_id,
-            correlation_id=correlation_id,
-            engine_kind=engine_kind,
-            manifest={
-                key: value for key, value in manifest.items() if key != "engine_kind"
-            },
         )
 
 

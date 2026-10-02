@@ -1,8 +1,22 @@
 import type { ChannelFieldDescriptor } from '@/types';
+import type { TFunction } from 'i18next';
 
 import type { EditFieldSpec, EditFieldType } from './console';
 
 export type ChannelDraftSection = 'channel_config' | 'credentials';
+
+export function channelExecutionUserField(t: TFunction, editable: boolean): EditFieldSpec {
+  return {
+    key: 'execution_user_id',
+    label: t('manage:deployments.field_execution_user'),
+    type: 'text',
+    editable,
+    placeholder: t('manage:deployments.execution_user_default'),
+    help: t('manage:deployments.execution_user_help'),
+    get: (draft) => draft.execution_user_id ?? '',
+    set: (draft, value) => ({ ...draft, execution_user_id: value }),
+  };
+}
 
 function sectionValue(
   draft: Record<string, unknown>,

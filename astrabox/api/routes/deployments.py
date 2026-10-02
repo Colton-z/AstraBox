@@ -33,6 +33,7 @@ class DeploymentRecord(BaseModel):
     scene: str | None = None
     prompt_prefix: str | None = None
     attention_policy: str | None = None
+    execution_user_id: str | None = None
     secret: str | None = None
     created_at: str | None = None
     updated_at: str | None = None

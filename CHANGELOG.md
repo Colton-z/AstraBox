@@ -5,10 +5,70 @@ All notable changes to AstraBox are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.2] - 2026-10-01
+
+This release fixes conversation recovery, background reply delivery, Pi dialogs,
+long-history navigation, and prepared sandbox admission. Re-run the installer
+to upgrade; existing settings, secrets, and conversation data are retained.
+
+### Added
+
+- Voice input in Web conversations through the existing model gateway. Transcripts
+  are appended to an editable draft without sending automatically; failed
+  recordings can be retried or discarded. Administrators can configure one or
+  more transcription models. See the [voice input guide](docs/voice-input.md).
+- Administrators can assign a separate execution account to a channel. Conversation
+  history and retained context stay isolated when switching between accounts.
+- Messaging destinations receive new main-Agent replies from native background
+  work and extensions without waiting for another inbound message.
+- An optional overlayfs snapshot differ for OpenSandbox Kubernetes nodes, with
+  native fallback and [installation guidance](docs/providers/opensandbox-snapshot-differ.md).
+- Delete unused Environments from the management console. Active Agent and
+  Assistant definitions, and runtime resources awaiting cleanup, prevent deletion.
+
+### Changed
+
+- Web, built-in messaging platforms, and installed channel providers consume
+  the same Session output, with reply identities and restart-safe replay.
+- Reduce remote commands when installing Pi and DeepSeek Harness instructions
+  and Hermes configuration files, retaining content verification and atomic replacement.
 
 ### Fixed
 
+- Stop Pi's native dialog as well as its active turn, allowing the next message
+  to be answered without leaving an extension waiting for a response.
+- Keep Pi's current reply and tool results together when another message is
+  queued during a tool call.
+- Preserve an autonomous reply's complete text and tool results when a new
+  Web input arrives, including DeepSeek Harness after backend restart and Pi
+  while the previous reply is still running.
+- Restore protected credentials and isolated execution sessions after snapshot
+  resume, preserving the conversation's sandbox, account and workspace.
+- Install Pi and DeepSeek Harness instructions in the conversation’s own
+  workspace when cold-starting inside a shared sandbox.
+
+- Clear confirmed-missing sandbox bindings on deleted Agents, avoiding repeated
+  cleanup while preserving bindings that changed during the sandbox check.
+- Show the prepared sandbox and preparation time on Agent records, and stop
+  reporting expired shared slots as ready capacity.
+- Withdraw prepared slots when their sandbox is confirmed missing, and fall
+  back to a fresh sandbox if prepared compute disappears during handoff.
+- Recheck shared sandbox memory before claiming a prepared runtime, accounting
+  for concurrent admissions and rejecting slots that expire during the check.
+- Preserve the current question and selected answers when older conversation
+  events are replayed after reconnecting.
+- Show when a Session record was last read and let operators refresh it while
+  a turn is running, so newly recorded incidents can be inspected immediately.
+- Preserve the reading position when loading older messages with different
+  heights in a long conversation.
+- Keep the latest messages visible when an idle history refresh appends replies
+  and the reader is already at the bottom of the conversation.
+- Keep earlier file changes visible in Diff after reloading a long conversation,
+  even when those changes are outside the loaded message history.
+- Continue scanning older background tasks when newer completed records fill the
+  scan window, so their results can still reach the conversation.
+- Track Claude background tasks before the parent turn finishes, preserving
+  their results if the parent runtime is lost while the child keeps running.
 - Administrator-terminated sessions publish their terminal state and reject
   new messages before automatic runtime recovery. Active sessions still
   recover after sandbox reclamation, and explicit manual recovery remains available.

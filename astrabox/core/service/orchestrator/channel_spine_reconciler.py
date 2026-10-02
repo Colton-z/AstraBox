@@ -1,12 +1,14 @@
 """Channel spine reconciler — the durable recovery owner (channel-spine.md).
 
-Boot-time sweep plus a periodic scan over the two recoverable surfaces:
+Boot-time sweep plus a periodic scan over durable channel work:
 
 * expired inbound work items (a worker died between ack and settle) are
   CAS-reclaimed and re-driven through the attach-not-append path, so a turn
   survives the loss of a worker process and is lost only with the database;
 * abandoned outbox rows (PENDING, or SENDING with an expired lease) are
-  re-leased and re-delivered against the exact bound turn.
+  re-leased and re-delivered against the exact bound turn;
+* Session output subscriptions create delivery records for new main-agent
+  responses, independently of input dispatch.
 
 Same host shape as :class:`~astrabox.core.service.orchestrator.expiration_watcher.ExpirationWatcher`:
 owned by the platform service, started after bootstrap, cancelled on quiesce.
@@ -28,9 +30,9 @@ logger = get_logger(__name__)
 
 def _interval_seconds() -> int:
     try:
-        return max(10, int(os.getenv("ASTRABOX_CHANNEL_RECONCILE_INTERVAL_SECONDS", "60")))
+        return max(1, int(os.getenv("ASTRABOX_CHANNEL_RECONCILE_INTERVAL_SECONDS", "5")))
     except ValueError:
-        return 60
+        return 5
 
 
 class ChannelSpineReconciler:
@@ -90,6 +92,7 @@ class ChannelSpineReconciler:
     # ── Single tick ─────────────────────────────────────────────────────
 
     async def scan_once(self) -> dict[str, int]:
+        projected = await self._ingress.project_session_outputs()
         recovered = await self._ingress.recover_inbound()
         swept = await self._ingress.sweep_pending_outbox()
-        return {"inbound_recovered": recovered, "outbox_swept": swept}
+        return {"output_projected": projected, "inbound_recovered": recovered, "outbox_swept": swept}

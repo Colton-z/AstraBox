@@ -83,7 +83,7 @@ bundled image for the selected Agent program, at the tag of the AstraBox
 release you run:
 
 ```dockerfile
-FROM ghcr.io/colton-z/astrabox-sandbox-claude-code:0.1.1
+FROM ghcr.io/colton-z/astrabox-sandbox-claude-code:0.1.2
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends postgresql-client redis-tools \

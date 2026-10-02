@@ -16,6 +16,7 @@ import {
   startAgentConversation,
   updateAgent,
   uploadSessionFiles,
+  transcribeSpeechInput,
 } from './api';
 
 // Behavioral tests for the send()/error-shaping chain in api.ts. None of
@@ -88,6 +89,32 @@ const AGENT_SCHEMA: FormSchema = {
     { key: 'environment_name', type: 'env_ref', group: 'runtime' },
   ],
 };
+
+it('uploads voice audio with its MIME type and session identity without a provider key', async () => {
+  const fetch = stubFetchJson({ code: 'OK', message: 'ok', data: { text: 'hello' } });
+  const audio = new Blob([new Uint8Array([0, 255, 128, 65])], { type: 'audio/mp4' });
+  const result = await transcribeSpeechInput('session-voice', 'voice-local', audio, new AbortController().signal);
+  expect(result).toBe('hello');
+  expect(fetch).toHaveBeenCalledTimes(1);
+  const [url, init] = fetch.mock.calls[0] as [string, RequestInit];
+  expect(url).toBe('/api/v1/sessions/session-voice/speech-input');
+  const headers = new Headers(init.headers);
+  expect(headers.get('content-type')).toContain('multipart/form-data; boundary=');
+  expect(headers.has('authorization')).toBe(false);
+  expect(init.credentials).toBe('include');
+  const request = new Request('http://test/upload', init);
+  const form = await request.formData();
+  expect(form.get('model')).toBe('voice-local');
+  const recording = form.get('file') as File;
+  expect(recording.type).toBe('audio/mp4');
+  expect(new Uint8Array(await recording.arrayBuffer())).toEqual(new Uint8Array([0, 255, 128, 65]));
+});
+
+it('does not replay a voice upload when the network loses the response', async () => {
+  const fetch = stubFetchRejected(new TypeError('Network disconnected'));
+  await expect(transcribeSpeechInput('s', 'voice-cloud', new Blob(['audio'], { type: 'audio/webm' }), new AbortController().signal)).rejects.toThrow();
+  expect(fetch).toHaveBeenCalledTimes(1);
+});
 
 describe('request() success path', () => {
   it('resolves with payload.data and issues a same-origin, credentialed JSON request', async () => {

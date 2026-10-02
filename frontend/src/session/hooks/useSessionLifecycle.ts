@@ -397,7 +397,7 @@ export function useSessionLifecycle(sessionId: string) {
     }
   }, [sessionId, stopPolling]);
 
-  // Both detail reads and live interaction frames update this session-owned field.
+  // History bootstrap and detail reads update this session-owned field.
   const pendingInteraction = session?.pending_interaction ?? null;
 
   return {

@@ -553,16 +553,19 @@ class _Lifecycle:
 class _World:
     """One assistant, its workspace and the kernel that boots it."""
 
-    def __init__(self) -> None:
-        self.sessions = _Sessions()
+    def __init__(
+        self, *, sessions: Any = None, workspace_repo: Any = None,
+        catalog: Any = None, agent_config: Any = None,
+    ) -> None:
+        self.sessions = sessions if sessions is not None else _Sessions()
         self.journal = _Journal()
         self.snapshots = _Snapshots()
         self.runtime = _Runtime()
-        self.workspace_repo = _WorkspaceRepo()
-        self.catalog = _CatalogRepo()
+        self.workspace_repo = workspace_repo if workspace_repo is not None else _WorkspaceRepo()
+        self.catalog = catalog if catalog is not None else _CatalogRepo()
         self.tasks: list[asyncio.Task[Any]] = []
 
-        agent_config = _AgentConfig()
+        agent_config = agent_config if agent_config is not None else _AgentConfig()
         workspace_service = AssistantWorkspaceService(
             workspace_repo=self.workspace_repo,  # type: ignore[arg-type]
         )

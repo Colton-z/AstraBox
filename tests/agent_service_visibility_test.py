@@ -112,3 +112,26 @@ async def test_a_stranger_cannot_delete_an_agent_they_cannot_even_see() -> None:
         await service.delete_agent(_User("stranger"), "prv")
     assert caught.value.status_code == 404
     assert repo.deleted == []
+
+
+@pytest.mark.asyncio
+async def test_delegated_channel_start_keeps_the_execution_user_without_opening_browser_access() -> None:
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from astrabox.common.utils.user_context import UserContext
+
+    service, _ = _service()
+    service._agent_config = SimpleNamespace(resolve_agent_harness=AsyncMock(return_value=None))
+    kernel = SimpleNamespace(create_session=AsyncMock(return_value={"session_id": "delegated"}))
+    service._platform = SimpleNamespace(_session_kernel=kernel)
+    user = UserContext(user_id="executor")
+    with pytest.raises(APIError) as error:
+        await service.start_conversation(user, "prv")
+    assert error.value.status_code == 403
+    kernel.create_session.assert_not_awaited()
+    started = await service.start_integration_conversation(user, "prv")
+    assert started["session_id"] == "delegated"
+    assert kernel.create_session.call_args.args == (user, "prv")
+    assert user.roles == []
+    assert kernel.create_session.call_args.kwargs["agent_id"] == "prv"

@@ -25,6 +25,10 @@ astrabox:
     # Secret-store key for the model API key. In local mode a plaintext
     # ANTHROPIC_AUTH_TOKEN is used instead.
     api_key_secret_name: "astrabox_model_api_key"
+  speech_input:
+    # Transcription route names on the model gateway, in picker order.
+    # Empty disables voice input. ASTRABOX_SPEECH_INPUT_MODELS accepts a JSON list.
+    models: []
   title_model:
     # Disable both automatic titles and process summaries without affecting Agent turns.
     enabled: true

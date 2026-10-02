@@ -1,12 +1,14 @@
 {
   "prewarm": {
-    "label": "预热状态",
+    "label": "预备容量",
     "help": "重新预热会按已保存的配置重新拉取 Plugin 和 Skill，替换待领取资源，不中断现有会话。固定的 commit 版本不会自动升级。",
     "loading": "读取中…",
-    "disabled": "未启用",
-    "ready": "已就绪",
-    "preparing": "准备中",
-    "failed": "准备失败",
+    "disabled": "此 Agent 未启用预热。",
+    "ready": "预备容量仍可用时，下一个会话可直接启动。",
+    "preparing": "暂无待命沙箱，正在准备。",
+    "failed": "AstraBox 未能准备沙箱。",
+    "expired": "预备沙箱已过期，正在等待更新。",
+    "prepared_at": "准备时间",
     "available": "可用数量：{{count}}",
     "reprepare": "重新预热",
     "requesting": "正在提交…",
@@ -226,6 +228,9 @@
     "no_match": "没有匹配「{{query}}」的会话。"
   },
   "deployments": {
+    "field_execution_user": "执行账号用户 ID",
+    "execution_user_default": "Agent 创建者",
+    "execution_user_help": "管理员可填写身份提供商中的用户 ID，留空使用 Agent 创建者。不同执行账号使用独立的渠道会话；已入队的消息保留原执行账号。",
     "title": "触发配置",
     "meta": "{{count}} 项触发配置 · {{enabled}} 项已启用",
     "description": "通过定时计划、签名 Webhook、外部调度器或消息平台自动启动 Agent 会话。",
@@ -471,7 +476,8 @@
     "err_name_exists": "已存在名为「{{name}}」的环境，换一个名称。",
     "not_found": "没有名为 {{name}} 的环境",
     "card_note": "标识符创建后固定,其余字段随时可改。",
-    "create_title": "创建环境"
+    "create_title": "创建环境",
+    "confirm_delete": "删除运行环境“{{name}}”？"
   },
   "env_form": {
     "select_placeholder": "请选择",

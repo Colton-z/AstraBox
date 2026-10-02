@@ -101,6 +101,9 @@ async def _persist_frames(
         engine_sequence_number = _coerce_int(
             frame_payload.pop("__engine_sequence_number", None)
         )
+        output_cursor = frame_payload.pop("__engine_output_cursor", None)
+        if output_cursor is not None and not isinstance(output_cursor, dict):
+            raise ValueError("engine output cursor must be an object")
         current_seq = int(state.frame_seq or 0)
         doc = {
             "session_id": session_id,
@@ -142,6 +145,8 @@ async def _persist_frames(
             doc["engine_turn_id"] = engine_turn_id_meta
         if engine_sequence_number is not None:
             doc["engine_sequence_number"] = int(engine_sequence_number)
+        if output_cursor is not None:
+            doc["engine_output_cursor"] = output_cursor
         if live_seq is not None:
             source_cursor["live_seq"] = live_seq
         if source_cursor:

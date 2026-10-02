@@ -24,11 +24,6 @@ Skill 使用 Git 来源和可选版本：
 
 AstraBox 不会创建另一套 Skill 内容格式，而是把 Skill 准备到所选 Agent 程序使用的原生 Skill 目录中。
 
-私有 HTTPS 来源需要平台管理员在下载前配置 **HTTP Basic（Git HTTPS）** 凭证，并将
-Vault 分配给 Agent。凭证的目标地址只填写仓库 URL，`@ref` 和 `#path` 保留在 Skill
-来源中。直接 Git 来源和管理员配置的 Skill 都适用，具体操作见
-[私有 Git 仓库鉴权](credentials.md#private-git-repositories)。
-
 ## Skill 的作用
 
 - **注入专业知识** —— 让通用 Agent 具备特定领域能力（如代码审查、文档生成）

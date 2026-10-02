@@ -73,7 +73,9 @@ test('Write approval hands off to a question on the same turn during live first-
   await openSessionView(page, sessionId);
   const prompt = [
     `E2E interaction handoff ${runId}. Follow this exact protocol in one assistant turn.`,
-    `Step 1: call Write exactly once to create relative file ${targetPath} with content exactly: ${targetContent}`,
+    `Step 1: call Write exactly once to create relative file ${targetPath}.`,
+    `Set its content argument to the exact string encoded here as JSON: ${JSON.stringify(targetContent)}.`,
+    'Do not add a trailing newline, whitespace, quotes or any other text to that string.',
     'Wait for the Write permission response. After approval, wait for the Write result and continue the same assistant turn.',
     `Step 2: call AskUserQuestion exactly once. Ask one single-select question containing ${questionMarker}, header Lock, and options YES and NO.`,
     `Step 3: wait for the questionnaire answer. If YES is selected, reply with exactly ${finalMarker} and use no more tools.`,

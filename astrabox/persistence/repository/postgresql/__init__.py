@@ -28,10 +28,12 @@ from ..sqlite.engine import (
     resolve_database_url,
 )
 from ..sqlite.query import UnsupportedMongoOperator
+from ..sqlite.transaction import run_transaction
 
 SqlCursor = SqliteCursor
 
 __all__ = [
+    "run_transaction",
     "AsyncCollection",
     "Base",
     "DocumentRow",

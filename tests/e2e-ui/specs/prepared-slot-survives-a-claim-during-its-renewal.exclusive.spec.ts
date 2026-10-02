@@ -1,69 +1,9 @@
 /**
- * Who re-arms an Agent after a user arrives inside its renewal window.
- *
- * A prepared slot is rebuilt ahead of its 30-minute TTL, and the rebuild is
- * deliberately gapless: the slot due for renewal stays published — and
- * claimable — for the whole 17-33s its replacement takes, and only the publish
- * swaps it (`prepare_slot_for_agent`, prepared_slots.py:663-668, 862). That
- * promise has a second edge. A conversation that claims the published slot
- * during the build takes the exact field the renewal read, so the renewal's
- * publish loses its CAS and the finished build is discarded
- * (`_publish_prepared_manifest`, prepared_slots.py:1296-1324); if the claim
- * instead lands just before the build's row read, the refill returns early with
- * "nothing to add" (prepared_slots.py:669-672). Both shapes end the same way:
- * `clear_claimed_slot` (prepared_slots.py:1112-1136) nulls the manifest, and
- * the refill demand the claim raised on its way out is answered by the renewal
- * already in flight and dropped — one reconciliation runs per Agent
- * (agent_service.py:330-335) and nothing re-asks when it finishes.
- *
- * So the Agent is left advertising nothing, and the question this spec asks is
- * the seed question: does anything in the background put the fast path back, or
- * does the next person pay a 17-33s cold start to re-arm prewarm for whoever
- * comes after them? The only background answer is the watcher's prewarm sweep
- * (`keep_prewarmed_agents_ready`, runtime_manager.py:2831), which is given
- * three forced ticks here — more attention than this Agent would get in fifteen
- * real minutes.
- *
- * NOT THE SIBLING SCENE. prewarm-rebuilds-a-lost-slot-before-the-next-
- * conversation starts from a build that failed and left no manifest, and its
- * user arrives after the background has settled. What only this spec covers is
- * the overlap: a claim and a renewal in flight at the same instant, which is the
- * one arrival the gapless-renewal rule was not built against.
- *
- * The verdict is written as an end state, never as an error code. One collision
- * shape records AGENT_PREWARM_SLOT_CONFLICT and the other records nothing at
- * all, so a spec keyed on `last_error` would pass through half the scene. It is
- * also fix-shape independent: queueing the dropped demand, re-checking at
- * reconciliation completion, or letting the sweep rebuild a null manifest each
- * satisfy it — and the third is the rule the tree carries, since
- * `keep_prewarmed_agents_ready` schedules a rebuild for a row holding no
- * manifest (runtime_manager.py:2892-2899).
- *
- * THE HOLE THIS IS POSITIONED TO CATCH. That rebuild is throttled per Agent by
- * `_prewarm_rebuild_scheduled_at` for `PREPARED_SLOT_REBUILD_RETRY_SECONDS`
- * (300s, runtime_manager.py:2892-2897), and the stamp is cleared by nothing: a
- * successful rebuild leaves it standing. A collision that lands inside 300s of
- * an earlier sweep-scheduled rebuild for the same Agent is therefore skipped
- * without a counter recording the skip, until the window closes. A5's window is
- * far shorter than 300s, so an Agent carrying such a stamp turns this spec red
- * and the attachment shows every tick that declined to act.
- *
- * Two things are constructed rather than waited for. No API ages a manifest, so
- * `backdatePreparedSlot` writes one past `PREPARED_SLOT_TTL_SECONDS` minus the
- * renewal lead in a single statement guarded down to the slot id; and the
- * watcher's own period is not waited out, but driven through
- * `POST /admin/sandbox-idle-sweep`, which runs the same `scan_once` the timer
- * runs, in the server process. That last part is not a convenience: a
- * docker-exec copy of the sweep would carry its own empty in-flight map and
- * could not construct the collision at all.
- *
- * This spec belongs in the exclusive lane's serial group. `scan_once` also runs
- * the abandoned-box reaper, the ownerless reaper and the idle-parking sweep
- * across the whole deployment, and the scene needs spare capacity and a
- * quiescent Agent row. See the note in the coverage report: the tree's spec
- * counts and `playwright.exclusive.serial_files` in
- * `tests/e2e-contract/suite-contract.json` are refreshed together,
- * and this file has to be listed there.
+ * A claim during renewal retains the published slot and leaves new warm capacity
+ * for the next conversation. The exact Agent/slot barrier holds the replacement
+ * before placement, whether the timer or the explicit sweep scheduled it.
+ * Both conversations must adopt their observed isolated sessions; the second
+ * warm start must remain within the original relative latency budget.
  */
 import { execFileSync } from 'node:child_process';
 
@@ -73,6 +13,7 @@ import { AstraApi } from '../fixtures/astraApi';
 import { backdatePreparedSlot, documentsByField } from '../fixtures/dbOracle';
 import { appPath, parseTimeoutEnv } from '../fixtures/env';
 import { PlatformApi } from '../fixtures/platformApi';
+import { preparedRenewalHold } from '../fixtures/preparedRenewalHold';
 import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
 import { expectComposerEnabled } from '../fixtures/sessionPage';
 import { requireServiceContainer, SERVER_CONTAINER_HANDLE } from '../fixtures/serviceContainer';
@@ -319,80 +260,74 @@ test('a conversation claiming the slot mid-renewal leaves prepared capacity for 
     'the prewarmed Agent must be on the picker before the renewal is triggered',
   ).toBeVisible({ timeout: READY_TIMEOUT_MS });
 
-  // ── Make the slot due for renewal ───────────────────────────────────────
-  // One statement, guarded down to the slot id: a read-modify-write of the
-  // whole Agent document would lose a concurrent server write in its window.
-  const agedAtIso = new Date(Date.now() - backdateMs).toISOString();
-  expect(
-    backdatePreparedSlot(agentId, before.slotId, agedAtIso),
-    'the backdate must land on exactly the manifest under test',
-  ).toEqual([{
-    agent_id: agentId,
-    sandbox_id: before.residentSandboxId,
-    slot_id: before.slotId,
-    state: 'prepared',
-    prepared_at: agedAtIso,
-  }]);
-  const agedAt = Date.now();
+  const hold = preparedRenewalHold(agentId, before.slotId);
+  let second: { sessionId: string; elapsedMs: number };
+  try {
+    // ── Make the slot due for renewal ───────────────────────────────────────
+    // One statement, guarded down to the slot id: a read-modify-write of the
+    // whole Agent document would lose a concurrent server write in its window.
+    const agedAtIso = new Date(Date.now() - backdateMs).toISOString();
+    expect(
+      backdatePreparedSlot(agentId, before.slotId, agedAtIso),
+      'the backdate must land on exactly the manifest under test',
+    ).toEqual([{
+      agent_id: agentId,
+      sandbox_id: before.residentSandboxId,
+      slot_id: before.slotId,
+      state: 'prepared',
+      prepared_at: agedAtIso,
+    }]);
+    const agedAt = Date.now();
 
-  // ── Start the renewal, in the server process ────────────────────────────
-  const renewalTick = await forcedTick(platform);
-  await test.info().attach('forced-tick-that-started-the-renewal', {
-    body: JSON.stringify({ watcherIntervalSeconds, backdateMs, summary: renewalTick }),
-    contentType: 'application/json',
-  });
-  // A2 — the observable "a renewal build is now in flight". Zero has two
-  // readings and neither leaves anything downstream to prove: the ageing landed
-  // on the wrong side of the rule the deployed sweep applies, or the
-  // deployment's own timer reached this Agent in the gap between the backdate
-  // and this call and took the reconciliation, which makes the repeat request a
-  // deduplicated no-op that counts nothing (agent_service.py:330-335). In a lane
-  // running more than one worker another Agent could also contribute to this
-  // counter; the discriminator for THIS Agent is A4 below, which no other Agent
-  // can satisfy.
-  expect(
-    Number(renewalTick.prepared_slots_renewed || 0),
-    `the forced sweep must have found Agent ${agentId}'s slot due for renewal — with the manifest `
-    + `aged ${Math.round(backdateMs / 1_000)}s against a ${Math.round(renewalLeadMs / 1_000)}s lead, `
-    + 're-derive PREPARED_SLOT_TTL_MS / PREPARED_SLOT_RENEWAL_BUILD_MS against prepared_slots.py',
-  ).toBeGreaterThanOrEqual(1);
-  // The gapless half of the promise, asserted per-Agent the instant the tick
-  // returns. Two readings if this fails, and the operator has to be able to tell
-  // them apart: either the renewal retired the old slot before publishing its
-  // replacement — the window a conversation walks into, a product defect — or
-  // the whole build finished inside the sweep call, which is a scene that cannot
-  // hold a collision and shows up again at A4.
-  const duringBuild = preparedSlotFacts(agentId);
-  expect(
-    duringBuild.slotId,
-    'the slot under renewal is no longer the published one: either the renewal retired it before '
-    + 'its replacement landed, or the replacement was built faster than this spec can click',
-  ).toBe(before.slotId);
-  expect(duringBuild.state, 'and it must still read as claimable').toBe('prepared');
+    // ── Start the renewal, in the server process ────────────────────────────
+    const renewalTick = await forcedTick(platform);
+    await test.info().attach('forced-tick-that-started-the-renewal', {
+      body: JSON.stringify({ watcherIntervalSeconds, backdateMs, summary: renewalTick }),
+      contentType: 'application/json',
+    });
+    // A global sweep count cannot identify this Agent: the periodic timer can
+    // start its renewal before the forced tick and make that tick a no-op.
+    await expect.poll(hold.consumed, {
+      timeout: POOL_TIMEOUT_MS,
+      intervals: [100, 250, 500],
+      message: 'the exact Agent and published slot must reach the renewal barrier',
+    }).toBe(true);
+    await test.info().attach('held-prepared-slot-renewal', {
+      body: JSON.stringify(hold.evidence()), contentType: 'application/json',
+    });
+    // A held replacement must leave the old preparation published and claimable.
+    const duringBuild = preparedSlotFacts(agentId);
+    expect(
+      duringBuild.slotId,
+      'the slot under renewal must stay published while its replacement is held',
+    ).toBe(before.slotId);
+    expect(duringBuild.state, 'and it must still read as claimable').toBe('prepared');
 
-  // A3 — guard the headroom before the user acts, so a slow sweep is reported
-  // as a broken scene and never misread as a missed claim at A4.
-  expect(
-    PREPARED_SLOT_TTL_MS - backdateMs - (Date.now() - agedAt),
-    'HARNESS: the aged slot must still be inside its TTL when the user clicks',
-  ).toBeGreaterThan(CLAIM_TTL_FLOOR_MS);
+    // A3 — guard the headroom before the user acts, so a slow sweep is reported
+    // as a broken scene and never misread as a missed claim at A4.
+    expect(
+      PREPARED_SLOT_TTL_MS - backdateMs - (Date.now() - agedAt),
+      'HARNESS: the aged slot must still be inside its TTL when the user clicks',
+    ).toBeGreaterThan(CLAIM_TTL_FLOOR_MS);
 
-  // ── The user opens a conversation while the rebuild runs ────────────────
-  const second = await startConversationFromCard(page, agentName);
-  sessions.push(second.sessionId);
-  await api.waitForSessionReady(second.sessionId, READY_TIMEOUT_MS);
-  const secondDetail = await api.adminSessionDetail(second.sessionId);
+    // ── The user opens a conversation while the rebuild runs ────────────────
+    second = await startConversationFromCard(page, agentName);
+    sessions.push(second.sessionId);
+    await api.waitForSessionReady(second.sessionId, READY_TIMEOUT_MS);
+    const secondDetail = await api.adminSessionDetail(second.sessionId);
 
-  // A4 — two things at once. The seed fix's promise, that a user arriving
-  // mid-rebuild still gets the fast path; and proof that this run really
-  // constructed the collision, because the claim's CAS can only have won
-  // against the pre-renewal manifest if it landed before the renewal's publish.
-  expect(
-    String((secondDetail.runtime_identity || {}).isolated_session_id || '').trim(),
-    'the renewal published before the click and this run did not construct the collision: the '
-    + 'conversation adopted a slot other than the one that was published when it clicked. Widen '
-    + 'the window rather than softening this assertion — it is what makes A5 mean anything',
-  ).toBe(before.isolatedSessionId);
+    // A4 — two things at once. The seed fix's promise, that a user arriving
+    // mid-rebuild still gets the fast path; and proof that this run really
+    // constructed the collision, because the claim's CAS can only have won
+    // against the pre-renewal manifest if it landed before the renewal's publish.
+    expect(
+      String((secondDetail.runtime_identity || {}).isolated_session_id || '').trim(),
+      'the conversation must adopt the original slot while its replacement is held',
+    ).toBe(before.isolatedSessionId);
+    hold.release();
+  } finally {
+    hold.clear();
+  }
 
   // ── Let the background do everything it can ────────────────────────────
   // Three forced ticks is more watcher attention than this Agent would get in

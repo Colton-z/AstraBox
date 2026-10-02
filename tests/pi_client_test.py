@@ -18,10 +18,7 @@ from typing import Any
 import pytest
 
 from astrabox.core.service.orchestrator.engine.base import EngineInputCommand
-from astrabox.core.service.orchestrator.engine.emissions import (
-    InteractionRequested,
-    TurnTerminal,
-)
+from astrabox.core.service.orchestrator.engine.emissions import TurnTerminal
 from astrabox.core.service.orchestrator.engine.pi_client import PiEngineClient, _PiRelaySeam
 from astrabox.core.service.orchestrator.engine.pi_events import PiProtocolError
 from astrabox.core.service.orchestrator.engine.pi_pipe import PiWireRecord
@@ -183,10 +180,13 @@ async def test_a_second_message_in_one_conversation_gets_its_own_turn() -> None:
     first = await _drive_one_turn(client, _command(1, "first"))
     assert isinstance(first[-1], TurnTerminal)
     assert first[-1].outcome == "completed"
+    assert first[-1].engine_sequence_number == process._offset
     assert client.active_receipt is None, "the turn slot was not released"
 
     second = await _drive_one_turn(client, _command(2, "second"))
     assert isinstance(second[-1], TurnTerminal)
+    assert second[-1].engine_sequence_number == process._offset
+    assert second[-1].engine_sequence_number > first[-1].engine_sequence_number
 
     prompts = [record for record in process.sent if record.get("type") == "prompt"]
     assert [record["message"] for record in prompts] == ["first", "second"]
@@ -214,71 +214,6 @@ async def test_only_an_acknowledged_abort_cancels_an_error_terminal(cancel: bool
     assert not await client.cancel_turn(receipt)
     second = await _drive_one_turn(client, _command(2, "second"))
     assert second[-1].outcome == "completed"
-
-
-class _DialogThenAbort(_FakeProcess):
-    """The first prompt stops at an extension dialog; an abort ends that run."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.prompts = 0
-
-    async def command(self, request_id: str, payload: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
-        kind = payload.get("type")
-        if kind == "prompt":
-            self.prompts += 1
-        if kind == "prompt" and self.prompts == 1:
-            self.sent.append({**payload, "id": request_id})
-            self._queue.extend([
-                {"type": "agent_start"},
-                {"type": "turn_start"},
-                {
-                    "type": "extension_ui_request",
-                    "id": "dialog-1",
-                    "method": "confirm",
-                    "title": "Proceed?",
-                    "message": "Write the file",
-                },
-            ])
-            self._arrived.set()
-            return {"id": request_id, "type": "response", "command": "prompt", "success": True}
-        if kind == "abort":
-            self.sent.append({**payload, "id": request_id})
-            self._queue.extend([
-                {"type": "turn_end"},
-                {"type": "agent_end", "willRetry": False},
-                {"type": "agent_settled"},
-            ])
-            self._arrived.set()
-            return {"id": request_id, "type": "response", "command": "abort", "success": True}
-        return await super().command(request_id, payload, **kwargs)
-
-
-@pytest.mark.asyncio
-async def test_the_message_after_a_stopped_dialog_gets_its_own_turn() -> None:
-    """A stop settles a turn parked at a dialog on the platform side, so no
-    stream reads the aborted run's end or releases the turn. The next message
-    must still be sent and answered on a turn of its own."""
-
-    process = _DialogThenAbort()
-    client = _client(process)
-    first = _command(1, "first")
-    await client.deliver(first)
-    receipt = await client.begin_delivery(first)
-    parked = [emission async for emission in client.iter_turn_events(receipt)]
-    assert isinstance(parked[-1], InteractionRequested)
-
-    assert await client.interrupt_active_turn()
-    for _ in range(50):
-        await asyncio.sleep(0)
-
-    second = await _drive_one_turn(client, _command(2, "second"))
-
-    assert isinstance(second[-1], TurnTerminal)
-    assert second[-1].outcome == "completed"
-    prompts = [record for record in process.sent if record.get("type") == "prompt"]
-    assert [record["message"] for record in prompts] == ["first", "second"]
-    assert "streamingBehavior" not in prompts[1]
 
 
 @pytest.mark.asyncio
@@ -311,58 +246,6 @@ async def test_the_first_emission_reports_the_input_the_engine_accepted() -> Non
     first = emissions[0].as_frame()
     assert first["type"] == "data-input-consumed"
     assert first["data"]["content"] == "hello"
-
-
-@pytest.mark.asyncio
-async def test_a_prompt_sent_while_streaming_says_how_to_queue() -> None:
-    """Pi refuses a mid-stream prompt that does not declare a behavior.
-
-    The platform FIFO means "after the work in flight", which is followUp.
-    """
-
-    process = _FakeProcess()
-    client = _client(process)
-    client._streaming = True
-
-    command = _command(1, "queued")
-    await client.deliver(command)
-    await client.begin_delivery(command)
-
-    prompt = next(record for record in process.sent if record.get("type") == "prompt")
-    assert prompt["streamingBehavior"] == "followUp"
-
-
-@pytest.mark.asyncio
-async def test_a_delivery_during_a_turn_joins_its_native_fifo_batch() -> None:
-    """SubmitInput is delivered without a second platform turn consumer."""
-
-    process = _FakeProcess()
-    client = _client(process)
-    first = _command(1, "first")
-    second = _command(2, "second")
-
-    await client.deliver(first)
-    receipt = await client.begin_delivery(first)
-    stream = client.iter_turn_events(receipt)
-    emissions = [await anext(stream)]
-
-    # This is the live platform's busy-turn path: it calls deliver() only.
-    await client.deliver(second)
-    async for emission in stream:
-        emissions.append(emission)
-
-    consumed = [
-        frame["data"]["content"]
-        for frame in (emission.as_frame() for emission in emissions)
-        if frame.get("type") == "data-input-consumed"
-    ]
-    assert consumed == ["first", "second"]
-    assert isinstance(emissions[-1], TurnTerminal)
-    assert client.active_receipt is None
-
-    prompts = [record for record in process.sent if record.get("type") == "prompt"]
-    assert [record["message"] for record in prompts] == ["first", "second"]
-    assert prompts[1]["streamingBehavior"] == "followUp"
 
 
 @pytest.mark.asyncio

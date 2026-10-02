@@ -24,6 +24,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from astrabox.common.fault_injection import pass_fault_barrier
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.settings import load_astrabox_settings
@@ -50,7 +51,9 @@ from astrabox.core.service.orchestrator.runtime.sandbox_client import (
 )
 from astrabox.core.service.orchestrator.runtime.shared_sandbox_lease import (
     BOX_ADMISSIONS,
+    SharedSandboxLease,
     release_box_admission,
+    surviving_admissions,
 )
 from astrabox.core.service.orchestrator.runtime.storage import (
     bootstrap_conversation_runtime_from_agent_cache,
@@ -165,6 +168,8 @@ def _manifest_age_seconds(manifest: dict[str, Any], key: str) -> float | None:
         stamped = datetime.fromisoformat(raw)
     except ValueError:
         return None
+    if stamped.tzinfo is None:
+        return None
     return (datetime.now(timezone.utc) - stamped).total_seconds()
 
 
@@ -190,6 +195,18 @@ def prepared_slot_renewal_lead_seconds() -> int:
     settings = load_astrabox_settings()
     interval = max(1, int(getattr(settings, "expiration_watcher_interval_seconds", 0) or 300))
     return interval + PREPARED_SLOT_RENEWAL_BUILD_SECONDS
+
+
+def prepared_slot_matches_resident(
+    manifest: dict[str, Any], agent: dict[str, Any],
+) -> bool:
+    """Shared capacity belongs only to its still-current resident binding."""
+    if manifest.get("placement") != "shared_slot":
+        return True
+    return all(
+        bool(manifest.get(key)) and manifest.get(key) == agent.get(key)
+        for key in ("sandbox_id", "sandbox_backend")
+    )
 
 
 def _manifest_is_reapable(
@@ -263,17 +280,25 @@ async def _claimed_session_adopted_placement(manifest: dict[str, Any]) -> bool:
     return False
 
 
-def prepared_slot_is_due_for_renewal(manifest: dict[str, Any]) -> str | None:
+def prepared_slot_is_due_for_renewal(
+    manifest: dict[str, Any], *, agent: dict[str, Any] | None = None,
+) -> str | None:
     """Why a slot manifest should be rebuilt now, or None while it holds.
 
     The expiration watcher's question, asked with the same rule the refill
     applies, so the sweep and the refill never disagree about what is stale:
     a prepared slot due to expire before the sweep's next build lands, or a
-    claimed manifest its Session never cleared. Only age is judged here; the
-    manifest's own generation stands in for the current one, because a
-    generation change already schedules its own refill.
+    claimed manifest its Session never cleared. A detached shared slot also
+    needs replacement, including records left by older servers. The manifest's
+    own generation stands in for the current one because generation changes
+    already schedule their own refill.
     """
 
+    if (
+        agent is not None and manifest.get("state") == "prepared"
+        and not prepared_slot_matches_resident(manifest, agent)
+    ):
+        return "prepared slot no longer belongs to the resident sandbox"
     return _manifest_is_reapable(
         manifest,
         current_runtime_generation=str(manifest.get("runtime_generation") or ""),
@@ -308,6 +333,8 @@ async def reap_slot_manifest_if_stale(
         manifest,
         current_runtime_generation=generation,
     )
+    if manifest.get("state") == "prepared" and not prepared_slot_matches_resident(manifest, row):
+        reason = "prepared slot no longer belongs to the resident sandbox"
     if reason is None:
         return None
     await _retire_manifest(agent_id, manifest, reason=reason, repo=repo)
@@ -662,6 +689,11 @@ async def prepare_slot_for_agent(
             # Retiring first left every Agent without a slot for the length
             # of a build, which is exactly the window a Session walks into.
             replacing = existing
+            await pass_fault_barrier(
+                "prepared_slot_renewal",
+                agent_id=agent_id,
+                slot_id=str(existing.get("slot_id") or ""),
+            )
         else:
             # A live claimed manifest belongs to its Session; the reap above
             # already destroyed anything stale. This refill has nothing to add.
@@ -1009,9 +1041,66 @@ async def claim_prepared_slot(
             ) else entry
             for entry in (raw or [])
         ]
+        binding_fence: dict[str, Any] = {}
+        if manifest.get("placement") == "shared_slot":
+            binding_fence = {
+                "sandbox_id": manifest.get("sandbox_id"),
+                "sandbox_backend": manifest.get("sandbox_backend"),
+            }
+            if not prepared_slot_matches_resident(manifest, row):
+                return None
+            sandbox_id = str(manifest.get("sandbox_id") or "")
+            slot_id = str(manifest.get("slot_id") or "")
+            lease = SharedSandboxLease(
+                agent_repo=repo,
+                provider=sandbox_for_name(str(manifest.get("sandbox_backend") or "")),
+            )
+            has_room = await lease.prepared_slot_has_room(
+                agent=row, sandbox_id=sandbox_id, slot_id=slot_id,
+            )
+            age = _manifest_age_seconds(manifest, "prepared_at")
+            if age is None or age > PREPARED_SLOT_TTL_SECONDS:
+                return None
+            if not has_room:
+                # Withdraw the promise before returning a cold miss. The normal
+                # refill/reaper owns cleanup; active siblings keep their box.
+                retired = await repo.compare_and_update_agent(
+                    target_agent,
+                    expected={
+                        **binding_fence,
+                        PREPARED_SLOT_FIELD: manifest,
+                        BOX_ADMISSIONS: raw if BOX_ADMISSIONS in row else {"$exists": False},
+                    },
+                    updates={PREPARED_SLOT_FIELD: {
+                        **manifest,
+                        "state": "retiring",
+                        "retire_reason": "shared sandbox no longer has room for the prepared conversation",
+                        "retiring_at": _utcnow_iso(),
+                    }},
+                )
+                if retired:
+                    return None
+                row = await repo.get_agent(target_agent)
+                continue
+            # A waiting process can be old while the conversation it receives
+            # is new. Reserve its growth again, atomically with the hand-off.
+            transferred = [
+                entry for entry in surviving_admissions(row)
+                if not (
+                    entry.get("sandbox_id") == sandbox_id
+                    and entry.get("session_id") == slot_id
+                )
+            ]
+            transferred.append({
+                "sandbox_id": sandbox_id,
+                "session_id": target_session,
+                "at": time.time(),
+            })
+        claimed["claimed_at"] = _utcnow_iso()
         won = await repo.compare_and_update_agent(
             target_agent,
             expected={
+                **binding_fence,
                 PREPARED_SLOT_FIELD: manifest,
                 BOX_ADMISSIONS: raw if BOX_ADMISSIONS in row else {"$exists": False},
             },
@@ -1281,9 +1370,17 @@ async def _publish_prepared_manifest(
     discarded by the caller rather than overwriting the winner.
     """
 
+    expected: dict[str, Any] = {PREPARED_SLOT_FIELD: replacing}
+    if manifest.get("placement") == "shared_slot":
+        # A refill can finish after its box died or was replaced. Publishing
+        # under only the old manifest would resurrect capacity in that box.
+        expected.update({
+            "sandbox_id": manifest.get("sandbox_id"),
+            "sandbox_backend": manifest.get("sandbox_backend"),
+        })
     won = await repo.compare_and_update_agent(
         agent_id,
-        expected={PREPARED_SLOT_FIELD: replacing},
+        expected=expected,
         updates={PREPARED_SLOT_FIELD: manifest},
     )
     if not won:

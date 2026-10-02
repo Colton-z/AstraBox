@@ -46,6 +46,9 @@ from astrabox.core.service.orchestrator.session_kernel.conversation_recovery imp
 from astrabox.core.service.orchestrator.stream_errors import (
     IncompleteStreamError,
 )
+from astrabox.core.service.orchestrator.session_kernel.engine_emission_projection import (
+    record_engine_background_tasks_opened,
+)
 from astrabox.core.service.orchestrator.session_kernel.workers.turn import (
     bridge_anchors,
     bridge_frames,
@@ -520,9 +523,6 @@ async def _run_bridge_command(
         build_terminal_assistant_blocks=lambda: worker._build_terminal_assistant_blocks(
             state, _bridge_ctx,
         ),
-        record_background_task_manifest_if_needed=lambda: worker._record_background_task_manifest_if_needed(
-            state, _bridge_ctx,
-        ),
     )
 
     try:
@@ -815,10 +815,16 @@ async def _run_bridge_command(
                 engine_kind = str(event.get("engine_kind") or "").strip()
                 if not isinstance(manifest, dict) or not engine_kind:
                     raise RuntimeError("background-task manifest envelope is malformed")
-                state.background_tasks_opened = {
-                    "engine_kind": engine_kind,
-                    **manifest,
-                }
+                await record_engine_background_tasks_opened(
+                    session_events_repo=worker._session_events_repo,
+                    session_id=session_id,
+                    turn_id=state.effective_turn_id,
+                    command_id=command_id,
+                    correlation_id=correlation_id,
+                    engine_kind=engine_kind,
+                    manifest=manifest,
+                    manifest_id=str(event.get("manifest_id") or "").strip(),
+                )
                 continue
 
             if evt_type == "response_result":
@@ -1023,7 +1029,17 @@ async def _run_bridge_command(
                                 worker,
                                 state,
                                 _bridge_ctx,
-                                {"type": "data-result", "data": public_result},
+                                {
+                                    "type": "data-result", "data": public_result,
+                                    **{
+                                        f"__{key}": data[key]
+                                        for key in (
+                                            "engine_kind", "engine_turn_id", "engine_sequence_number",
+                                            "engine_output_cursor",
+                                        )
+                                        if key in data
+                                    },
+                                },
                             ),
                             turn_id=state.effective_turn_id or None,
                         )
@@ -1061,6 +1077,7 @@ async def _run_bridge_command(
                 await bridge_terminal._append_terminal_signal(worker, state, _bridge_ctx,
                     "error",
                     error_text=state.last_error_text,
+                    engine_metadata=event,
                 )
                 continue
         if not state.turn_settled:

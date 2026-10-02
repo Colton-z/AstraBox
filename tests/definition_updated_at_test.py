@@ -22,6 +22,7 @@ from astrabox.core.service.orchestrator.credential_binding_service import (
 )
 from astrabox.core.service.orchestrator.runtime.storage._identity import ensure_workspace_id
 from astrabox.persistence.repository.agent_repository import AgentRepository
+from astrabox.persistence.repository.environment_repository import EnvironmentRepository
 from astrabox.persistence.repository.assistant_catalog_repository import (
     AssistantCatalogRepository,
 )
@@ -38,6 +39,13 @@ def _isolated_sqlite_state(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> An
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+async def _environment_records(_isolated_sqlite_state: Any) -> None:
+    environments = EnvironmentRepository()
+    await environments.upsert("claude-code", {"engine_kind": "claude_code"})
+    await environments.upsert("hermes", {"engine_kind": "assistant"})
 
 
 class _Environments:

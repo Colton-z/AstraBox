@@ -262,3 +262,7 @@ ENV IS_SANDBOX=1 \
 # CLI is spawned into it. A deployment that mounts durable storage over the path
 # owns making that mount writable by uid 1000, which is why the uid is fixed.
 WORKDIR /workspace
+
+# Foreground commands wait for execd to drain their SSE stream. Match the
+# supplier's 200ms drain without changing command execution timeouts.
+ENV EXECD_API_GRACE_SHUTDOWN=200ms

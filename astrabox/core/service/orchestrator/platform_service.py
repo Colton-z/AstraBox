@@ -39,6 +39,7 @@ from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.settings import load_astrabox_settings
 from astrabox.common.utils.user_context import UserContext
+from astrabox.core.service.orchestrator.agent_access import is_platform_admin
 from astrabox.core.service.orchestrator.event_broker import SessionEventBroker
 from astrabox.core.service.orchestrator.vault_service import VaultService
 from astrabox.seams.sandbox import sandbox_for_template
@@ -65,7 +66,7 @@ from astrabox.core.service.orchestrator.engine.base import (
 )
 
 from astrabox.core.service.orchestrator.session_service import SessionService
-from astrabox.core.service.orchestrator.session_message_view import SessionMessageView
+from astrabox.core.service.orchestrator.session_message_view import FileChangeCursorError, SessionMessageView
 from astrabox.core.service.orchestrator.session_public_projection import (
     project_owner_session,
     project_public_message_page,
@@ -141,6 +142,7 @@ class AgentPlatformService:
         self._agent_config = AgentConfigService(
             self._agent_repo,
             self._environment_repo,
+            sessions_repo=self._sessions_repo,
             spawn_background_task=self._spawn_background_task,
         )
         self._vault_service = VaultService()
@@ -324,6 +326,8 @@ class AgentPlatformService:
             supersede_pending_interaction=self.supersede_pending_interaction,
             spawn_background_task=self._spawn_background_task,
             channel_credentials=self._channel_credentials,
+            read_session_output=self._session_kernel.read_session_output,
+            session_output_cursor=self._session_kernel.session_output_cursor,
         )
         self._channel_spine_reconciler = ChannelSpineReconciler(
             ingress_service=self._channel_ingress_service,
@@ -542,6 +546,11 @@ class AgentPlatformService:
     async def list_agent_environment_options(self) -> list[dict[str, Any]]:
         return await self._agent_config.list_agent_environment_options()
 
+    async def delete_environment_config(
+        self, user: UserContext, name: str,
+    ) -> dict[str, Any]:
+        return await self._agent_config.delete_environment_config(user, name)
+
     async def list_agent_environment_models(self, name: str) -> list[str]:
         return await self._agent_config.list_agent_environment_models(name)
 
@@ -688,6 +697,17 @@ class AgentPlatformService:
             session=session,
         )
         return project_public_message_page(page)
+
+    async def get_file_changes(
+        self, user: UserContext, session_id: str, *, after_seq: int = 0,
+    ) -> dict[str, Any]:
+        """Read native changes from owned durable history without a live sandbox."""
+        await self.ensure_bootstrap()
+        await self._session_service.must_get_owned_session(user, session_id)
+        try:
+            return await self._session_message_view.file_changes(session_id, after_seq=after_seq)
+        except FileChangeCursorError as exc:
+            raise APIError(code="INVALID_REQUEST", message=str(exc), status_code=400) from exc
 
     async def get_history_blocks(
         self,
@@ -1198,12 +1218,13 @@ class AgentPlatformService:
             credentials=payload.get("credentials"),
             callback_base_url=callback_base_url,
             schedule=payload.get("schedule"),
+            **({"execution_user_id": payload["execution_user_id"], "actor": user}
+               if "execution_user_id" in payload else {}),
         )
         await self._channel_source_host.reconcile()
         return created
 
     async def list_channel_providers(self, user: UserContext) -> list[dict[str, Any]]:
-        _ = user
         from astrabox.seams.channel import registered_channels
 
         return [
@@ -1211,6 +1232,7 @@ class AgentPlatformService:
                 **provider.describe().to_dict(),
                 "supports_source": provider.supports_source,
                 "uses_trigger_secret": provider.uses_trigger_secret,
+                "can_configure_execution_user": is_platform_admin(user.roles),
             }
             for _, provider in sorted(registered_channels().items())
         ]
@@ -1223,6 +1245,7 @@ class AgentPlatformService:
             deployment_id,
             agent_id=agent_id,
             patch=patch,
+            **({"actor": user} if "execution_user_id" in patch else {}),
         )
         await self._channel_source_host.reconcile()
         return updated

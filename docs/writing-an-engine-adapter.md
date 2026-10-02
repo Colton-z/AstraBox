@@ -104,6 +104,13 @@ and the adapter's `per_conversation_account` placement. Implement
 isolated session. It must start the image-installed service in the background;
 the platform waits for its declared port before activation.
 
+For verified text publication, use `install_verified_text_script` from
+`runtime/sandbox_script_writer.py` with the context's `runtime_identity` and a
+runtime-visible path. The platform maps workspace paths to their backing
+location before writing, for both cold and prepared placements. Do not convert
+workspace paths in the adapter. A `None` identity explicitly addresses the box
+filesystem; an incomplete supplied identity is rejected before any write.
+
 ## 2. Translate engine events
 
 `EngineClient` represents one native conversation. It must:
@@ -122,6 +129,27 @@ Classify native output once, inside the adapter, as public UI output, a control
 fact, a terminal result, or a private diagnostic. Vendor event names,
 identifiers, finish reasons, and payload meanings remain adapter-owned; core
 orchestration must not infer them.
+
+### Publish output without a platform input
+
+Some Agent programs produce main-conversation output when a native background
+task finishes or an extension starts work. Keep observing the native
+conversation while it is idle from AstraBox's perspective. The client uses
+`ResidentOutputSink` from `base.py` to open, publish, and finish these replies
+under their native identity. The platform persists their frames in the same
+Session journal used for input-driven replies.
+
+Use the program's own signals to distinguish a reply from the next accepted
+input. Accepting a queued input does not mean its answer has begun: preserve
+the preceding reply's text, tools, and terminal boundary before publishing
+the queued input's response. A transport reconnect must retain the native
+conversation identity and restore any open reply through the supplied output
+checkpoint.
+
+Channels subscribe to this common Session output. The engine adapter neither
+chooses recipients nor emits a separate background notification for a child
+result. Child lifecycle facts are saved separately; the main Agent decides
+whether and how to respond to them.
 
 If the Agent program supports approvals, questions, child-run control,
 permission modes, server information, live-turn reconnect, or transcript

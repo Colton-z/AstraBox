@@ -168,6 +168,25 @@ class _FakeKernel:
         self.commands: list[dict[str, Any]] = []
         self.turn_texts: dict[tuple[str, str], str] = {}
 
+    async def list_events(self, session_id: str, **kwargs: Any) -> list[dict[str, Any]]:
+        return []
+
+    async def session_output_cursor(self, session_id):
+        return len([key for key in self.turn_texts if key[0] == session_id])
+
+    async def read_session_output(self, session_id, *, after_seq):
+        from astrabox.core.service.orchestrator.session_kernel.service_mixins.session_output import (
+            SessionOutputBatch, SessionOutputResponse,
+        )
+        messages = [(turn, text) for (session, turn), text in self.turn_texts.items() if session == session_id]
+        return SessionOutputBatch(
+            responses=[SessionOutputResponse(
+                response_id=turn, turn_id=turn, start_after_seq=index,
+                response_seq=index + 1, text=text, complete=True,
+            ) for index, (turn, text) in enumerate(messages) if index + 1 > after_seq],
+            after_seq=len(messages),
+        )
+
     async def find_command_by_client_message_id(
         self, session_id: str, *, client_message_id: str
     ) -> dict[str, Any] | None:
@@ -232,7 +251,7 @@ def _service(**overrides: Any) -> DeploymentService:
     agent_service = AsyncMock()
     agent_service.start_conversation.return_value = {"session_id": "sess-1"}
     sessions_repo = AsyncMock()
-    sessions_repo.get_session.return_value = {"state": "READY"}
+    sessions_repo.get_session.return_value = {"state": "READY", "user_id": "creator-1"}
     kernel = _FakeKernel()
 
     spawned: list[Any] = []
@@ -246,6 +265,8 @@ def _service(**overrides: Any) -> DeploymentService:
         agent_service_getter=lambda: agent_service,
         stream_message_events_ds=kernel.stream,
         resume_command_stream=kernel.resume_command_stream,
+        read_session_output=kernel.read_session_output,
+        session_output_cursor=kernel.session_output_cursor,
         sessions_repo=sessions_repo,
         session_events_repo=kernel,
         message_view=kernel,
@@ -292,7 +313,11 @@ async def test_channel_trigger_maps_verifies_fires_and_delivers() -> None:
     # outbound delivery of the last assistant message.
     spawned = service._test_spawned  # type: ignore[attr-defined]
     assert len(spawned) == 1
-    await asyncio.wait_for(spawned[0], timeout=5)
+    await asyncio.wait_for(spawned.pop(0), timeout=5)
+    await service._channel_ingress.project_session_outputs()
+    await service._channel_ingress.sweep_pending_outbox()
+    while spawned:
+        await asyncio.wait_for(spawned.pop(0), timeout=5)
     assert provider.delivered == [({"chat": "c-9"}, "final assistant reply")]
 
 

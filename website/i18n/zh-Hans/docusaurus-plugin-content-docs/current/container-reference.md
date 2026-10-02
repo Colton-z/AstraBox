@@ -62,7 +62,7 @@ Session 的文件面板和 API 直接操作这个工作区；AstraBox 不会另�
 AstraBox 镜像开始构建，标签与你运行的 AstraBox 版本相同：
 
 ```dockerfile
-FROM ghcr.io/colton-z/astrabox-sandbox-claude-code:0.1.1
+FROM ghcr.io/colton-z/astrabox-sandbox-claude-code:0.1.2
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends postgresql-client redis-tools \

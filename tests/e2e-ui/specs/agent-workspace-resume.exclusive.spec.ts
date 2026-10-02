@@ -63,7 +63,9 @@ async function preparedCapacity(page: Page, id: string): Promise<Prepared> {
     }
     return status.ready && status.prepared_count > 0;
   }, { timeout: 60_000, intervals: [1_000, 2_000] }).toBe(true);
-  await expect(page.getByTestId('prewarm-state')).toHaveText('Ready');
+  await expect(page.getByTestId('prewarm-state')).toHaveText(
+    'The next conversation starts warm while this capacity remains available.',
+  );
   await expect(page.getByTestId('prewarm-count')).toHaveText(`Available: ${status.prepared_count}`);
   expect(status.sandbox_id).toBeTruthy();
   expect(status.client_pool_name).toBeTruthy();

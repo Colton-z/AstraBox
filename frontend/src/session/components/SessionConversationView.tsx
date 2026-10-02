@@ -46,7 +46,7 @@ export function SessionConversationView({
       pendingToolCallId={pendingToolCallId}
       activeTurnId={activeTurnId}
       isStreaming={isStreaming}
-      shouldAutoFollow={isStreaming || isSubmitted || hasPendingInteraction}
+      shouldAutoFollow
       firstItemIndex={firstItemIndex}
       hasMore={hasMore}
       loadingMore={loadingMore}

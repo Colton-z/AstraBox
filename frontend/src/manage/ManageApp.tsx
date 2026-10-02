@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Routes, Route, Navigate, Link, useLocation } from 'react-router-dom';
 import {
   Activity,
@@ -39,10 +39,8 @@ import {
   SurfaceNav,
 } from '@/components/shell';
 import { UserMenu } from '@/components/UserMenu';
-import { adminNavigationSummary } from '@/api';
+import { adminListIntegrations, adminNavigationSummary } from '@/api';
 import type { AdminIntegratedService, AdminNavigationSummary } from '@/types';
-import { useAdminIntegrations } from '@/hooks/useAdminIntegrations';
-import { keepsLastRead } from '@/hooks/useKeepCurrent';
 
 import AgentsListPage from './AgentsListPage';
 import AgentCreatePage from './AgentCreatePage';
@@ -141,10 +139,11 @@ const INTEGRATION_NAV: Record<AdminIntegratedService['category'], Pick<NavItem, 
 export function ManageSidebar() {
   const { pathname } = useLocation();
   const { t } = useTranslation();
-  const { isAdmin, data: integrations, error: integrationsError } = useAdminIntegrations();
+  const [integrations, setIntegrations] = useState<AdminIntegratedService[]>([]);
+  const [integrationsError, setIntegrationsError] = useState(false);
 
   const summary = useSWR<AdminNavigationSummary>(
-    isAdmin ? MANAGE_NAV_SUMMARY_KEY : null,
+    MANAGE_NAV_SUMMARY_KEY,
     adminNavigationSummary,
   );
   // Moving between pages is the reader's own gesture, and the counts they
@@ -153,10 +152,10 @@ export function ManageSidebar() {
   const revalidateSummary = summary.mutate;
   const countedAt = useRef(pathname);
   useEffect(() => {
-    if (!isAdmin || countedAt.current === pathname) return;
+    if (countedAt.current === pathname) return;
     countedAt.current = pathname;
     void revalidateSummary();
-  }, [isAdmin, pathname, revalidateSummary]);
+  }, [pathname, revalidateSummary]);
   // An open list publishes the total from the same response that rendered its
   // rows. Inactive collections use one count-only summary instead of loading
   // three catalogs (and one otherwise unused Session row) on every shell mount.
@@ -164,7 +163,7 @@ export function ManageSidebar() {
   const environments = useSWR<ManageNavCount>(MANAGE_NAV_COUNT_KEYS.environments, null);
   const sessions = useSWR<ManageNavCount>(MANAGE_NAV_COUNT_KEYS.sessions, null);
   // SWR retains the last totals during failed background revalidation.
-  const inactive = isAdmin ? summary.data : undefined;
+  const inactive = summary.data;
   const counts: NavCounts = {
     agents: pathname === '/manage/agents'
       ? agents.error ? undefined : agents.data ?? undefined
@@ -177,7 +176,25 @@ export function ManageSidebar() {
       : inactive?.sessions,
   };
 
-  const integrationItems: NavItem[] = (integrations?.services ?? []).map((integration) => ({
+  // Integrated-service links have no collection page that can share their
+  // response, so they remain one independent, failure-visible read.
+  useEffect(() => {
+    let alive = true;
+    void adminListIntegrations()
+      .then((result) => {
+        if (!alive) return;
+        setIntegrations(result.services);
+        setIntegrationsError(false);
+      })
+      .catch(() => {
+        if (alive) setIntegrationsError(true);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const integrationItems: NavItem[] = integrations.map((integration) => ({
     to: integration.admin_url,
     match: '',
     external: true,
@@ -247,7 +264,7 @@ export function ManageSidebar() {
           </SidebarGroupContent>
         </SidebarGroup>
       ))}
-      {integrationsError && !keepsLastRead(integrationsError, { background: true }, integrations !== undefined) ? (
+      {integrationsError ? (
         <ErrorNote className="mx-2.5 mb-2">
           {t('manage:nav.integrations_unavailable')}
         </ErrorNote>

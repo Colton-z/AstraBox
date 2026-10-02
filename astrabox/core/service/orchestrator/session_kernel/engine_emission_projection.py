@@ -214,18 +214,21 @@ async def record_engine_background_tasks_opened(
     correlation_id: str,
     engine_kind: str,
     manifest: dict[str, Any],
+    manifest_id: str,
 ) -> None:
     """Persist the adapter's opaque detached-child continuation manifest."""
 
     if not engine_kind:
         raise RuntimeError("background-task manifest has no engine kind")
+    if not manifest_id.strip() or not turn_id.strip():
+        raise RuntimeError("background-task manifest requires turn and adapter identities")
     await session_events_repo.try_claim_event(
         {
             "session_id": session_id,
             "channel": "conversation",
             "turn_id": turn_id,
             "event_type": "turn.background_tasks_opened",
-            "causation_id": f"{command_id}:background-continuation",
+            "causation_id": f"{turn_id}:background-continuation:{manifest_id}",
             "correlation_id": correlation_id,
             "payload": {
                 "command_id": command_id,

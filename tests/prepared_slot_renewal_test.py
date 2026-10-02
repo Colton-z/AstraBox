@@ -272,3 +272,14 @@ def test_a_prewarmed_agents_box_lease_is_renewed_on_the_sweeps_own_cadence(monke
     assert first["agent_box_leases_renewed"] == 1
     assert second["agent_box_leases_renewed"] == 0
     assert service.scheduled == []
+
+
+def test_a_fresh_detached_shared_slot_is_rebuilt_without_waiting_for_ttl(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest = _manifest(1, placement="shared_slot", sandbox_id="old-box", sandbox_backend="fake")
+    rows = [{"agent_id": "detached", "sandbox_id": None, ps.PREPARED_SLOT_FIELD: manifest}]
+    manager, service = _manager(monkeypatch, rows)
+    summary = asyncio.run(manager.keep_prewarmed_agents_ready())
+    assert service.scheduled == ["detached"]
+    assert summary["prepared_slots_renewed"] == 1

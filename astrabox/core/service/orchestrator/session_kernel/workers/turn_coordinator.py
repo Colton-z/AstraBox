@@ -349,6 +349,7 @@ class TurnCoordinator:
     ) -> None:
         after_seq = -1
         page_size = 500
+        has_message_start = False
         while True:
             page = await self._session_events.list_frames(
                 session_id,
@@ -369,6 +370,8 @@ class TurnCoordinator:
                     if isinstance(payload, dict)
                     else ""
                 )
+                if frame_type in {"start", "data-input-consumed"}:
+                    has_message_start = True
                 if (
                     str(frame.get("source_kind") or "").strip()
                     in {"turn_recovery", "transcript_mirror"}
@@ -391,6 +394,14 @@ class TurnCoordinator:
             {"type": "text-end", "id": text_id},
             {"type": "finish-step"},
         ]
+        if not has_message_start:
+            # The runner can finish before its input receipt reaches the host,
+            # leaving no live preamble. Recovery must open the same turn message
+            # that the history view projects before publishing its content.
+            payloads.insert(0, {
+                "type": "start", "messageId": turn_id,
+                "messageMetadata": {"turn_id": turn_id},
+            })
         frame_seq = await self._session_events.allocate_session_frame_seq(
             session_id,
             count=len(payloads),

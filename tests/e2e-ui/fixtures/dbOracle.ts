@@ -371,6 +371,19 @@ export function replaceDocs(
   return before;
 }
 
+/** Remove only the matching fault-fixture records and return their prior contents. */
+export function deleteDocs(
+  collection: string,
+  matches: Record<string, string>,
+): Record<string, unknown>[] {
+  if (!Object.keys(matches).length) throw new Error('deleteDocs requires an exact fixture scope');
+  return postgresTextRows(
+    postgresContainerName(), process.env.ASTRABOX_E2E_POSTGRES_DB || 'astrabox',
+    process.env.ASTRABOX_E2E_POSTGRES_USER || 'astrabox',
+    `DELETE FROM astrabox_documents WHERE ${docWhere(collection, matches)} RETURNING doc::text;`,
+  ).map((row) => JSON.parse(row) as Record<string, unknown>);
+}
+
 /**
  * Shallow-merge `patch` into every matching document (a `patch` value of null
  * DELETES that key). Returns the pre-mutation documents.

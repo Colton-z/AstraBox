@@ -175,3 +175,7 @@ ENV ASTRABOX_WORKLOAD_USER=agent \
     WORKSPACE=/workspace
 
 WORKDIR /workspace
+
+# Foreground commands wait for execd to drain their SSE stream. Match the
+# supplier's 200ms drain without changing command execution timeouts.
+ENV EXECD_API_GRACE_SHUTDOWN=200ms

@@ -26,6 +26,7 @@ from astrabox.core.service.orchestrator.engine.deepseek_harness_events import (
     DeepSeekHarnessProtocolError,
     raw_event_frame,
 )
+from astrabox.core.service.orchestrator.engine.deepseek_harness_history import read_history_events
 from astrabox.core.service.orchestrator.engine.frame_scope import (
     session_scoped_engine_frame,
 )
@@ -35,9 +36,7 @@ logger = get_logger(__name__)
 DSH_ENGINE_KIND = "deepseek_harness"
 
 _CATALOG_METHOD = "subagents/list"
-_HISTORY_METHOD = "session/page"
 _INTERRUPT_METHOD = "subagents/interruptByParent"
-_HISTORY_PAGE_MESSAGES = 100
 
 _CHILD_MODES = frozenset({"one-shot", "continuable"})
 _CHILD_ACTIVITIES = frozenset({"running", "inactive"})
@@ -521,73 +520,24 @@ class DeepSeekHarnessChildResources:
 
     async def _refresh_history(self, state: _ChildState) -> list[dict[str, Any]]:
         previous_max = self._history_max_seq.get(state.child_session_id, -1)
-        before_seq: int | None = None
-        entries_by_seq: dict[int, dict[str, Any]] = {}
         address = {
             "kind": "subagent", "parentSessionId": state.parent_session_id,
             "childSessionId": state.child_session_id, "mode": state.mode,
         }
         snapshot = await self._call("session/follow", {"args": {"request": {"address": address}}})
-        through_seq = snapshot["cursor"]
-        while True:
-            payload: dict[str, Any] = {
-                "address": address,
-                "throughSeq": through_seq,
-                "maxMessages": _HISTORY_PAGE_MESSAGES,
-            }
-            if before_seq is not None:
-                payload["beforeSeq"] = before_seq
-            value = await self._call(_HISTORY_METHOD, {"args": {"request": payload}})
-            if not isinstance(value, dict) or not isinstance(value.get("records"), list):
-                raise DeepSeekHarnessProtocolError(
-                    "deepseek_harness session/page returned no events list"
-                )
-            if not isinstance(value.get("hasMore"), bool):
-                raise DeepSeekHarnessProtocolError(
-                    "deepseek_harness session/page returned no hasMore flag"
-                )
-            page_seqs: list[int] = []
-            for raw_entry in value["records"]:
-                if not isinstance(raw_entry, dict) or not isinstance(raw_entry.get("event"), dict):
-                    raise DeepSeekHarnessProtocolError(
-                        "deepseek_harness session/page returned a malformed entry"
-                    )
-                event = dict(raw_entry["event"])
-                seq = event.get("seq")
-                if not isinstance(seq, int) or isinstance(seq, bool) or seq < 0:
-                    raise DeepSeekHarnessProtocolError(
-                        "deepseek_harness session/page event lacks a non-negative seq"
-                    )
-                page_seqs.append(seq)
-                previous = entries_by_seq.get(seq)
-                if previous is not None and previous != event:
-                    raise DeepSeekHarnessProtocolError(
-                        "deepseek_harness session/page reused an event seq"
-                    )
-                entries_by_seq[seq] = event
-            if not value["hasMore"] or (page_seqs and min(page_seqs) <= previous_max):
-                break
-            if not page_seqs:
-                raise DeepSeekHarnessProtocolError(
-                    "deepseek_harness session/page cannot advance an empty page"
-                )
-            next_before = min(page_seqs)
-            if before_seq is not None and next_before >= before_seq:
-                raise DeepSeekHarnessProtocolError(
-                    "deepseek_harness session/page pagination did not advance"
-                )
-            before_seq = next_before
+        events = await read_history_events(
+            self._call, address=address, through_seq=snapshot["cursor"],
+            after_seq=previous_max,
+        )
 
         frames: list[dict[str, Any]] = []
-        for seq in sorted(entries_by_seq):
-            if seq <= previous_max:
-                continue
+        for event in events:
             self._native_input({"type": "session/event", "payload": {
-                "sessionId": state.child_session_id, "event": entries_by_seq[seq],
+                "sessionId": state.child_session_id, "event": event,
             }})
-            frames.extend(self._event_frames(state, entries_by_seq[seq]))
-        if entries_by_seq:
-            self._history_max_seq[state.child_session_id] = max(previous_max, max(entries_by_seq))
+            frames.extend(self._event_frames(state, event))
+        if events:
+            self._history_max_seq[state.child_session_id] = max(previous_max, events[-1]["seq"])
         return frames
 
     def _event_frames(

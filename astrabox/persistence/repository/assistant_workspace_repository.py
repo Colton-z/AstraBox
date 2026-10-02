@@ -120,6 +120,21 @@ class AssistantWorkspaceRepository:
             lambda: collection.find_one({"_id": fence_id}),
         )
 
+    async def list_runtime_references(
+        self, assistant_ids: list[str], *, transaction: Any,
+    ) -> list[dict[str, Any]]:
+        """Read resource ownership even after the catalog or workspace is deleted."""
+        if not assistant_ids:
+            return []
+        cursor = transaction.collection(self._collection_name).find(
+            {"assistant_id": {"$in": assistant_ids}},
+            projection={
+                "assistant_id": 1, "state": 1, "current_sandbox_id": 1,
+                "provisioning_session_id": 1,
+            },
+        )
+        return [doc async for doc in cursor]
+
     async def has_assistant_workspace(self, assistant_id: str) -> bool:
         collection = await get_async_collection(self._collection_name)
         found = await run_mongo_with_retry(

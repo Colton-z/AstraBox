@@ -56,7 +56,7 @@ CLAUDE_CODE_VERSION ?= 2.1.266
 SANDBOX_BASE_IMAGE  ?= ghcr.io/agent-infra/sandbox:1.11.0
 NPM_REGISTRY        ?= https://registry.npmjs.org/
 
-.PHONY: help install install-py install-web install-channel-gateway dev test test-py test-postgresql test-mongo test-opensandbox lint typecheck fmt-check check-e2e-collection \
+.PHONY: help install install-py install-web install-channel-gateway dev test test-py test-postgresql test-mongo test-mongo-transactions test-opensandbox lint typecheck fmt-check check-e2e-collection \
         check-comments check-comments-report check-i18n check-upstream check-api-client check-all-in-one check-dockerfile-modes audit-interaction audit-ui audit-console \
         test-web test-channel-gateway test-layout utilisation build-web build-dist e2e e2e-smoke e2e-browser e2e-live \
         build-agent-image build-assistant-image build-dsh-image build-codex-image build-pi-image build-workspace-mounter-image build-all-in-one-image clean \
@@ -103,10 +103,13 @@ test-py: ## Fast unit suite (database-backed and live markers are deselected).
 	$(NODE_TOOLCHAIN) $(PYTEST)
 
 test-postgresql: ## Production PostgreSQL contract (explicit URL or maintained local Compose credentials).
-	$(NODE_TOOLCHAIN) $(PYTEST) -m postgresql tests/postgresql_collection_conformance_test.py tests/postgresql_schema_migrations_test.py tests/postgresql_transcript_sequence_test.py
+	$(NODE_TOOLCHAIN) $(PYTEST) -m postgresql tests/postgresql_collection_conformance_test.py tests/postgresql_schema_migrations_test.py tests/postgresql_transcript_sequence_test.py tests/sql_document_transaction_test.py tests/environment_delete_test.py tests/environment_delete_lifecycle_test.py
 
 test-mongo: ## Opt-in: the mongo conformance suite. Needs a reachable mongod (ASTRABOX_DB_URL=mongodb://…) + `pip install -e '.[mongo]'`.
 	$(NODE_TOOLCHAIN) $(PYTEST) -m mongo
+
+test-mongo-transactions: ## Native Mongo transactions: requires a replica-set or sharded ASTRABOX_DB_URL and the [mongo] extra.
+	$(NODE_TOOLCHAIN) $(PYTEST) -m mongo_transaction
 
 test-opensandbox: ## Opt-in: the open_sandbox LIVE conformance lane. Needs a reachable opensandbox-server (ASTRABOX_OPENSANDBOX_LIVE_BASE_URL=http://…) that can pull the agent image; skips when unset.
 	$(NODE_TOOLCHAIN) $(PYTEST) -m opensandbox

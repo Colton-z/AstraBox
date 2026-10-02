@@ -41,6 +41,10 @@ EngineKind = str
 ENGINE_MESSAGE_EVENT_TYPE = "engine.message"
 
 
+class EngineOutputAlreadyObserved(RuntimeError):
+    """A live host already owns the engine output connection."""
+
+
 class EngineStreamDetached(RuntimeError):
     """The turn's event stream ended without the engine's own terminal.
 
@@ -130,6 +134,8 @@ class EngineOutputCheckpoint:
 
     after_sequence: int | None = None
     committed_frames: tuple[dict[str, Any], ...] = ()
+    #: The latest committed adapter-owned cursor. Core never interprets it.
+    output_cursor: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -207,10 +213,30 @@ class ResidentOutputCheckpoint:
     """
 
     open_response_id: str | None = None
+    #: Whether the unfinished output still owns the active Session overlay.
+    #: A newly accepted input may hold that slot while the engine finishes it.
+    open_response_owns_slot: bool = True
     boundary_sequence: int | None = None
     after_sequence: int | None = None
     committed_frames: tuple[dict[str, Any], ...] = ()
     external_turn_active: bool = False
+    #: Opaque dispatch anchor for the same sandbox and native Session. Only
+    #: the adapter may decode it to rejoin an existing output connection.
+    engine_turn_id: str | None = None
+    #: End of the latest journaled terminal on that connection. An idle
+    #: observer must replay what follows, including output during downtime.
+    replay_after_sequence: int | None = None
+    #: Resume information carried by the latest frame of an open response.
+    output_cursor: dict[str, Any] | None = None
+    #: Resume information carried by the latest matching connection terminal.
+    replay_output_cursor: dict[str, Any] | None = None
+    #: Replay boundary preceding an unfinished response, which can be older
+    #: than a later input's already-published terminal. Both remain opaque.
+    open_response_replay_cursor: dict[str, Any] | None = None
+    #: Highest reader position in frames or idle engine facts. A connection
+    #: with a local counter continues above it; native replay still uses the
+    #: adapter's cursor, not this delivery position.
+    high_water_sequence: int | None = None
 
 
 @runtime_checkable
@@ -228,6 +254,8 @@ class ResidentOutputSink(Protocol):
         self,
         *,
         engine_kind: str,
+        sandbox_id: str | None = None,
+        engine_session_key: str | None = None,
     ) -> ResidentOutputCheckpoint: ...
 
     async def open_resident_response(
@@ -354,7 +382,7 @@ class EngineStartupContext:
     #: an existing Session. Engines use it solely to choose their vendor's
     #: reconnect handshake; sandbox adoption and workspace/credential refresh
     #: have already happened.
-    attach_mode: Literal["full", "lightweight"] | None = None
+    attach_mode: Literal["full", "lightweight", "observe"] | None = None
 
 
 @dataclass(frozen=True)
@@ -1005,6 +1033,10 @@ class EngineAdapter(ABC):
         """Declare what this engine needs in a box, without creating one."""
 
         ...
+
+    def supports_unowned_output_attach(self) -> bool:
+        """Whether reconnect can atomically leave an existing observer alone."""
+        return False
 
     def startup_material_request(
         self,

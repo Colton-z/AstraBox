@@ -267,6 +267,24 @@ async def get_async_collection(collection_name: str) -> Any:
     return collection
 
 
+async def document_transaction_runner() -> Callable[..., Awaitable[Any]] | None:
+    """Resolve the backend's optional atomic multi-collection callback runner.
+
+    Absence keeps ordinary collection operations available. Operations whose
+    correctness requires a transaction must refuse rather than emulate one
+    with independently committed collection calls.
+    """
+    backend = _resolve_backend(active_backend_name())
+    resolve = getattr(backend, "get_transaction_runner", None)
+    if callable(resolve):
+        runner = resolve()
+        if inspect.isawaitable(runner):
+            runner = await runner
+    else:
+        runner = getattr(backend, "run_transaction", None)
+    return runner if callable(runner) else None
+
+
 async def create_all() -> None:
     """Create the active backend's base schema when needed (idempotent).
 

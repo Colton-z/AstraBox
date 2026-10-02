@@ -607,15 +607,10 @@ class SandboxLifecycleService:
             if agent_id in parked_agent_ids:
                 ignored_agents[agent_id] = "agent_box_parked"
                 continue
-            applied = await self._agent_repo.compare_and_update_agent(
+            applied = await self._agent_repo.clear_resident_sandbox_binding(
                 agent_id,
-                expected={"sandbox_id": target},
-                updates={
-                    "sandbox_id": None,
-                    "sandbox_backend": None,
-                    "_resident_sandbox_generation": None,
-                    "expires_at": None,
-                },
+                sandbox_id=target,
+                sandbox_backend=str(agent.get("sandbox_backend") or "") or None,
             )
             if applied:
                 converged_agents.append(agent_id)

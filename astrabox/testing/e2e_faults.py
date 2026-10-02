@@ -18,6 +18,8 @@ Hook points (see :mod:`astrabox.common.fault_injection`):
   ``entry_count``) — consume one temporary append rejection.
 - ``turn_frame_processed`` (context: ``session_id``, ``frame_type``) — hold the
   bridge after one matching frame until the declaration releases it.
+- ``prepared_slot_renewal`` (context: ``agent_id``, ``slot_id``) — hold a
+  replacement build while the published slot remains available for a claim.
 
 The reversible sandbox-egress fault uses the same armed support module but an
 admin test route rather than a watched file. It is a requested mutation, not a
@@ -41,7 +43,7 @@ from astrabox.common.logger.logger_factory import get_logger
 logger = get_logger(__name__)
 
 _FAULT_FILE = "/tmp/astrabox-e2e-turn-terminal-drop-faults.json"
-_FRAME_HOLD_RELEASE_TIMEOUT_SECONDS = 120.0
+_HOLD_RELEASE_TIMEOUT_SECONDS = 120.0
 _LOCK = threading.Lock()
 
 
@@ -59,6 +61,7 @@ def install_e2e_fault_hooks() -> None:
     register_fault_hook("turn_terminal_drop", maybe_consume_turn_terminal_drop)
     register_fault_hook("transcript_append_5xx", maybe_consume_transcript_append_5xx)
     register_fault_barrier("turn_frame_processed", maybe_hold_turn_after_frame)
+    register_fault_barrier("prepared_slot_renewal", maybe_hold_prepared_slot_renewal)
     logger.warning(
         "E2E fault hooks installed (ASTRABOX_E2E_FAULTS armed) — "
         "this must never be a production deployment"
@@ -225,6 +228,7 @@ def _consume_counted_fault(
     session_id: str,
     consumed_value: Any,
     frame_type: str = "",
+    match_context: dict[str, str] | None = None,
 ) -> str | None:
     """Consume one matching count and return the declaration path that fired."""
     paths = _fault_paths()
@@ -244,6 +248,16 @@ def _consume_counted_fault(
                 not isinstance(payload, dict)
                 or not _context_matches(payload, session_id)
                 or (frame_type and not _frame_type_matches(payload, frame_type))
+                or (
+                    match_context is not None
+                    and (
+                        not isinstance(payload.get("match"), dict)
+                        or any(
+                            payload["match"].get(key) != value
+                            for key, value in match_context.items()
+                        )
+                    )
+                )
             ):
                 continue
             faults = payload.get("faults")
@@ -320,8 +334,8 @@ def _consume_turn_frame_hold(*, session_id: str, frame_type: str) -> str | None:
     )
 
 
-def _wait_for_turn_frame_release(path: str, *, session_id: str) -> None:
-    deadline = time.monotonic() + _FRAME_HOLD_RELEASE_TIMEOUT_SECONDS
+def _wait_for_hold_release(path: str, *, label: str) -> None:
+    deadline = time.monotonic() + _HOLD_RELEASE_TIMEOUT_SECONDS
     while time.monotonic() < deadline:
         try:
             with open(path, encoding="utf-8") as fp:
@@ -332,8 +346,8 @@ def _wait_for_turn_frame_release(path: str, *, session_id: str) -> None:
             return
         time.sleep(0.05)
     raise TimeoutError(
-        f"e2e turn-frame hold was not released for session {session_id!r} "
-        f"within {_FRAME_HOLD_RELEASE_TIMEOUT_SECONDS:.0f}s"
+        f"e2e {label} hold was not released "
+        f"within {_HOLD_RELEASE_TIMEOUT_SECONDS:.0f}s"
     )
 
 
@@ -355,9 +369,9 @@ async def maybe_hold_turn_after_frame(
         path,
     )
     await asyncio.to_thread(
-        _wait_for_turn_frame_release,
+        _wait_for_hold_release,
         path,
-        session_id=session_id,
+        label=f"turn-frame for session {session_id!r}",
     )
     logger.warning(
         "e2e released turn-frame hold session=%s frame_type=%s path=%s",
@@ -365,3 +379,20 @@ async def maybe_hold_turn_after_frame(
         frame_type,
         path,
     )
+
+
+async def maybe_hold_prepared_slot_renewal(*, agent_id: str, slot_id: str) -> None:
+    """Hold only the declared Agent's exact renewal until its claim completes."""
+    context = {"agent_id": agent_id, "slot_id": slot_id}
+    path = _consume_counted_fault(
+        "hold_prepared_slot_renewal",
+        session_id="",
+        match_context=context,
+        consumed_value={"fault": "hold_prepared_slot_renewal", **context},
+    )
+    if path is not None:
+        await asyncio.to_thread(
+            _wait_for_hold_release,
+            path,
+            label=f"prepared-slot renewal for Agent {agent_id!r} slot {slot_id!r}",
+        )

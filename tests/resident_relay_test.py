@@ -61,8 +61,20 @@ class _Seam:
         return record.get("type") == "start"
 
     @staticmethod
+    def platform_run(
+        record: dict[str, Any], *, pending: bool, active: bool,
+    ) -> bool:
+        return pending or active
+
+    @staticmethod
     def settles_run(record: dict[str, Any]) -> bool:
         return record.get("type") == "settled"
+
+    @staticmethod
+    def handoff_to_platform(
+        translator: _Translator, record: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        return None
 
     @staticmethod
     def response_id(record: dict[str, Any], sequence: int) -> str:
@@ -397,6 +409,32 @@ async def test_wire_replay_from_before_the_relay_never_opens_a_response() -> Non
         )
 
         assert h.sink.opened == [("toy:110", 110)]
+    finally:
+        await h.relay.stop()
+
+
+@pytest.mark.asyncio
+async def test_idle_reconnect_reads_replies_completed_during_host_downtime() -> None:
+    """The pipe's current end is newer than the platform's last saved output."""
+
+    h = _Harness(
+        checkpoint=ResidentOutputCheckpoint(replay_after_sequence=12), floor=500,
+    )
+    h.relay.start()
+    try:
+        await h.feed(
+            (10, {"type": "start"}),
+            (11, {"type": "text", "text": "old foreground reply"}),
+            (12, {"type": "settled"}),
+            (20, {"type": "start"}),
+            (21, {"type": "text", "text": "reply while host was down"}),
+            (22, {"type": "settled"}),
+        )
+
+        assert h.sink.opened == [("toy:20", 20)]
+        assert [frame["delta"] for frame in h.sink.frames] == ["reply while host was down"]
+        assert h.sink.closed == [("toy:20", "completed", 22)]
+        assert await h.turn_records() == []
     finally:
         await h.relay.stop()
 

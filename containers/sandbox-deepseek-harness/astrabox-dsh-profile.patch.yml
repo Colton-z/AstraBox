@@ -1,6 +1,6 @@
 # AstraBox's overlay on the harness's own web profile.
 #
-# One entry, and it exists so the session log can be mirrored out of the box.
+# The session log can be mirrored out of the box.
 # The harness keeps each conversation in an append-only artifact and defaults
 # it to checksummed Zstandard frames; `none` selects the same log as plain
 # JSONL (`logSuffix` in the backend's own format module returns `.jsonl` for
@@ -22,3 +22,9 @@
   config:
     root: !!js dshHomePath('sessions')
     compression: none
+
+# Only the platform collector uses this exclusive carrier. The vendor's mux,
+# authentication and native browser routes remain owned by the web profile.
+- insert:
+    - id: astrabox-output
+      name: /opt/dsh/output.mjs

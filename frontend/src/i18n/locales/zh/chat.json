@@ -1,4 +1,8 @@
 {
+  "diff": {
+    "loading": "正在加载文件变更…",
+    "load_failed": "无法加载文件变更。"
+  },
   "history": {
     "loading_older": "正在加载更早消息…",
     "load_older_failed": "更早消息加载失败",
@@ -53,6 +57,29 @@
     "commands": "命令",
     "shortcut_hint": "Shift+Enter 换行",
     "remove_attachment": "移除附件"
+  },
+  "voice": {
+    "start": "开始语音输入",
+    "requesting": "等待麦克风授权…",
+    "stop": "停止录音并转写",
+    "transcribing": "正在转写…",
+    "cancel": "取消语音输入",
+    "retry": "重试转写",
+    "retry_short": "重试",
+    "discard": "丢弃录音",
+    "retained": "转写失败，录音已暂存在当前页面。请重试或丢弃录音后再发送。离开或刷新页面会清除录音。",
+    "choose_model": "选择转写模型",
+    "unsupported": "请通过 HTTPS 在支持麦克风录音的浏览器中使用语音输入",
+    "retry_options": "重试语音输入",
+    "permission_denied": "麦克风访问被拒绝，请在浏览器中允许后重试。",
+    "no_microphone": "未找到麦克风。",
+    "empty": "未识别到语音，请重新录音。",
+    "too_large": "录音过大，请缩短录音后重试。",
+    "timeout": "语音转写超时，请重试。",
+    "not_configured": "当前部署尚未配置语音输入。",
+    "invalid_audio": "暂不支持此录音格式，请尝试其他浏览器。",
+    "transcription_failed": "录音转写失败，请重试。",
+    "failed": "语音输入失败，请重试。"
   },
   "permission_mode": {
     "choose": "选择权限模式",

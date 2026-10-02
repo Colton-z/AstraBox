@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import {
+  act,
   cleanup,
   fireEvent,
   isInaccessible,
@@ -184,6 +185,62 @@ describe('SessionDetailPage last_error', () => {
     await screen.findByRole('link', { name: /export/i });
     expect(screen.queryByText(/last error/i)).toBeNull();
     expect(container.querySelector('[data-slot="verbatim"]')).toBeNull();
+  });
+});
+
+describe('SessionDetailPage read freshness', () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(2026, 8, 28, 9, 0, 0));
+  });
+  afterEach(() => vi.useRealTimers());
+
+  it('dates the actual read and refreshes a new incident without navigation', async () => {
+    renderPage();
+    expect(await screen.findByText('Captured 2026-09-28 09:00:00')).toBeTruthy();
+
+    detail = async () => sessionDetail({ state: 'RECOVERY_REQUIRED', last_error: 'new incident' });
+    vi.setSystemTime(new Date(2026, 8, 28, 9, 5, 0));
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+
+    expect(await screen.findByText('new incident')).toBeTruthy();
+    expect(screen.getByText('Captured 2026-09-28 09:05:00')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Refresh' }).hasAttribute('disabled')).toBe(false);
+  });
+
+  it('keeps the last read time when a background refresh fails', async () => {
+    detail = async () => sessionDetail({ last_error: 'last observed incident' });
+    renderPage();
+    await screen.findByText('Captured 2026-09-28 09:00:00');
+    const failedRead = vi.fn(async () => { throw new Error('network unavailable'); });
+    detail = failedRead;
+    vi.setSystemTime(new Date(2026, 8, 28, 9, 5, 0));
+
+    await act(async () => { fireEvent.online(window); });
+
+    expect(failedRead).toHaveBeenCalledOnce();
+    expect(screen.getByText('last observed incident')).toBeTruthy();
+    expect(screen.getByText('Captured 2026-09-28 09:00:00')).toBeTruthy();
+    expect(screen.queryByText('Captured 2026-09-28 09:05:00')).toBeNull();
+  });
+
+  it('does not let an older background read replace a manually refreshed incident', async () => {
+    renderPage();
+    await screen.findByText('Captured 2026-09-28 09:00:00');
+    let finishOlderRead!: (value: AdminSessionDetail) => void;
+    detail = () => new Promise((resolve) => { finishOlderRead = resolve; });
+    vi.setSystemTime(new Date(2026, 8, 28, 9, 1, 0));
+    fireEvent.online(window);
+
+    detail = async () => sessionDetail({ last_error: 'newer incident' });
+    vi.setSystemTime(new Date(2026, 8, 28, 9, 2, 0));
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    await screen.findByText('newer incident');
+    await act(async () => { finishOlderRead(sessionDetail({ last_error: 'older incident' })); });
+
+    expect(screen.getByText('newer incident')).toBeTruthy();
+    expect(screen.queryByText('older incident')).toBeNull();
+    expect(screen.getByText('Captured 2026-09-28 09:02:00')).toBeTruthy();
   });
 });
 

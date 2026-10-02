@@ -705,7 +705,9 @@ async def test_the_reaper_gives_back_an_abandoned_box_and_keeps_a_lived_in_one(
         async def list_agents_by_sandbox_id(self, sandbox_id: str):
             return [{"agent_id": "a1", "_prepared_slot": None, "box_admissions": []}]
 
-        async def compare_and_update_agent(self, agent_id, *, expected, updates):
+        async def clear_resident_sandbox_binding(self, agent_id, *, sandbox_id, sandbox_backend):
+            assert sandbox_id == BOX
+            assert sandbox_backend is None
             self.cleared.append(agent_id)
             return True
 

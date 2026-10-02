@@ -44,6 +44,26 @@
         "title": "AdminAsyncioTasks",
         "type": "object"
       },
+      "AdminDeletedEnvironment": {
+        "additionalProperties": true,
+        "description": "The identity of the preset removed by an administrator.",
+        "properties": {
+          "deleted": {
+            "title": "Deleted",
+            "type": "boolean"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "deleted"
+        ],
+        "title": "AdminDeletedEnvironment",
+        "type": "object"
+      },
       "AdminEnvironmentModels": {
         "additionalProperties": true,
         "description": "Model ids an environment's provider can offer.\n\nEmpty when the provider publishes no authoritative catalog; the console\nthen accepts a free-text model id.",
@@ -1712,6 +1732,17 @@
             ],
             "title": "Placement"
           },
+          "prepared_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prepared At"
+          },
           "prepared_count": {
             "title": "Prepared Count",
             "type": "integer"
@@ -2173,6 +2204,28 @@
           "data"
         ],
         "title": "ApiEnvelope[AdminApiWorkspaceResult]",
+        "type": "object"
+      },
+      "ApiEnvelope_AdminDeletedEnvironment_": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/AdminDeletedEnvironment"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[AdminDeletedEnvironment]",
         "type": "object"
       },
       "ApiEnvelope_AdminEnvironmentModels_": {
@@ -3429,6 +3482,28 @@
         "title": "ApiEnvelope[SessionDirectoryCreated]",
         "type": "object"
       },
+      "ApiEnvelope_SessionFileChanges_": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/SessionFileChanges"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[SessionFileChanges]",
+        "type": "object"
+      },
       "ApiEnvelope_SessionFileListing_": {
         "properties": {
           "code": {
@@ -3713,6 +3788,50 @@
           "data"
         ],
         "title": "ApiEnvelope[SharedSession]",
+        "type": "object"
+      },
+      "ApiEnvelope_SpeechInputOptions_": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/SpeechInputOptions"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[SpeechInputOptions]",
+        "type": "object"
+      },
+      "ApiEnvelope_SpeechInputTranscript_": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/SpeechInputTranscript"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[SpeechInputTranscript]",
         "type": "object"
       },
       "ApiEnvelope_StartedAgentConversation_": {
@@ -4745,6 +4864,25 @@
         "title": "BackgroundTaskState",
         "type": "object"
       },
+      "Body_transcribe_session_speech_api_v1_sessions__session_id__speech_input_post": {
+        "properties": {
+          "file": {
+            "contentMediaType": "application/octet-stream",
+            "title": "File",
+            "type": "string"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          }
+        },
+        "required": [
+          "model",
+          "file"
+        ],
+        "title": "Body_transcribe_session_speech_api_v1_sessions__session_id__speech_input_post",
+        "type": "object"
+      },
       "Body_upload_session_files_api_v1_sessions__session_id__files_upload_post": {
         "properties": {
           "files": {
@@ -5685,6 +5823,17 @@
               }
             ],
             "title": "Enabled"
+          },
+          "execution_user_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Execution User Id"
           },
           "prompt_prefix": {
             "anyOf": [
@@ -6799,6 +6948,73 @@
           "path"
         ],
         "title": "SessionDirectoryCreated",
+        "type": "object"
+      },
+      "SessionFileChangeMessage": {
+        "additionalProperties": false,
+        "properties": {
+          "message_id": {
+            "title": "Message Id",
+            "type": "string"
+          },
+          "parts": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Parts",
+            "type": "array"
+          }
+        },
+        "required": [
+          "message_id",
+          "parts"
+        ],
+        "title": "SessionFileChangeMessage",
+        "type": "object"
+      },
+      "SessionFileChangeTurn": {
+        "additionalProperties": false,
+        "properties": {
+          "messages": {
+            "items": {
+              "$ref": "#/components/schemas/SessionFileChangeMessage"
+            },
+            "title": "Messages",
+            "type": "array"
+          },
+          "turn_id": {
+            "title": "Turn Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "turn_id",
+          "messages"
+        ],
+        "title": "SessionFileChangeTurn",
+        "type": "object"
+      },
+      "SessionFileChanges": {
+        "additionalProperties": false,
+        "properties": {
+          "through_seq": {
+            "title": "Through Seq",
+            "type": "integer"
+          },
+          "turns": {
+            "items": {
+              "$ref": "#/components/schemas/SessionFileChangeTurn"
+            },
+            "title": "Turns",
+            "type": "array"
+          }
+        },
+        "required": [
+          "through_seq",
+          "turns"
+        ],
+        "title": "SessionFileChanges",
         "type": "object"
       },
       "SessionFileEntry": {
@@ -7945,6 +8161,47 @@
         "title": "SharedSession",
         "type": "object"
       },
+      "SpeechInputOptions": {
+        "additionalProperties": false,
+        "properties": {
+          "max_audio_bytes": {
+            "title": "Max Audio Bytes",
+            "type": "integer"
+          },
+          "max_recording_seconds": {
+            "title": "Max Recording Seconds",
+            "type": "integer"
+          },
+          "models": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Models",
+            "type": "array"
+          }
+        },
+        "required": [
+          "models",
+          "max_audio_bytes",
+          "max_recording_seconds"
+        ],
+        "title": "SpeechInputOptions",
+        "type": "object"
+      },
+      "SpeechInputTranscript": {
+        "additionalProperties": false,
+        "properties": {
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "SpeechInputTranscript",
+        "type": "object"
+      },
       "StartConversationRequest": {
         "additionalProperties": false,
         "description": "Conversation start body.\n\nCredentials are deliberately absent. They are bound to the managed Agent or\nAssistant configuration; accepting a user-supplied Vault id here would let a\nconversation replace that management decision. Keeping an empty, strict\nmodel lets ``POST`` without a body and ``{}`` work while unknown fields fail.",
@@ -8641,7 +8898,7 @@
   "info": {
     "summary": "Self-hosted agent runtime that runs installed Agent programs in isolated sandboxes and streams responses over the AI SDK Data Stream Protocol (SSE).",
     "title": "AstraBox",
-    "version": "0.1.1"
+    "version": "0.1.2"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -9476,6 +9733,44 @@
       }
     },
     "/api/v1/admin/environments/{name}": {
+      "delete": {
+        "description": "Delete a preset only after checking its Agent and Assistant references.",
+        "operationId": "delete_admin_environment_api_v1_admin_environments__name__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_AdminDeletedEnvironment_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Admin Environment"
+      },
       "put": {
         "description": "Upsert a single environment preset by name.",
         "operationId": "upsert_admin_environment_api_v1_admin_environments__name__put",
@@ -12967,6 +13262,56 @@
         "summary": "End Conversation"
       }
     },
+    "/api/v1/sessions/{session_id}/file-changes": {
+      "get": {
+        "operationId": "get_session_file_changes_api_v1_sessions__session_id__file_changes_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "after_seq",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "After Seq",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_SessionFileChanges_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Session File Changes"
+      }
+    },
     "/api/v1/sessions/{session_id}/files/delete": {
       "post": {
         "operationId": "delete_session_files_api_v1_sessions__session_id__files_delete_post",
@@ -13772,6 +14117,92 @@
           }
         },
         "summary": "Create Share"
+      }
+    },
+    "/api/v1/sessions/{session_id}/speech-input": {
+      "get": {
+        "operationId": "get_speech_input_options_api_v1_sessions__session_id__speech_input_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_SpeechInputOptions_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Speech Input Options"
+      },
+      "post": {
+        "operationId": "transcribe_session_speech_api_v1_sessions__session_id__speech_input_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_transcribe_session_speech_api_v1_sessions__session_id__speech_input_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_SpeechInputTranscript_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Transcribe Session Speech"
       }
     },
     "/api/v1/sessions/{session_id}/terminal/stream": {

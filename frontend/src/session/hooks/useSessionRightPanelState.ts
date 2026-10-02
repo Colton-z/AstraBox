@@ -3,6 +3,7 @@ import type { UIMessage as SDKUIMessage } from 'ai';
 import type { SessionRecord } from '../../types';
 import { isSandboxLiveForSession } from '../../utils/format';
 import { changedFilePaths, computeFileChanges } from '../fileChanges';
+import { useSessionFileChanges } from './useSessionFileChanges';
 import { getSessionRightPanelCapabilities, type SessionRightPanelTab } from '../sessionCapabilities';
 
 type TranslateFn = (key: string) => string;
@@ -31,10 +32,15 @@ export function useSessionRightPanelState({
   const diffEnabled = rightPanelCaps.tabs.includes('diff');
   const [rightTab, setRightTab] = useState<SessionRightPanelTab>(rightPanelCaps.defaultTab);
 
+  const durableChanges = useSessionFileChanges({
+    sessionId: session.session_id, enabled: diffEnabled, lifecycleState,
+    lastTurnId: session.last_turn_id, messages,
+  });
+
   // ── File changes for diff panel ──────────────────────────────
   const fileChanges = useMemo(
-    () => computeFileChanges(messages, diffEnabled && rightTab === 'diff'),
-    [diffEnabled, messages, rightTab],
+    () => computeFileChanges(durableChanges.messages, diffEnabled && rightTab === 'diff'),
+    [diffEnabled, durableChanges.messages, rightTab],
   );
 
   useEffect(() => {
@@ -44,8 +50,8 @@ export function useSessionRightPanelState({
   }, [rightPanelCaps, rightTab]);
   const [selectedDiffFile, setSelectedDiffFile] = useState<string | null>(null);
   const uniqueChangedFiles = useMemo(
-    () => changedFilePaths(messages, diffEnabled).length,
-    [diffEnabled, messages],
+    () => changedFilePaths(durableChanges.messages, diffEnabled && !durableChanges.error).length,
+    [diffEnabled, durableChanges.messages, durableChanges.error],
   );
 
   const [terminalCwd, setTerminalCwd] = useState<string | null>(session.terminal_cwd ?? null);
@@ -68,6 +74,9 @@ export function useSessionRightPanelState({
   return {
     rightPanelCaps,
     fileChanges,
+    fileChangesLoading: durableChanges.loading,
+    fileChangesError: durableChanges.error,
+    refreshFileChanges: durableChanges.refresh,
     rightTab,
     setRightTab,
     selectedDiffFile,

@@ -8,8 +8,8 @@ Lane constraints preserve independent test results:
 
   · Budgets belong to the runner. Its timeout reporter terminates the process
     group, so a spec cannot independently extend its own execution window.
-  · Sandbox destruction runs serially because the default Agent uses shared
-    tenancy. Destroying its sandbox would also terminate sibling tests.
+  · Sandbox destruction needs isolated ownership to run in parallel. A test's
+    cold Agent owns its boxes; the deployment's default Agent can have siblings.
   · Workspace parking runs serially because committing the filesystem competes
     for host resources and must complete within the lane budget.
   · A sandbox-wide fault or sole-occupancy assertion needs a dedicated Agent.
@@ -230,27 +230,60 @@ def test_the_lane_rules_pass_a_spec_that_only_uses_the_shared_budget() -> None:
     assert lane_violations("candidate.parallel.spec.ts", source) == []
 
 
-def test_a_spec_that_destroys_a_sandbox_runs_in_the_serial_group() -> None:
-    """A killed box takes its cohabitants with it, so it may not have any.
+def destruction_needs_serial(source: str) -> bool:
+    """Require isolation evidence before allowing a destructive spec in parallel.
 
-    The Agent these specs use holds one box for all its conversations. With five
-    workers that is five conversations in one box, and a spec that kills it ends
-    the other four — reported against whichever of them noticed first, which is
-    never the spec that did it.
+    The cold fixture creates a test-owned Agent on conversation tenancy. Other
+    creation paths need separate review; mixing one with the cold fixture does
+    not establish ownership for every sandbox in a file.
     """
+    code = executable(source)
+    if not DESTROYS_A_SANDBOX.search(code):
+        return False
+    return not re.search(r"\bcreateColdTestAgent\s*\(", code) or bool(
+        re.search(r"\b(?:defaultAgent|createAgent)\s*\(", code)
+    )
+
+
+@pytest.mark.parametrize(
+    ("setup", "expected"),
+    [
+        ("const agent = await api.createColdTestAgent('owned');", False),
+        ("const agent = await api.defaultAgent();", True),
+        ("const agent = await api.createAgent(config);", True),
+        (
+            "await api.createColdTestAgent('owned'); await api.defaultAgent();",
+            True,
+        ),
+        ("// await api.createColdTestAgent('owned');\n", True),
+        ("/* await api.createColdTestAgent('owned'); */", True),
+    ],
+)
+def test_parallel_destruction_requires_a_dedicated_fixture(
+    setup: str, expected: bool
+) -> None:
+    assert destruction_needs_serial(setup + "\nawait api.terminateSandbox(id);") is expected
+
+
+def test_describing_sandbox_destruction_does_not_require_serial_execution() -> None:
+    assert not destruction_needs_serial("// api.terminateSandbox(id);\n")
+
+
+def test_shared_sandbox_destruction_runs_in_the_serial_group() -> None:
+    """Destroying a test-owned box is safe; unproven ownership requires serial."""
     exclusive = CONTRACT_JSON["playwright"]["exclusive"]
     serial = set(exclusive["serial_files"])
     shared: list[str] = []
     for path in sorted(SPECS.glob("*.exclusive.spec.ts")):
-        if not DESTROYS_A_SANDBOX.search(path.read_text(encoding="utf-8")):
+        if not destruction_needs_serial(path.read_text(encoding="utf-8")):
             continue
         entry = f"specs/{path.name}"
         if entry not in serial:
             shared.append(entry)
 
     assert shared == [], (
-        "these specs destroy a sandbox their cohabitants are still using; "
-        f"add them to the contract's serial_files: {shared}"
+        "these destructive specs lack a dedicated cold fixture; establish "
+        f"isolated ownership or add them to the contract's serial_files: {shared}"
     )
 
 

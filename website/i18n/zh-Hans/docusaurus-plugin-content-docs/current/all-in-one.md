@@ -64,7 +64,7 @@ docker run -d --name astrabox --restart unless-stopped \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v astrabox-data:/data \
   --env-file ~/.config/astrabox/model.env \
-  ghcr.io/colton-z/astrabox:0.1.1
+  ghcr.io/colton-z/astrabox:0.1.2
 ```
 
 然后查看日志：
@@ -144,7 +144,7 @@ AstraBox，保证备份一致：
 ```bash
 docker stop astrabox
 docker run --rm -v astrabox-data:/data -v "$PWD":/backup --entrypoint tar \
-  ghcr.io/colton-z/astrabox:0.1.1 -czf /backup/astrabox-data.tgz -C /data .
+  ghcr.io/colton-z/astrabox:0.1.2 -czf /backup/astrabox-data.tgz -C /data .
 docker start astrabox
 ```
 
@@ -153,7 +153,7 @@ docker start astrabox
 ```bash
 docker volume create astrabox-data-restored
 docker run --rm -v astrabox-data-restored:/data -v "$PWD":/backup --entrypoint tar \
-  ghcr.io/colton-z/astrabox:0.1.1 -xzf /backup/astrabox-data.tgz -C /data
+  ghcr.io/colton-z/astrabox:0.1.2 -xzf /backup/astrabox-data.tgz -C /data
 ```
 
 然后删除旧容器，用 `-v astrabox-data-restored:/data` 运行第 2 步的命令。恢复出的副本

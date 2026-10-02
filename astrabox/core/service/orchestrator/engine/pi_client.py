@@ -15,9 +15,9 @@ Three of pi's readings drive this client, and each is the vendor's own:
   its correlated ``prompt`` response reports that its handler returned.
 * **One command, one response.** A command carrying an ``id`` is answered
   once, with the same id, and ``success`` reports acceptance only — failures
-  after acceptance arrive as events. That response is the consumption
-  evidence ``data-input-consumed`` requires. A registered command's native
-  dialog or model start also proves its handler is already executing, before
+  after acceptance arrive as events. A queued follow-up starts its reply at
+  the native user-message boundary, after the previous answer. A registered
+  command's native dialog or model start proves its handler is executing before
   that handler can return its final response.
 * **A prompt sent during streaming must say how to queue.** Pi refuses one
   that does not. The platform FIFO means "after the work in flight", which is
@@ -47,6 +47,7 @@ from astrabox.core.service.orchestrator.engine.base import (
     EngineInputCommand,
     EngineStreamDetached,
     EngineTurnReceipt,
+    ResidentOutputCheckpoint,
     ResidentOutputSink,
 )
 from astrabox.core.service.orchestrator.engine.emissions import (
@@ -139,6 +140,14 @@ def decode_turn_anchor(value: str) -> dict[str, str]:
     return result
 
 
+def _wire_emission(wire: PiWireRecord, frame: dict[str, Any]) -> EngineTurnEmission:
+    """Keep the native byte cursor on every projection of this record."""
+
+    return emission_from_translated_frame({
+        **frame, "__engine_sequence_number": wire.output_offset,
+    })
+
+
 def _interaction_contract(request: dict[str, Any]) -> dict[str, Any]:
     """One pi extension dialog as an AstraBox form contract.
 
@@ -211,6 +220,7 @@ class PiEngineClient:
         resume_session_key: str | None = None,
         pty_session_id: str | None = None,
         switch_prepared_session: bool = False,
+        output_checkpoint: ResidentOutputCheckpoint | None = None,
         http_transport: httpx.AsyncBaseTransport | None = None,
         resident_output_sink: ResidentOutputSink | None = None,
         event_sink: EngineEventSink | None = None,
@@ -230,6 +240,7 @@ class PiEngineClient:
         self._resume_session_key = str(resume_session_key or "").strip() or None
         self._configured_pty_session_id = str(pty_session_id or "").strip() or None
         self._switch_prepared_session = switch_prepared_session
+        self._output_checkpoint = output_checkpoint
         self._filesystem = filesystem
         self._search_file_paths = search_file_paths
         self._session_root = session_root
@@ -256,6 +267,7 @@ class PiEngineClient:
         self._translator: PiTurnTranslator | None = None
         #: The turn's stream ended at a dialog and has not been re-entered.
         self._parked = False
+        self._dialog_request_id: str | None = None
         #: The relay's number for each written input.
         self._submission_numbers: dict[str, int] = {}
         self._child_resources = PiChildResources()
@@ -292,8 +304,14 @@ class PiEngineClient:
             pty_session_id=self._configured_pty_session_id,
             http_transport=self._http_transport,
         )
-        await process.connect(since=0)
         self._process = process
+        if self._output_checkpoint is None:
+            await process.connect(since=0)
+        else:
+            await process.connect(
+                since=self._output_checkpoint.replay_after_sequence or 0,
+                takeover=False,
+            )
         self._configured_pty_session_id = process.pty_session_id
         if self._switch_prepared_session:
             await self._resume_prepared_session(process)
@@ -344,6 +362,7 @@ class PiEngineClient:
             current_sequence=process.current_output_offset,
             resident_output_sink=self._resident_output_sink,
             event_sink=self._event_sink,
+            checkpoint=self._output_checkpoint,
         )
         self._relay = relay
         relay.start()
@@ -568,13 +587,13 @@ class PiEngineClient:
             command = self._commands[command_id]
             try:
                 process = await self._ensure_process()
-                payload: dict[str, Any] = {"type": "prompt", "message": command.content}
-                if self._streaming:
-                    # Pi refuses a prompt sent mid-stream without a queueing
-                    # behavior. Its followUp queue is drained before the active
-                    # agent_settled; steer would instead cut into the answer
-                    # already in flight.
-                    payload["streamingBehavior"] = "followUp"
+                # Native activity can start without a platform input. Declare
+                # the queueing policy on every prompt; Pi applies it only when
+                # streaming, without a racy platform-side idle check.
+                payload: dict[str, Any] = {
+                    "type": "prompt", "message": command.content,
+                    "streamingBehavior": "followUp",
+                }
                 extension_command = activate and await self._is_extension_command(process, command.content)
                 if self._relay is not None:
                     self._submission_numbers[command_id] = (
@@ -687,7 +706,13 @@ class PiEngineClient:
             raise RuntimeError("pi turn has no translator; begin_delivery first")
         self._parked = False
 
-        for consumed in self._unreported_consumption_emissions():
+        if self._unreported_consumed_command_ids:
+            # The prompt ACK can precede the end of an autonomous answer.
+            # Its input marker also opens a new public reply, so publish it
+            # only after the relay hands this consumer its first owned record.
+            first = await self._next_turn_record()
+            self._command_prelude.appendleft(first)
+        for consumed in self._unreported_consumption_emissions(limit=1):
             yield consumed
 
         while True:
@@ -704,40 +729,54 @@ class PiEngineClient:
                     if not record.get("success"):
                         raise PiProtocolError(f"pi refused extension command: {record.get('error')}")
                     self._extension_acknowledged = True
-                    yield emission_from_translated_frame(raw_event_frame("prompt", record))
+                    yield _wire_emission(wire, raw_event_frame("prompt", record))
                     if not self._extension_agent_started or self._extension_terminal is not None:
                         terminal = self._extension_terminal or {
                             "type": "result", "finishReason": "stop",
                         }
                         self._settle_turn()
-                        yield emission_from_translated_frame(terminal)
+                        yield _wire_emission(wire, terminal)
                         return
                     continue
 
             if self._child_transcript is not None:
                 for diagnostic in await self._child_transcript.observe(record):
-                    yield emission_from_translated_frame(diagnostic)
+                    yield _wire_emission(wire, diagnostic)
 
-            # A concurrent SubmitInput wakes this stream with Pi's queue update
-            # or the queued user-message boundary.  Report the correlated
-            # prompt acknowledgement before any response frame for that input.
-            for consumed in self._unreported_consumption_emissions():
-                yield consumed
+            # Queue acceptance does not end the answer still using its tool.
+            # Pi consumes the next follow-up after that answer, at the same
+            # native user boundary used by resident-output handoff.
+            if self._unreported_consumed_command_ids:
+                previous = translator.finish_before_follow_up(record)
+                if previous is not None:
+                    yield _wire_emission(wire, {
+                        "type": "response-result",
+                        "data": {key: value for key, value in previous.items()
+                                 if key != "type" and not key.startswith("__")},
+                    })
+                    translator = PiTurnTranslator(session_id=self._engine_session_key)
+                    self._translator = translator
+                    for consumed in self._unreported_consumption_emissions(limit=1):
+                        yield consumed
 
             if record_type == "extension_ui_request":
                 method = str(record.get("method") or "").strip()
                 if method in _DIALOG_METHODS:
-                    yield emission_from_translated_frame(
-                        _interaction_frame(record)
-                    )
+                    interaction = _interaction_frame(record)
+                    self._dialog_request_id = str(interaction["interactionId"])
                     # Parked: pi is blocked on the answer, and the translator
                     # stays alive so the continuation resumes this same turn.
                     # A stop already sent means the platform settles the parked
                     # turn itself, so it is released as a stop at a park is.
                     if self._abort_request is not None:
+                        await asyncio.shield(self._abort_request)
+                        await self._cancel_dialog(process)
                         self._abandon_parked_turn()
                     else:
                         self._parked = True
+                    # The consumer exits at this emission, so the parked state
+                    # must already be visible to an interrupt of that segment.
+                    yield _wire_emission(wire, interaction)
                     return
                 # Fire-and-forget. Waiting on one would park the turn for a
                 # reply pi never reads.
@@ -753,7 +792,7 @@ class PiEngineClient:
                         else self._child_resources.observe_inspect_reply(record)
                     )
                     for child in facts:
-                        yield emission_from_translated_frame(child)
+                        yield _wire_emission(wire, child)
                     # A child the snapshot just changed is read for its own
                     # words. The command is an extension command, which pi's
                     # RPC guide says "executes immediately even during
@@ -768,13 +807,14 @@ class PiEngineClient:
                             },
                         )
                     continue
-                yield emission_from_translated_frame(raw_event_frame(method, record))
+                yield _wire_emission(wire, raw_event_frame(method, record))
                 continue
 
             if record_type == "response":
                 # No command was waiting for it; the pipe reports rather than
                 # drops, so it lands in the record as a diagnostic.
-                yield emission_from_translated_frame(
+                yield _wire_emission(
+                    wire,
                     raw_event_frame("unmatched_response", record)
                 )
                 continue
@@ -782,11 +822,11 @@ class PiEngineClient:
             if record_type == "entry_appended":
                 # Extension SessionStore writes are not model-loop events.
                 # A command may append after its model settles, before its ACK.
-                yield emission_from_translated_frame(raw_event_frame(record_type, record))
+                yield _wire_emission(wire, raw_event_frame(record_type, record))
                 continue
 
             for child in self._child_resources.observe_tool_event(record):
-                yield emission_from_translated_frame(child)
+                yield _wire_emission(wire, child)
             # A blocking launch reports its children on the tool call itself,
             # and they are owed the same read as one the widget announced.
             for request_id, reference in self._child_resources.inspect_requests():
@@ -803,7 +843,7 @@ class PiEngineClient:
                         if frame.get("type") == "result":
                             self._extension_terminal = frame
                         else:
-                            yield emission_from_translated_frame(frame)
+                            yield _wire_emission(wire, frame)
                     continue
                 if self._abort_request is not None:
                     # Pi can report an aborted lazy model setup as an error.
@@ -822,13 +862,13 @@ class PiEngineClient:
                 # turn", which is a defect only a second turn can show.
                 self._settle_turn()
             for frame in frames:
-                yield emission_from_translated_frame(frame)
+                yield _wire_emission(wire, frame)
             if translator.terminal_seen:
                 return
 
-    def _unreported_consumption_emissions(self) -> list[EngineTurnEmission]:
+    def _unreported_consumption_emissions(self, *, limit: int) -> list[EngineTurnEmission]:
         emissions: list[EngineTurnEmission] = []
-        while self._unreported_consumed_command_ids:
+        while self._unreported_consumed_command_ids and len(emissions) < limit:
             command_id = self._unreported_consumed_command_ids.popleft()
             command = self._commands.get(command_id)
             if command is None:
@@ -859,6 +899,7 @@ class PiEngineClient:
         self._extension_agent_started = False
         self._extension_terminal = None
         self._abort_request = None
+        self._dialog_request_id = None
         self._translator = None
         self._streaming = False
         self._active_command_id = None
@@ -904,6 +945,7 @@ class PiEngineClient:
                 raise PiProtocolError("pi select requires one of its declared choices")
             reply["value"] = answer_text
         await process.send_untracked(reply)
+        self._dialog_request_id = None
         return True
 
     # ── stopping ─────────────────────────────────────────────────────────
@@ -924,8 +966,19 @@ class PiEngineClient:
             # run's end or settle this turn: the platform settles it itself.
             # Its state is released here, as the terminal would have released
             # it, or the next message finds "pi already has an active turn".
+            await self._cancel_dialog(process)
             self._abandon_parked_turn()
         return True
+
+    async def _cancel_dialog(self, process: PiRpcProcess) -> None:
+        request_id = self._dialog_request_id
+        if request_id is not None:
+            # abort stops the model loop; a native dialog awaits its own reply.
+            await process.send_untracked({
+                "type": "extension_ui_response", "id": request_id,
+                "cancelled": True,
+            })
+            self._dialog_request_id = None
 
     def _abandon_parked_turn(self) -> None:
         self._parked = False
@@ -935,6 +988,7 @@ class PiEngineClient:
         self._extension_agent_started = False
         self._extension_terminal = None
         self._abort_request = None
+        self._dialog_request_id = None
         self._translator = None
         self._streaming = False
         self._active_command_id = None
@@ -1040,6 +1094,10 @@ class _PiRelaySeam:
     follow-up may still follow. Records are ordered by the pipe's output
     offset, which is pi's own stdout position and survives a reconnect. The
     client owns extension-command completion, which also awaits its prompt ACK.
+
+    A queued user message can start inside that run after the previous answer
+    finished. That boundary hands an engine-owned response over to the pending
+    platform input without declaring the native agent idle.
     """
 
     engine_kind = ENGINE_KIND
@@ -1061,11 +1119,23 @@ class _PiRelaySeam:
     def starts_run(record: dict[str, Any]) -> bool:
         return str(record.get("type") or "") == "agent_start"
 
+    @staticmethod
+    def platform_run(
+        record: dict[str, Any], *, pending: bool, active: bool,
+    ) -> bool:
+        return pending or active
+
     def settles_run(self, record: dict[str, Any]) -> bool:
         return (
             self._client._extension_command_id is None
             and str(record.get("type") or "") == "agent_settled"
         )
+
+    @staticmethod
+    def handoff_to_platform(
+        translator: PiTurnTranslator, record: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        return translator.finish_before_follow_up(record)
 
     def response_id(self, record: dict[str, Any], sequence: int) -> str:
         # Pi names no run; the native session plus the run's own position on
@@ -1151,6 +1221,7 @@ async def connect_pi_client(
     resume_session_key: str | None = None,
     pty_session_id: str | None = None,
     switch_prepared_session: bool = False,
+    output_checkpoint: ResidentOutputCheckpoint | None = None,
     port: int = EXECD_PORT,
     service_credential: str | None = None,
     resident_output_sink: ResidentOutputSink | None = None,
@@ -1185,6 +1256,7 @@ async def connect_pi_client(
         resume_session_key=resume_session_key,
         pty_session_id=pty_session_id,
         switch_prepared_session=switch_prepared_session,
+        output_checkpoint=output_checkpoint,
         resident_output_sink=resident_output_sink,
         event_sink=event_sink,
         session_root=session_root,

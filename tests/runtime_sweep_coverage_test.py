@@ -27,6 +27,7 @@ from astrabox.core.service.orchestrator.runtime_manager import (
     StartupAllocationCleanup,
 )
 from astrabox.persistence.repository.agent_repository import AgentRepository
+from astrabox.persistence.repository.environment_repository import EnvironmentRepository
 from astrabox.persistence.repository.assistant_workspace_repository import (
     AssistantWorkspaceRepository,
 )
@@ -221,6 +222,7 @@ async def test_the_occupancy_check_sees_a_joiner_behind_five_hundred_newer_alloc
 async def test_environment_and_startup_preparation_reach_every_agent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    await EnvironmentRepository().upsert("research", {"engine_kind": "claude_code"})
     ids = await _agents(_MORE_THAN_THE_LISTING, environment_name="research")
     service = AgentService(
         platform_service=None,
@@ -343,7 +345,7 @@ async def test_the_idle_sweep_reaches_a_parkable_conversation_behind_ones_that_s
     async def _no_background(session_id: str) -> None:
         return None
 
-    platform._get_background_task_state = _no_background
+    platform._session_kernel = SimpleNamespace(_get_background_task_state=_no_background)
     watcher = ExpirationWatcher(platform_service=platform)
 
     async def _window(session: dict[str, Any], *, default_idle_seconds: int) -> int | None:

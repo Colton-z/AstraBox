@@ -101,6 +101,25 @@ Protocol Server option connects to an endpoint an operator already runs. A
 multi-replica installation can configure one authenticated external channel
 gateway.
 
+Web and messaging adapters consume the same Session output subscription. The
+Agent-program adapter interprets native reply boundaries; the platform saves
+the text, tools, and terminal state in the existing Session journal. A channel
+renders that output for its destination rather than running a separate Agent
+workflow.
+
+An attached channel follows the Session even when no new inbound message
+arrives. If a native background task or extension wakes the main Agent, its
+reply reaches Web and the attached messaging destinations through the same
+output path. Child status and child transcripts remain separate from the main
+Agent's reply. A text-only destination receives the reply's text; Web also
+renders its tool cards and other supported parts.
+
+Channel subscriptions retain a journal cursor, and the existing reply outbox
+retains delivery attempts and platform message IDs. After a partial read, the
+subscription reconstructs the reply from its boundary before advancing the
+cursor. There is no second conversation store. See
+[Add a messaging platform](writing-a-channel-provider.md#deliver-agent-replies).
+
 ### Data and credentials
 
 PostgreSQL is the deployment default for AstraBox records. MongoDB is available

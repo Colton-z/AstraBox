@@ -1,9 +1,22 @@
 /** An external Satori protocol server consumed by the real official adapter. */
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { expect } from '@playwright/test';
+import { expect, type Page } from '@playwright/test';
 
 import { requireServiceContainer, SERVER_CONTAINER_HANDLE } from './serviceContainer';
+
+export async function satoriReplyTexts(page: Page, rows: Array<{ content: string }>, messageId: string): Promise<string[]> {
+  return page.evaluate(({ rows, messageId }) => rows.map((row) => {
+    const document = new DOMParser().parseFromString(`<reply>${row.content}</reply>`, 'application/xml');
+    if (document.querySelector('parsererror')) throw new Error('invalid Satori reply markup');
+    const quotes = document.querySelectorAll('quote');
+    if (quotes.length !== 1 || quotes[0].getAttribute('id') !== messageId) {
+      throw new Error('Satori reply must quote its subscribed channel message');
+    }
+    quotes[0].remove();
+    return document.documentElement.textContent || '';
+  }), { rows, messageId });
+}
 
 const SOURCE = String.raw`
 import asyncio
@@ -116,6 +129,7 @@ export async function satoriSource() {
   ], { stdio: ['pipe', 'pipe', 'pipe'] });
   let port = 0;
   let connected = false;
+  let connections = 0;
   let sent = 0;
   let pending = '';
   let stderr = '';
@@ -130,7 +144,7 @@ export async function satoriSource() {
       try {
         const record = JSON.parse(line) as { kind: string; payload: unknown };
         if (record.kind === 'ready') port = Number(record.payload);
-        if (record.kind === 'connected') connected = true;
+        if (record.kind === 'connected') { connected = true; connections += 1; }
         if (record.kind === 'sent') sent += 1;
         if (record.kind === 'error') errors.push(String(record.payload));
         if (record.kind === 'delivery') deliveries.push(record.payload as typeof deliveries[number]);
@@ -154,6 +168,7 @@ export async function satoriSource() {
   }
   return {
     botId, token, endpoint: `http://127.0.0.1:${port}`, errors, deliveries,
+    get connectionCount() { return connections; },
     async waitConnected() {
       await expect.poll(() => { healthy(); return connected; }, { timeout: 30_000 }).toBe(true);
     },

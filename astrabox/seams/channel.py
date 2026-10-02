@@ -13,17 +13,19 @@ platform-specific concerns:
 * **inbound mapping** — :meth:`ChannelProvider.verify_and_resolve` handles a
   direct callback, while :meth:`ChannelProvider.open_source` yields managed
   source envelopes; each produces :class:`ChannelInbound`;
-* **outbound delivery** — :meth:`ChannelProvider.deliver_outbound` posts the
-  finished turn's assistant text back to the platform using that
-  ``reply_context`` and the freshly loaded binding. The latter keeps provider
-  credentials out of the durable outbox;
+* **outbound delivery** — :meth:`ChannelProvider.deliver_outbound` posts each
+  main-conversation response using the Session's subscribed ``reply_context``
+  and freshly loaded binding. Streaming providers receive the same responses
+  through :meth:`ChannelProvider.open_delivery`. Neither path depends on how
+  the agent's response was triggered;
 * **official callbacks** — callback-based adapters may forward an authenticated
   platform exchange through :meth:`ChannelProvider.forward_callback` without
   exposing their internal control plane.
 
 Everything else belongs to core: binding CRUD, encrypted credential storage,
 attention policy, deduplication, conversation start, durable ACK ordering,
-background turn drive, and recovery.
+input dispatch, Session output subscriptions, and recovery. Providers do not
+inspect engine transcripts, task identities, or the cause of a response.
 
 Registration mirrors every other seam: ``register_channel`` at import +
 the ``astrabox.providers.channel`` entry-point group; name lookups fail loud.
@@ -166,8 +168,9 @@ class ChannelInbound:
 
     #: The message the agent turn runs with.
     content: str
-    #: Opaque reply routing data, handed back to ``deliver_outbound``
-    #: unchanged once the turn finishes. ``None`` → no outbound delivery.
+    #: Opaque destination data establishing a Session output subscription.
+    #: Every main-agent response uses this context for the Session lifetime.
+    #: None creates no subscription; it does not remove an existing one.
     reply_context: dict[str, Any] | None = None
     #: Extra fields merged into the trigger's HTTP response (e.g. a
     #: platform-required ack shape). Never carries secrets.
@@ -228,8 +231,10 @@ EVENT_FAILED = "failed"
 
 @dataclass
 class ChannelEvent:
-    """One step of a delivery session, projected from the turn's durable
-    frame log by the spine's deliverer.
+    """One rendering update from the platform Session output subscription.
+
+    ``response_id`` identifies the mainline reply independently of its trigger.
+    Command and turn metadata can be empty for engine-owned Session messages.
 
     ``progress`` carries the coalesced assistant text SO FAR (idempotent
     update-the-card semantics — intermediate steps may be skipped);
@@ -244,6 +249,7 @@ class ChannelEvent:
     text: str | None = None
     error: str | None = None
     version: int = CHANNEL_EVENT_VERSION
+    response_id: str = ""
 
 
 @dataclass
@@ -426,7 +432,7 @@ class ChannelProvider(ABC):
         text: str,
         binding: Mapping[str, Any],
     ) -> "ChannelDeliveryReceipt | None":
-        """Send the finished turn's assistant text back to the platform.
+        """Send one completed main-conversation response to its destination.
 
         Default: no-op (inbound-only channel). Called in the background after
         the turn settles; exceptions are logged by the caller, never raised

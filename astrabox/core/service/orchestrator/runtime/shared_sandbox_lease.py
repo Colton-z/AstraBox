@@ -223,6 +223,23 @@ class SharedSandboxLease:
         if not self._backend:
             raise ValueError("shared sandbox provider must declare its backend name")
 
+    async def prepared_slot_has_room(
+        self, *, agent: dict[str, Any], sandbox_id: str, slot_id: str
+    ) -> bool:
+        """Recheck capacity before a prepared process receives a conversation.
+
+        The preparation's own reservation already covers this claimant. Other
+        recent admissions still count, including ones without an owner id.
+        The caller must fence this observed admission list when claiming, and
+        refresh the claimant's reservation for its upcoming workload growth.
+        """
+
+        pending = sum(
+            entry.get("session_id") != slot_id
+            for entry in young_admissions(agent, sandbox_id)
+        )
+        return await self._has_room(sandbox_id, pending=pending)
+
     async def place_in_agent_box(
         self,
         *,
@@ -643,6 +660,7 @@ class SharedSandboxLease:
         workspace_source_dir: str,
         uid: int,
         gid: int,
+        on_recreated: Callable[[SharedSandboxBinding], Awaitable[None]] | None = None,
     ) -> SharedSandboxBinding:
         """Restore and verify the placement persisted on a conversation row."""
         home = str(home_dir or "").rstrip("/")
@@ -666,77 +684,111 @@ class SharedSandboxLease:
             f"test -d {shlex.quote(home)} && "
             f"test -w {shlex.quote(workspace)}"
         )
-        exit_code, out, err = await self._provider.run_in_isolated_session(
-            binding.sandbox_id,
-            binding.isolated_session_id,
-            code=code,
-            timeout_s=30.0,
-        )
-        if exit_code != 0:
-            raise APIError(
-                code="AGENT_RUNTIME_ERROR",
-                message=(
-                    "persisted isolated session does not match this conversation "
-                    f"(box={binding.sandbox_id!r}, session="
-                    f"{binding.isolated_session_id!r}, uid={binding.uid}): "
-                    f"{err.strip() or out.strip() or f'exit {exit_code}'}"
-                ),
-                status_code=409,
-            )
-        if binding.terminal_isolated_session_id:
-            terminal_usable = True
+        created_session_ids: list[str] = []
+        try:
             try:
-                terminal_exit, _terminal_out, _terminal_err = (
-                    await self._provider.run_in_isolated_session(
+                exit_code, out, err = await self._provider.run_in_isolated_session(
+                    binding.sandbox_id,
+                    binding.isolated_session_id,
+                    code=code,
+                    timeout_s=30.0,
+                )
+            except APIError as exc:
+                if exc.code != "SANDBOX_ISOLATED_SESSION_NOT_FOUND":
+                    raise
+                # Snapshot resume retains the private files and numeric owner, but
+                # execd's process-local session registry starts empty. Recreate only
+                # an explicitly absent session; a timeout or identity mismatch does
+                # not authorize replacing a possibly live conversation process.
+                opened = await self._provider.open_isolated_session(
+                    binding.sandbox_id,
+                    workspace_dir=binding.workspace_dir,
+                    workspace_source_dir=binding.workspace_source_dir,
+                    uid=binding.uid,
+                    gid=binding.gid,
+                    share_net=True,
+                    extra_writable=[binding.home_dir],
+                    extra_binds=[(f"{binding.home_dir}/tmp", "/tmp")],
+                )
+                created_session_ids.append(opened.session_id)
+                binding.isolated_session_id = opened.session_id
+                exit_code, out, err = await self._provider.run_in_isolated_session(
+                    binding.sandbox_id,
+                    binding.isolated_session_id,
+                    code=code,
+                    timeout_s=30.0,
+                )
+            if exit_code != 0:
+                raise APIError(
+                    code="AGENT_RUNTIME_ERROR",
+                    message=(
+                        "persisted isolated session does not match this conversation "
+                        f"(box={binding.sandbox_id!r}, session="
+                        f"{binding.isolated_session_id!r}, uid={binding.uid}): "
+                        f"{err.strip() or out.strip() or f'exit {exit_code}'}"
+                    ),
+                    status_code=409,
+                )
+            if binding.terminal_isolated_session_id:
+                terminal_usable = True
+                try:
+                    terminal_exit, _terminal_out, _terminal_err = (
+                        await self._provider.run_in_isolated_session(
+                            binding.sandbox_id,
+                            binding.terminal_isolated_session_id,
+                            code=code,
+                            timeout_s=30.0,
+                        )
+                    )
+                    terminal_usable = terminal_exit == 0
+                except TimeoutError:
+                    # A host restart can leave a foreground run with no SSE owner.
+                    # This session is intentionally disposable; delete it instead
+                    # of making every future terminal command queue behind it.
+                    terminal_usable = False
+                except APIError as exc:
+                    if int(getattr(exc, "status_code", 0) or 0) not in (404, 409):
+                        raise
+                    terminal_usable = False
+                if not terminal_usable:
+                    await self._provider.close_isolated_session(
                         binding.sandbox_id,
                         binding.terminal_isolated_session_id,
-                        code=code,
-                        timeout_s=30.0,
                     )
-                )
-                terminal_usable = terminal_exit == 0
-            except TimeoutError:
-                # A host restart can leave a foreground run with no SSE owner.
-                # This session is intentionally disposable; delete it instead
-                # of making every future terminal command queue behind it.
-                terminal_usable = False
-            except APIError as exc:
-                if int(getattr(exc, "status_code", 0) or 0) not in (404, 409):
-                    raise
-                terminal_usable = False
-            if not terminal_usable:
-                await self._provider.close_isolated_session(
+                    binding.terminal_isolated_session_id = ""
+            if not binding.terminal_isolated_session_id:
+                terminal = await self._provider.open_isolated_session(
                     binding.sandbox_id,
-                    binding.terminal_isolated_session_id,
+                    workspace_dir=binding.workspace_dir,
+                    workspace_source_dir=binding.workspace_source_dir,
+                    uid=binding.uid,
+                    gid=binding.gid,
+                    share_net=True,
+                    extra_writable=[binding.home_dir],
+                    # The replacement terminal sees the same private /tmp as the
+                    # session it replaces; a sibling with the root-owned tmpfs
+                    # would behave differently from its own predecessor.
+                    extra_binds=[(f"{binding.home_dir.rstrip('/')}/tmp", "/tmp")],
                 )
-                binding.terminal_isolated_session_id = ""
-        if not binding.terminal_isolated_session_id:
-            terminal = await self._provider.open_isolated_session(
-                binding.sandbox_id,
-                workspace_dir=binding.workspace_dir,
-                workspace_source_dir=binding.workspace_source_dir,
-                uid=binding.uid,
-                gid=binding.gid,
-                share_net=True,
-                extra_writable=[binding.home_dir],
-                # The replacement terminal sees the same private /tmp as the
-                # session it replaces; a sibling with the root-owned tmpfs
-                # would behave differently from its own predecessor.
-                extra_binds=[(f"{binding.home_dir.rstrip('/')}/tmp", "/tmp")],
-            )
-            try:
+                created_session_ids.append(terminal.session_id)
                 await self._confirm_writable(
                     binding.sandbox_id,
                     terminal.session_id,
                     binding.workspace_dir,
                 )
-            except BaseException:
-                await self._provider.close_isolated_session(
-                    binding.sandbox_id, terminal.session_id
-                )
-                raise
-            binding.terminal_isolated_session_id = terminal.session_id
-        return binding
+                binding.terminal_isolated_session_id = terminal.session_id
+            if created_session_ids and on_recreated is not None:
+                # Register the new IDs before a later preparation step can
+                # fail, so the next attach and eventual release own this pair.
+                await on_recreated(binding)
+            return binding
+        except BaseException:
+            for created_session_id in reversed(created_session_ids):
+                with contextlib.suppress(Exception):
+                    await self._provider.close_isolated_session(
+                        binding.sandbox_id, created_session_id,
+                    )
+            raise
 
     async def _confirm_writable(
         self, sandbox_id: str, session_id: str, workspace_dir: str

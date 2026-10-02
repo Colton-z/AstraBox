@@ -14,6 +14,7 @@ from astrabox.persistence.repository.backend import (
     get_async_collection,
     run_mongo_with_retry,
 )
+from astrabox.persistence.repository.environment_repository import write_environment_binding
 from astrabox.persistence.repository.index_verification import ensure_unique_index
 from astrabox.persistence.repository.session_repository import _safe_create_index
 from astrabox.common.logger.logger_factory import get_logger
@@ -54,9 +55,9 @@ class AssistantCatalogRepository:
         now = utcnow_iso()
         doc = {"deleted": False, "created_at": now, "updated_at": now, **payload}
         collection = await get_async_collection(self._collection_name)
-        await run_mongo_with_retry(
-            "assistant_catalog.create",
-            lambda: collection.insert_one(doc),
+        await write_environment_binding(
+            self._collection_name, str(doc.get("environment_name") or "").strip(),
+            "assistant_catalog.create", lambda bound: bound.insert_one(doc),
         )
         stored = await run_mongo_with_retry(
             "assistant_catalog.read_after_create",
@@ -96,6 +97,26 @@ class AssistantCatalogRepository:
             _list,
             fault_context={"vault_id": target},
         )
+
+    async def list_assistants_by_environment(
+        self, name: str, *, transaction: Any = None,
+    ) -> list[dict[str, Any]]:
+        """Every Assistant referencing a preset, including deleted cleanup owners."""
+        collection = (
+            transaction.collection(self._collection_name) if transaction is not None
+            else await get_async_collection(self._collection_name)
+        )
+
+        async def _list() -> list[dict[str, Any]]:
+            cursor = collection.find(
+                {"environment_name": name},
+                projection={"assistant_id": 1, "display_name": 1, "deleted": 1},
+            )
+            return [doc async for doc in cursor]
+
+        if transaction is not None:
+            return await _list()
+        return await run_mongo_with_retry("assistant_catalog.list_by_environment", _list)
 
     async def list_owner_assistants(self, owner_id: str) -> list[dict[str, Any]]:
         """Every live Assistant ``owner_id`` owns, the most recently edited first."""
@@ -156,13 +177,18 @@ class AssistantCatalogRepository:
         ``updates`` when an authored field changed.
         """
         collection = await get_async_collection(self._collection_name)
-        result = await run_mongo_with_retry(
-            "assistant_catalog.update",
-            lambda: collection.update_one(
-                {"assistant_id": assistant_id, "deleted": {"$ne": True}},
-                {"$set": updates},
-            ),
-        )
+        query = {"assistant_id": assistant_id, "deleted": {"$ne": True}}
+        if "environment_name" in updates:
+            result = await write_environment_binding(
+                self._collection_name, str(updates["environment_name"] or "").strip(),
+                "assistant_catalog.update",
+                lambda bound: bound.update_one(query, {"$set": updates}),
+            )
+        else:
+            result = await run_mongo_with_retry(
+                "assistant_catalog.update",
+                lambda: collection.update_one(query, {"$set": updates}),
+            )
         return result.modified_count > 0
 
     async def soft_delete(self, assistant_id: str) -> bool:

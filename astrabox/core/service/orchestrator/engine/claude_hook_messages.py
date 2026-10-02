@@ -33,4 +33,4 @@ def session_start_message(message: dict[str, Any]) -> SessionMessageFact | None:
         raise ValueError("SessionStart systemMessage must be nonempty text")
     if not isinstance(event_id, str) or not event_id.strip():
         raise ValueError("SessionStart systemMessage requires its native event uuid")
-    return SessionMessageFact(f"sdk-hook-system-message:{event_id}", content)
+    return SessionMessageFact(f"sdk-hook-system-message:{event_id}", content, is_response=False)

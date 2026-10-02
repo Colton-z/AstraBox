@@ -10,10 +10,12 @@ from typing import Any
 from astrabox.persistence.repository import (
     AgentRepository,
     EnvironmentRepository,
+    SessionRepository,
 )
 from astrabox.persistence.repository.assistant_catalog_repository import (
     AssistantCatalogRepository,
 )
+from astrabox.persistence.repository.assistant_workspace_repository import AssistantWorkspaceRepository
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.time_utils import utcnow_iso
 from astrabox.common.utils.user_context import UserContext, default_org_id
@@ -59,6 +61,7 @@ from astrabox.core.service.orchestrator.mcp_assignments import (
     normalize_assignments,
 )
 from astrabox.core.service.orchestrator.runtime.plugin_repos import normalize_plugin_repos
+from astrabox.core.service.orchestrator.sandbox_names import read_undestroyed
 from astrabox.seams.extensions import extension_provider_for_name
 
 # The masked stand-in for a set ``provider_access.api_key`` in client-facing
@@ -87,6 +90,17 @@ _VERSIONED_HARNESS_FIELDS = (
     "diff_panel",
     "prewarm_enabled",
 )
+
+def _session_has_runtime_reference(session: dict[str, Any]) -> bool:
+    return bool(
+        str(session.get("sandbox_id") or "").strip()
+        or read_undestroyed(session)
+        or session.get("state") == "CREATING"
+        # Failed or superseded startup may retain scope without a main pointer.
+        or session.get("startup_allocation")
+        or session.get("_retained_startup_allocations")
+    )
+
 
 def _authored_change(existing: dict[str, Any], updates: dict[str, Any]) -> bool:
     """Whether a write changes any of the authored fields it carries.
@@ -121,10 +135,14 @@ class AgentConfigService:
         environment_repo: EnvironmentRepository,
         *,
         assistant_repo: AssistantCatalogRepository | None = None,
+        sessions_repo: SessionRepository | None = None,
+        assistant_workspace_repo: AssistantWorkspaceRepository | None = None,
         spawn_background_task: Callable[..., Any] | None = None,
     ) -> None:
         self._agent_repo = agent_repo
         self._environment_repo = environment_repo
+        self._sessions_repo = sessions_repo or SessionRepository()
+        self._assistant_workspace_repo = assistant_workspace_repo or AssistantWorkspaceRepository()
         # The runtime-view resolver reads the Assistant catalog directly. An
         # Assistant view combines its Environment with its own overrides; using
         # the repository here avoids a service-construction cycle.
@@ -1051,6 +1069,100 @@ class AgentConfigService:
         }
         result = await self._environment_repo.upsert(name, doc)
         return self._redact_env_secret(self.sanitize_agent_doc(result))
+
+    async def delete_environment_config(
+        self, user: UserContext, name: str,
+    ) -> dict[str, Any]:
+        """Remove an unreferenced preset through the administrator HTTP surface."""
+        target = str(name or "").strip()
+        if not target:
+            raise invalid_request("environment name is required")
+
+        async def check_references(transaction: Any) -> None:
+            agents = await self._agent_repo.list_agents_by_environment(target, transaction=transaction)
+            deleted_agent_ids = [
+                str(agent["agent_id"]) for agent in agents if agent.get("deleted") is True
+            ]
+            sessions = await self._sessions_repo.list_agent_runtime_references(
+                deleted_agent_ids, transaction=transaction,
+            )
+            agents_with_session_runtime = {
+                str(session["agent_id"]) for session in sessions
+                if _session_has_runtime_reference(session)
+            }
+            agents = [
+                agent for agent in agents
+                if agent.get("deleted") is not True
+                or str(agent.get("sandbox_id") or "").strip()
+                or read_undestroyed(agent)
+                # A claimed manifest may survive Agent deletion while its
+                # Session publishes ownership; pools may still be retiring.
+                or agent.get("_prepared_slot")
+                or str(agent.get("_client_pool_name") or "").strip()
+                or agent.get("_retiring_client_pools")
+                or str(agent["agent_id"]) in agents_with_session_runtime
+            ]
+            assistants = await self._assistant_repo.list_assistants_by_environment(target, transaction=transaction)
+            deleted_assistant_ids = [
+                str(assistant["assistant_id"]) for assistant in assistants if assistant.get("deleted") is True
+            ]
+            assistant_sessions = await self._sessions_repo.list_assistant_runtime_references(
+                deleted_assistant_ids, transaction=transaction,
+            )
+            workspaces = await self._assistant_workspace_repo.list_runtime_references(
+                deleted_assistant_ids, transaction=transaction,
+            )
+            assistants_with_runtime = {
+                str(session["assistant_id"]) for session in assistant_sessions
+                if _session_has_runtime_reference(session)
+            }
+            assistants_with_runtime.update(
+                str(workspace["assistant_id"]) for workspace in workspaces
+                if str(workspace.get("current_sandbox_id") or "").strip()
+                or (workspace.get("state") == "MATERIALIZING" and workspace.get("provisioning_session_id"))
+            )
+            assistants = [
+                assistant for assistant in assistants
+                if assistant.get("deleted") is not True
+                or str(assistant["assistant_id"]) in assistants_with_runtime
+            ]
+            holders = [
+                {
+                    "target_type": "agent",
+                    "target_id": str(agent["agent_id"]),
+                    "target_name": str(
+                        (agent.get("display_meta") or {}).get("display_name")
+                        or agent.get("name") or agent["agent_id"]
+                    ),
+                }
+                for agent in agents
+            ]
+            holders.extend(
+                {
+                    "target_type": "assistant",
+                    "target_id": str(assistant["assistant_id"]),
+                    "target_name": str(assistant.get("display_name") or assistant["assistant_id"]),
+                }
+                for assistant in assistants
+            )
+            if holders:
+                shown = ", ".join(
+                    f"{holder['target_type']} '{holder['target_name']}'" for holder in holders[:5]
+                )
+                suffix = f", and {len(holders) - 5} more" if len(holders) > 5 else ""
+                raise APIError(
+                    code="ENVIRONMENT_IN_USE",
+                    message=(
+                        f"Environment is still used by {shown}{suffix}. "
+                        "Move or delete these Agents and Assistants, and finish any pending "
+                        "sandbox cleanup, before deleting the Environment."
+                    ),
+                    status_code=409,
+                    data={"holders": holders},
+                )
+
+        await self._environment_repo.delete_after_reference_check(target, check_references)
+        return {"name": target, "deleted": True}
 
     # ── Normalizers ────────────────────────────────────────────────────────
 

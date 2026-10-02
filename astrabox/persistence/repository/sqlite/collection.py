@@ -59,8 +59,9 @@ import functools
 import operator
 import re
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import PurePath
-from typing import Any, Iterable, Sequence
+from typing import Any, AsyncIterator, Iterable, Sequence, TYPE_CHECKING
 
 from sqlalchemy import and_, case, delete as sa_delete, func, literal, or_, select, text
 from sqlalchemy.dialects.postgresql import JSONB
@@ -88,6 +89,10 @@ __all__ = [
     "AsyncCollection",
     "SqliteCursor",
 ]
+
+
+if TYPE_CHECKING:
+    from .transaction import SqlDocumentTransaction
 
 
 logger = get_logger(__name__)
@@ -184,6 +189,9 @@ def _cancel_shielded(fn: Any) -> Any:
 
     @functools.wraps(fn)
     async def wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
+        if self._transaction is not None:
+            self._transaction.check_owner()
+            return await fn(self, *args, **kwargs)
         inner = asyncio.ensure_future(fn(self, *args, **kwargs))
         try:
             return await asyncio.shield(inner)
@@ -399,6 +407,8 @@ class SqliteCursor:
 
     # ---- materialise ------------------------------------------------------
     async def _materialise(self) -> list[dict[str, Any]]:
+        if self._collection._transaction is not None:
+            self._collection._transaction.check_owner()
         if self._cached is not None:
             return self._cached
         query = self._query
@@ -441,6 +451,8 @@ class SqliteCursor:
         return self
 
     async def __anext__(self) -> dict[str, Any]:
+        if self._collection._transaction is not None:
+            self._collection._transaction.check_owner()
         if getattr(self, "_iter_rows", None) is None:
             self._iter_rows = await self._materialise()
             self._iter_index = 0
@@ -467,7 +479,11 @@ class SqliteCursor:
 class AsyncCollection:
     """SQLite-backed, async, Mongo-collection-shaped document store (one namespace)."""
 
-    def __init__(self, name: str, db_url: str | None = None) -> None:
+    def __init__(
+        self, name: str, db_url: str | None = None,
+        *, transaction: SqlDocumentTransaction | None = None,
+    ) -> None:
+        self._transaction = transaction
         self._name = name
         self._db_url = db_url
         self._resolved_db_url = resolve_database_url(db_url)
@@ -477,6 +493,40 @@ class AsyncCollection:
         # contending for the write lock). See .engine for why this split exists.
         self._sessionmaker = get_sessionmaker(db_url, mode="write")
         self._read_sessionmaker = get_sessionmaker(db_url, mode="read")
+
+    @asynccontextmanager
+    async def _session(self, *, write: bool) -> AsyncIterator[Any]:
+        if self._transaction is not None:
+            self._transaction.check_owner()
+            yield self._transaction.session
+        else:
+            factory = self._sessionmaker if write else self._read_sessionmaker
+            async with factory() as session:
+                yield session
+
+    @asynccontextmanager
+    async def _write_transaction(self, session: Any) -> AsyncIterator[None]:
+        if self._transaction is not None:
+            self._transaction.check_owner()
+            yield
+            # Flush each operation so its constraint failures surface at the
+            # collection call; only the transaction owner may commit.
+            await session.flush()
+        else:
+            async with session.begin():
+                yield
+
+    async def lock_one(self, query: dict[str, Any]) -> dict[str, Any] | None:
+        """Hold a matching document's write lock until the owning transaction ends."""
+        if self._transaction is None:
+            raise RuntimeError("lock_one requires an owned document transaction")
+        async with self._session(write=True) as session:
+            row = await self._first_matching_row(session, query)
+            return copy.deepcopy(row.doc) if row is not None else None
+
+    def _require_schema_outside_transaction(self) -> None:
+        if self._transaction is not None:
+            raise RuntimeError("prepare collection indexes before the document transaction")
 
     @property
     def name(self) -> str:
@@ -502,7 +552,7 @@ class AsyncCollection:
         and dotted keys are nested paths with different semantics.
         """
         await ensure_created(self._db_url)
-        async with self._read_sessionmaker() as sess:
+        async with self._session(write=False) as sess:
             stmt = select(DocumentRow.doc).where(DocumentRow.collection == self._name)
             fast_id = self._extract_id_equality(query)
             if fast_id is not None:
@@ -587,7 +637,7 @@ class AsyncCollection:
         stmt = stmt.order_by(*order)
 
         matched: list[dict[str, Any]] = []
-        async with self._read_sessionmaker() as sess:
+        async with self._session(write=False) as sess:
             result = await sess.stream(stmt)
             async for row in result.scalars():
                 doc = dict(row)
@@ -897,7 +947,7 @@ class AsyncCollection:
         """Count matching documents. (Uses a fast COUNT for the empty filter.)"""
         if not filter:
             await ensure_created(self._db_url)
-            async with self._read_sessionmaker() as sess:
+            async with self._session(write=False) as sess:
                 stmt = select(func.count()).select_from(DocumentRow).where(
                     DocumentRow.collection == self._name
                 )
@@ -918,9 +968,9 @@ class AsyncCollection:
         doc = dict(document)
         doc_id = _doc_id_of(doc)
         doc["_id"] = doc_id
-        async with self._sessionmaker() as sess:
+        async with self._session(write=True) as sess:
             try:
-                async with sess.begin():
+                async with self._write_transaction(sess):
                     await self._check_unique(sess, doc, exclude_id=None)
                     sess.add(DocumentRow(collection=self._name, doc_id=doc_id, doc=doc))
             except IntegrityError as exc:
@@ -947,9 +997,9 @@ class AsyncCollection:
             doc_id = _doc_id_of(doc)
             doc["_id"] = doc_id
             await ensure_created(self._db_url)
-            async with self._sessionmaker() as sess:
+            async with self._session(write=True) as sess:
                 try:
-                    async with sess.begin():
+                    async with self._write_transaction(sess):
                         await self._check_unique(sess, doc, exclude_id=None)
                         sess.add(
                             DocumentRow(collection=self._name, doc_id=doc_id, doc=doc)
@@ -975,9 +1025,9 @@ class AsyncCollection:
     ) -> _UpdateResult:
         """Update the first matching document; optionally upsert if none matched."""
         await ensure_created(self._db_url)
-        async with self._sessionmaker() as sess:
+        async with self._session(write=True) as sess:
             try:
-                async with sess.begin():
+                async with self._write_transaction(sess):
                     row = await self._first_matching_row(sess, filter)
                     if row is None:
                         if not upsert:
@@ -1007,9 +1057,9 @@ class AsyncCollection:
         await ensure_created(self._db_url)
         matched = 0
         modified = 0
-        async with self._sessionmaker() as sess:
+        async with self._session(write=True) as sess:
             try:
-                async with sess.begin():
+                async with self._write_transaction(sess):
                     for row in await self._all_matching_rows(sess, filter):
                         matched += 1
                         before = copy.deepcopy(row.doc)
@@ -1028,8 +1078,8 @@ class AsyncCollection:
     async def delete_one(self, filter: dict[str, Any]) -> _DeleteResult:
         """Delete the first matching document."""
         await ensure_created(self._db_url)
-        async with self._sessionmaker() as sess:
-            async with sess.begin():
+        async with self._session(write=True) as sess:
+            async with self._write_transaction(sess):
                 row = await self._first_matching_row(sess, filter)
                 if row is None:
                     return _DeleteResult(0)
@@ -1040,8 +1090,8 @@ class AsyncCollection:
     async def delete_many(self, filter: dict[str, Any]) -> _DeleteResult:
         """Delete all matching documents (``{}`` deletes the whole collection)."""
         await ensure_created(self._db_url)
-        async with self._sessionmaker() as sess:
-            async with sess.begin():
+        async with self._session(write=True) as sess:
+            async with self._write_transaction(sess):
                 stmt = sa_delete(DocumentRow).where(
                     DocumentRow.collection == self._name
                 )
@@ -1090,9 +1140,9 @@ class AsyncCollection:
         (``AFTER``); ``None`` when nothing matched and ``upsert`` is False.
         """
         await ensure_created(self._db_url)
-        async with self._sessionmaker() as sess:
+        async with self._session(write=True) as sess:
             try:
-                async with sess.begin():
+                async with self._write_transaction(sess):
                     rows = await self._all_matching_rows(sess, filter)
                     if sort and rows:
                         sort_spec = [(str(k), int(d)) for k, d in sort]
@@ -1291,6 +1341,7 @@ class AsyncCollection:
         expected unique index rely on this). Other unknown kwargs (``background``,
         ``expireAfterSeconds``…) are accepted and ignored — no SQLite analogue.
         """
+        self._require_schema_outside_transaction()
         await ensure_created(self._db_url)
         fields = self._normalise_index_keys(keys)
         index_name = name or ("ux_" if unique else "ix_") + self._name + "_" + "_".join(fields)
@@ -1330,6 +1381,7 @@ class AsyncCollection:
 
     async def _existing_index_names(self) -> set[str]:
         """Index names that actually exist on the shared documents table."""
+        self._require_schema_outside_transaction()
         from .engine import get_engine
 
         engine = get_engine(self._db_url)
@@ -1356,6 +1408,7 @@ class AsyncCollection:
         performs, which is why dropping it needs a call of its own rather than
         an absent ``create_index``.
         """
+        self._require_schema_outside_transaction()
         _INDEX_REGISTRY.forget_spec(self._name, name)
         from .engine import get_engine
 
@@ -1457,6 +1510,7 @@ class AsyncCollection:
                 f"CREATE INDEX IF NOT EXISTS {index_name} "
                 f"ON {DocumentRow.__tablename__} (collection, {', '.join(exprs)})"
             )
+        self._require_schema_outside_transaction()
         from .engine import get_engine
 
         engine = get_engine(self._db_url)

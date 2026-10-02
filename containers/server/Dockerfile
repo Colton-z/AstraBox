@@ -64,6 +64,7 @@ WORKDIR /web
 # Install deps first (cache on the lockfile), then build. `npm run build` runs
 # `tsc --noEmit && vite build` (the real typecheck gate) → ./dist.
 COPY --chmod=u=rwX,go=rX frontend/package.json frontend/package-lock.json ./
+COPY --chmod=u=rwX,go=rX frontend/patches/ ./patches/
 RUN npm ci
 COPY --chmod=u=rwX,go=rX frontend/ ./
 RUN npm run build

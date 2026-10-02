@@ -31,8 +31,12 @@ from typing import Any
 
 import httpx
 
-from astrabox.core.service.orchestrator.engine.base import EngineStreamDetached
+from astrabox.core.service.orchestrator.engine.base import (
+    EngineOutputAlreadyObserved,
+    EngineStreamDetached,
+)
 from astrabox.core.service.orchestrator.runtime.execd_json_lines import (
+    ExecdChannelAlreadyAttached,
     ExecdChannelDetached,
     ExecdJsonLineChannel,
 )
@@ -121,7 +125,7 @@ class PiRpcProcess:
         return await self._channel.delete()
 
     # ── connect ──────────────────────────────────────────────────────────
-    async def connect(self, *, since: int) -> None:
+    async def connect(self, *, since: int, takeover: bool = True) -> None:
         """Open the pipe and start reading.
 
         Pi announces no readiness record of its own, so a connected pipe is
@@ -131,7 +135,7 @@ class PiRpcProcess:
         """
 
         try:
-            await self._channel.connect(since=since)
+            await self._channel.connect(since=since, takeover=takeover)
         except asyncio.CancelledError:
             raise
         except BaseException as exc:
@@ -210,11 +214,12 @@ class PiRpcProcess:
     async def _on_failure(self, exc: BaseException) -> None:
         if self._fatal is not None:
             return
-        self._fatal = (
-            EngineStreamDetached(str(exc))
-            if isinstance(exc, ExecdChannelDetached)
-            else exc
-        )
+        if isinstance(exc, ExecdChannelAlreadyAttached):
+            self._fatal = EngineOutputAlreadyObserved(str(exc))
+        elif isinstance(exc, ExecdChannelDetached):
+            self._fatal = EngineStreamDetached(str(exc))
+        else:
+            self._fatal = exc
         await self._records.put(self._fatal)
 
     async def _fail(self, exc: BaseException) -> None:

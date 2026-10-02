@@ -1070,6 +1070,13 @@ export async function getEnvironmentSchema(): Promise<FormSchema> {
   return asDeclared<FormSchema>(await send((wire) => client.GET('/api/v1/admin/environment-schema', wire)));
 }
 
+export async function deleteAdminEnvironment(name: string): Promise<void> {
+  await send((wire) => client.DELETE('/api/v1/admin/environments/{name}', {
+    ...wire,
+    params: { path: { name } },
+  }));
+}
+
 export async function upsertAdminEnvironment(
   name: string,
   payload: EnvironmentConfig
@@ -1410,6 +1417,7 @@ export async function createAgentDeployment(
     name?: string;
     prompt_prefix?: string;
     secret?: string;
+    execution_user_id?: string;
     attention_policy?: 'all' | 'mentions';
     channel_config?: Record<string, unknown>;
     credentials?: Record<string, unknown>;
@@ -1431,6 +1439,7 @@ export async function updateAgentDeployment(
     name?: string;
     prompt_prefix?: string;
     scene?: string;
+    execution_user_id?: string;
     attention_policy?: 'all' | 'mentions';
     channel_config?: Record<string, unknown>;
     credentials?: Record<string, unknown>;
@@ -1561,6 +1570,29 @@ export interface ChildRunMessagePage {
   session_id: string;
   child_run_id: string;
   messages: ChildRunTranscriptMessage[];
+}
+
+export interface SessionFileChangeTurn {
+  turn_id: string;
+  messages: Array<{
+    message_id: string;
+    parts: Array<{ type: 'data-file-changes'; id?: string; data: import('./types').FileChangesResult }>;
+  }>;
+}
+
+export interface SessionFileChanges {
+  through_seq: number;
+  turns: SessionFileChangeTurn[];
+}
+
+export async function getSessionFileChanges(
+  sessionId: string, afterSeq: number, signal?: AbortSignal,
+): Promise<SessionFileChanges> {
+  return asDeclared<SessionFileChanges>(await send((wire) => client.GET('/api/v1/sessions/{session_id}/file-changes', {
+    ...wire,
+    params: { path: { session_id: sessionId }, query: { after_seq: afterSeq } },
+    signal,
+  })));
 }
 
 export async function getMessages(
@@ -2034,6 +2066,32 @@ export async function uploadSessionFiles(
     params: { path: { session_id: sessionId } },
     body: formData as never,
   })) as Promise<SessionFilesMutationResult>;
+}
+
+export async function getSpeechInputOptions(sessionId: string, signal?: AbortSignal) {
+  return send((wire) => client.GET('/api/v1/sessions/{session_id}/speech-input', {
+    ...wire,
+    params: { path: { session_id: sessionId } },
+    signal,
+  }));
+}
+
+export async function transcribeSpeechInput(
+  sessionId: string,
+  model: string,
+  audio: Blob,
+  signal: AbortSignal,
+): Promise<string> {
+  const formData = new FormData();
+  formData.append('model', model);
+  formData.append('file', audio, 'recording');
+  const result = await send((wire) => client.POST('/api/v1/sessions/{session_id}/speech-input', {
+    ...wire,
+    params: { path: { session_id: sessionId } },
+    body: formData as never,
+    signal,
+  }));
+  return result.text;
 }
 
 export async function createSessionDirectory(

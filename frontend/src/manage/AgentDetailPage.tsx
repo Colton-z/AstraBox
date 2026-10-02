@@ -332,15 +332,6 @@ export default function AgentDetailPage() {
   const draftRecord = draft as unknown as Record<string, unknown> | undefined;
 
   const extensionField = (field: EditFieldSpec, customField: React.ReactNode) => {
-    if (field.key === 'prewarm_enabled') return (
-      <>
-        {customField}
-        <AgentPrewarmStatus key={agentId} agentId={agentId}
-          savedAt={String(record.updated_at || '')}
-          enabled={record.prewarm_enabled === true && record.enabled !== false}
-          dirty={extensionsDirty || sections.some((section) => isDirty(section.fields))} />
-      </>
-    );
     if (field.key !== 'mcp_servers' && field.key !== 'skills') return customField;
     const isMcp = field.key === 'mcp_servers';
     const kind = isMcp ? 'mcp' : 'skills';
@@ -414,6 +405,12 @@ export default function AgentDetailPage() {
     >
       {saveError && <ErrorNote>{saveError}</ErrorNote>}
       {extensionError && <ErrorNote>{extensionError}</ErrorNote>}
+      {canManage && (
+        <AgentPrewarmStatus key={agentId} agentId={agentId}
+          savedAt={String(record.updated_at || '')}
+          enabled={record.prewarm_enabled === true && record.enabled !== false}
+          dirty={extensionsDirty || sections.some((section) => isDirty(section.fields))} />
+      )}
       {canManage && (
         <ConsoleEditSections
           sections={sections}

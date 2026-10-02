@@ -438,6 +438,12 @@ async def test_public_replacement_contract_receives_route_agent_scope() -> None:
     platform._channel_source_host = AsyncMock()
     user = UserContext(user_id="owner-1")
 
+    created = await platform.create_agent_deployment(user, "agent-1", {"scene": "webhook"})
+    assert "actor" not in created
+    assert "execution_user_id" not in created
+    deployment_service.management_calls.clear()
+    platform._channel_source_host.reconcile.reset_mock()
+
     await platform.update_agent_deployment(
         user, "agent-1", "wh-1", {"enabled": False}
     )
@@ -479,3 +485,76 @@ async def test_public_replacement_contract_receives_route_agent_scope() -> None:
             b"{}",
         ),
     ]
+
+
+@pytest.mark.parametrize("replacement", ["bob", ""])
+async def test_agent_owner_cannot_change_an_administrator_delegated_execution_account(replacement) -> None:
+    service, repo = _service({
+        "deployment_id": "dep", "agent_id": "agent", "scene": "channel:generic_json",
+        "execution_user_id": "alice",
+    })
+    with pytest.raises(APIError) as error:
+        await service.update(
+            "dep", agent_id="agent", patch={"execution_user_id": replacement},
+            actor=UserContext(user_id="owner"),
+        )
+    assert error.value.status_code == 403
+    assert repo.webhook["execution_user_id"] == "alice"
+    repo.update_for_deployment.assert_not_awaited()
+
+
+@pytest.mark.parametrize("roles", [[], ["admin"]])
+async def test_platform_passes_execution_account_authority_to_the_deployment_service(roles) -> None:
+    service, repo = _service({
+        "deployment_id": "dep", "agent_id": "agent", "scene": "channel:generic_json",
+        "execution_user_id": "alice",
+    })
+    service._agent_repo.get_agent.return_value = {"user_id": "owner"}
+    platform = object.__new__(AgentPlatformService)
+    platform._deployment_service = service
+    platform._channel_source_host = AsyncMock()
+    user = UserContext(user_id="owner", roles=roles)
+    if roles:
+        result = await platform.update_agent_deployment(
+            user, "agent", "dep", {"execution_user_id": "bob"},
+        )
+        assert result["execution_user_id"] == "bob"
+        assert repo.webhook["execution_user_id"] == "bob"
+        platform._channel_source_host.reconcile.assert_awaited_once()
+    else:
+        with pytest.raises(APIError) as error:
+            await platform.update_agent_deployment(
+                user, "agent", "dep", {"execution_user_id": "bob"},
+            )
+        assert error.value.status_code == 403
+        assert repo.webhook["execution_user_id"] == "alice"
+        repo.update_for_deployment.assert_not_awaited()
+        platform._channel_source_host.reconcile.assert_not_awaited()
+
+
+@pytest.mark.parametrize("replacement", ["bob", ""])
+async def test_administrator_can_assign_or_clear_a_channel_execution_account(replacement) -> None:
+    service, repo = _service({
+        "deployment_id": "dep", "agent_id": "agent", "scene": "channel:generic_json",
+        "execution_user_id": "alice",
+    })
+    result = await service.update(
+        "dep", agent_id="agent", patch={"execution_user_id": replacement},
+        actor=UserContext(user_id="admin", roles=["admin"]),
+    )
+    assert result["execution_user_id"] == replacement
+    assert repo.webhook["execution_user_id"] == replacement
+
+
+@pytest.mark.parametrize("value", [None, 7, "alice\nbob"])
+async def test_invalid_execution_accounts_are_not_coerced_into_delegation(value) -> None:
+    service, repo = _service({
+        "deployment_id": "dep", "agent_id": "agent", "scene": "channel:generic_json",
+    })
+    with pytest.raises(APIError) as error:
+        await service.update(
+            "dep", agent_id="agent", patch={"execution_user_id": value},
+            actor=UserContext(user_id="admin", roles=["admin"]),
+        )
+    assert error.value.status_code == 400
+    repo.update_for_deployment.assert_not_awaited()

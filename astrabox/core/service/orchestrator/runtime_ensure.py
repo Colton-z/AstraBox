@@ -551,9 +551,8 @@ class RuntimeEnsure:
         parked_at = str((session or {}).get("sandbox_parked_at") or "").strip()
         if not parked_at:
             return
-        resumed = False
         try:
-            resumed = await self._runtime_manager.resume_sandbox_by_id(sandbox_id)
+            await self._runtime_manager.wake_parked_session(session)
         except Exception as exc:
             logger.warning(
                 "agent_chat turn prepare: resume of parked sandbox errored "
@@ -561,35 +560,6 @@ class RuntimeEnsure:
                 session_id, sandbox_id, parked_at, exc,
             )
             return
-        if not resumed:
-            logger.warning(
-                "agent_chat turn prepare: parked sandbox did not resume — this "
-                "turn continues on a FRESH box and that workspace is not in it "
-                "session=%s sandbox=%s parked_at=%s",
-                session_id, sandbox_id, parked_at,
-            )
-            return
-        # The box kept its id and its files; it did not keep its address. A resume
-        # reschedules the workload, so the endpoint stored before the pause names a
-        # place nothing answers at any more, and the attach below prefers a stored
-        # endpoint over resolving one. Clearing it is what sends this turn back to
-        # the control plane for the box's current address.
-        #
-        # Without this clear the failure is silent on both sides: the resumed box
-        # is healthy on its own `:8000` and its log records no host request at
-        # all, because the host spends the whole attempt talking to the pre-pause
-        # address and never reaches it. `sandbox_endpoint` is the
-        # field paired with `sandbox_id` to name a box (they are cleared together
-        # when one dies, see ``terminal_session_updates``); a resume keeps the id
-        # and must drop the address.
-        session["sandbox_parked_at"] = None
-        session["sandbox_endpoint"] = None
-        with contextlib.suppress(Exception):
-            await self._sessions_repo.update_session(
-                session_id,
-                {"sandbox_parked_at": None, "sandbox_endpoint": None},
-                touch_updated_at=False,
-            )
         logger.info(
             "agent_chat turn prepare: resumed parked sandbox session=%s sandbox=%s "
             "parked_at=%s",
@@ -1027,7 +997,9 @@ class RuntimeEnsure:
                     sandbox_gone=gone,
                 )
 
-    async def acquire_engine_control_runtime(self, session: dict[str, Any]) -> Any:
+    async def acquire_engine_control_runtime(
+        self, session: dict[str, Any], *, observe_only: bool = False,
+    ) -> Any:
         """Return a conversation-bound runtime for an engine control operation.
 
         Interaction answers, turn interrupts, and child controls all need the
@@ -1115,6 +1087,7 @@ class RuntimeEnsure:
                 session_kind=session_kind,
                 workspace_plan=workspace_plan,
                 runtime_identity=runtime_identity,
+                observe_only=observe_only,
             )
         except Exception as exc:
             # A typed SANDBOX_GONE is the transport's verdict that the box did

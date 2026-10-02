@@ -117,7 +117,11 @@ def _preparation_context(
         sandbox=sandbox or SimpleNamespace(sandbox_id="box-9"),
         sandbox_id="box-9",
         cwd="/workspace",
-        runtime_identity={"workspace_dir": "/workspace", "sandbox_id": "box-9"},
+        runtime_identity={
+            "workspace_dir": "/workspace", "sandbox_id": "box-9",
+            "linux_user": "user", "home_dir": "/home/user",
+            "sandbox_tenancy": "conversation",
+        },
         model_access=_Manager().resolve_model_access(selected.model_config),
         model_credential="placeholder",
         runtime_env={},
@@ -298,7 +302,10 @@ def test_preparation_creates_the_conversation_a_claim_will_rejoin(
         ordered.append("link-connect")
         return link
 
-    async def _agents_md(sandbox: Any, *, cwd: str, instructions: str) -> None:
+    async def _agents_md(
+        sandbox: Any, *, cwd: str, instructions: str,
+        runtime_identity: dict[str, Any] | None,
+    ) -> None:
         ordered.append(f"agents-md:{cwd}:{instructions}")
 
     monkeypatch.setattr(dsh.DshApiLink, "connect", staticmethod(_connect))
@@ -598,7 +605,7 @@ def test_activation_adopts_binds_and_publishes_in_order(
     async def _target(sandbox: Any, manager_arg: Any, session_id: str) -> None:
         events.append(f"mirror-target:{session_id}")
 
-    async def _connect(sandbox: Any, *, port: int = 44780, launch_url_path: str) -> Any:
+    async def _connect(sandbox: Any, *, port: int = 44780, launch_url_path: str, observe_only: bool = False) -> Any:
         # Box-tenancy paths keep dialing the image's fixed forwarder port.
         assert port == 44780
         events.append("link-connect")
@@ -721,7 +728,7 @@ def test_a_failed_activation_discards_the_box_and_fails_loudly(
     ) -> Any:
         return SimpleNamespace(sandbox_id="box-77")
 
-    async def _connect(sandbox: Any, *, port: int = 44780, launch_url_path: str) -> Any:
+    async def _connect(sandbox: Any, *, port: int = 44780, launch_url_path: str, observe_only: bool = False) -> Any:
         raise APIError(
             code="AGENT_RUNTIME_ERROR",
             message="the box went away between prepare and activation",

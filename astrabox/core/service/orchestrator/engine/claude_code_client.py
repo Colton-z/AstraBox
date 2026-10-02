@@ -52,7 +52,7 @@ from claude_agent_sdk.types import PermissionMode, SessionStore
 
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.core.service.orchestrator.engine.claude_code_background import (
-    build_background_task_manifest,
+    background_task_opening,
 )
 from astrabox.core.service.orchestrator.engine.claude_child_runs import ClaudeChildIdentities
 from astrabox.core.service.orchestrator.engine.base import (
@@ -582,6 +582,9 @@ class ClaudeCodeEngineClient:
                     await self._observe_frame(frame, from_consumer=True)
                     continue
                 raw_turn_messages.append(dict(message))
+                opening = background_task_opening(raw_turn_messages)
+                if opening is not None:
+                    yield opening
                 for translated in translate_claude_sdk_message(
                     message, envelope_seq=int(frame.get("seq") or 0), cursor=cursor
                 ):
@@ -617,12 +620,6 @@ class ClaudeCodeEngineClient:
                         if self._active_receipt is receipt:
                             self._active_receipt = None
                         self._answered_interaction_ids.clear()
-                        background_tasks = build_background_task_manifest(raw_turn_messages)
-                        if background_tasks is not None:
-                            yield {
-                                "type": "background-tasks-opened",
-                                "manifest": background_tasks,
-                            }
                         yield {
                             "type": "data-result",
                             "data": claude_result_data(message),
@@ -1051,7 +1048,9 @@ class ClaudeCodeEngineClient:
         )
         self._resident = _ResidentResponse(
             response_id=response_id,
-            handle=ResidentResponseHandle(response_id=response_id, owns_slot=True),
+            handle=ResidentResponseHandle(
+                response_id=response_id, owns_slot=checkpoint.open_response_owns_slot,
+            ),
             cursor=cursor,
             boundary_sequence=int(checkpoint.boundary_sequence),
             after_sequence=int(checkpoint.after_sequence),
@@ -1263,6 +1262,9 @@ class ClaudeCodeEngineClient:
             resident.after_sequence is None or sequence > resident.after_sequence
         )
         emissions: list[EngineTurnEmission] = []
+        opening = background_task_opening(resident.raw_messages)
+        if opening is not None:
+            emissions.append(emission_from_translated_frame(opening))
         terminal: dict[str, Any] | None = None
         for translated in translate_claude_sdk_message(
             message, envelope_seq=sequence, cursor=resident.cursor
@@ -1290,13 +1292,6 @@ class ClaudeCodeEngineClient:
                 # consumer gives a stopped platform turn.
                 terminal = {**terminal, "finishReason": "cancelled"}
                 terminal.pop("error", None)
-            background_tasks = build_background_task_manifest(resident.raw_messages)
-            if background_tasks is not None:
-                emissions.append(
-                    emission_from_translated_frame(
-                        {"type": "background-tasks-opened", "manifest": background_tasks}
-                    )
-                )
             emissions.append(
                 emission_from_translated_frame(
                     {"type": "data-result", "data": claude_result_data(message)}

@@ -28,8 +28,10 @@ from .engine import (
     resolve_sqlite_url,
 )
 from .query import UnsupportedMongoOperator
+from .transaction import run_transaction
 
 __all__ = [
+    "run_transaction",
     "AsyncCollection",
     "SqliteCursor",
     "Base",

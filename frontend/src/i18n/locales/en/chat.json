@@ -1,4 +1,8 @@
 {
+  "diff": {
+    "loading": "Loading file changes…",
+    "load_failed": "Could not load file changes."
+  },
   "history": {
     "loading_older": "Loading earlier messages…",
     "load_older_failed": "Could not load earlier messages",
@@ -53,6 +57,29 @@
     "commands": "Commands",
     "shortcut_hint": "Shift+Enter for a new line",
     "remove_attachment": "Remove attachment"
+  },
+  "voice": {
+    "start": "Start voice input",
+    "requesting": "Waiting for microphone access…",
+    "stop": "Stop recording and transcribe",
+    "transcribing": "Transcribing…",
+    "cancel": "Cancel voice input",
+    "retry": "Retry transcription",
+    "retry_short": "Retry",
+    "discard": "Discard recording",
+    "retained": "Transcription failed. Your recording is kept on this page. Retry or discard it before sending. Leaving or refreshing the page clears it.",
+    "choose_model": "Choose transcription model",
+    "unsupported": "Voice input requires microphone access in a supported browser over HTTPS",
+    "retry_options": "Retry voice input",
+    "permission_denied": "Microphone access was denied. Allow it in your browser and try again.",
+    "no_microphone": "No microphone was found.",
+    "empty": "No speech was detected. Try recording again.",
+    "too_large": "The recording is too large. Try a shorter recording.",
+    "timeout": "Transcription timed out. Please try again.",
+    "not_configured": "Voice input is not configured for this deployment.",
+    "invalid_audio": "The recording format is unsupported. Try another browser.",
+    "transcription_failed": "The recording could not be transcribed. Please retry.",
+    "failed": "Voice input failed. Please try again."
   },
   "permission_mode": {
     "choose": "Choose permission mode",

@@ -58,7 +58,7 @@ tenancy 在池发布可用沙箱前完成整箱准备，之后由 Session 领取
 版本相同的标签，因为镜像内的平台组件必须与服务端匹配：
 
 ```dockerfile
-FROM ghcr.io/colton-z/astrabox-sandbox-claude-code:0.1.1
+FROM ghcr.io/colton-z/astrabox-sandbox-claude-code:0.1.2
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git build-essential libssl-dev \

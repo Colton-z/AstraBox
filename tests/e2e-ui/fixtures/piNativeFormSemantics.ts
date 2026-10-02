@@ -9,10 +9,43 @@ import { object } from './piChildFailure';
 import { requireSandboxHandle, sandboxExec, type SandboxHandle } from './sandboxOps';
 import { openSessionView, sendPrompt } from './sessionPage';
 import { aiStreamBodies, mirrorSseBodies } from './sseBodies';
+import { runnerPortFor } from './staleWriterReconnect';
 
 export interface PiFormStep {
   method: 'select' | 'confirm' | 'input' | 'editor';
   options?: string[];
+}
+
+/** Read Pi's own replay buffer without acquiring its command connection. */
+export function piNativeOutput(
+  handle: SandboxHandle, pipe: string, identity: Record<string, unknown> = {},
+): Record<string, unknown>[] {
+  const credentialPath = identity.isolated_session_id ? `${String(identity.home_dir)}/.astrabox-service-credential` : '';
+  const port = identity.isolated_session_id ? runnerPortFor(identity) : 44772;
+  const script = [
+    "python3 - <<'PY'", 'import asyncio, json', 'from pathlib import Path', 'from websockets.asyncio.client import connect',
+    `url = ${JSON.stringify(`ws://127.0.0.1:${port}/pty/${pipe}/ws?mode=viewer&since=0`)}`,
+    `credential_path = ${JSON.stringify(credentialPath)}`,
+    'headers = {"X-EXECD-ACCESS-TOKEN": Path(credential_path).read_text().strip()} if credential_path else {}',
+    'async def main():', '    buffer = b""', '    offsets = []', '    records = []',
+    '    async with connect(url, additional_headers=headers, max_size=64*1024*1024) as ws:',
+    '        while True:', '            frame = await asyncio.wait_for(ws.recv(), 10)',
+    '            if isinstance(frame, str):', '                control = json.loads(frame)',
+    '                if control.get("type") == "connected":',
+    '                    assert offsets and offsets[0] == 0, "native replay did not begin at zero"',
+    '                    print(json.dumps({"finished_replay": True, "records": records}))',
+    '                    return', '                continue',
+    '            if frame[0] == 3:', '                offsets.append(int.from_bytes(frame[1:9], "big"))',
+    '                buffer += frame[9:]', '            elif frame[0] == 1:', '                buffer += frame[1:]',
+    '            else:', '                continue',
+    '            while b"\\n" in buffer:', '                line, buffer = buffer.split(b"\\n", 1)',
+    '                if line.strip(): records.append(json.loads(line))',
+    'asyncio.run(main())', 'PY',
+  ].join('\n');
+  const result = object(JSON.parse(sandboxExec(handle, script, 15_000)));
+  expect(result.finished_replay).toBe(true);
+  expect(Array.isArray(result.records)).toBe(true);
+  return (result.records as unknown[]).map(object);
 }
 
 export class PiNativeFormScene {
@@ -51,28 +84,7 @@ export class PiNativeFormScene {
   /** Execd viewer replays supplier stdout without taking the platform's holder or sending RPC. */
   nativeOutput(): Record<string, unknown>[] {
     if (!this.handle || !this.pipe) throw new Error('native viewer requires the actual sandbox and Pi pipe');
-    const script = [
-      "python3 - <<'PY'", 'import asyncio, json', 'from websockets.asyncio.client import connect',
-      `url = ${JSON.stringify(`ws://127.0.0.1:44772/pty/${this.pipe}/ws?mode=viewer&since=0`)}`,
-      'async def main():', '    buffer = b""', '    offsets = []', '    records = []',
-      '    async with connect(url, max_size=64*1024*1024) as ws:',
-      '        while True:', '            frame = await asyncio.wait_for(ws.recv(), 10)',
-      '            if isinstance(frame, str):', '                control = json.loads(frame)',
-      '                if control.get("type") == "connected":',
-      '                    assert offsets and offsets[0] == 0, "native replay did not begin at zero"',
-      '                    print(json.dumps({"finished_replay": True, "records": records}))',
-      '                    return', '                continue',
-      '            if frame[0] == 3:', '                offsets.append(int.from_bytes(frame[1:9], "big"))',
-      '                buffer += frame[9:]', '            elif frame[0] == 1:', '                buffer += frame[1:]',
-      '            else:', '                continue',
-      '            while b"\\n" in buffer:', '                line, buffer = buffer.split(b"\\n", 1)',
-      '                if line.strip(): records.append(json.loads(line))',
-      'asyncio.run(main())', 'PY',
-    ].join('\n');
-    const result = object(JSON.parse(sandboxExec(this.handle, script, 15_000)));
-    expect(result.finished_replay).toBe(true);
-    expect(Array.isArray(result.records)).toBe(true);
-    return (result.records as unknown[]).map(object);
+    return piNativeOutput(this.handle, this.pipe);
   }
 
   async noFailure(phase: 'live' | 'idle' = 'live'): Promise<void> {

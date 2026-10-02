@@ -35,6 +35,22 @@ accepted some other way. Backend-NAME selection (``ASTRABOX_DB_BACKEND=<name>`` 
 ``mongodb://`` URL) is separate from this resolution path and stays fail-loud
 on an unknown name.
 
+Atomic operations across collections are an optional backend capability:
+``run_transaction(callback)`` passes an :class:`AsyncDocumentTransaction` to a
+DB-only callback. Its bound collections share one native transaction, and
+``lock_one`` retains the matched document's write guard until commit/rollback.
+Binding and deletion must acquire the same parent guard before changing or
+checking references. Individual-command retries must not escape that boundary;
+only the backend may retry the whole callback after a definitely aborted
+transaction. Connection loss during commit is not proof of rollback.
+A backend can expose asynchronous ``get_transaction_runner()`` instead when
+capability depends on the connected deployment; it returns the callback runner
+or None. Mongo uses this for replica-set/sharded versus standalone deployments.
+Backends without this capability retain ordinary collection operations, while
+Environment deletion refuses to run without an atomic boundary. Schema/index
+preparation belongs outside the callback. Bound handles cannot escape their
+owning task or transaction lifetime.
+
 Documents are plain ``dict[str, Any]`` at this boundary (the store maps them to
 rows/JSON underneath). Construction (``__init__``) and store-specific internals
 (cursor encoders, index helpers) are deliberately not part of the contract.
@@ -46,6 +62,8 @@ from typing import Any, Protocol, Sequence, runtime_checkable
 
 __all__ = [
     "AsyncDocumentCollection",
+    "TransactionalDocumentCollection",
+    "AsyncDocumentTransaction",
 ]
 
 
@@ -145,3 +163,17 @@ class AsyncDocumentCollection(Protocol):
     async def create_indexes(self, models: Sequence[Any]) -> Any: ...
 
     async def list_indexes(self) -> Any: ...
+
+
+class TransactionalDocumentCollection(AsyncDocumentCollection, Protocol):
+    """A collection bound to its owner's transaction and lifetime."""
+
+    async def lock_one(self, query: dict[str, Any]) -> dict[str, Any] | None:
+        """Read under a write guard held until the transaction ends."""
+        ...
+
+
+class AsyncDocumentTransaction(Protocol):
+    """A native transaction shared by collections, used sequentially in one task."""
+
+    def collection(self, name: str) -> TransactionalDocumentCollection: ...

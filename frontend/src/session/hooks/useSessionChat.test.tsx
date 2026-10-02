@@ -99,7 +99,6 @@ describe('useSessionChat under an unstable durableRecords identity', () => {
         permissionModeRef: { current: 'default' },
         refresh,
         refreshAuthoritativeHistory: vi.fn(),
-        observePendingInteraction: vi.fn(),
         clearPendingInteraction: vi.fn(() => true),
         interrupt: vi.fn(),
         recover: vi.fn(),
@@ -144,7 +143,6 @@ describe('useSessionChat structural stream recovery', () => {
       permissionModeRef: { current: 'default' },
       refresh: vi.fn().mockResolvedValue({ detail: session }),
       refreshAuthoritativeHistory: vi.fn(),
-      observePendingInteraction: vi.fn(),
       clearPendingInteraction: vi.fn(() => true),
       interrupt: vi.fn(),
       recover: vi.fn(),
@@ -192,7 +190,6 @@ describe('useSessionChat structural stream recovery', () => {
     const permissionModeRef = { current: 'plan' };
     const refresh = vi.fn().mockResolvedValue({ detail: session });
     const refreshAuthoritativeHistory = vi.fn();
-    const observePendingInteraction = vi.fn();
     const clearPendingInteraction = vi.fn(() => true);
     const interrupt = vi.fn();
     const recover = vi.fn();
@@ -213,7 +210,6 @@ describe('useSessionChat structural stream recovery', () => {
       permissionModeRef,
       refresh,
       refreshAuthoritativeHistory,
-      observePendingInteraction,
       clearPendingInteraction,
       interrupt,
       recover,
@@ -323,7 +319,6 @@ describe('useSessionChat structural stream recovery', () => {
       permissionModeRef: { current: 'default' },
       refresh,
       refreshAuthoritativeHistory,
-      observePendingInteraction: vi.fn(),
       clearPendingInteraction: vi.fn(() => true),
       interrupt: vi.fn(),
       recover: vi.fn(),
@@ -394,7 +389,6 @@ describe('useSessionChat structural stream recovery', () => {
       permissionModeRef: { current: 'default' },
       refresh: vi.fn().mockResolvedValue({ detail: session }),
       refreshAuthoritativeHistory: vi.fn(),
-      observePendingInteraction: vi.fn(),
       clearPendingInteraction: vi.fn(() => true),
       interrupt: vi.fn(),
       recover: vi.fn(),
@@ -457,7 +451,6 @@ describe('useSessionChat structural stream recovery', () => {
         permissionModeRef: { current: 'default' },
         refresh: vi.fn().mockResolvedValue({ detail: session }),
         refreshAuthoritativeHistory: vi.fn(),
-        observePendingInteraction: vi.fn(),
         clearPendingInteraction: vi.fn(() => true),
         interrupt: vi.fn(),
         recover: vi.fn(),
@@ -505,7 +498,6 @@ describe('useSessionChat interrupt settling', () => {
     permissionModeRef: { current: 'default' },
     refresh: vi.fn().mockResolvedValue({ detail: baseSession(turnId) }),
     refreshAuthoritativeHistory: vi.fn(),
-    observePendingInteraction: vi.fn(),
     clearPendingInteraction: vi.fn(() => true),
     interrupt: vi.fn().mockResolvedValue(undefined),
     recover: vi.fn(),

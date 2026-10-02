@@ -40,6 +40,9 @@ describe('SessionRightPanel', () => {
         selectedChildRunId={null}
         setSelectedChildRunId={() => {}}
         fileChanges={[]}
+        fileChangesLoading={false}
+        fileChangesError={null}
+        refreshFileChanges={async () => {}}
         selectedDiffFile={null}
         setSelectedDiffFile={() => {}}
       />,
@@ -63,5 +66,34 @@ describe('SessionRightPanel', () => {
         }
       }
     }
+  });
+});
+
+describe('Diff read status', () => {
+  function show({ loading = false, error = null as string | null } = {}) {
+    return render(<SessionRightPanel
+      rightTab="diff" setRightTab={() => {}}
+      rightPanelCaps={{ tabs: ['diff'], defaultTab: 'diff' }}
+      uniqueChangedFiles={0} subagentRegistry={emptyRegistry} childRunProjectionError={null}
+      sessionId="session-1" filesPanelEnabled={false} runtimeUnavailableMessage="Unavailable"
+      filesRefreshNonce={0} runtimeAccessReady={false} lifecycleState="terminated"
+      terminalCwd={null} setTerminalCwd={() => {}}
+      selectedChildRunId={null} setSelectedChildRunId={() => {}}
+      fileChanges={[]} selectedDiffFile={null} setSelectedDiffFile={() => {}}
+      fileChangesLoading={loading} fileChangesError={error} refreshFileChanges={async () => {}}
+    />);
+  }
+
+  it('announces loading instead of rendering the empty Diff verdict', () => {
+    const page = show({ loading: true });
+    expect(page.getByRole('status')).toBeTruthy();
+    expect(page.queryByText(/No file changes/i)).toBeNull();
+  });
+
+  it('offers retry after failure instead of rendering an empty Diff', () => {
+    const page = show({ error: 'history unavailable' });
+    expect(page.getByRole('alert')).toBeTruthy();
+    expect(page.getByRole('button')).toBeTruthy();
+    expect(page.queryByText(/No file changes/i)).toBeNull();
   });
 });

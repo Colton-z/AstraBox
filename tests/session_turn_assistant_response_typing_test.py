@@ -105,6 +105,18 @@ _MESSAGE_PAGE: dict[str, Any] = {
     "pending_interaction": None,
 }
 
+_FILE_CHANGES: dict[str, Any] = {
+    "through_seq": 101,
+    "turns": [{"turn_id": "turn-1", "messages": [{
+        "message_id": "native-message", "parts": [{
+            "type": "data-file-changes", "id": "native-call", "data": {
+                "toolCallId": "native-call", "toolName": "Write", "supplier_extension": {"preserved": True},
+                "files": [{"path": "/workspace/file.txt", "diff": None}],
+            },
+        }],
+    }]}],
+}
+
 _CHILD_RUN_PAGE: dict[str, Any] = {
     "session_id": "session-1",
     "child_runs": [
@@ -269,6 +281,7 @@ class _PlatformService:
     list_sessions_page = staticmethod(_returns(_SESSION_PAGE))
     get_session = staticmethod(_returns(_SESSION))
     get_messages = staticmethod(_returns(_MESSAGE_PAGE))
+    get_file_changes = staticmethod(_returns(_FILE_CHANGES))
     list_session_child_runs = staticmethod(_returns(_CHILD_RUN_PAGE))
     get_session_child_run_messages = staticmethod(_returns(_CHILD_RUN_MESSAGES))
     update_session_permission_mode = staticmethod(_returns(_PERMISSION_MODE))
@@ -381,6 +394,7 @@ def test_the_session_list_answers_both_of_its_shapes_whole(
     [
         ("GET", "/api/v1/sessions/session-1", None, _SESSION),
         ("GET", "/api/v1/sessions/session-1/messages", None, _MESSAGE_PAGE),
+        ("GET", "/api/v1/sessions/session-1/file-changes?after_seq=25", None, _FILE_CHANGES),
         ("GET", "/api/v1/sessions/session-1/child-runs", None, _CHILD_RUN_PAGE),
         (
             "GET",

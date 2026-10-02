@@ -153,8 +153,9 @@ def test_parallel_failure_never_enters_the_restart_window(tmp_path: Path) -> Non
     )
 
 
+@pytest.mark.parametrize("suffix_names", [False, True], ids=["prefix", "suffix"])
 def test_exact_node_selection_keeps_parallel_and_restart_isolated(
-    tmp_path: Path,
+    tmp_path: Path, suffix_names: bool,
 ) -> None:
     parallel_node = (
         "tests/e2e/test_delete_and_archive.py::test_delete_makes_session_unreadable"
@@ -162,6 +163,12 @@ def test_exact_node_selection_keeps_parallel_and_restart_isolated(
     restart_node = (
         "tests/e2e/test_reattach.py::test_sandbox_and_session_survive_backend_restart"
     )
+    if suffix_names:
+        parallel_node = (
+            "tests/e2e/agent_instruction_install_test.py::"
+            "test_authored_instructions_reach_the_first_reply[cold-conversation]"
+        )
+        restart_node = "tests/e2e/reattach_test.py::test_restart"
     result, records = _run_live_runner(
         tmp_path,
         arguments=[
@@ -181,6 +188,18 @@ def test_exact_node_selection_keeps_parallel_and_restart_isolated(
     assert str(_REPO_ROOT / restart_node) in restart["args"]
     assert str(_REPO_ROOT / parallel_node) not in restart["args"]
     assert "-n" not in restart["args"]
+
+
+@pytest.mark.parametrize("node", [
+    "tests/unit/instruction_test.py::test_one",
+    "tests/e2e/instruction_test.txt::test_one",
+    "tests/e2e/instruction_test.py",
+])
+def test_invalid_node_selection_never_starts_pytest(tmp_path: Path, node: str) -> None:
+    result, records = _run_live_runner(tmp_path, arguments=["--parallel-node", node])
+    assert result.returncode == 64
+    assert "invalid selected Python node" in result.stderr
+    assert records == []
 
 
 def test_assistant_lane_runs_once_without_an_empty_restart_phase(

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from fastapi import APIRouter, Body, Request
+from fastapi import APIRouter, Body, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from astrabox.common.utils.api_response import success_response
@@ -409,6 +409,27 @@ class WebshellAccess(BaseModel):
     url: str
 
 
+class SessionFileChangeMessage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    message_id: str
+    parts: list[dict[str, Any]]
+
+
+class SessionFileChangeTurn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    turn_id: str
+    messages: list[SessionFileChangeMessage]
+
+
+class SessionFileChanges(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    through_seq: int
+    turns: list[SessionFileChangeTurn]
+
+
 @router.get(
     "/api/v1/sessions",
     # Two shapes, and both are live: the console's `listSessions` reads the
@@ -450,6 +471,17 @@ async def get_messages(session_id: str, request: Request):
     limit = min(int(request.query_params.get("limit", "20")), 50)
     result = await _svc().get_messages(user, session_id, before=before, limit=limit)
     return success_response(result)
+
+
+@router.get(
+    "/api/v1/sessions/{session_id}/file-changes",
+    response_model=ApiEnvelope[SessionFileChanges],
+)
+async def get_session_file_changes(
+    session_id: str, request: Request, after_seq: int = Query(default=0, ge=0),
+):
+    user = await _resolve_user(request)
+    return success_response(await _svc().get_file_changes(user, session_id, after_seq=after_seq))
 
 
 @router.get(

@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { Download, Trash2 } from 'lucide-react';
+import { Download, RefreshCw, Trash2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
-import { buttonVariants } from '@/components/ui/button';
+import { Button, buttonVariants } from '@/components/ui/button';
 import {
   adminGetSessionDetail,
   adminGetSessionTrace,
@@ -69,11 +69,10 @@ function formatMcpConfig(value: unknown): string {
  * once, deliberately, to answer "why did that run do that". A panel beside the
  * list clips the digest, which is the only part with any length to it.
  *
- * Nothing here is editable. A session is a record of something that happened,
- * so the only control is the one that stops it.
+ * The record shows its read time and can be refreshed without navigating away.
  */
-// A conversation at rest: idle between turns, or over. Every other state is
-// a turn, a recovery or a creation in progress that the record should follow.
+// READY also covers running turns. These records disclose their read time;
+// creation and recovery additionally follow through the existing polling hook.
 const RESTING_SESSION_STATES = new Set(['READY', 'TERMINATED', 'DELETED']);
 
 export default function SessionDetailPage() {
@@ -82,6 +81,7 @@ export default function SessionDetailPage() {
   const { t } = useTranslation();
 
   const [detail, setDetail] = useState<AdminSessionDetail | null>(null);
+  const [readAt, setReadAt] = useState<string | null>(null);
   const [trace, setTrace] = useState<AdminSessionTrace | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -92,8 +92,11 @@ export default function SessionDetailPage() {
 
   // True after any successful read of the detail (see keepsLastRead).
   const loaded = useRef(false);
+  const readSequence = useRef(0);
 
   const load = useCallback(async (context?: ReloadContext) => {
+    const sequence = ++readSequence.current;
+    const startedAt = new Date().toISOString();
     const background = context?.background === true;
     if (!background) setLoading(true);
     // The trace is a second call and is allowed to fail on its own: a session
@@ -103,11 +106,15 @@ export default function SessionDetailPage() {
       adminGetSessionDetail(sessionId),
       adminGetSessionTrace(sessionId),
     ]);
+    // A manual refresh can overtake a background read of an older incident.
+    if (sequence !== readSequence.current) return;
+    setLoading(false);
     // Kept whole: a background read that lost the network leaves the record
     // and its trace as last read, rather than one of them.
     if (d.status === 'rejected' && keepsLastRead(d.reason, context, loaded.current)) return;
     if (d.status === 'fulfilled') {
       setDetail(d.value);
+      setReadAt(startedAt);
       setError('');
       loaded.current = true;
     } else {
@@ -119,7 +126,6 @@ export default function SessionDetailPage() {
     } else if (!keepsLastRead(tr.reason, context, loaded.current)) {
       setTrace(null);
     }
-    if (!background) setLoading(false);
   }, [sessionId]);
 
   useEffect(() => {
@@ -157,9 +163,19 @@ export default function SessionDetailPage() {
   return (
     <ConsoleRecordPage
       title={sessionUserDisplay(detail)}
+      lede={readAt ? t('manage:system.captured_at', { at: formatDateTimeSeconds(readAt) }) : undefined}
       status={{ tone: sessionStateTone(detail.state), label: sessionStateLabel(detail.state) }}
       actions={
         <>
+          <Button
+            variant="outline"
+            size="icon"
+            onClick={() => void load()}
+            disabled={loading}
+            aria-label={t('common:refresh')}
+          >
+            <RefreshCw className={loading ? 'size-4 animate-spin' : 'size-4'} />
+          </Button>
           {/* The Claude Agent SDK transcript is distinct from the AstraBox
               session record: the file lands
               in ~/.claude/projects/ and `claude --resume` continues the

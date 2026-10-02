@@ -8,6 +8,8 @@ carry the next turn into the same AI SDK parser.
 
 from __future__ import annotations
 
+from astrabox.core.service.orchestrator.session_kernel.service_mixins.session_output import _TailFrameState
+
 import asyncio
 import json
 import unittest
@@ -15,7 +17,6 @@ from typing import Any
 
 from astrabox.core.service.orchestrator.session_kernel.service_mixins.turn_dispatch import (
     TurnDispatchStreamingMixin,
-    _TailFrameState,
 )
 from astrabox.core.service.orchestrator.session_kernel.service_mixins._helpers import (
     _ResumeCursorTracker,
@@ -206,6 +207,9 @@ class _FollowerFrameHistory:
 
 
 class _DurableFollowerHarness(TurnDispatchStreamingMixin):
+    async def _observe_session_output(self, session_id):
+        pass
+
     def __init__(self) -> None:
         self._broker = _SilentBroker()
         self._session_events_repo = _FollowerFrameHistory()

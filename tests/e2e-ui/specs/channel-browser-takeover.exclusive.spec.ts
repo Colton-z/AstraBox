@@ -6,7 +6,7 @@ import { AstraApi, messageText, visibleMessages } from '../fixtures/astraApi';
 import { documentsByField, sessionEvents, waitForTurnTerminalProof } from '../fixtures/dbOracle';
 import { apiPath } from '../fixtures/env';
 import { PlatformApi } from '../fixtures/platformApi';
-import { satoriSource } from '../fixtures/satoriSource';
+import { satoriReplyTexts, satoriSource } from '../fixtures/satoriSource';
 import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
 import { expectPromptDelivered, openSessionView, startPromptDelivery } from '../fixtures/sessionPage';
 import { aiStreamBodies, mirrorSseBodies, type SseBody } from '../fixtures/sseBodies';
@@ -263,13 +263,18 @@ test('a channel-created conversation accepts one browser turn without replacing 
     expect(object(lifecycle.payload).provider_ignore_reason)
       .toMatch(/^channel event 'login-(?:added|updated)' is not message-created$/);
   }
-  expect(source!.deliveries).toHaveLength(1);
-  expect(documentsByField('channel_outbox', '$.session_id', sessionId)).toHaveLength(1);
   const history = visibleMessages(await api.getMessages(sessionId, 100));
   expect(history.filter((row) => row.role === 'user').map(messageText)).toEqual([channelPrompt, browserPrompt]);
   const replies = history.filter((row) => row.role === 'assistant');
   expect(replies).toHaveLength(2);
   expect(replies.filter((row) => row.turn_id === browserCommand.turn_id).map(messageText)).toEqual([streamedText]);
+  await expect.poll(() => {
+    source!.healthy();
+    return satoriReplyTexts(page, source!.deliveries, messageId);
+  }, { timeout: 30_000 }).toEqual(replies.map((reply) => messageText(reply).trim()));
+  const outboxes = documentsByField('channel_outbox', '$.session_id', sessionId);
+  expect(outboxes).toHaveLength(2);
+  expect(outboxes.map((row) => row.response_id).sort()).toEqual(replies.map((reply) => reply.message_id).sort());
   await expect(page.getByTestId('user-message')).toHaveText([channelPrompt, browserPrompt]);
   await expect(page.getByTestId('assistant-text')).toHaveCount(2);
   await expect(page.getByTestId('assistant-text').last()).toHaveText(/\S/, { useInnerText: true });

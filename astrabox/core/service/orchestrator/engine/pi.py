@@ -47,6 +47,7 @@ from astrabox.core.service.orchestrator.engine.base import (
     EngineKind,
     EnginePreparationContext,
     EngineStartupContext,
+    EngineStreamDetached,
     initialize_engine_client,
 )
 from astrabox.core.service.orchestrator.engine.capabilities import (
@@ -58,6 +59,7 @@ from astrabox.core.service.orchestrator.engine.capabilities import (
 from astrabox.core.service.orchestrator.engine.pi_client import (
     ENGINE_KIND,
     PiEngineClient,
+    decode_turn_anchor,
 )
 from astrabox.core.service.orchestrator.engine.provisioning import (
     ENGINE_ENV_FILE_NAME,
@@ -397,7 +399,8 @@ async def _park_pi_child(
 
 
 async def _install_agent_instructions(
-    sandbox: Any, *, cwd: str, instructions: str
+    sandbox: Any, *, cwd: str, instructions: str,
+    runtime_identity: dict[str, Any] | None,
 ) -> None:
     """Place the Agent's instructions where pi already looks.
 
@@ -411,6 +414,7 @@ async def _install_agent_instructions(
         sandbox,
         path=f"{cwd.rstrip('/')}/{PI_AGENT_INSTRUCTIONS_FILE}",
         content=instructions if instructions.endswith("\n") else instructions + "\n",
+        runtime_identity=runtime_identity,
         mode=0o644,
         error_code="AGENT_RUNTIME_ERROR",
         error_message="failed to install the pi agent instructions",
@@ -825,17 +829,13 @@ class PiEngineAdapter(EngineAdapter):
                 status_code=409,
             )
         await _await_rendered_models_config(context.sandbox, model=model)
-        source_cwd = (
-            str(identity.get("workspace_source_dir") or "").strip()
-            if context.placement == "shared_slot"
-            else context.cwd
-        )
         instructions = str(getattr(template, "system", None) or "").strip()
-        if instructions and source_cwd:
+        if instructions:
             await _install_agent_instructions(
                 context.sandbox,
-                cwd=source_cwd,
+                cwd=context.cwd,
                 instructions=instructions,
+                runtime_identity=identity,
             )
         parked_pty_session_id = await _park_pi_child(
             context.sandbox,
@@ -891,6 +891,9 @@ class PiEngineAdapter(EngineAdapter):
         model = _model_reference(model_access)
         return _engine_sandbox_request(model_access, model=model)
 
+    def supports_unowned_output_attach(self) -> bool:
+        return True
+
     async def activate_runtime(
         self,
         context: EngineStartupContext,
@@ -940,12 +943,33 @@ class PiEngineAdapter(EngineAdapter):
                 status_code=409,
             )
         sandbox = context.sandbox
+        output_checkpoint = None
+        if context.attach_mode == "observe":
+            if context.resident_output_sink is None:
+                raise RuntimeError("pi output attachment requires the Session journal")
+            output_checkpoint = await context.resident_output_sink.restore_resident_output(
+                engine_kind=ENGINE_KIND,
+                sandbox_id=context.sandbox_id,
+                engine_session_key=context.resume_session_key,
+            )
+            if (
+                not output_checkpoint.engine_turn_id
+                or output_checkpoint.replay_after_sequence is None
+            ):
+                raise EngineStreamDetached(
+                    "pi output connection has no committed terminal cursor to resume"
+                )
+            anchor = decode_turn_anchor(output_checkpoint.engine_turn_id)
+            if anchor["pi_session_id"] != context.resume_session_key:
+                raise RuntimeError("pi output connection belongs to another native Session")
+            parked_pty_session_id = anchor["pty_session_id"]
         client: PiEngineClient | None = None
         try:
             instructions = str(getattr(template, "system", None) or "").strip()
             if instructions and not is_prepared:
                 await _install_agent_instructions(
-                    sandbox, cwd=context.cwd, instructions=instructions
+                    sandbox, cwd=context.cwd, instructions=instructions,
+                    runtime_identity=context.runtime_identity,
                 )
             identity = context.runtime_identity or {}
             # The key the PLATFORM honoured, not the one the plan asked for:
@@ -985,6 +1009,7 @@ class PiEngineAdapter(EngineAdapter):
                 command=command,
                 resume_session_key=resume_key or None,
                 switch_prepared_session=is_prepared and bool(resume_key),
+                output_checkpoint=output_checkpoint,
                 resident_output_sink=context.resident_output_sink,
                 event_sink=context.event_sink,
             )

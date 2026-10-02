@@ -187,7 +187,8 @@ async def test_parked_turn_terminal_survives_same_turn_worker_replacement() -> N
     assert snapshots.doc["last_turn_terminal_frame"] == _finish_proof()
     assert snapshots.doc[_WATERMARK] == 12, "terminal commit must not roll back the newer watermark"
     assert state.turn_settled is True
-    record_manifest.assert_awaited_once()
+    # Launch custody belongs to its emission, not terminal settlement.
+    record_manifest.assert_not_awaited()
 
 
 @pytest.mark.asyncio

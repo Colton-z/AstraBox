@@ -15,6 +15,7 @@ import {
 } from './console';
 import {
   channelEditField,
+  channelExecutionUserField,
   channelFieldValues,
   firstMissingChannelField,
 } from './channelProviderFields';
@@ -54,6 +55,7 @@ export default function DeploymentCreatePage() {
         prompt_prefix: '',
         cron: '0 9 * * *',
         timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+        execution_user_id: '',
         channel_config: {},
         credentials: {},
       });
@@ -171,6 +173,7 @@ export default function DeploymentCreatePage() {
     ];
     if (selectedProvider) {
       const providerFields = [
+        channelExecutionUserField(t, selectedProvider.can_configure_execution_user === true),
         ...selectedProvider.config_fields.map((field) =>
           channelEditField(field, 'channel_config'),
         ),
@@ -275,6 +278,8 @@ export default function DeploymentCreatePage() {
         setError('');
         void createAgentDeployment(agentId, {
           scene,
+          execution_user_id: selectedProvider?.can_configure_execution_user
+            ? String(draft.execution_user_id ?? '').trim() : undefined,
           name: scene === 'schedule' ? name : undefined,
           prompt_prefix: prompt || undefined,
           channel_config: selectedProvider

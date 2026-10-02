@@ -12,7 +12,7 @@
  * declaration. The write is atomic (temp file + rename) because the backend
  * reads it on its own schedule and must never see half a JSON document.
  *
- * `_FRAME_HOLD_RELEASE_TIMEOUT_SECONDS` is 120 on the backend side: a hold that
+ * `_HOLD_RELEASE_TIMEOUT_SECONDS` is 120 on the backend side: a hold that
  * is never released raises there and fails the turn for a reason that has
  * nothing to do with the spec. Every caller must fit its whole outage inside
  * that window and release in a `finally`.

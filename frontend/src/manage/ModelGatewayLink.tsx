@@ -1,14 +1,15 @@
+import useSWR from 'swr';
 import { useTranslation } from 'react-i18next';
 import { ArrowUpRight } from 'lucide-react';
 
-import { useAdminIntegrations } from '@/hooks/useAdminIntegrations';
+import { adminListIntegrations } from '@/api';
 import { ErrorNote } from '@/components/shell';
 import { keepsLastRead } from '@/hooks/useKeepCurrent';
 
 /** Reuse the deployment's management link without issuing new privileges. */
 export function ModelGatewayLink() {
   const { t } = useTranslation();
-  const { data, error } = useAdminIntegrations();
+  const { data, error } = useSWR('/api/v1/admin/integrations', adminListIntegrations);
   if (error && !keepsLastRead(error, { background: true }, data !== undefined)) {
     return <ErrorNote>{t('manage:nav.integrations_unavailable')}</ErrorNote>;
   }

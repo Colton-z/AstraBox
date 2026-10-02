@@ -176,6 +176,9 @@ class ClaudeCodeEngineAdapter(EngineAdapter):
             sandbox_death_notice=True,
         )
 
+    def supports_unowned_output_attach(self) -> bool:
+        return True
+
     async def activate_runtime(
         self, context: EngineStartupContext
     ) -> Any:

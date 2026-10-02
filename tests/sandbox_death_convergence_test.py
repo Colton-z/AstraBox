@@ -136,6 +136,21 @@ class _FakeAgentRepo:
             and (after_agent_id is None or str(row.get("agent_id") or "") > after_agent_id)
         ][:limit]
 
+    async def clear_resident_sandbox_binding(
+        self, agent_id: str, *, sandbox_id: str, sandbox_backend: str | None = None,
+    ) -> bool:
+        expected = {"sandbox_id": sandbox_id}
+        if sandbox_backend:
+            expected["sandbox_backend"] = sandbox_backend
+        return await self.compare_and_update_agent(
+            agent_id,
+            expected=expected,
+            updates={
+                "sandbox_id": None, "sandbox_backend": None,
+                "_resident_sandbox_generation": None, "expires_at": None,
+            },
+        )
+
     async def compare_and_update_agent(
         self,
         agent_id: str,
@@ -456,7 +471,7 @@ class ConvergeDeadSandboxTests(unittest.IsolatedAsyncioTestCase):
             [
                 {
                     "agent_id": "agent-1",
-                    "expected": {"sandbox_id": "sbx-1"},
+                    "expected": {"sandbox_id": "sbx-1", "sandbox_backend": "open_sandbox"},
                     "updates": {
                         "sandbox_id": None,
                         "sandbox_backend": None,
