@@ -21,7 +21,7 @@
   },
   "devDependencies": {
     "@axe-core/playwright": "4.13.0",
-    "@modelcontextprotocol/sdk": "1.30.0",
+    "@modelcontextprotocol/sdk": "1.32.0",
     "@playwright/test": "1.63.0",
     "@types/node": "^26.4.1",
     "typescript": "^7.0.2"
