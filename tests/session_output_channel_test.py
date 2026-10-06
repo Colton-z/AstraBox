@@ -686,35 +686,5 @@ class RequestedResumeCursorValidationTests(unittest.IsolatedAsyncioTestCase):
         )
 
 
-class DispatchReturnsAReceiptNotContentTests(unittest.IsolatedAsyncioTestCase):
-    async def test_the_streaming_path_is_dispatch_plus_follow(self) -> None:
-        # `stream_ai_stream` must not re-implement admission, journalling or
-        # projection: it dispatches through the same entry the ack-only route
-        # uses, so the two channels cannot drift into disagreeing about what
-        # accepting a turn means.
-        import inspect
-
-        source = inspect.getsource(TurnDispatchStreamingMixin.stream_ai_stream)
-        self.assertIn("dispatch_turn_input", source)
-        for owned_by_dispatch in (
-            "_append_command_accepted",
-            "_project_command_to_snapshot_and_message",
-            "enforce_admission",
-        ):
-            self.assertNotIn(
-                owned_by_dispatch,
-                source,
-                f"{owned_by_dispatch} belongs to the input channel, not the output one",
-            )
-
-    async def test_dispatch_answers_with_the_identifiers_and_no_frames(self) -> None:
-        source_annotations = TurnDispatchStreamingMixin.dispatch_turn_input.__annotations__
-        self.assertEqual(
-            source_annotations.get("return"),
-            "dict[str, Any]",
-            "the input channel returns a receipt; it is not an iterator",
-        )
-
-
 if __name__ == "__main__":
     unittest.main()

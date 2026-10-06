@@ -9,11 +9,8 @@
  *
  * Scope: what the record SAYS, asked once per mount. Whether an open record
  * re-asks the control plane when the reader returns to the tab is the other
- * half, and it belongs to
- * `a-sandbox-record-can-be-re-asked-without-a-browser-reload.parallel.spec.ts`
- * — which times its return against `useKeepCurrent`'s 5s throttle
- * (`SandboxDetailPage.tsx:73`). Nothing here dispatches focus or
- * visibilitychange, so a green result makes no claim about that reader.
+ * half. Nothing here dispatches focus or visibilitychange, so a green result
+ * makes no claim about that reader.
  */
 import { test, expect, type Locator, type Page } from '@playwright/test';
 
@@ -121,9 +118,8 @@ test('the sandbox record pages report what the box answered, and never an empty 
   // page, so on a quiet host a spec that drove them would be green because the
   // control was absent.
   //
-  // A row is located as the element it is. The table is laid out as CSS grid,
-  // which is why console-interaction.audit.spec.ts addresses rows this way
-  // too. What it shows of an id is `shortId` — the first eight characters, an
+  // A row is located as the element it is; the table is laid out as CSS grid.
+  // What it shows of an id is `shortId` — the first eight characters, an
   // ellipsis, the last four — so the eight-character prefix is what identifies
   // the target on screen.
   const row = page

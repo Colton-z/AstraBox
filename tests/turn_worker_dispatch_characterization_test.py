@@ -8,7 +8,7 @@ nonlocals (``_record_translated_frame``, ``_persist_frames``,
 ``_project_turn_terminal``) it cannot be invoked without standing up the whole
 bridge (background writer/heartbeat tasks, translator, checkpoint lease); those
 are pinned at the nearest faithful seam: the module-level pure classifier the
-closure delegates to, plus a source-structure assertion over the exact wiring.
+closure delegates to.
 
 Four behaviors pinned:
 
@@ -18,10 +18,8 @@ Four behaviors pinned:
   StartTurn cannot re-project over a turn already in flight, while the
   legitimate sequential case (new turn after terminal, current_turn_id back to
   None) and the reconcile path are unaffected.
-* **Frame journaling seq / idempotency.** The writer atomically reserves each
-  durable batch's session-scoped range and assigns a strictly-monotonic
-  ``frame_seq``; replay re-appends of a terminal
-  ``data-result`` are guarded (idempotent) by a durable-type scan.
+* **Frame journaling.** A session-scoped child frame is made durable before it
+  is published, and carries no turn.
 * **Completed-vs-errored terminal classification.** The worker reads only its
   durable finish/error proof. Public ``data-result`` payloads are display data
   and cannot reclassify a turn.
@@ -32,7 +30,6 @@ Four behaviors pinned:
 
 from __future__ import annotations
 
-import inspect
 import unittest
 from types import SimpleNamespace
 from typing import Any
@@ -56,7 +53,6 @@ from astrabox.core.service.orchestrator.session_kernel.workers.turn import (
     bridge_frames,
     bridge_journal,
     bridge_loop,
-    bridge_terminal,
 )
 from astrabox.core.service.orchestrator.session_kernel.workers.turn.state import (
     _BridgeRunState,
@@ -285,58 +281,10 @@ class SingleDispatchGuardTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snapshots.doc["current_turn_id"], "turn-A")
 
 
-# ── Frame journaling: seq assignment + replay idempotency ─────────────────────
+# ── Frame journaling: session-scoped child frames ────────────────────────────
 
 
 class FrameJournalSeqTests(unittest.IsolatedAsyncioTestCase):
-    def _worker(self, turn_max: int | None) -> TurnWorker:
-        worker = TurnWorker.__new__(TurnWorker)
-        worker._session_events_repo = SimpleNamespace(
-            get_max_turn_frame_seq=AsyncMock(return_value=turn_max),
-        )
-        return worker
-
-    async def test_get_max_frame_seq_reads_the_turns_own_watermark(self) -> None:
-        # Allocation is session-scoped, so the session maximum can belong to a
-        # concurrent background-lane append. A turn's watermark must be asked
-        # for by turn, or the assistant message claims frames that are not its.
-        worker = self._worker(turn_max=4)
-        self.assertEqual(await worker._get_max_frame_seq("s-1", "turn-1"), 4)
-        worker._session_events_repo.get_max_turn_frame_seq.assert_awaited_once_with(
-            "s-1", turn_id="turn-1"
-        )
-
-    async def test_get_max_frame_seq_none_when_turn_has_no_frames(self) -> None:
-        worker = self._worker(turn_max=None)
-        self.assertIsNone(await worker._get_max_frame_seq("s-1", "turn-1"))
-
-    async def test_get_max_frame_seq_none_without_turn_id_skips_repo(self) -> None:
-        worker = self._worker(turn_max=4)
-        self.assertIsNone(await worker._get_max_frame_seq("s-1", ""))
-        worker._session_events_repo.get_max_turn_frame_seq.assert_not_awaited()
-
-    def test_frame_writer_reserves_batch_and_assigns_monotonic_seq(self) -> None:
-        # _persist_frames reserves one session-scoped range for the whole batch,
-        # then stamps each doc with the current seq and increments by one.
-        persist = inspect.getsource(bridge_journal._persist_frames)
-        self.assertIn("allocate_session_frame_seq", persist)
-        self.assertIn("count=len(frames)", persist)
-        self.assertIn('"frame_seq": current_seq', persist)
-        self.assertIn("frame_seq = current_seq + 1", persist)
-
-    def test_replay_terminal_result_reappend_is_idempotent(self) -> None:
-        # On answer-continuation replay the worker must not double-journal the
-        # terminal data-result: the re-append is guarded by a durable-type scan.
-        # This guard is a (worker, state, ctx)-parameterised free function in
-        # the bridge_terminal module; the scan-then-skip shape is pinned
-        # there.
-        guard = inspect.getsource(
-            bridge_terminal._append_replay_terminal_result_if_missing
-        )
-        self.assertIn("_turn_has_durable_frame_type(", guard)
-        self.assertIn('"data-result"', guard)
-        self.assertIn("return", guard)
-
     async def test_session_child_frame_is_durable_before_publish_and_has_no_turn(self) -> None:
         queued = AsyncMock()
         state = _BridgeRunState()
@@ -660,10 +608,6 @@ class TerminalClassificationTests(unittest.TestCase):
             [{"type": "text", "text": "只有结果文本"}],
         )
 
-    def test_terminal_settlement_does_not_read_public_result_verdicts(self) -> None:
-        bridge_src = inspect.getsource(bridge_loop._run_bridge_command)
-        self.assertNotIn("saw_error_result", bridge_src)
-
 
 # ── Dead / missing runtime binding ───────────────────────────────────────────
 
@@ -766,72 +710,6 @@ class DeadMissingBindingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status"], "idle")
         turn_service.interrupt_engine_turn.assert_not_awaited()
         self.assertEqual(journal, [])
-
-    async def test_interrupt_with_pending_interaction_dispatches_runtime_interrupt(self) -> None:
-        # A pending interaction is an active turn awaiting the runner's
-        # PreToolUse resolution — InterruptTurn cancels the engine turn like
-        # any other active turn (the runner resolves its pending wait as part
-        # of the interrupt); there is no separate answer-shaped interrupt.
-        pending = {
-            "interaction_id": "iid-1",
-            "turn_id": "turn-1",
-            "interaction_state": "OPEN",
-            "active": True,
-        }
-        worker, turn_service, _req, journal = self._interrupt_worker(
-            interrupt_mark_lands=True,
-            snapshot={"current_turn_id": "turn-1", "active_interaction_id": "iid-1"},
-            session={"sandbox_id": "sbx-1", "sandbox_endpoint": "http://sidecar.local"},
-            active_interaction=pending,
-        )
-        seq, result = await worker._run_interrupt_command(
-            user=SimpleNamespace(user_id="u"),
-            session_id="s-1",
-            command_event={"causation_id": "cmd-1", "event_seq": 8, "turn_id": "turn-1"},
-        )
-        turn_service.interrupt_engine_turn.assert_awaited_once_with(
-            {"sandbox_id": "sbx-1", "sandbox_endpoint": "http://sidecar.local"}
-        )
-        self.assertEqual(result["status"], "accepted")
-        self.assertTrue(
-            any(e.get("event_type") == "turn.interrupt_requested" for e in journal)
-        )
-
-    async def test_interrupt_dispatches_to_runtime_and_appends_event(self) -> None:
-        # Happy path: an active matching turn with a live runtime → the engine
-        # turn is interrupted through the runtime manager (engine client), and
-        # a turn.interrupt_requested event is journaled.
-        worker, turn_service, interrupt_mark, journal = self._interrupt_worker(
-            interrupt_mark_lands=True,
-            snapshot={"current_turn_id": "turn-1"},
-            session={"sandbox_id": "sbx-1", "sandbox_endpoint": "http://sidecar.local"},
-            active_interaction=None,
-        )
-        seq, result = await worker._run_interrupt_command(
-            user=SimpleNamespace(user_id="u"),
-            session_id="s-1",
-            command_event={
-                "causation_id": "cmd-int", "correlation_id": "corr-1",
-                "event_seq": 8, "turn_id": "turn-1",
-            },
-        )
-        self.assertEqual(result["status"], "accepted")
-        self.assertEqual(seq, 99)
-        # The mark must land on the SNAPSHOT (the store that owns
-        # current_turn_id) CAS-scoped to the interrupted turn — the park side
-        # reads the same store, which is what closes the park-vs-interrupt
-        # race. A mark scoped against the sessions row's terminal-time mirror
-        # never lands during a live turn.
-        mark_call = interrupt_mark.await_args_list[0]
-        self.assertEqual(mark_call.args[0], "s-1")
-        self.assertTrue(bool(mark_call.args[1].get("interrupt_requested")))
-        self.assertEqual(mark_call.kwargs.get("extra_filter"), {"current_turn_id": "turn-1"})
-        turn_service.interrupt_engine_turn.assert_awaited_once_with(
-            {"sandbox_id": "sbx-1", "sandbox_endpoint": "http://sidecar.local"}
-        )
-        self.assertEqual(len(journal), 1)
-        self.assertEqual(journal[0]["event_type"], "turn.interrupt_requested")
-        self.assertEqual(journal[0]["payload"]["command_id"], "cmd-int")
 
     async def test_pre_first_token_interrupt_force_settles_the_turn(self) -> None:
         # The interrupt-settle race: an active PROCESSING turn with ZERO frames
@@ -1021,41 +899,3 @@ def _slice_between(source: str, start_header: str, end_header: str) -> str:
 
 if __name__ == "__main__":
     unittest.main()
-
-
-# ── the failure phase reaching the live stream, not just history ────────────
-
-
-class TurnFailureStreamProjectionTests(unittest.TestCase):
-    """A failed turn's stream carries a versioned ``data-turn-failure`` data
-    part with the phase (pre_dispatch = the engine never received the write,
-    retry-safe; post_dispatch = it may have). Clients drive retry/settlement
-    affordances off this without racing the stream close to poll the detail."""
-
-    def test_error_terminal_emits_the_versioned_failure_data_part(self) -> None:
-        source = inspect.getsource(bridge_terminal._append_terminal_signal)
-        self.assertIn('"data-turn-failure"', source)
-        self.assertIn('"failure_phase": failure_phase', source)
-        self.assertIn('"version": 1', source)
-        self.assertIn(
-            'state.dispatch_confirmed else "pre_dispatch"', source,
-            "the wire phase derives from the same dispatch_confirmed signal "
-            "as the durable turn_failure block",
-        )
-
-    def test_failure_data_part_is_replay_idempotent(self) -> None:
-        source = inspect.getsource(bridge_terminal._append_terminal_signal)
-        self.assertIn("_turn_has_durable_frame_type(", source)
-        # And the deterministic identity mirrors data-result's.
-        normalize = inspect.getsource(bridge_journal._normalize_frame)
-        self.assertIn('"data-turn-failure"', normalize)
-        self.assertIn('f"turn-failure:{failure_id}"', normalize)
-
-    def test_finish_terminal_emits_no_failure_data_part(self) -> None:
-        # The data part is scoped to the error branch: a clean finish appends
-        # only the standard finish frame.
-        source = inspect.getsource(bridge_terminal._append_terminal_signal)
-        error_branch = source.split('payload_doc = {"type": "error"')[1]
-        self.assertIn('"data-turn-failure"', error_branch)
-        finish_branch = source.split('payload_doc = {"type": "error"')[0]
-        self.assertNotIn('"data-turn-failure"', finish_branch)

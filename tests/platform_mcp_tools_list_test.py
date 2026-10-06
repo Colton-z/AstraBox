@@ -18,7 +18,7 @@ def test_tools_list_describes_the_platform_capability() -> None:
     server = {
         "deployment_id": "dep-1",
         "server_name": "preview",
-        "platform_server": "html_preview",
+        "platform_server": "expose_port",
         "allowed_tools": {"expose_port"},
     }
 
@@ -43,7 +43,7 @@ def test_every_request_helper_stays_callable_off_the_class() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("tool_name", ["expose_port", "publish_html_preview"])
+@pytest.mark.parametrize("tool_name", ["expose_port"])
 @pytest.mark.parametrize("arguments", [{}, {"path": "index.html"}, {"port": "8080"}])
 async def test_preview_tool_requires_an_explicit_integer_port(
     tool_name: str, arguments: dict[str, object]

@@ -46,6 +46,16 @@ LiteLLM 会把这个名称映射到实际模型服务。以后更换上游模型
 Agent 程序只会得到请求所需的模型名称和网关访问方式。上游模型服务密钥保存在 LiteLLM
 一侧。
 
+DeepSeek Harness 对其原生 DeepSeek 目录中的模型使用 Messages 协议；本版本内置目录
+包含 `deepseek-flash` 和 `deepseek-v4-pro`。这些模型的图片上传还使用 Files API。
+内置网关提供这两种协议；外部网关也必须支持原生 Messages 和 Files。
+只有 Chat Completions 接口的网关需要使用其他路由名称。
+
+其他路由名称使用所选网关的 Chat Completions 接口，包括图片输入，不会把图片上传到
+DeepSeek 的 Files API。对于 LiteLLM 无法识别的自定义视觉模型，在路由中声明
+`model_info.supports_vision: true`。这个设置描述上游模型的实际能力，不会让纯文本模型
+获得图片理解能力。
+
 ## 使用内置网关
 
 标准 AstraBox 容器会在运行 AstraBox 服务的同时启动 LiteLLM。先为内置配置中的路由提供

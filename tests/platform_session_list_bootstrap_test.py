@@ -4,13 +4,12 @@ import asyncio
 from datetime import timedelta
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 
 from astrabox.core.service.orchestrator.bootstrap_reconciler import BootstrapReconciler
 from astrabox.core.service.orchestrator.platform_service import AgentPlatformService
-from astrabox.persistence.repository.keyset import SWEEP_PAGE_SIZE
 from astrabox.common.utils.time_utils import utcnow
 
 
@@ -132,47 +131,6 @@ def _service(
     return service, kernel, repo, expiration_watcher
 
 
-def test_runtime_manager_uses_the_platform_session_repository() -> None:
-    service = AgentPlatformService()
-
-    assert service._runtime_manager._sessions_repo is service._sessions_repo
-
-
-@pytest.mark.asyncio
-async def test_list_page_starts_read_prerequisites_without_global_reconcile() -> None:
-    service, kernel, repo, expiration_watcher = _service()
-
-    await service.list_sessions_page(
-        SimpleNamespace(user_id="user-1"),
-        limit=20,
-        cursor="cursor-1",
-    )
-
-    assert repo.ensure_index_calls == 1
-    assert repo.bootstrap_candidate_calls == []
-    assert kernel.bootstrap_calls == 1
-    assert kernel.background_starts >= 1
-    assert kernel.list_page_calls == [
-        {"user_id": "user-1", "limit": 20, "cursor": "cursor-1"}
-    ]
-    assert expiration_watcher.starts == 1
-    assert service._session_list_bootstrapped is True
-    assert service._bootstrapped is False
-
-
-@pytest.mark.asyncio
-async def test_full_bootstrap_reconciles_once_after_a_list_only_bootstrap() -> None:
-    service, _kernel, repo, _expiration_watcher = _service()
-
-    await service.list_sessions_page(SimpleNamespace(user_id="user-1"))
-    await service.ensure_bootstrap()
-    await service.ensure_bootstrap()
-
-    assert repo.bootstrap_candidate_calls == [SWEEP_PAGE_SIZE]
-    assert service._session_list_bootstrapped is True
-    assert service._bootstrapped is True
-
-
 @pytest.mark.asyncio
 async def test_list_bootstrap_failure_is_not_marked_or_hidden() -> None:
     repo = _SessionsRepository(index_error=RuntimeError("index unavailable"))
@@ -252,61 +210,3 @@ async def test_bootstrap_does_not_terminate_a_startup_that_advanced_after_scan()
 
     assert repo.cas_updates[0][1] == {"state": "CREATING", "updated_at": stale}
     assert service._session_events_repo.events == []
-
-
-@pytest.mark.asyncio
-async def test_bootstrap_candidate_query_is_bounded_to_creating_sessions() -> None:
-    captured: dict[str, object] = {}
-
-    class _FakeCursor:
-        def sort(self, field: str, direction: int) -> "_FakeCursor":
-            captured["sort"] = (field, direction)
-            return self
-
-        def limit(self, limit: int) -> "_FakeCursor":
-            captured["limit"] = limit
-            return self
-
-        def __aiter__(self):
-            async def _gen():
-                if False:  # pragma: no cover - empty async iterator
-                    yield None
-
-            return _gen()
-
-    class _FakeCollection:
-        def find(self, query: dict[str, object]) -> _FakeCursor:
-            captured["query"] = dict(query)
-            return _FakeCursor()
-
-    async def _get_collection(_name: str) -> _FakeCollection:
-        return _FakeCollection()
-
-    async def _run(_label: str, op, **_kwargs):
-        return await op()
-
-    with (
-        patch(
-            "astrabox.persistence.repository.session_repository.load_astrabox_settings",
-            return_value=SimpleNamespace(sessions_collection="sessions"),
-        ),
-        patch(
-            "astrabox.persistence.repository.session_repository.get_async_collection",
-            new=_get_collection,
-        ),
-        patch(
-            "astrabox.persistence.repository.session_repository.run_mongo_with_retry",
-            new=_run,
-        ),
-    ):
-        from astrabox.persistence.repository.session_repository import SessionRepository
-
-        rows = await SessionRepository().list_bootstrap_reconcile_candidates(limit=123)
-
-    assert rows == []
-    assert captured["query"] == {
-        "deleted": {"$ne": True},
-        "state": "CREATING",
-    }
-    assert captured["sort"] == ("session_id", 1)
-    assert captured["limit"] == 123

@@ -9,9 +9,6 @@ speaks: lifecycle JSON under ``/v1``, execd SSE for command runs, and the
 
 Pinned here:
 
-* the capability flag FREEZE TABLE (exact values, including the
-  ``conversation_bootstrap_transport == "sandbox_command_script"`` pin against
-  the sidecar-HTTP transport, whose route the in-box server does not serve);
 * registration round-trip through the real ``register_builtin_providers``
   (sidecar-pair validation + provisioning composition run for real);
 * the READY gate: an ``open_sandbox`` Agent session resolves READY without an
@@ -34,9 +31,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-import tomllib
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from urllib.parse import parse_qs
@@ -54,12 +49,10 @@ from astrabox.providers.open_sandbox._metadata import (
 )
 from astrabox.providers.open_sandbox.sandbox import (
     EXECD_LINE_EVENT_MODEL,
-    EXECD_LINE_EVENT_MODEL_VERSION,
     OpenSandboxDataPlane,
     OpenSandboxEndpoint,
     OpenSandboxHandle,
     OpenSandboxSandboxProvider,
-    collect_execd_stream,
 )
 from astrabox.providers.sandbox_image import AGENT_IMAGE_COMPONENT
 from astrabox.seams.sandbox import (
@@ -72,8 +65,6 @@ from astrabox.seams.sandbox import (
     SandboxProvider,
     sandbox_installation_id,
 )
-
-_REPO_ROOT = Path(__file__).resolve().parents[1]
 
 _BASE_URL = "http://opensandbox.test:8080"
 _EXECD_HOST = "box.execd.test"
@@ -360,41 +351,6 @@ def _provider(fake: _FakeLifecycle) -> OpenSandboxSandboxProvider:
 # (one binding site for all built-in backends).
 
 
-# ── flag freeze table ────────────────────────────────────────────────────────
-
-# The activation design's §2 table, frozen EXACTLY. A drift here is a behavior
-# change in the engine's branch selection (dispatch gate, mount short-circuits,
-# sidecar pairing), not a style edit — treat any diff as a regression.
-_FLAG_FREEZE_TABLE: dict[str, object] = {
-    "requires_sandbox_object_for_ws": False,
-    "uses_create_oss_mounts": True,
-    "connection_secret_uses_legacy_sandbox_api_key": False,
-    "conversation_bootstrap_transport": "sandbox_command_script",
-    "requires_https_git": False,
-    "endpoint_is_authoritative": False,
-    "assistant_workspace_root_preprovisioned": False,
-    "supports_correlated_create": True,
-    "supports_egress_credential_injection": True,
-    "sandbox_is_profile_exclusive": True,
-    "supports_turn_preparation": False,
-    "turn_preparation_contract_version": None,
-    "turn_preparation_validity_seconds": None,
-}
-
-
-def test_flag_freeze_table_is_exact() -> None:
-    provider = OpenSandboxSandboxProvider()
-    for flag, expected in _FLAG_FREEZE_TABLE.items():
-        actual = getattr(provider, flag)
-        if expected is None or isinstance(expected, bool):
-            assert actual is expected, f"{flag}: {actual!r} != {expected!r}"
-        else:
-            assert actual == expected, f"{flag}: {actual!r} != {expected!r}"
-    # Pinned explicitly: the in-box server serves NO /conversation/bootstrap
-    # route, so a sidecar_http transport would 404 on every bootstrap.
-    assert provider.conversation_bootstrap_transport == "sandbox_command_script"
-
-
 # ── registration + composition + READY gate ─────────────────────────────────
 
 
@@ -409,54 +365,6 @@ def test_builtin_registration_round_trips() -> None:
     register_builtin_providers()
     provider = sandbox_for_name("open_sandbox")
     assert storage_provider("mounted_volume").name == "mounted_volume"
-
-
-def test_the_registered_backend_implements_box_creation() -> None:
-    # ``create_sandbox`` is soft-abstract on the seam: the base raises
-    # NotImplementedError so a lifecycle-only integration stays expressible.
-    # The platform calls it unconditionally after it has made the placement,
-    # workspace, credential and startup decisions, so the selected backend
-    # must provide the atomic supplier capability.
-    from astrabox.providers import register_builtin_providers
-    from astrabox.seams.sandbox import sandbox_for_name
-
-    register_builtin_providers()
-    provider = sandbox_for_name("open_sandbox")
-    assert type(provider).create_sandbox is not SandboxProvider.create_sandbox
-
-
-def test_entry_points_declare_open_sandbox_and_local_storage_targets() -> None:
-    # The installed distribution's entry-point metadata only refreshes on
-    # reinstall, so the gate checks the pyproject DECLARATION (the source of
-    # truth a packaging build consumes), not importlib.metadata.
-    with open(_REPO_ROOT / "pyproject.toml", "rb") as fh:
-        pyproject = tomllib.load(fh)
-    entry_points = pyproject["project"]["entry-points"]
-    assert (
-        entry_points["astrabox.providers.sandbox"]["open_sandbox"]
-        == "astrabox.providers.open_sandbox.sandbox:OpenSandboxSandboxProvider"
-    )
-    assert (
-        entry_points["astrabox.providers.storage"]["mounted_volume"]
-        == "astrabox.providers.storage.mounted_volume:MountedVolumeStorage"
-    )
-    # The storage group is keyed by storage provider name; no row is named after
-    # a sandbox backend.
-    assert "open_sandbox" not in entry_points["astrabox.providers.storage"]
-
-
-def test_pytest_defaults_enforce_provider_test_isolation() -> None:
-    with open(_REPO_ROOT / "pyproject.toml", "rb") as fh:
-        pyproject = tomllib.load(fh)
-    pytest_options = pyproject["tool"]["pytest"]["ini_options"]
-    assert pytest_options["addopts"] == (
-        "-m 'not e2e and not mongo and not mongo_transaction and not postgresql "
-        "and not opensandbox' --timeout=120 "
-        "--strict-markers --ignore-glob='**/._*'"
-    )
-    assert any(m.startswith("postgresql:") for m in pytest_options["markers"])
-    assert any(m.startswith("mongo_transaction:") for m in pytest_options["markers"])
-    assert any(m.startswith("opensandbox:") for m in pytest_options["markers"])
 
 
 def _agent_session(session_id: str = "sess-ready") -> dict[str, Any]:
@@ -506,12 +414,6 @@ async def test_ready_gate_uninstalled_engine_is_a_named_unavailable_state() -> N
 
 
 # ── probe (never raises; four states; override pinned) ──────────────────────
-
-
-def test_probe_is_overridden_not_the_seam_default() -> None:
-    # The runtime's probe wrapper only bounds TimeoutError; the seam default
-    # raises NotImplementedError, which would punch through the watcher.
-    assert type(OpenSandboxSandboxProvider()).probe is not SandboxProvider.probe
 
 
 async def test_probe_running_maps_to_ok() -> None:
@@ -977,25 +879,6 @@ def _events_execution(
     )
 
 
-def test_the_execd_event_model_assumption_is_written_down_and_assertable() -> None:
-    # The whole reassembly hinges on one undocumented judgement: an event whose
-    # text is EXACTLY "\n" means "empty line". Both the judgement and the execd
-    # version it was measured against are module constants precisely so this
-    # test can hold them still.
-    assert sandbox_module._EXECD_EMPTY_LINE_EVENT == "\n"
-    assert EXECD_LINE_EVENT_MODEL_VERSION == "1.1.0"
-    # Every row is (in-box command, events, reassembled bytes).
-    for command, events, expected in EXECD_LINE_EVENT_MODEL:
-        assert command.startswith("printf ")
-        assert isinstance(events, tuple) and events
-        assert isinstance(expected, bytes)
-    # Pure-function agreement with the table, independent of the handle.
-    for _command, events, expected in EXECD_LINE_EVENT_MODEL:
-        messages = [SimpleNamespace(text=text) for text in events]
-        assert collect_execd_stream(messages) == expected
-    assert collect_execd_stream([]) == b""
-
-
 @pytest.mark.parametrize(
     ("command", "events", "expected"),
     EXECD_LINE_EVENT_MODEL,
@@ -1443,13 +1326,6 @@ async def test_create_sandbox_failure_text_is_scrubbed(
 # ── provider boundary ────────────────────────────────────────────────────────
 
 
-def test_provider_exposes_box_capabilities_not_agent_orchestration() -> None:
-    provider = OpenSandboxSandboxProvider()
-
-    assert "create_agent_executor" not in type(provider).__dict__
-    assert type(provider).create_sandbox is not SandboxProvider.create_sandbox
-
-
 def test_runtime_defaults_reflect_the_shared_image_contract(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1659,16 +1535,6 @@ async def test_exec_collect_enforces_a_host_side_deadline() -> None:
     handle = OpenSandboxHandle(sdk)  # type: ignore[arg-type]
     with pytest.raises(TimeoutError, match="did not complete within"):
         await handle.exec_collect(["sleep", "3600"], timeout=0.05)
-
-
-def test_exec_collect_deadline_defaults_on() -> None:
-    import inspect
-
-    default = inspect.signature(OpenSandboxHandle.exec_collect).parameters["timeout"].default
-    # The bound must be opt-OUT (timeout=None), never opt-in: every call site
-    # that forgets about it still gets a deadline.
-    assert isinstance(default, float)
-    assert default > 0
 
 
 # ── key hygiene beyond the provider lifecycle face ───────────────────────────

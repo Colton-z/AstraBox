@@ -1,8 +1,12 @@
 /** Every engine's approval reaches a person through the browser, in that engine's own words. */
 import { expect, test, type Page } from '@playwright/test';
 
-import { AstraApi, visibleMessages, type PendingInteraction } from '../fixtures/astraApi';
+import { AstraApi, messageText, visibleMessages, type PendingInteraction } from '../fixtures/astraApi';
+import { revealAssistantProcess } from '../fixtures/assistantProcess';
 import { framesForTurn, sessionEvents, waitForTurnTerminalProof } from '../fixtures/dbOracle';
+import { dshApprovalCompleted, dshApprovalPanel, dshApprovalSource, dshPendingApproval, savedOutput } from '../fixtures/dshNativeApproval';
+import type { DshApprovalEvidence } from '../fixtures/dshNativeApproval';
+import { messageProseBlocks, textBlockValues, textBlocks } from '../fixtures/dshOutput';
 import {
   decisionId,
   engineCases,
@@ -37,15 +41,16 @@ test.afterEach(async ({ request, page }, info) => {
   if (!sessionId) return;
   if (!['failed', 'timedOut', 'interrupted'].includes(String(info.status))) return;
   const api = new AstraApi(request);
-  const [session, pending, history, stream, events] = await Promise.all([
+  const [session, pending, history, stream, events, native] = await Promise.all([
     observe(() => api.getSession(sessionId)),
     observe(() => api.getPendingInteraction(sessionId)),
     observe(() => api.getMessages(sessionId, 50)),
     observe(() => aiStreamBodies(page)),
     observe(() => sessionEvents(sessionId)),
+    observe(() => nativeRows(sessionId)),
   ]);
   await info.attach('engine-approval-scene', {
-    body: JSON.stringify({ sessionId, observations, session, pending, history, stream, events }),
+    body: JSON.stringify({ sessionId, observations, session, pending, history, stream, events, native }),
     contentType: 'application/json',
   });
 });
@@ -133,13 +138,15 @@ for (const { profile: declared, delegated } of commandCases) {
       ] : []),
       'After the command succeeds, briefly confirm completion without calling more tools.',
     ].join('\n');
-    await sendPrompt(page, sessionId, delegated ? [
+    const prompt = delegated ? [
       `Delegate work item ${marker} to exactly one native child Agent.`,
       `Call spawn_agent exactly once with message=${JSON.stringify(commandPrompt)}.`,
       'Then call wait_agent for that Agent and wait for its completed result before answering.',
       'Do not run shell commands yourself. The child owns the complete workload.',
       'When the child finishes, briefly report its completion.',
-    ].join('\n') : commandPrompt);
+    ].join('\n') : commandPrompt;
+    const delivery = await sendPrompt(page, sessionId, prompt);
+    let dshHeld: DshApprovalEvidence | undefined;
     const first = await api.waitForSession(sessionId, (detail) => {
       if (detail.last_turn_status === 'FAILED' || detail.last_error) {
         throw new Error(`first command failed before approval: ${JSON.stringify(detail)}`);
@@ -187,7 +194,7 @@ for (const { profile: declared, delegated } of commandCases) {
         interaction_id: interaction.interaction_id, tool_call_id: interaction.tool_call_id, turn_id: turnId,
       });
       if (engine === 'deepseek_harness') {
-        // dsh-tool-bash 0.1.5-rc.2 requires a real denial before escalation.
+        // The supplier requires a real sandbox denial before escalation.
         const beforeBlocks = visibleMessages(before).filter((message) => message.turn_id === turnId)
           .flatMap((message) => message.blocks || []);
         const attempts = beforeBlocks.filter((block) => block.type === 'tool_use');
@@ -205,6 +212,10 @@ for (const { profile: declared, delegated } of commandCases) {
         expect(String(denial[0]!.content)).toContain('[sandbox: file access denied under read-only mode]');
         expect(beforeBlocks.filter((block) =>
           block.type === 'tool_result' && block.tool_use_id === attempts[1]!.id)).toEqual([]);
+        dshHeld = await dshPendingApproval(sessionId, interaction, prompt,
+          String(delivery.request().postDataJSON().client_message_id || ''));
+        observations.push({ dshHeld });
+        await dshApprovalPanel(page, interaction);
       }
       expect(await api.downloadFileText(sessionId, filename), 'approval must precede the command side effect')
         .toBe('NOT_EXECUTED');
@@ -216,6 +227,10 @@ for (const { profile: declared, delegated } of commandCases) {
       });
       await expect(page.getByTestId('session-conversation-shell'))
         .toHaveAttribute('data-pending-tool-call-id', String(interaction.tool_call_id));
+      if (engine === 'deepseek_harness') {
+        expect(await api.getPendingInteraction(sessionId)).toMatchObject({ raw_input: interaction.raw_input });
+        await dshApprovalPanel(page, interaction);
+      }
       if (profile.presentation === 'decision') {
         const approve = decisionId(profile, 'approve');
         await panel.getByTestId(`decision-option-${approve}`).click();
@@ -288,6 +303,10 @@ for (const { profile: declared, delegated } of commandCases) {
     const results = blocks.filter((block) => block.type === 'tool_result' && block.tool_use_id === approvedCall.id);
     expect(results).toHaveLength(1);
     expect(results[0]!.is_error).not.toBe(true);
+    if (engine === 'deepseek_harness') {
+      expect(dshHeld).toBeDefined();
+      observations.push(await dshApprovalCompleted(api, sessionId, pending!, dshHeld!, 'allowed-once'));
+    }
     await expect(panel).toHaveCount(0);
     await expectNoTurnFailure(page, turnId);
     await page.reload({ waitUntil: 'domcontentloaded' });
@@ -298,6 +317,333 @@ for (const { profile: declared, delegated } of commandCases) {
     await expectNoTurnFailure(page, turnId, 'idle');
   });
 }
+
+test('DSH rejects native command escalation without a write and remains usable', async ({ page, request }) => {
+  const api = new AstraApi(request);
+  const profile = engineProfileFor('deepseek_harness');
+  const marker = `REJECT_DSH_${Date.now()}`;
+  const receipt = `${marker}_DONE`;
+  const filename = `${marker}.txt`;
+  sessionId = (await api.startConversation(profile.agent_id)).session_id;
+  sessions.push(sessionId);
+  await api.waitForSessionReady(sessionId);
+  await api.setPermissionMode(sessionId, modeName(profile, 'gated'));
+  const target = await workspacePath(api, sessionId, filename);
+  const command = `printf %s '${marker}' > '${target}'`;
+  await api.uploadFileText(sessionId, target.slice(0, target.lastIndexOf('/')), filename, 'NOT_EXECUTED');
+  await mirrorSseBodies(page);
+  await openSessionView(page, sessionId);
+  const prompt = [
+    'Use bash following its native denial-then-escalation flow.',
+    `First execute exactly this command without escalation: ${command}`,
+    'After its read-only sandbox denial, retry exactly the same command once with sandbox_permissions="workspace-write" and a justification based on that denial, then wait for my approval.',
+    `After my decision, reply exactly ${receipt}. If I reject it, do not retry, work around the denial, delegate or call another tool.`,
+    'Do not make any other tool calls.',
+  ].join('\n');
+  const delivery = await sendPrompt(page, sessionId, prompt);
+  const pending = await api.waitForPendingInteractionOrSettledTurn(sessionId, 60_000);
+  expect(pending, 'the real escalation must wait for a decision').not.toBeNull();
+  const interaction = pending!;
+  const turnId = String(interaction.turn_id || '');
+  expect(turnId).not.toBe('');
+  const held = await dshPendingApproval(sessionId, interaction, prompt,
+    String(delivery.request().postDataJSON().client_message_id || ''));
+  const nativeCalls = dshApprovalSource(sessionId).filter((event) => event.type === 'tool/call');
+  expect(nativeCalls).toHaveLength(2);
+  expect(nativeCalls[0]!.data.name).toBe('bash');
+  expect(JSON.parse(String(nativeCalls[0]!.data.arguments))).toMatchObject({ command });
+  expect(JSON.parse(String(nativeCalls[0]!.data.arguments)).sandbox_permissions).toBeUndefined();
+  expect(nativeCalls[1]).toEqual(held.call);
+  expect(JSON.parse(String(held.call.data.arguments))).toMatchObject({ command, sandbox_permissions: 'workspace-write' });
+  expect(nativeCalls[0]!.data.callId).not.toBe(held.call.data.callId);
+  expect(await api.downloadFileText(sessionId, filename)).toBe('NOT_EXECUTED');
+  observations.push({ prompt, command, pending: interaction, held, nativeCalls });
+  const panel = page.getByTestId('pending-interaction-panel');
+  for (const reload of [false, true]) {
+    if (reload) await page.reload();
+    expect(await api.getPendingInteraction(sessionId)).toMatchObject({
+      interaction_id: interaction.interaction_id, turn_id: turnId,
+      tool_call_id: held.call.data.callId, raw_input: interaction.raw_input,
+    });
+    await dshApprovalPanel(page, interaction);
+    expect(await api.downloadFileText(sessionId, filename)).toBe('NOT_EXECUTED');
+  }
+  await browserAnswer(page, interaction, 'reject', () => panel.getByRole('button', {
+    name: /Reject this action|拒绝此次操作/,
+  }).click());
+  const settled = await api.waitForSession(sessionId, (session) => {
+    if (session.last_turn_status === 'FAILED' || session.last_error) {
+      throw new Error(`rejected command poisoned its conversation: ${JSON.stringify(session)}`);
+    }
+    return session.last_turn_id === turnId && session.state === 'READY'
+      && !session.current_turn_id && !session.pending_interaction;
+  }, 60_000);
+  expect(settled.last_turn_status).toBe('COMPLETED');
+  await waitForTurnTerminalProof(sessionId, turnId, 'COMPLETED', 15_000);
+  const completed = await dshApprovalCompleted(api, sessionId, interaction, held, 'rejected');
+  const source = dshApprovalSource(sessionId);
+  expect(source.filter((event) => event.type === 'tool/call')).toEqual(nativeCalls);
+  const result = source.find((event) => event.type === 'tool/result'
+    && record(event.data.message).toolCallId === held.call.data.callId)!;
+  const rejection = 'Error: the user rejected escalating this command to "workspace-write"; '
+    + 'it stays denied, so stop and explain instead of working around it';
+  expect(textBlocks(record(result.data.message).content)).toBe(rejection);
+  expect(await api.downloadFileText(sessionId, filename)).toBe('NOT_EXECUTED');
+  observations.push({ completed });
+  const stored = (await api.getMessages(sessionId)).messages.find((message) => message.message_id === held.responseMessageId)!;
+  expect(messageText(stored)).toContain(receipt);
+  const blocks = JSON.stringify(stored.blocks);
+  for (const reload of [false, true]) {
+    if (reload) await page.reload();
+    await expect(panel).toHaveCount(0);
+    const reply = page.locator(`[data-message-id="${held.responseMessageId}"]`);
+    await expect(reply).toContainText(receipt);
+    await expect(reply.getByTestId('assistant-turn-process')).toHaveCount(1);
+    await revealAssistantProcess(page, { within: reply });
+    const card = reply.locator(`[data-tool-call-id="${String(held.call.data.callId)}"]`);
+    await expect(card).toBeVisible();
+    const trigger = card.locator('button[aria-expanded]').first();
+    if (await trigger.getAttribute('aria-expanded') !== 'true') await trigger.click();
+    const output = card.getByRole('heading', { name: 'Result', exact: true })
+      .locator('..').locator('[data-language="json"]');
+    await output.scrollIntoViewIfNeeded();
+    await expect(output).toBeInViewport();
+    expect(savedOutput(await output.innerText())).toEqual({
+      content: record(result.data.message).content, isError: true,
+    });
+    await expectNoTurnFailure(page, turnId, reload ? 'idle' : 'live');
+    expect(JSON.stringify((await api.getMessages(sessionId)).messages
+      .find((message) => message.message_id === held.responseMessageId)!.blocks)).toBe(blocks);
+    expect(await api.downloadFileText(sessionId, filename)).toBe('NOT_EXECUTED');
+  }
+  const nextReceipt = `AFTER_${marker}`;
+  const nextPrompt = `Reply exactly ${nextReceipt}. Do not use tools or delegate.`;
+  await sendPrompt(page, sessionId, nextPrompt);
+  const next = await api.waitForAssistantMessageMatching(sessionId, 0, (message) => messageText(message) === nextReceipt);
+  await api.waitForSessionReady(sessionId);
+  expect(next.turn_id).not.toBe(turnId);
+  expect(next.message_id).not.toBe(held.responseMessageId);
+  await expect.poll(() => dshApprovalSource(sessionId).filter((event) => event.type === 'turn/end')).toHaveLength(2);
+  expect(dshApprovalSource(sessionId).filter((event) => event.type === 'tool/call')).toEqual(nativeCalls);
+  expect(JSON.stringify((await api.getMessages(sessionId)).messages
+    .find((message) => message.message_id === held.responseMessageId)!.blocks)).toBe(blocks);
+  await expect(page.locator(`[data-message-id="${next.message_id}"]`)).toContainText(nextReceipt);
+  await page.reload();
+  await expect(page.locator(`[data-message-id="${next.message_id}"]`)).toContainText(nextReceipt);
+  await expect(page.getByTestId('composer-prompt')).toBeEnabled();
+  expect(await api.downloadFileText(sessionId, filename)).toBe('NOT_EXECUTED');
+  observations.push({ next, native: dshApprovalSource(sessionId), history: await api.getMessages(sessionId) });
+});
+
+test('DSH stops a parked native approval and answers the next message on its own turn', async ({ page, request }) => {
+  const api = new AstraApi(request);
+  const profile = engineProfileFor('deepseek_harness');
+  const marker = `STOP_DSH_${Date.now()}`;
+  const filename = `${marker}.txt`;
+  sessionId = (await api.startConversation(profile.agent_id)).session_id;
+  sessions.push(sessionId);
+  await api.waitForSessionReady(sessionId);
+  await api.setPermissionMode(sessionId, modeName(profile, 'gated'));
+  const target = await workspacePath(api, sessionId, filename);
+  const command = `printf %s '${marker}' > '${target}'`;
+  await api.uploadFileText(sessionId, target.slice(0, target.lastIndexOf('/')), filename, 'NOT_EXECUTED');
+  await mirrorSseBodies(page);
+  await openSessionView(page, sessionId);
+  const prompt = [
+    'Use bash following its native denial-then-escalation flow.',
+    `First execute exactly this command without escalation: ${command}`,
+    'After its read-only sandbox denial, retry exactly the same command once with sandbox_permissions="workspace-write" and a justification based on that denial, then wait for my approval.',
+    'Do not make any other tool calls, retry again, work around the denial or delegate.',
+  ].join('\n');
+  const delivery = await sendPrompt(page, sessionId, prompt);
+  const pending = await api.waitForPendingInteractionOrSettledTurn(sessionId, 60_000);
+  expect(pending, 'the real escalation must park before the user stops it').not.toBeNull();
+  const interaction = pending!;
+  const turnId = String(interaction.turn_id || '');
+  expect(turnId).not.toBe('');
+  const held = await dshPendingApproval(sessionId, interaction, prompt,
+    String(delivery.request().postDataJSON().client_message_id || ''));
+  const calls = dshApprovalSource(sessionId).filter((event) => event.type === 'tool/call');
+  expect(calls).toHaveLength(2);
+  expect(calls[0]!.data.name).toBe('bash');
+  expect(JSON.parse(String(calls[0]!.data.arguments))).toMatchObject({ command });
+  expect(JSON.parse(String(calls[0]!.data.arguments)).sandbox_permissions).toBeUndefined();
+  expect(calls[1]).toEqual(held.call);
+  expect(JSON.parse(String(held.call.data.arguments))).toMatchObject({ command, sandbox_permissions: 'workspace-write' });
+  expect(calls[0]!.data.callId).not.toBe(held.call.data.callId);
+  expect(await api.downloadFileText(sessionId, filename)).toBe('NOT_EXECUTED');
+  observations.push({ prompt, command, pending: interaction, held, calls });
+  const panel = page.getByTestId('pending-interaction-panel');
+  await dshApprovalPanel(page, interaction);
+  const response = page.waitForResponse((value) => value.request().method() === 'POST'
+    && new URL(value.url()).pathname.endsWith(`/sessions/${sessionId}/interrupt`));
+  await panel.getByRole('button', { name: /^(Stop generating|Stopping|停止生成|停止中)$/i }).click();
+  const interrupted = await response;
+  expect(interrupted.status()).toBe(200);
+  expect((await interrupted.json()).data).toMatchObject({ session_id: sessionId, status: 'accepted' });
+  const settled = await api.waitForSession(sessionId, (session) => {
+    if (session.last_turn_status === 'FAILED' || session.last_error) {
+      throw new Error(`stopping an approval poisoned its conversation: ${JSON.stringify(session)}`);
+    }
+    return session.last_turn_id === turnId && session.state === 'READY'
+      && !session.current_turn_id && !session.pending_interaction;
+  }, 60_000);
+  expect(settled.last_turn_status).toBe('COMPLETED');
+  await waitForTurnTerminalProof(sessionId, turnId, 'COMPLETED', 15_000);
+  await expect(panel).toHaveCount(0);
+  await expect.poll(() => dshApprovalSource(sessionId).filter((event) => event.type === 'turn/end')).toHaveLength(1);
+  const stoppedNative = dshApprovalSource(sessionId);
+  const stoppedEnd = stoppedNative.find((event) => event.type === 'turn/end')!;
+  expect(stoppedEnd.data).toMatchObject({ turn: held.call.data.turn, reason: { kind: 'aborted', reason: { kind: 'user' } } });
+  expect(stoppedNative.filter((event) => event.type === 'approval/asked')).toEqual([held.asked]);
+  expect(stoppedNative.filter((event) => event.type === 'approval/decided')).toEqual([
+    expect.objectContaining({ data: { id: held.asked.data.id, outcome: 'cancelled' } }),
+  ]);
+  expect(stoppedNative.filter((event) => event.type === 'tool/call')).toEqual(calls);
+  expect(stoppedNative.filter((event) => event.type === 'turn/start')).toHaveLength(1);
+  expect(stoppedNative.filter((event) => event.type === 'user/message'
+    && record(event.data.source).kind === 'user')).toEqual([held.input]);
+  const nativeResults = stoppedNative.filter((event) => event.type === 'tool/result');
+  expect(nativeResults).toHaveLength(calls.length);
+  const stoppedFrames = framesForTurn(turnId).map((row) => record(row.payload));
+  expect(stoppedFrames.filter((frame) => frame.type === 'error')).toEqual([]);
+  expect(stoppedFrames.filter((frame) => frame.type === 'data-result')).toEqual([
+    expect.objectContaining({ data: expect.objectContaining({ finish_reason: 'cancelled' }) }),
+  ]);
+  expect(stoppedFrames.filter((frame) => frame.type === 'finish')).toEqual([
+    expect.objectContaining({ finishReason: 'tool-calls' }),
+    expect.objectContaining({ finishReason: 'stop' }),
+  ]);
+  const stopped = (await api.getMessages(sessionId)).messages
+    .filter((message) => message.role === 'assistant' && message.turn_id === turnId);
+  expect(stopped).toHaveLength(1);
+  expect(stopped[0]!.message_id).toBe(held.responseMessageId);
+  expect(messageProseBlocks(stopped[0]!)).toEqual(stoppedNative.filter((event) => event.type === 'assistant/message')
+    .flatMap((event) => textBlockValues(record(event.data.message).content)));
+  const blocks = stopped[0]!.blocks ?? [];
+  expect(blocks.filter((block) => block.type === 'tool_use').map((block) => block.id))
+    .toEqual(calls.map((event) => event.data.callId));
+  expect(blocks.filter((block) => block.type === 'tool_result').map((block) => block.tool_use_id))
+    .toEqual(calls.map((event) => event.data.callId));
+  for (const call of calls) {
+    const results = nativeResults.filter((event) => record(event.data.message).toolCallId === call.data.callId);
+    expect(results).toHaveLength(1);
+    const result = results[0]!;
+    expect(result.data.turn).toBe(call.data.turn);
+    expect(result.seq).toBeGreaterThan(call.seq);
+    expect(result.seq).toBeLessThan(stoppedEnd.seq);
+    const cancelledCall = call.data.callId === held.call.data.callId;
+    expect(record(result.data.message)).toMatchObject({ role: 'tool', isError: cancelledCall });
+    expect(textBlocks(record(result.data.message).content)).not.toBe('');
+    expect(blocks.filter((block) => block.type === 'tool_use' && block.id === call.data.callId)).toEqual([
+      expect.objectContaining({ name: call.data.name, input: JSON.parse(String(call.data.arguments)) }),
+    ]);
+    const stored = blocks.find((block) => block.type === 'tool_result' && block.tool_use_id === call.data.callId)!;
+    if (cancelledCall) {
+      expect(stored).toMatchObject({ is_error: true, tool_result_state: 'output-denied' });
+    } else {
+      expect(textBlocks(record(result.data.message).content))
+        .toContain('[sandbox: file access denied under read-only mode]');
+      expect(savedOutput(stored.content)).toEqual({ content: record(result.data.message).content, isError: false });
+    }
+  }
+  expect(blocks.filter((block) => block.type === 'result')).toEqual([
+    expect.objectContaining({ finish_reason: 'cancelled' }),
+  ]);
+  const savedBlocks = JSON.stringify(blocks);
+  observations.push({ stoppedNative, stoppedFrames, stopped });
+  for (const reload of [false, true]) {
+    if (reload) await page.reload();
+    const reply = page.locator(`[data-message-id="${held.responseMessageId}"]`);
+    await expect(reply.getByText(/^(This response stopped early\.|本次回复提前结束。)$/)).toBeVisible();
+    await expect(reply.getByTestId('assistant-turn-process')).toHaveCount(1);
+    await revealAssistantProcess(page, { within: reply });
+    for (const call of calls) {
+      const card = reply.locator(`[data-tool-call-id="${String(call.data.callId)}"]`);
+      await expect(card).toBeVisible();
+      const trigger = card.locator('button[aria-expanded]').first();
+      if (await trigger.getAttribute('aria-expanded') !== 'true') await trigger.click();
+      await expect(card).toContainText(command);
+    }
+    await expectNoTurnFailure(page, turnId, reload ? 'idle' : 'live');
+    await expect(page.getByTestId('composer-prompt')).toBeEnabled();
+    expect(JSON.stringify((await api.getMessages(sessionId)).messages
+      .find((message) => message.message_id === held.responseMessageId)!.blocks)).toBe(savedBlocks);
+    expect(await api.downloadFileText(sessionId, filename)).toBe('NOT_EXECUTED');
+  }
+  const nextReceipt = `AFTER_${marker}`;
+  const nextPrompt = `Reply exactly ${nextReceipt}. Do not use tools or delegate.`;
+  const nextDelivery = await sendPrompt(page, sessionId, nextPrompt);
+  const nextClientMessageId = String(nextDelivery.request().postDataJSON().client_message_id || '');
+  expect(nextClientMessageId).not.toBe('');
+  const next = await api.waitForAssistantMessageMatching(sessionId, 0, (message) => messageText(message) === nextReceipt);
+  await api.waitForSessionReady(sessionId);
+  expect(next.turn_id).not.toBe(turnId);
+  expect(next.message_id).not.toBe(held.responseMessageId);
+  await expect.poll(() => dshApprovalSource(sessionId).filter((event) => event.type === 'turn/end')).toHaveLength(2);
+  const source = dshApprovalSource(sessionId);
+  expect(source.filter((event) => event.seq <= stoppedEnd.seq)).toEqual(stoppedNative);
+  expect(source.filter((event) => event.type === 'tool/call')).toEqual(calls);
+  const starts = source.filter((event) => event.type === 'turn/start');
+  expect(starts).toHaveLength(2);
+  expect(starts[1]!.seq).toBeGreaterThan(stoppedEnd.seq);
+  expect(starts[1]!.data.turn).not.toBe(held.call.data.turn);
+  const inputs = source.filter((event) => event.type === 'user/message' && record(event.data.source).kind === 'user');
+  expect(inputs).toHaveLength(2);
+  expect(inputs[0]).toEqual(held.input);
+  expect(textBlocks(inputs[1]!.data.content)).toBe(nextPrompt);
+  expect(inputs[1]!.seq).toBeGreaterThan(starts[1]!.seq);
+  const nextNativeRpcId = String(record(inputs[1]!.data.source).rpcId || '');
+  expect(nextNativeRpcId).not.toBe('');
+  expect(nextNativeRpcId).not.toBe(record(held.input.data.source).rpcId);
+  const terminal = source.filter((event) => event.type === 'turn/end')[1]!;
+  expect(terminal.data).toMatchObject({ turn: starts[1]!.data.turn, reason: { kind: 'completed' } });
+  const messages = source.filter((event) => event.type === 'assistant/message' && event.data.turn === starts[1]!.data.turn);
+  expect(textBlocks(record(messages.at(-1)!.data.message).content)).toBe(nextReceipt);
+  expect(messages.at(-1)!.data.usage).toEqual(expect.any(Object));
+  expect(messageProseBlocks(next)).toEqual(messages.flatMap((event) => textBlockValues(record(event.data.message).content)));
+  const accepted = sessionEvents(sessionId).filter((row) => row.event_type === 'command.accepted'
+    && record(row.payload).client_message_id === nextClientMessageId);
+  expect(accepted).toEqual([expect.objectContaining({ turn_id: next.turn_id,
+    payload: expect.objectContaining({ content: nextPrompt }),
+  })]);
+  const nextInputId = String(record(accepted[0]!.payload).input_id || '');
+  expect(nextInputId).not.toBe('');
+  const consumed = sessionEvents(sessionId).filter((row) => row.event_type === 'input.consumed'
+    && record(row.payload).input_id === nextInputId);
+  expect(consumed).toEqual([expect.objectContaining({ turn_id: next.turn_id,
+    payload: expect.objectContaining({ response_message_id: next.message_id, content: nextPrompt }),
+  })]);
+  const frames = framesForTurn(String(next.turn_id)).map((row) => record(row.payload));
+  expect(frames.filter((frame) => frame.type === 'data-input-consumed')).toEqual([
+    expect.objectContaining({ data: expect.objectContaining({ inputId: nextInputId,
+      responseMessageId: next.message_id, content: nextPrompt }) }),
+  ]);
+  expect(framesForTurn(String(next.turn_id)).filter((row) => record(row.payload).type === 'data-result')).toEqual([
+    expect.objectContaining({
+      engine_kind: 'deepseek_harness', engine_turn_id: nextNativeRpcId,
+      engine_output_cursor: expect.objectContaining({ sessionId: held.nativeSessionId, seq: terminal.seq }),
+      payload: expect.objectContaining({ data: expect.objectContaining({ finish_reason: 'stop', usage: messages.at(-1)!.data.usage }) }),
+    }),
+  ]);
+  expect(frames.filter((frame) => frame.type === 'finish')).toEqual([expect.objectContaining({ finishReason: 'stop' })]);
+  expect(frames.filter((frame) => frame.type === 'error' || String(frame.type).startsWith('tool-'))).toEqual([]);
+  for (const reload of [false, true]) {
+    if (reload) await page.reload();
+    await expect(page.locator(`[data-message-id="${next.message_id}"]`)).toContainText(nextReceipt);
+    await expect(page.locator(`[data-message-id="${held.responseMessageId}"]`)
+      .getByText(/^(This response stopped early\.|本次回复提前结束。)$/)).toBeVisible();
+    await expect(page.getByTestId('composer-prompt')).toBeEnabled();
+    const history = (await api.getMessages(sessionId)).messages;
+    expect(history.filter((message) => message.role === 'user').map(messageText)).toEqual([prompt, nextPrompt]);
+    expect(history.filter((message) => message.role === 'assistant').map((message) => message.message_id))
+      .toEqual([held.responseMessageId, next.message_id]);
+    expect(JSON.stringify(history
+      .find((message) => message.message_id === held.responseMessageId)!.blocks)).toBe(savedBlocks);
+    expect(await api.downloadFileText(sessionId, filename)).toBe('NOT_EXECUTED');
+  }
+  observations.push({ next, native: source, frames, history: await api.getMessages(sessionId) });
+});
 
 async function browserAnswer(
   page: Page,

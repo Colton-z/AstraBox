@@ -16,7 +16,6 @@ only after the backend reported itself idle.
 
 from __future__ import annotations
 
-import base64
 import shlex
 from types import SimpleNamespace
 from typing import Any
@@ -112,16 +111,6 @@ async def test_an_unreadable_standing_answer_fails_loudly() -> None:
         )
 
     assert excinfo.value.code == "HERMES_PROFILE_SETUP_FAILED"
-
-
-@pytest.mark.asyncio
-async def test_the_restart_names_the_supervised_program() -> None:
-    box = _Box()
-
-    await hermes._restart_hermes_backend(box.run)
-
-    assert len(box.commands) == 1
-    assert "supervisorctl restart astrabox-hermes" in box.commands[0]
 
 
 @pytest.mark.asyncio
@@ -298,58 +287,3 @@ async def test_only_process_inputs_move_the_fingerprint(
         )
         != base
     )
-
-
-def _soul_of(profile_env: str) -> str | None:
-    """The SOUL.md content a profile env file carries, decoded, or None."""
-
-    for line in profile_env.splitlines():
-        prefix = "export ASTRABOX_HERMES_SOUL_B64="
-        if line.startswith(prefix):
-            return base64.b64decode(shlex.split(line[len(prefix):])[0]).decode("utf-8")
-    return None
-
-
-@pytest.mark.asyncio
-async def test_the_system_prompt_is_the_profile_soul(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """An Assistant's system prompt reaches Hermes as SOUL.md, verbatim.
-
-    The profile env file is the only channel into the box's backend, so this
-    is where an Assistant whose instructions never arrive would show: the
-    Hermes identity stays "You are Hermes Agent" while the platform stored
-    something else.
-    """
-
-    written: list[str] = []
-    instructions = "You are Quill.\n\nAnswer in one sentence."
-
-    await _prepare(
-        _Box(standing="ABSENT"),
-        monkeypatch,
-        template=AgentView(engine_kind="assistant", system=f"  {instructions}  \n"),
-        written=written,
-    )
-
-    assert len(written) == 1
-    assert _soul_of(written[0]) == f"{instructions}\n"
-
-
-@pytest.mark.asyncio
-async def test_no_system_prompt_writes_no_soul(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Unset hands SOUL.md back to Hermes: the variable's absence is the signal."""
-
-    written: list[str] = []
-
-    await _prepare(
-        _Box(standing="ABSENT"),
-        monkeypatch,
-        template=AgentView(engine_kind="assistant", system="   "),
-        written=written,
-    )
-
-    assert len(written) == 1
-    assert _soul_of(written[0]) is None

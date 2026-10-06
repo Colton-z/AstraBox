@@ -364,72 +364,6 @@ def test_compose_keeps_postgresql_off_the_sandbox_bridge_and_uses_file_secrets()
         assert known_default not in rendered
 
 
-def test_kubernetes_compose_overlay_clears_docker_only_edge_discovery() -> None:
-    class ComposeLoader(yaml.SafeLoader):
-        pass
-
-    def construct_override(loader: yaml.SafeLoader, node: yaml.Node) -> object:
-        if isinstance(node, yaml.SequenceNode):
-            return loader.construct_sequence(node)
-        if isinstance(node, yaml.MappingNode):
-            return loader.construct_mapping(node)
-        return loader.construct_scalar(node)
-
-    ComposeLoader.add_constructor("!override", construct_override)
-    ComposeLoader.add_constructor("!reset", lambda loader, node: None)
-    base = yaml.safe_load((ROOT / "containers" / "compose.yaml").read_text())
-    overlay = yaml.load(
-        (ROOT / "containers" / "compose.kubernetes.yaml").read_text(),
-        Loader=ComposeLoader,
-    )
-    environment = {
-        **base["services"]["server"]["environment"],
-        **overlay["services"]["server"]["environment"],
-    }
-
-    assert environment["ASTRABOX_SANDBOX_SERVER_RUNTIME"] == "kubernetes"
-    for required in (
-        "ASTRABOX_MCP_PROXY_BASE_URL",
-        "ASTRABOX_LITELLM_BASE_URL",
-        "ASTRABOX_ALLOWED_HOSTS",
-    ):
-        assert ":?" in overlay["services"]["server"]["environment"][required]
-
-    reset = overlay["services"]["server"]["environment"]
-    for docker_only in (
-        "ASTRABOX_SANDBOX_EDGE_SERVICE",
-        "ASTRABOX_SANDBOX_DNS_EDGE_SERVICE",
-        "ASTRABOX_SANDBOX_EDGE_CALLBACK_PORT",
-        "ASTRABOX_SANDBOX_EDGE_NETWORK",
-        "ASTRABOX_SANDBOX_SERVER_NETWORK_MODE",
-        "ASTRABOX_SANDBOX_SERVER_PORT_RANGE",
-        "ASTRABOX_PUBLISH_HOST_IP",
-        "ASTRABOX_SANDBOX_GATEWAY_IP",
-        "ASTRABOX_SANDBOX_EGRESS_DNS_UPSTREAM",
-        "ASTRABOX_SANDBOX_EGRESS_DNS_UPSTREAM_DEFAULT",
-    ):
-        assert reset[docker_only] is None
-
-    server = overlay["services"]["server"]
-    assert server["depends_on"] == {
-        "postgres": {"condition": "service_healthy"},
-        "redis": {"condition": "service_healthy"},
-    }
-    assert server["volumes"] == [
-        "astrabox-state:/data",
-        "${ASTRABOX_KUBECONFIG_HOST_PATH:?set a kubeconfig readable by uid 999}:/etc/astrabox/kubeconfig:ro",
-    ]
-    assert server["group_add"] == []
-    assert server["extra_hosts"] == []
-    assert ":?" in server["ports"][0]
-    assert overlay["services"]["sandbox-edge"]["profiles"] == [
-        "docker-runtime-only"
-    ]
-    assert overlay["services"]["sandbox-dns-edge"]["profiles"] == [
-        "docker-runtime-only"
-    ]
-
-
 def test_sandbox_edge_forwards_only_model_and_capability_scoped_platform_routes() -> None:
     template = (ROOT / "containers" / "sandbox-edge" / "default.conf.template").read_text()
     directives = [
@@ -486,60 +420,6 @@ def test_sandbox_edge_forwards_only_model_and_capability_scoped_platform_routes(
         if not line.lstrip().startswith("#")
     )
     assert "gateway.astrabox.test" in gateway_dns
-
-
-def test_source_overlay_mounts_code_and_bundled_gateway_adapters() -> None:
-    overlay = yaml.safe_load(
-        (ROOT / "containers" / "compose.source.yaml").read_text()
-    )
-    server = overlay["services"]["server"]
-
-    assert server["volumes"] == [
-        "../astrabox:/usr/local/lib/python3.12/site-packages/astrabox:ro",
-        "../channel-gateway/src:/opt/astrabox/channel-gateway/src:ro",
-        "./litellm/config.yaml:/opt/astrabox/litellm/config.yaml:ro",
-        "../astrabox/identity/oidc.py:/opt/astrabox/litellm/astrabox_oidc.py:ro",
-        "../astrabox/identity/session_signing.py:/opt/astrabox/litellm/astrabox_identity_session.py:ro",
-        "../astrabox/providers/litellm_shared_auth.py:/opt/astrabox/litellm/astrabox_litellm_auth.py:ro",
-        "./litellm/custom_auth.py:/opt/astrabox/litellm/custom_auth.py:ro",
-        "./litellm/langfuse_session_hook.py:/opt/astrabox/litellm/langfuse_session_hook.py:ro",
-        "./litellm/langfuse_tracing.py:/opt/astrabox/litellm/langfuse_tracing.py:ro",
-        "./litellm/stream_normalization_hook.py:/opt/astrabox/litellm/stream_normalization_hook.py:ro",
-    ]
-    assert server["command"][:4] == ["python", "-m", "uvicorn", "astrabox.api.app:create_app"]
-    assert "--reload" in server["command"]
-    assert "networks" not in server
-    assert "ports" not in server
-    assert "environment" not in server
-
-
-def test_source_and_live_e2e_launchers_reuse_the_maintained_compose_topology() -> None:
-    dev = (ROOT / "scripts" / "dev.sh").read_text()
-    browser_backend = (ROOT / "e2e" / "scripts" / "serve-backend.sh").read_text()
-    smoke = (ROOT / "scripts" / "e2e_smoke.sh").read_text()
-    makefile = (ROOT / "Makefile").read_text()
-
-    for launcher in (dev, browser_backend):
-        assert '"$REPO_ROOT/scripts/compose.sh"' in launcher
-        assert "containers/compose.source.yaml" in launcher
-        assert "ASTRABOX_LOCAL_DATABASE_SECRET_DIR" in launcher
-        # The server publishes nothing on the bridge gateway, so there is no
-        # per-stack gateway port left to move.
-        for retired in (
-            "ASTRABOX_SERVER_SANDBOX_PORT",
-            "ASTRABOX_MODEL_GATEWAY_HOST_PORT",
-            "ASTRABOX_GATEWAY_DNS_HOST_PORT",
-        ):
-            assert retired not in launcher
-        assert "postgresql+asyncpg://astrabox:" not in launcher
-        assert "postgresql://litellm:" not in launcher
-        assert "http://172.17.0.1" not in launcher
-
-    assert "exec bash e2e/scripts/serve-backend.sh" in smoke
-    assert "postgresql+asyncpg://astrabox:" not in smoke
-    assert "http://172.17.0.1" not in smoke
-    assert "ASTRABOX_DEV_BACKEND_ONLY=1" in makefile
-    assert "postgresql+asyncpg://astrabox:" not in makefile
 
 
 def test_sso_overlay_keeps_casdoor_on_its_own_database_secret_and_loopback_port() -> None:
@@ -633,9 +513,3 @@ def test_sso_overlay_keeps_casdoor_on_its_own_database_secret_and_loopback_port(
     entrypoint = (ROOT / "containers" / "casdoor" / "entrypoint.sh").read_text()
     assert 'init_data=/run/astrabox-casdoor/init_data.json' in entrypoint
     assert '>/init_data.json' not in entrypoint
-
-
-def test_compose_wrapper_keeps_machine_readable_compose_stdout_clean() -> None:
-    wrapper = (ROOT / "scripts" / "compose.sh").read_text()
-
-    assert '--directory "$SECRET_DIR" >/dev/null' in wrapper

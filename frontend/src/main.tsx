@@ -10,6 +10,7 @@ import './i18n';
 
 import App from './App';
 import ManageApp from './manage/ManageApp';
+import { ArtifactSharePage } from './artifacts/ArtifactPages';
 import SharePage from './SharePage';
 import LoginPage from './LoginPage';
 import { RequireAuth } from '@/components/RequireAuth';
@@ -56,6 +57,7 @@ ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
             {/* A share link carries its own token and is opened by people who
                 may not have a console account, so it keeps its own authorization
                 rather than answering to the session gate. */}
+            <Route path="/share/artifacts/:token" element={<ArtifactSharePage />} />
             <Route path="/share/:token" element={<SharePage />} />
             <Route
               path="/manage/*"

@@ -94,16 +94,17 @@ model_list:
   # by `GET https://api.deepseek.com/v1/models`; unsupported names are rejected.
   # The public Anthropic aliases are protocol-qualified so an Agent can select
   # the native Messages route explicitly.
-  # DeepSeek publishes native OpenAI and Anthropic surfaces. Keep one explicit
-  # route for each wire: Codex uses Responses, Hermes/DSH/pi use Chat
-  # Completions, and Claude Code uses Messages. Sending Claude Code through
-  # the OpenAI route makes LiteLLM translate tool histories between protocols,
-  # where a valid multi-step tool result can become orphaned.
+  # Use LiteLLM's DeepSeek provider for the bare catalog names. It serves
+  # DSH's native Messages protocol as well as the other clients' OpenAI
+  # protocols. A generic OpenAI provider converts Messages to Responses and
+  # can reorder assistant text between tool calls and their results.
   - model_name: "deepseek-flash"
     litellm_params:
-      model: "openai/deepseek-flash"
+      model: "deepseek/deepseek-flash"
       api_base: "https://api.deepseek.com"
       api_key: os.environ/DEEPSEEK_API_KEY
+      extra_headers:
+        anthropic-beta: "files-api-2025-04-14,mid-conversation-tool-changes-2026-07-01"
 
   - model_name: "anthropic/deepseek-flash"
     litellm_params:
@@ -113,9 +114,11 @@ model_list:
 
   - model_name: "deepseek-v4-pro"
     litellm_params:
-      model: "openai/deepseek-v4-pro"
+      model: "deepseek/deepseek-v4-pro"
       api_base: "https://api.deepseek.com"
       api_key: os.environ/DEEPSEEK_API_KEY
+      extra_headers:
+        anthropic-beta: "files-api-2025-04-14,mid-conversation-tool-changes-2026-07-01"
 
   - model_name: "anthropic/deepseek-v4-pro"
     litellm_params:
@@ -124,9 +127,8 @@ model_list:
       api_key: os.environ/DEEPSEEK_API_KEY
 
   # LiteLLM's native DeepSeek adapter, for platform titles and process
-  # summaries. They send `reasoning_effort: "none"`, and only this adapter
-  # maps it to DeepSeek's `thinking: {"type": "disabled"}`; the two routes
-  # above drop it, and DeepSeek then thinks by default. On a DeepSeek
+  # summaries. Like the bare catalog routes above, this adapter maps
+  # `reasoning_effort: "none"` to `thinking: {"type": "disabled"}`. On a DeepSeek
   # deployment the entry point sets ASTRABOX_TITLE_MODEL_NAME to
   # `deepseek/<model>` (astrabox/deploy/onebox.py). A wildcard is safe here:
   # what follows `deepseek/` is DeepSeek's full model id.
@@ -158,9 +160,23 @@ litellm_settings:
   # Streamed tool-call deltas leave with the OpenAI shape: an upstream that
   # repeats id and name as empty strings on later deltas would otherwise
   # break clients that merge by field presence (the DeepSeek Harness does).
-  callbacks: ["langfuse_tracing.handler_instance", "langfuse_session_hook.handler_instance", "stream_normalization_hook.handler_instance"]
+  callbacks: ["langfuse_tracing.handler_instance", "langfuse_session_hook.handler_instance", "stream_normalization_hook.handler_instance", "native_protocol_hook.handler_instance"]
 
 general_settings:
+  # Native DeepSeek Files is Anthropic-shaped, while /v1/files is OpenAI-shaped.
+  # Messages under the same base goes directly to the normal metered handler
+  # through native_protocol_hook; do not add a loopback Messages passthrough.
+  pass_through_endpoints:
+    - path: "/v1/deepseek/v1/files"
+      target: "https://api.deepseek.com/anthropic/v1/files"
+      auth: true
+      include_subpath: true
+      forward_headers: false
+      methods: ["GET", "POST", "DELETE"]
+      headers:
+        Authorization: "Bearer os.environ/DEEPSEEK_API_KEY"
+        anthropic-version: "2023-06-01"
+        anthropic-beta: "files-api-2025-04-14"
   # Custom auth accepts the private service credential, the same OIDC identity
   # AstraBox uses, and the adapter's scoped browser sessions.
   custom_auth: custom_auth.user_api_key_auth

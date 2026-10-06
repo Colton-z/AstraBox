@@ -207,6 +207,22 @@ def _engine_option(template: Any, key: str) -> dict[str, Any]:
     return dict(value)
 
 
+def _thread_config(template: Any, *, deployment_settings: Any, deployment_id: str) -> dict[str, Any]:
+    """Codex 0.160.0's untagged URL transport, on start and resume alike."""
+    from astrabox.core.service.orchestrator.engine.platform_mcp import platform_mcp_servers
+
+    servers = platform_mcp_servers(
+        template, deployment_settings=deployment_settings, deployment_id=deployment_id,
+    )
+    return {
+        **_engine_option(template, "config"),
+        "mcp_servers": {
+            name: {"url": server["url"], "required": True}
+            for name, server in servers.items()
+        },
+    }
+
+
 def _model_catalog(template: Any) -> str | None:
     if "model_catalog" not in (getattr(template, "engine_options", None) or {}):
         return None
@@ -684,8 +700,7 @@ class CodexEngineAdapter(EngineAdapter):
             "spawn_fingerprint": _slot_spawn_fingerprint(
                 template, base_url=base_url, catalog=catalog
             ),
-            # Only user-identity MCP servers belong in the activation set;
-            # codex declares no MCP servers, so the set is empty.
+            # MCP connects when the claiming Session starts its native thread.
             "activation_mcp_servers": [],
         }
 
@@ -738,6 +753,8 @@ class CodexEngineAdapter(EngineAdapter):
                     status_code=409,
                 )
 
+        from astrabox.core.service.orchestrator.engine.platform_mcp import startup_mcp_deployment_id
+
         sandbox = context.sandbox
         link: CodexAppServerLink | None = None
         try:
@@ -771,7 +788,10 @@ class CodexEngineAdapter(EngineAdapter):
                 # like a broken adapter rather than a missing field.
                 model=str(model_access.model_name or "").strip() or None,
                 base_url=base_url,
-                config=_engine_option(template, "config"),
+                config=_thread_config(
+                    template, deployment_settings=context.deployment_settings,
+                    deployment_id=startup_mcp_deployment_id(context),
+                ),
                 turn_start=_engine_option(template, "turn_start"),
                 model_catalog=bool(catalog),
                 prepare_engine_input=context.prepare_engine_input,

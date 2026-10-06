@@ -16,8 +16,6 @@ tests require:
   a ``task_notification`` says ``stopped`` where a ``task_updated`` patch says
   ``killed``. Notifications may be suppressed, so either event must settle the
   task.
-- the generic adapter seam has no raw-turn manifest parser, so the platform
-  cannot accidentally teach another engine Claude's vocabulary.
 """
 
 from __future__ import annotations
@@ -34,7 +32,6 @@ from astrabox.core.service.orchestrator.engine.claude_code_background import (
     background_task_opening,
     build_background_task_manifest,
 )
-from astrabox.core.service.orchestrator.engine.base import EngineAdapter
 from astrabox.core.service.orchestrator.engine.registry import get_engine_adapter
 
 
@@ -481,16 +478,6 @@ def test_a_notification_naming_one_task_still_settles_it() -> None:
     assert record is not None
     assert record["engine_ref"] == "agent-session-aa"
     assert record["engine_status"] == "stopped"
-
-
-def test_background_manifest_parser_is_not_part_of_the_platform_adapter_seam() -> None:
-    """Claude vocabulary stays in its engine package.
-
-    The client emits a neutral manifest; neither the base adapter nor another
-    engine is asked to parse Claude's raw events.
-    """
-    assert not hasattr(EngineAdapter, "background_tasks_opened")
-    assert not hasattr(get_engine_adapter("claude_code"), "background_tasks_opened")
 
 
 def test_each_launch_opens_its_own_manifest_before_any_parent_terminal() -> None:

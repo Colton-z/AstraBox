@@ -22,7 +22,6 @@
   },
   "include": [
     "specs/**/*.ts",
-    "held/**/*.ts",
     "fixtures/**/*.ts",
     "playwright.config.ts"
   ]

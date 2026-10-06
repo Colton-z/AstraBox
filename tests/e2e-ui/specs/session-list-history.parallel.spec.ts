@@ -1,6 +1,8 @@
+import { randomUUID } from 'node:crypto';
 import { expect, test } from '@playwright/test';
 
 import { AstraApi } from '../fixtures/astraApi';
+import { documentsByField, patchSessionDoc, sessionDoc } from '../fixtures/dbOracle';
 import { trackSessions } from '../fixtures/sessionCleanup';
 import { apiPath, appPath } from '../fixtures/env';
 import { openSessionView, sendPrompt } from '../fixtures/sessionPage';
@@ -8,6 +10,79 @@ import { openSessionView, sendPrompt } from '../fixtures/sessionPage';
 // Sessions created here are deleted only when the test passes. A failure keeps
 // the scene and names it in the report tail — see fixtures/sessionCleanup.ts.
 const sessions = trackSessions();
+
+test('cursor pages retain every visible conversation once and exclude hidden and foreign histories', async ({ request, page }) => {
+  const api = new AstraApi(request);
+  const agent = await api.defaultAgent();
+  const created = await Promise.all(Array.from({ length: 5 }, async () => {
+    const item = await api.startConversation(String(agent.agent_id));
+    sessions.push(item.session_id);
+    return item;
+  }));
+  await Promise.all(created.map((item) => api.waitForSessionReady(item.session_id)));
+  const original = sessionDoc(created[0].session_id);
+  expect(original?.user_id).toBeTruthy();
+  const userId = String(original!.user_id);
+  for (const item of created) {
+    expect(patchSessionDoc(item.session_id, { updated_at: '2099-01-01T00:00:00Z' })).toHaveLength(1);
+  }
+  const hiddenId = created[3].session_id;
+  const foreignId = created[4].session_id;
+  expect(patchSessionDoc(hiddenId, { hidden: true })).toHaveLength(1);
+  // A test-owned durable row with a different owner tests the listing boundary;
+  // it does not claim a second principal's runtime/history is exercised here.
+  expect(patchSessionDoc(foreignId, { user_id: randomUUID() })).toHaveLength(1);
+  const nativeVisible = documentsByField('sessions', '$.user_id', userId)
+    .filter((row) => row.deleted !== true && (row.hidden === undefined || row.hidden === false))
+    .sort((left, right) => {
+      for (const field of ['updated_at', 'session_id']) {
+        const a = String(left[field]); const b = String(right[field]);
+        if (a !== b) return a < b ? 1 : -1;
+      }
+      return 0;
+    });
+  const expectedIds = nativeVisible.map((row) => String(row.session_id));
+  expect(expectedIds.slice(0, 3).sort()).toEqual(created.slice(0, 3).map((item) => item.session_id).sort());
+  const received: string[] = [];
+  const cursors: string[] = [];
+  let cursor: string | null = null;
+  do {
+    const suffix = cursor ? `&cursor=${encodeURIComponent(cursor)}` : '';
+    const response = await request.get(apiPath(`/sessions?page=1&limit=2${suffix}`));
+    expect(response.ok(), await response.text()).toBe(true);
+    const data = (await response.json()).data as {
+      sessions: Array<{ session_id: string }>; has_more: boolean; next_cursor: string | null;
+    };
+    const ids = data.sessions.map((row) => row.session_id);
+    expect(ids).toEqual(expectedIds.slice(received.length, received.length + 2));
+    received.push(...ids);
+    expect(data.has_more).toBe(received.length < expectedIds.length);
+    cursor = data.next_cursor;
+    if (data.has_more) {
+      expect(cursor).toBeTruthy();
+      expect(cursors).not.toContain(cursor);
+      cursors.push(cursor!);
+    } else {
+      expect(cursor).toBeNull();
+    }
+  } while (cursor);
+  expect(received).toEqual(expectedIds);
+  expect(new Set(received).size).toBe(received.length);
+
+  await page.goto(appPath('/agents'), { waitUntil: 'domcontentloaded' });
+  for (const item of created.slice(0, 3)) {
+    await expect(page.locator(`[data-testid="session-row"][data-session-id="${item.session_id}"]`)).toHaveCount(1);
+  }
+  for (const id of [hiddenId, foreignId]) {
+    await expect(page.locator(`[data-testid="session-row"][data-session-id="${id}"]`)).toHaveCount(0);
+  }
+  await test.info().attach('session-cursor-native-oracle.json', {
+    body: JSON.stringify({ created: created.map((item) => item.session_id), expectedIds, received, hiddenId, foreignId, cursors }),
+    contentType: 'application/json',
+  });
+  // Restore this fixture's owner only on success, before ordinary API cleanup.
+  expect(patchSessionDoc(foreignId, { user_id: userId })).toHaveLength(1);
+});
 
 test('unsent text survives session switching and reload without returning after send', async ({ request, page }) => {
   const api = new AstraApi(request);

@@ -648,7 +648,7 @@ def _spine(
     counter = {"n": 0}
     owners: dict[str, str] = {}
 
-    async def _start(user, agent_id):
+    async def _start(user, agent_id, *, source_type="agent"):
         counter["n"] += 1
         session_id = f"sess-{counter['n']}"
         owners[session_id] = user.user_id
@@ -1181,7 +1181,7 @@ def _streaming_spine(
     agent_service = AsyncMock()
     counter = {"n": 0}
 
-    async def _start(user, agent_id):
+    async def _start(user, agent_id, *, source_type="agent"):
         counter["n"] += 1
         return {"session_id": f"sess-{counter['n']}"}
 

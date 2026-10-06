@@ -14,6 +14,21 @@ Agents often need to access third-party services — GitHub, Jira, databases, or
 | `auth.type` | Credential auth type: Bearer token for an MCP service (`static_bearer`), OAuth token for an MCP service (`mcp_oauth`), API-key header for an MCP service (`mcp_static_header`), HTTP Basic for an HTTPS destination (`http_basic`), or Environment variable for another service (`environment_variable`) |
 | `vault_ids` | The ordered list of Vault IDs assigned to an Agent or Assistant |
 
+## Who manages credentials
+
+Vaults and Credentials are managed by **platform administrators**. This covers
+listing and creating records, updating or rotating secrets, archiving and
+deleting records, and assigning or unassigning Vaults. All of these API routes
+are under `/api/v1/admin/`; a signed-in user without the administrator role
+receives `403 ADMIN_ROLE_REQUIRED`.
+
+Creating an Agent does not grant credential-management permission. Agent
+developers who are not administrators ask their platform administrator to
+configure the required credential and assign its Vault to the Agent. Users can
+then run an Agent with its assigned credentials without choosing a Vault or
+entering a token for each Session. This applies to every credential type,
+including MCP tokens, OAuth tokens, Git HTTP Basic, and environment variables.
+
 ## Security
 
 - `access_token` is **never** returned in API responses.
@@ -129,8 +144,37 @@ make another service credential available as an environment variable, use
 `environment_variable`; see [Protect credentials used by Agents](egress-credential-injection.md)
 for its host and request restrictions.
 
-For a private Git repository accessed over HTTPS, choose **HTTP Basic (Git
-HTTPS)** in the console, or create an `http_basic` credential:
+#### Private Git repositories for Plugins and Skills {#private-git-repositories}
+
+For a Plugin or Skill downloaded from a private HTTPS Git repository, an
+administrator configures access in the console:
+
+1. Open **Console → Credentials**, create a Vault, and open it.
+2. Click **Add credential**, choose **HTTP Basic (Git HTTPS)**, fill in the
+   destination URL, username, and password or access token, then save.
+3. In the Vault's assignments, click **Assign**, choose **Agent**, and select
+   the Agent that downloads the Plugin or Skill. Saving a credential alone
+   does not assign it to an Agent.
+4. Keep the clean repository URL in the Agent's Plugin or Skill configuration
+   and start a new Session after the Vault has been assigned.
+
+For example, to download a private Gitee repository:
+
+| Console field | Value |
+| --- | --- |
+| Credential type | **HTTP Basic (Git HTTPS)** (`http_basic`) |
+| Destination URL | `https://gitee.com/your-team/private-plugins.git` — replace with the repository's actual HTTPS clone URL |
+| Username | The Gitee username of the account with access to the repository |
+| Password or access token | That account's personal access token with permission to read the repository |
+
+[Gitee's HTTPS instructions](https://gitee.com/oschina/git-osc) describe using
+the account username and a personal access token in place of a login password.
+Use the username and token permissions required by your Git host. For a Skill
+source such as `https://gitee.com/your-team/private-skills.git@main#skills/review`,
+the credential destination is only `https://gitee.com/your-team/private-skills.git`;
+keep the revision and subdirectory in the Skill configuration.
+
+The equivalent administration API request is:
 
 ```http
 POST /api/v1/admin/vaults/{vault_id}/credentials
@@ -140,8 +184,8 @@ Content-Type: application/json
   "display_name": "Private Skill repository",
   "auth": {
     "type": "http_basic",
-    "url": "https://github.com/acme/private-skills.git",
-    "username": "x-access-token",
+    "url": "https://gitee.com/your-team/private-skills.git",
+    "username": "your-gitee-username",
     "password": "<repository-access-token>"
   }
 }
@@ -204,6 +248,27 @@ credentials.
 | `auth.refresh` | object | No | OAuth refresh configuration |
 
 ## FAQ
+
+**Q: A Plugin or Skill clone fails with `could not read Username for 'https://gitee.com': No such device or address`. What should I check?**
+
+A: Git could not complete authentication and tried to prompt for credentials
+in a runtime without interactive input. The message alone does not establish
+whether the credential is missing, rejected, or scoped to another repository.
+Ask the administrator to check:
+
+1. The Vault contains an active **HTTP Basic (Git HTTPS)** credential. An MCP
+   Bearer token or environment-variable credential does not configure Git
+   HTTP Basic authentication.
+2. Its destination matches the actual HTTPS clone URL, including the repository
+   path and any `.git` suffix. A host-only URL is insufficient; Skill `@ref`
+   and `#path` suffixes do not belong in this field.
+3. The username is correct, the token is valid, and its account and permissions
+   allow reading this repository. Also verify the repository URL itself.
+4. The Vault is active and assigned to the Agent that failed. Start a new
+   Session after correcting the configuration.
+
+Keep the token in the Credential's password field; do not put it in the Git URL,
+Agent prompt, or error report. See the [configuration steps](#private-git-repositories).
 
 **Q: What happens when an MCP OAuth token expires?** A: If the Credential has a
 refresh token and refresh configuration, AstraBox refreshes an expired token

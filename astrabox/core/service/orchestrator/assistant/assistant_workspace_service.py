@@ -189,7 +189,7 @@ class AssistantWorkspaceService:
         sandbox_id: str,
         expires_at: str | None,
     ) -> bool:
-        """Refresh one live workspace lease behind its exact sandbox fence."""
+        """Refresh a workspace whose binding and lease have not changed."""
         resolved_sandbox_id = str(sandbox_id or "").strip()
         resolved_expires_at = str(expires_at or "").strip() or None
         assistant_id = str((workspace or {}).get("assistant_id") or "").strip()
@@ -203,7 +203,12 @@ class AssistantWorkspaceService:
         return await self._workspace_repo.compare_and_update_workspace(
             user_id,
             assistant_id,
-            expected={"current_sandbox_id": resolved_sandbox_id},
+            expected={
+                "current_sandbox_id": resolved_sandbox_id,
+                "current_sandbox_expires_at": workspace.get(
+                    "current_sandbox_expires_at", {"$exists": False}
+                ),
+            },
             updates={"current_sandbox_expires_at": resolved_expires_at},
         )
 

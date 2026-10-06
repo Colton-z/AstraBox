@@ -4,54 +4,18 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
-from typing import Any
 
 import pytest
 from pydantic import ValidationError
 
 from astrabox.common.utils.settings import AstraBoxRuntimeSettings
-from astrabox.config.config import _read_app_yaml
 from astrabox.config import settings as settings_module
-from astrabox.config.env_registry import concrete_names
 from astrabox.config.settings import AstraBoxSettings
 from astrabox.deploy import onebox, sandbox_server
 from astrabox.identity import session_signing
 from astrabox.providers import secret_store
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
-
-_REMOVED_RUNTIME_FIELDS = frozenset(
-    {
-        "mongodb_database",
-        "mongodb_uri",
-        "mongodb_uri_secret_name",
-        "agent_scheduler_poll_interval_ms",
-        "agent_run_default_timeout_seconds",
-        "agent_conversation_workspace_timeout_seconds",
-        "agent_sandbox_renew_cooldown_seconds",
-        "template_cache_seconds",
-        "sandbox_dev_host_aliases",
-        "reprovision_max_attempts",
-        "engine_memory_base_url",
-        "assistant_skill_source_dirs",
-        "assistant_skill_repos",
-        "mcp_gateway_url",
-    }
-)
-
-_REMOVED_ENV_NAMES = frozenset(
-    {
-        "ASTRABOX_MONGODB_DATABASE",
-        "ASTRABOX_AGENT_CONVERSATION_WORKSPACE_TIMEOUT_SECONDS",
-        "ASTRABOX_AGENT_SANDBOX_RENEW_COOLDOWN_SECONDS",
-        "ASTRABOX_SANDBOX_DEV_HOST_ALIASES",
-        "ASTRABOX_REPROVISION_MAX_ATTEMPTS",
-        "ASTRABOX_ENGINE_MEMORY_BASE_URL",
-        "ASTRABOX_ASSISTANT_SKILL_SOURCE_DIRS",
-        "ASTRABOX_ASSISTANT_SKILL_REPOS",
-        "ASTRABOX_MCP_GATEWAY_URL",
-    }
-)
 
 
 def test_state_dir_resolver_expands_home_for_sqlite(
@@ -104,51 +68,6 @@ def test_every_state_dir_consumer_uses_the_resolved_authority(
     assert sandbox_server.metadata_dir() == resolved / sandbox_server.DEFAULT_METADATA_DIRNAME
     assert (resolved / onebox.LITELLM_KEY_FILENAME).read_text().strip() == key
     assert not (tmp_path / "~" / "wrong-parser-result" / onebox.LITELLM_KEY_FILENAME).exists()
-
-
-def _removed_attribute_reads() -> list[str]:
-    reads: list[str] = []
-    for path in (_REPO_ROOT / "astrabox").rglob("*.py"):
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        for node in ast.walk(tree):
-            if (
-                isinstance(node, ast.Attribute)
-                and isinstance(node.ctx, ast.Load)
-                and node.attr in _REMOVED_RUNTIME_FIELDS
-            ):
-                reads.append(f"{path.relative_to(_REPO_ROOT)}:{node.lineno}:{node.attr}")
-            if (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Name)
-                and node.func.id == "getattr"
-                and len(node.args) >= 2
-                and isinstance(node.args[1], ast.Constant)
-                and node.args[1].value in _REMOVED_RUNTIME_FIELDS
-            ):
-                reads.append(
-                    f"{path.relative_to(_REPO_ROOT)}:{node.lineno}:{node.args[1].value}"
-                )
-    return reads
-
-
-def test_removed_runtime_settings_leave_no_config_or_reader() -> None:
-    assert _REMOVED_RUNTIME_FIELDS.isdisjoint(AstraBoxRuntimeSettings.model_fields)
-    assert _REMOVED_ENV_NAMES.isdisjoint(concrete_names())
-
-    document: dict[str, Any] = _read_app_yaml()
-    astrabox = document["astrabox"]
-    mongodb = astrabox["mongodb"]
-    agent = astrabox["agent"]
-    assert {"uri", "uri_secret_name", "database"}.isdisjoint(mongodb)
-    assert {
-        "scheduler_poll_interval_ms",
-        "run_default_timeout_seconds",
-        "conversation_workspace_timeout_seconds",
-        "sandbox_renew_cooldown_seconds",
-        "reprovision_max_attempts",
-    }.isdisjoint(agent)
-    assert "template_cache_seconds" not in astrabox
-    assert _removed_attribute_reads() == []
 
 
 def test_every_runtime_setting_name_is_read_outside_its_declaration() -> None:

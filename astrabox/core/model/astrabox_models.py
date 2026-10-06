@@ -101,6 +101,11 @@ class AgentView:
     system: str | None = None
     #: Remote MCP server definitions as a flat name→server-def map.
     mcp_servers: dict[str, Any] | None = None
+    #: Session trigger provenance, set only during runtime resolution.
+    session_source_type: str | None = None
+    #: Whether this Agent's conversations receive the built-in ``artifacts``
+    #: tools. Assistants have no such switch and keep the default.
+    artifacts_enabled: bool = True
     skills: list[str] = field(default_factory=list)
     #: Opaque options interpreted only by the selected engine adapter.
     engine_options: dict[str, Any] | None = None

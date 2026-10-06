@@ -1,8 +1,9 @@
 """``astrabox init`` — the skeleton, and the export driven by the server schema.
 
 The export's contract is a round trip: whatever it writes, `astrabox apply`
-must accept. That is what these tests assert, rather than the exact field list
-— which belongs to the deployment and moves without this file changing.
+must accept; the live CLI journey drives that round trip. These tests assert
+what the export leaves out, rather than the exact field list — which belongs to
+the deployment and moves without this file changing.
 """
 
 from __future__ import annotations
@@ -97,18 +98,6 @@ def _client(*, agents: list[dict[str, Any]] | None = None) -> ApiClient:
     )
 
 
-def test_the_export_is_a_document_apply_accepts() -> None:
-    """The round trip is the whole point: an export that apply then rejects
-    would be worse than no export at all."""
-    with _client() as client:
-        document = export_document(client)
-
-    parsed = parse_document(document)
-
-    assert [spec.name for spec in parsed.environments] == ["default"]
-    assert [spec.name for spec in parsed.agents] == ["researcher"]
-
-
 def test_server_managed_state_never_reaches_the_document() -> None:
     """agent_id, version, created_by and friends are not writable fields; the
     write path refuses them, so exporting them would break the next apply."""
@@ -118,17 +107,6 @@ def test_server_managed_state_never_reaches_the_document() -> None:
     exported = document["agents"][0]
     for managed in ("agent_id", "version", "created_by", "updated_at", "state"):
         assert managed not in exported
-
-
-def test_a_nested_field_is_exported_under_the_name_it_is_written_with() -> None:
-    """The schema says display_name lives at display_meta.display_name in the
-    stored document; the document must carry the writable key, not the path."""
-    with _client() as client:
-        document = export_document(client)
-
-    exported = document["agents"][0]
-    assert exported["display_name"] == "Researcher"
-    assert "display_meta" not in exported
 
 
 def test_a_field_absent_from_the_schema_is_dropped_even_when_stored() -> None:
@@ -180,19 +158,6 @@ def test_init_overwrites_with_force(tmp_path: Path, capsys) -> None:
 
     assert "agents:" in target.read_text(encoding="utf-8")
     capsys.readouterr()
-
-
-def test_init_from_deployment_writes_the_export(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys
-) -> None:
-    target = tmp_path / "astrabox.yaml"
-    monkeypatch.setattr("astrabox.cli.scaffold.ApiClient", lambda *_a, **_k: _client())
-
-    assert _cmd_init(_args(target, from_deployment=True)) == 0
-
-    parsed = parse_document(_load_yaml(target))
-    assert [spec.name for spec in parsed.agents] == ["researcher"]
-    assert json.loads(capsys.readouterr().out)["agents"] == 1
 
 
 def test_init_refuses_ambiguous_agent_names_before_writing(

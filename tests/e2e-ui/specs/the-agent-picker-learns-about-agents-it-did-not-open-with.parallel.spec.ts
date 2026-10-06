@@ -34,11 +34,9 @@
  * are DELETING (agent_service.py:279), ACTIVE (agent_service.py:510) and
  * DELETED (session_read.py:263); `hibernate_agent` (agent_service.py:514-521)
  * writes no state at all, and create fixes it to ACTIVE. A spec waiting for
- * PROVISIONING or HIBERNATING would wait for something the product never emits
- * — two existing specs assert that absence as the invariant
- * (agent-active-no-sandbox-across-hibernate-wake-cycles,
- * agent-stays-active-on-broken-config-no-hibernating-fallback). Membership is
- * the same mechanism, the same complaint, and a change the backend really makes.
+ * PROVISIONING or HIBERNATING would wait for something the product never emits.
+ * Membership is the same mechanism, the same complaint, and a change the
+ * backend really makes.
  *
  * WHY THE RETURN IS DRIVEN, NOT ONLY CLICKED. A second real tab takes the
  * foreground, which is the journey. But headless Chromium is not guaranteed to

@@ -41,6 +41,7 @@ logger = get_logger(__name__)
 _DEFAULT_EXEMPT_PREFIXES: tuple[str, ...] = (
     # Public share links: the capability is the signed link itself (no login).
     "/api/v1/share/",
+    "/api/v1/artifact-share/",
     # Deployment triggers authenticate via their own credential (HMAC /
     # scheduler secret / channel provider auth); only trigger endpoints may
     # live under this prefix — admin CRUD stays under /api/v1/admin/**.
@@ -52,13 +53,8 @@ _DEFAULT_EXEMPT_PREFIXES: tuple[str, ...] = (
     # un-scoped /api/v1/transcript/ path is deliberately NOT exempt — it is
     # fail-closed unless the capability requirement is opted out.
     "/api/v1/sbxcap/",
-    # Sandbox->platform MCP calls are authorized by the deployment id in the
-    # path, which the route resolves against a stored binding before answering.
-    # It is unguessable either way it is minted — a session uuid for an Agent, a
-    # sha256 over scope/owner/user for an Assistant — so the id is the
-    # capability, as it is for sbxcap above. This is the only sandbox-originated
-    # MCP surface: every other server is dialled by the sandbox's own client and
-    # never reaches this app.
+    # Sandbox MCP URLs carry an HMAC over deployment id and server name. The
+    # platform-mcp route verifies that path capability before resolving a binding.
     "/api/v1/platform-mcp/",
     # The built-in OIDC login flow IS the door: login/callback carry their own
     # protection (signed state+PKCE flow cookie, ID-token verification) and a

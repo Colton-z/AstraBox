@@ -17,6 +17,7 @@ export interface SubagentEntry {
   description?: string;
   taskType?: string;
   summary?: string;
+  model?: string;
   usage?: { total_tokens?: number; tool_uses?: number; duration_ms?: number };
   lastToolName?: string;
 }
@@ -39,7 +40,7 @@ function toEntry(childRun: SessionChildRun): SubagentEntry {
     parentChildRunId: optionalString(childRun.parent_child_run_id),
     engineKind: childRun.engine_kind,
     depth: childRun.depth,
-    engineEvent: childRun.engine_event,
+    engineEvent: childRun.engine_event ?? '',
     engineStatus: optionalString(childRun.engine_status),
     engineReason: optionalString(childRun.engine_reason),
     closed: childRun.closed,
@@ -49,6 +50,7 @@ function toEntry(childRun: SessionChildRun): SubagentEntry {
     description: optionalString(childRun.description),
     taskType: optionalString(childRun.task_type),
     summary: optionalString(childRun.summary),
+    model: optionalString(childRun.model),
     usage: childRun.usage ?? undefined,
     lastToolName: optionalString(childRun.last_tool_name),
   };

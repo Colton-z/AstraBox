@@ -29,6 +29,7 @@ Agent 在 Session 中执行任务。AstraBox 让 Agent 随时可用，创建或�
 | `engine_options` | object | 否 | 运行环境所选 Agent 程序定义的高级配置 |
 | `skills` | array | 否 | 加载到 Session 沙箱中的 Skill 来源 |
 | `mcp_servers` | object | 否 | MCP 服务器配置，以服务器名称为键 |
+| `artifacts_enabled` | boolean | 否 | Agent 的对话是否提供内置 `artifacts` 工具。创建时省略则为 `true`；参见 [Artifacts](artifacts.md#create-an-artifact) |
 | `default_repo` | object | 否 | 每个新 Session 默认克隆的代码仓库 |
 | `plugin_repos` | array | 否 | 要安装的 Plugin 仓库及经过审核的版本 |
 | `environment_name` | string | 是 | 提供 Agent 程序、沙箱、网络策略和模型连接的运行环境 |

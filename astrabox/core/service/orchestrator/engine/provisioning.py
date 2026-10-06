@@ -75,6 +75,7 @@ from astrabox.core.service.orchestrator.runtime.mcp_credentials import (
     resolve_mcp_credential_plan,
 )
 from astrabox.core.service.orchestrator.runtime.mcp_servers import (
+    artifact_tools_enabled,
     sandbox_mcp_egress_hosts,
 )
 from astrabox.core.service.orchestrator.runtime.plugin_repos import (
@@ -220,6 +221,8 @@ class EngineSandboxRequest:
     #: Everything else the image needs. The credential variable is composed in
     #: and must not appear here.
     env: Mapping[str, str] = field(default_factory=dict)
+    #: The image consumes the platform MCP array before its resident engine boots.
+    platform_mcp_servers_env: bool = False
     #: The variable the engine's image reads its model credential from, when it
     #: reads one from the environment at all. Under the vault this carries a
     #: placeholder and the sidecar injects the real value. ``None`` for an
@@ -1690,6 +1693,11 @@ async def claim_prepared_engine_sandbox(
     An adapter receives only the resulting box and its own opaque evidence.
     """
 
+    if not artifact_tools_enabled(getattr(template, "session_source_type", None)):
+        # Prepared native processes froze personal artifact tools before any Session existed.
+        logger.info("channel Session %s starts its own runtime without private artifact tools", session_id)
+        return None
+
     if (
         str(getattr(workspace_plan, "resume_engine_session_key", "") or "").strip()
         and str(load_astrabox_settings().sandbox_workspace_volume or "").strip()
@@ -2037,6 +2045,9 @@ async def _claim_conversation_pool_box(
 ) -> _ConversationPoolClaim | None:
     """Recover or atomically acquire the Session's official-pool box."""
 
+    if recovered_assignment is None and not artifact_tools_enabled(getattr(template, "session_source_type", None)):
+        return None
+
     from astrabox.core.service.orchestrator.agent.client_pool import (
         acquire_agent_client_pool,
         conversation_pool_receipt,
@@ -2332,6 +2343,12 @@ async def provision_engine_sandbox(
                 status_code=409,
             )
         return result
+    from astrabox.core.service.orchestrator.engine.platform_mcp import request_with_platform_mcp
+
+    request = request_with_platform_mcp(
+        request, template=template, deployment_settings=getattr(manager, "deployment_settings", None),
+        deployment_id=session_id,
+    )
     if (
         workspace_plan.subject_kind == "deployment_conversation"
         and tenancy == SANDBOX_TENANCY_AGENT
@@ -2532,6 +2549,14 @@ async def provision_engine_slot_sandbox(
             message="engine slot provisioning requires a slot id",
             status_code=500,
         )
+    from astrabox.core.service.orchestrator.engine.platform_mcp import request_with_platform_mcp
+    from astrabox.core.service.orchestrator.runtime.mcp_servers import prepared_slot_mcp_deployment_id
+
+    request = request_with_platform_mcp(
+        request, template=template, deployment_settings=getattr(manager, "deployment_settings", None),
+        deployment_id=prepared_slot_mcp_deployment_id(target_slot),
+    )
+
     composed = {request.credential_env_var, request.cwd_env_var} - {None}
     conflicting = sorted(composed & set(request.env))
     if conflicting:
@@ -2612,39 +2637,54 @@ async def provision_engine_slot_sandbox(
         runtime_identity=runtime_identity,
     )
     resource_limits, resource_requests = sandbox_create_resources()
-    sandbox = await create_sandbox_with_storage(
-        backend_adapter,
-        SandboxCreateSpec(
-            session_id=target_slot,
-            assignment_id=target_slot,
-            resource_limits=resource_limits,
-            resource_requests=resource_requests,
-            image=resolve_runtime_template_name(template),
-            entrypoint=tuple(request.entrypoint),
-            cwd=cwd,
-            env={
-                **SANDBOX_SELF_DESCRIPTION,
-                **dict(request.env),
-                **mirror_env,
-                **runtime_env,
-                **({request.credential_env_var: credential} if request.credential_env_var else {}),
-                **({request.cwd_env_var: cwd} if request.cwd_env_var else {}),
-            },
-            publish_ports=tuple(request.publish_ports),
-            wait_for_inbox_service_port=request.wait_for_inbox_service_port,
-            # Every box the platform hands to a conversation has commands run
-            # in it before its engine starts — the mount check, the workspace
-            # provisioning, the identity script. Proving the channel at create
-            # puts that failure where the box is still just a box, instead of
-            # in the first thing that tried to use it.
-            requires_command_channel=True,
-            death_callback_url=None,
-            network_policy=network_policy,
-            permission_level=resolve_sandbox_permission_level(template),
-            vault_write=vault_write,
-            workspace_mounts=planned_mounts,
-        )
+    from astrabox.core.service.orchestrator.agent.prepared_slots import (
+        _delete_prepared_platform_mcp_binding,
+        _publish_prepared_platform_mcp_binding,
+        _suppress_and_log,
     )
+
+    await _publish_prepared_platform_mcp_binding(
+        template, agent_id=str(template.agent_id), slot_id=target_slot,
+        sandbox_id="", sandbox_backend=str(backend_adapter.name),
+    )
+    try:
+        sandbox = await create_sandbox_with_storage(
+            backend_adapter,
+            SandboxCreateSpec(
+                session_id=target_slot,
+                assignment_id=target_slot,
+                resource_limits=resource_limits,
+                resource_requests=resource_requests,
+                image=resolve_runtime_template_name(template),
+                entrypoint=tuple(request.entrypoint),
+                cwd=cwd,
+                env={
+                    **SANDBOX_SELF_DESCRIPTION,
+                    **dict(request.env),
+                    **mirror_env,
+                    **runtime_env,
+                    **({request.credential_env_var: credential} if request.credential_env_var else {}),
+                    **({request.cwd_env_var: cwd} if request.cwd_env_var else {}),
+                },
+                publish_ports=tuple(request.publish_ports),
+                wait_for_inbox_service_port=request.wait_for_inbox_service_port,
+                # Every box the platform hands to a conversation has commands run
+                # in it before its engine starts — the mount check, the workspace
+                # provisioning, the identity script. Proving the channel at create
+                # puts that failure where the box is still just a box, instead of
+                # in the first thing that tried to use it.
+                requires_command_channel=True,
+                death_callback_url=None,
+                network_policy=network_policy,
+                permission_level=resolve_sandbox_permission_level(template),
+                vault_write=vault_write,
+                workspace_mounts=planned_mounts,
+            )
+        )
+    except BaseException:
+        with _suppress_and_log("slot create binding delete", target_slot):
+            await _delete_prepared_platform_mcp_binding(target_slot)
+        raise
     # A slot that reaches the pool without its mount is worse than a slot that
     # was never prepared: it is lent out as ready, and every conversation that
     # borrows it writes where nothing will look.

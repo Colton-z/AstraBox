@@ -294,6 +294,14 @@ its JSON entries and restores them into a replacement sandbox before reconnect.
 It preserves the entries and their order without interpreting vendor semantics;
 JSONL whitespace need not be byte-identical. An engine with another native state
 format can request `runtime_state_store` and supply its save/restore integration.
+Declare `runtime_state_scope="session"` when that native profile belongs to one
+Session's isolated account; the default `"workspace"` binds it to the Agent or
+Assistant workspace. The platform issues the owner and capability. Engines
+forward that owner unchanged, and publish references only after required native
+bytes reach database custody. DSH extends its supplier's local attachment
+backend for this acknowledgement, retaining native normalization, immutable
+publication, and verified reads. Its restore barrier runs before the Session
+opens on replacement compute.
 
 ### Execution user and environment variables
 

@@ -1,5 +1,5 @@
 from .models import (
-    ArtifactRecord,
+    SessionArtifactRecord,
     ProjectionChannel,
     ProjectionWatermark,
     ProjectionWriter,
@@ -14,7 +14,7 @@ from .ownership import (
 )
 
 __all__ = [
-    "ArtifactRecord",
+    "SessionArtifactRecord",
     "ProjectionChannel",
     "ProjectionWatermark",
     "SESSION_SNAPSHOT_FIELD_OWNERSHIP",

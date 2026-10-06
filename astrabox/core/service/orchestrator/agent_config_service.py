@@ -4,7 +4,7 @@ import hashlib
 import json
 import uuid
 from collections.abc import Callable, Sequence
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict, is_dataclass, replace
 from typing import Any
 
 from astrabox.persistence.repository import (
@@ -37,6 +37,7 @@ from astrabox.core.service.orchestrator.schema_validation import (
 )
 from astrabox.core.service.orchestrator.agent_schema import (
     AGENT_PRIVATE_STORED_FIELDS,
+    agent_artifacts_enabled,
     agents_prewarm_by_default,
     validate_agent_payload,
 )
@@ -79,6 +80,7 @@ _VERSIONED_HARNESS_FIELDS = (
     "skills",
     "mcp_servers",
     "mcp_assignments",
+    "artifacts_enabled",
     "extension_catalog",
     "plugin_repos",
     "default_repo",
@@ -251,9 +253,10 @@ class AgentConfigService:
         ).strip() or str(session.get("agent_id") or "").strip()
         if not agent_id:
             return None
-        return await self.resolve_agent_harness(
+        view = await self.resolve_agent_harness(
             agent_id, require_enabled_environment=require_enabled_environment
         )
+        return replace(view, session_source_type=session.get("source_type")) if view else None
 
     async def _resolve_assistant_harness(
         self, assistant_id: str, *, require_enabled_environment: bool = True
@@ -361,6 +364,7 @@ class AgentConfigService:
             model_config=self._synthesize_model_config(model, env),
             system=item.get("system"),
             mcp_servers=resolved_mcp_servers or None,
+            artifacts_enabled=agent_artifacts_enabled(item),
             skills=resolved_skills,
             engine_options=item.get("engine_options"),
             default_repo=self._normalize_default_repo(item.get("default_repo")),
@@ -845,10 +849,13 @@ class AgentConfigService:
                     status_code=409,
                 )
 
-        changed = self._harness_changed(existing, updates)
+        # Reads report an Agent stored without the switch as on, so a client
+        # writing that value back leaves the Agent's definition unchanged.
+        current = {**existing, "artifacts_enabled": agent_artifacts_enabled(existing)}
+        changed = self._harness_changed(current, updates)
         if changed:
             updates["version"] = stored_version + 1
-        if _authored_change(existing, updates):
+        if _authored_change(current, updates):
             updates.update(updated_at=utcnow_iso(), updated_by=me)
 
         applied = await self._agent_repo.compare_and_update_agent(

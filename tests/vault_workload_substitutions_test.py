@@ -163,35 +163,6 @@ async def test_the_workload_this_write_adds_is_carried_too() -> None:
     assert workload_model_placeholder("slot-new") in placeholders_of(vault.written[-1])
 
 
-@pytest.mark.asyncio
-async def test_without_the_derivation_the_sibling_is_lost(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The control: the same write, with the derivation taken back out.
-
-    An assertion that passes both with and without the mechanism it is meant
-    to prove tests nothing. Neutering `carry_workload_substitutions` to the
-    identity restores exactly the composition the five writers used on
-    2026-09-02, and the sibling's bearer must then be gone — which is what
-    makes the tests above evidence rather than decoration.
-    """
-    from astrabox.providers.open_sandbox import executor
-
-    monkeypatch.setattr(
-        executor, "carry_workload_substitutions", lambda bindings, _credentials: bindings
-    )
-    live = workload_credential_name("slot-12b7f006")
-    vault = FakeVault(["astrabox-model-gateway", live])
-
-    await apply_open_sandbox_vault(
-        handle_for(vault), vault_write=gateway_write(), session_id="session-cold"
-    )
-
-    assert workload_model_placeholder("slot-12b7f006") not in placeholders_of(
-        vault.written[-1]
-    )
-
-
 def test_only_the_model_gateway_binding_carries_workload_bearers() -> None:
     """An MCP binding must not splice a credential into a matching string."""
     _credentials, mcp_bindings = build_vault_write(

@@ -25,6 +25,7 @@ from astrabox.core.service.orchestrator.engine.child_runs import (
 from astrabox.core.service.orchestrator.engine.deepseek_harness_events import (
     DeepSeekHarnessProtocolError,
     raw_event_frame,
+    tool_result_message,
 )
 from astrabox.core.service.orchestrator.engine.deepseek_harness_history import read_history_events
 from astrabox.core.service.orchestrator.engine.frame_scope import (
@@ -35,11 +36,11 @@ logger = get_logger(__name__)
 
 DSH_ENGINE_KIND = "deepseek_harness"
 
-_CATALOG_METHOD = "subagents/list"
+_CATALOG_METHOD = "session/projections"
+_SUMMARY_METHOD = "session/list"
 _INTERRUPT_METHOD = "subagents/interruptByParent"
 
-_CHILD_MODES = frozenset({"one-shot", "continuable"})
-_CHILD_ACTIVITIES = frozenset({"running", "inactive"})
+_CHILD_MODES = frozenset({"one-shot", "continuable", "unknown"})
 _VISIBLE_USER_SOURCES = frozenset({"user", "user-rpc"})
 _IGNORED_CHILD_EVENT_TYPES = frozenset(
     {
@@ -71,7 +72,6 @@ class _ChildState:
     child_session_id: str
     mode: str
     activity: str
-    has_children: bool
     label: str | None
     closed: bool = False
 
@@ -200,10 +200,6 @@ def _dsh_content_blocks(raw: Any) -> list[dict[str, Any]]:
                 tool_input = arguments
             block["type"] = "tool_use"
             block["input"] = tool_input
-        elif block_type == "tool-result":
-            block["type"] = "tool_result"
-            block["tool_use_id"] = block.pop("toolCallId", "")
-            block["is_error"] = bool(block.pop("isError", False))
         blocks.append(block)
     return blocks
 
@@ -229,6 +225,7 @@ def _message_frame(
 
     role = ""
     content_raw: Any = None
+    tool_message: dict[str, Any] | None = None
     if event_type == "assistant/message":
         message = data.get("message")
         if not isinstance(message, dict):
@@ -245,15 +242,17 @@ def _message_frame(
         role = "user"
         content_raw = data.get("content")
     elif event_type == "tool/result":
-        message = data.get("message")
-        if not isinstance(message, dict):
-            raise DeepSeekHarnessProtocolError("deepseek_harness child tool/result lacks message")
+        tool_message = tool_result_message(data)
         role = "user"
-        content_raw = message.get("content")
     else:
         return None
 
-    content = _dsh_content_blocks(content_raw)
+    content = [{
+        "type": "tool_result",
+        "tool_use_id": tool_message["toolCallId"],
+        "content": tool_message["content"],
+        "is_error": tool_message.get("isError", False),
+    }] if tool_message is not None else _dsh_content_blocks(content_raw)
     if not content:
         return None
     message_ref = f"{event_type}:{seq}"
@@ -278,7 +277,7 @@ def _message_frame(
 
 #: Runtime status follows the durable parent-owned child catalog.
 _CHILD_SESSION_EMITS = frozenset(
-    {"api-session/status", "api-session/removed"}
+    {"api-session/added", "api-session/status", "api-session/removed"}
 )
 
 
@@ -292,6 +291,8 @@ class DeepSeekHarnessChildResources:
         self._history_max_seq: dict[str, int] = {}
         self._lock = asyncio.Lock()
         self._catalogs: dict[str, dict[str, Any]] = {}
+        self._summary: dict[str, Any] | None = None
+        self._running: dict[str, bool] = {}
         self._source_id = ""
         self._recording: list[dict[str, Any]] | None = None
         self._natives: list[dict[str, Any]] = []
@@ -322,12 +323,13 @@ class DeepSeekHarnessChildResources:
     ) -> list[dict[str, Any]]:
         self._source_id = _required_string(observed.get("id"), field="observation id")
         record = observed["record"]
+        if record.get("method") == _SUMMARY_METHOD:
+            self._read_summary(record["value"])
+            return []
         if record.get("method") == _CATALOG_METHOD:
-            parent = record["args"]["parentSessionId"]
+            parent = record["args"]["request"]["sessionId"]
             frames: list[dict[str, Any]] = []
-            for entry in record["value"]["entries"]:
-                if entry.get("kind") != "child":
-                    continue
+            for entry in self._catalog_entries(record["value"]):
                 # Context supplies identity only once; replacing an observed
                 # child could overwrite activity from its later events.
                 if context_only and entry["id"] in self._children:
@@ -375,6 +377,14 @@ class DeepSeekHarnessChildResources:
     async def _refresh_unlocked(self) -> list[dict[str, Any]]:
         """Refresh while holding the projector's state lock."""
 
+        # The supplier's Web client joins durable parent catalog projections
+        # with Session summaries for live running state. Neither read activates
+        # an Agent, and catalog entries remain visible after its disposal.
+        summary = await self._call(_SUMMARY_METHOD, {"args": {"_request": {}}})
+        self._read_summary(summary)
+        self._summary = self._native_input({
+            "method": _SUMMARY_METHOD, "args": {"_request": {}}, "value": summary,
+        })
         frames: list[dict[str, Any]] = []
         pending_parents = [self._root_session_id]
         visited_parents: set[str] = set()
@@ -385,53 +395,44 @@ class DeepSeekHarnessChildResources:
             visited_parents.add(parent_session_id)
             value = await self._call(
                 _CATALOG_METHOD,
-                {"args": {"parentSessionId": parent_session_id}},
+                {"args": {"request": {"sessionId": parent_session_id}}},
             )
-            if not isinstance(value, dict) or not isinstance(value.get("entries"), list):
-                raise DeepSeekHarnessProtocolError(
-                    "deepseek_harness subagents/list returned no entries list"
-                )
-            if not isinstance(value.get("parentAvailable"), bool):
-                raise DeepSeekHarnessProtocolError(
-                    "deepseek_harness subagents/list returned no parentAvailable flag"
-                )
+            entries = self._catalog_entries(value)
             self._catalogs[parent_session_id] = self._native_input(
                 {
                     "method": _CATALOG_METHOD,
-                    "args": {"parentSessionId": parent_session_id},
+                    "args": {"request": {"sessionId": parent_session_id}},
                     "value": value,
                 }
             )
-            for raw_entry in value["entries"]:
-                if not isinstance(raw_entry, dict):
-                    raise DeepSeekHarnessProtocolError(
-                        "deepseek_harness subagents/list returned a non-object entry"
-                    )
-                kind = str(raw_entry.get("kind") or "").strip()
-                if kind == "diagnostic":
-                    reason = _required_string(raw_entry.get("reason"), field="diagnostic reason")
-                    frames.append(
-                        raw_event_frame(
-                            f"subagent.catalog.{reason}",
-                            {
-                                "parentSessionId": parent_session_id,
-                                "entry": deepcopy(raw_entry),
-                            },
-                        )
-                    )
-                    continue
-                if kind != "child":
-                    raise DeepSeekHarnessProtocolError(
-                        f"deepseek_harness subagents/list returned kind={kind!r}"
-                    )
+            for raw_entry in entries:
                 self._source_id = str(self._catalogs[parent_session_id]["id"])
                 state, lifecycle = self._observe_catalog_child(parent_session_id, raw_entry)
                 if lifecycle is not None:
                     frames.append(lifecycle)
                 frames.extend(await self._refresh_history(state))
-                if state.has_children:
-                    pending_parents.append(state.child_session_id)
+                pending_parents.append(state.child_session_id)
         return frames
+
+    def _read_summary(self, value: Any) -> None:
+        items = value.get("items") if isinstance(value, dict) else None
+        if not isinstance(items, list):
+            raise DeepSeekHarnessProtocolError("deepseek_harness session/list returned no items")
+        running: dict[str, bool] = {}
+        for item in items:
+            if not isinstance(item, dict) or not isinstance(item.get("running"), bool):
+                raise DeepSeekHarnessProtocolError("deepseek_harness Session summary lacks running state")
+            session_id = _required_string(item.get("sessionId"), field="Session summary id")
+            running[session_id] = item["running"]
+        self._running = running
+
+    @staticmethod
+    def _catalog_entries(value: Any) -> list[dict[str, Any]]:
+        values = value.get("values") if isinstance(value, dict) else None
+        entries = values.get("subagentCatalog") if isinstance(values, dict) else None
+        if not isinstance(entries, list) or any(not isinstance(entry, dict) for entry in entries):
+            raise DeepSeekHarnessProtocolError("deepseek_harness Session has no subagentCatalog projection")
+        return entries
 
     def _observe_catalog_child(
         self,
@@ -448,14 +449,7 @@ class DeepSeekHarnessChildResources:
             raise DeepSeekHarnessProtocolError(
                 f"deepseek_harness child has unsupported mode={mode!r}"
             )
-        activity = _required_string(raw.get("activity"), field="child activity")
-        if activity not in _CHILD_ACTIVITIES:
-            raise DeepSeekHarnessProtocolError(
-                f"deepseek_harness child has unsupported activity={activity!r}"
-            )
-        has_children = raw.get("hasChildren")
-        if not isinstance(has_children, bool):
-            raise DeepSeekHarnessProtocolError("deepseek_harness child has no hasChildren flag")
+        activity = "running" if self._running.get(child_session_id, False) else "inactive"
         label = str(raw.get("label") or "").strip() or None
         if mode == "continuable" and label is None:
             raise DeepSeekHarnessProtocolError("deepseek_harness continuable child has no label")
@@ -470,7 +464,6 @@ class DeepSeekHarnessChildResources:
                 child_session_id=child_session_id,
                 mode=mode,
                 activity=activity,
-                has_children=has_children,
                 label=label,
             )
             event = "closed" if mode == "one-shot" and activity == "inactive" else "opened"
@@ -484,16 +477,18 @@ class DeepSeekHarnessChildResources:
                 engine_status=activity,
             )
 
-        if existing.parent_session_id != parent_session_id or existing.mode != mode:
+        if existing.parent_session_id != parent_session_id or (
+            existing.mode != mode and existing.mode != "unknown"
+        ):
             raise DeepSeekHarnessProtocolError(
                 "deepseek_harness child changed its durable parent or mode"
             )
-        existing.has_children = has_children
+        existing.mode = mode
         existing.label = label
         if existing.activity == activity:
             return existing, None
         if existing.closed:
-            # `subagents/list` is a SNAPSHOT, not an ordered stream: a refresh
+            # `session/list` is a SNAPSHOT, not an ordered stream: a refresh
             # issued before the engine finished closing a one-shot child comes
             # back describing it as running, after the close was already
             # observed. Treating that as a contradiction and failing the
@@ -588,7 +583,10 @@ class DeepSeekHarnessChildResources:
         """Consume a child-owned mux frame; leave root and foreign frames alone."""
 
         async with self._lock:
-            context = deepcopy(list(self._catalogs.values()))
+            context = deepcopy(
+                ([self._summary] if self._summary is not None else [])
+                + list(self._catalogs.values())
+            )
             self._recording = []
             try:
                 owned, frames = await self._observe_mux_frame_unlocked(frame)
@@ -616,6 +614,8 @@ class DeepSeekHarnessChildResources:
             args = frame.get("args") or []
             if native_event == "api-session/status":
                 frame_type, payload = native_event, {"sessionId": args[0], "running": args[1]}
+            elif native_event == "api-session/added":
+                frame_type, payload = native_event, args[0]
             elif native_event == "api-session/removed":
                 frame_type, payload = native_event, {"sessionId": args[0]}
         if not isinstance(payload, dict):
@@ -647,6 +647,8 @@ class DeepSeekHarnessChildResources:
             native_event = frame.get("event")
             if native_event == "api-session/status":
                 frame_type, payload = native_event, {"sessionId": args[0], "running": args[1]}
+            elif native_event == "api-session/added":
+                frame_type, payload = native_event, args[0]
             elif native_event == "api-session/removed":
                 frame_type, payload = native_event, {"sessionId": args[0]}
         if not isinstance(payload, dict):
@@ -661,7 +663,7 @@ class DeepSeekHarnessChildResources:
             # token attempts. The followed durable settlement supplies their content.
             return True, []
 
-        if frame_type == "api-session/status":
+        if frame_type in {"api-session/status", "api-session/added"}:
             running = payload.get("running")
             if not isinstance(running, bool):
                 raise DeepSeekHarnessProtocolError(

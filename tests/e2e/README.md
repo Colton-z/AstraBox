@@ -29,6 +29,11 @@ An Assistant/Hermes contract carries `assistant_live` and runs against its
 actual deployment. It must not skip inside the Agent lane or be counted as one
 of that lane's passes.
 
+For affected-only verification through `testbed.py verify`, an exact
+`--pytest-node` from the Assistant inventory selects that node on its pinned
+Assistant runtime without an Agent `--engine`. `--assistant` selects the whole
+atomic Assistant lane. A selected pass does not certify the complete lane.
+
 The frozen node inventory, engine matrix, and storage partitions live in
 [suite-contract.json](../../tests/e2e-contract/suite-contract.json).
 `main` runs ordinary and restart tests for each configured Agent program;

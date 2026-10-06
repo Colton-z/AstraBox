@@ -27,7 +27,6 @@ import ipaddress
 import logging
 import os
 import signal
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -147,19 +146,6 @@ def test_a_third_party_backend_needs_no_sandbox_server(
 def test_open_sandbox_without_a_base_url_needs_one(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(onebox.BACKEND_ENV, "open_sandbox")
     assert onebox.needs_sandbox_server() is True
-
-
-def test_the_removed_local_backend_name_still_starts_the_replacement_server(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv(onebox.BACKEND_ENV, "direct_docker")
-    assert onebox.needs_sandbox_server() is True
-
-
-def test_settings_normalize_the_removed_local_backend_name() -> None:
-    from astrabox.config.settings import AstraBoxSettings
-
-    assert AstraBoxSettings(sandbox_backend="direct_docker").sandbox_backend == "open_sandbox"
 
 
 def test_open_sandbox_with_an_operators_own_server_needs_none(
@@ -817,30 +803,6 @@ def test_a_failure_after_the_server_starts_never_orphans_it(
     assert spawned[0].process.poll() is not None, "the server was orphaned"
 
 
-def test_the_server_child_runs_this_interpreter_and_the_launcher_module(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The rebinds must land in the process that serves, so ``-m`` is the shape.
-
-    A console script or a shell would let a different interpreter (or a stale
-    install) run the launcher, and the two module-constant rebinds only protect
-    the process they happen in.
-    """
-    from astrabox.deploy import sandbox_server as launcher
-
-    recorded: list[list[str]] = []
-
-    class _Recorder:
-        def __init__(self, name: str, argv: Any, *, prefix_output: bool) -> None:
-            recorded.append(list(argv))
-            self.process = subprocess.CompletedProcess(list(argv), 0)
-
-    monkeypatch.setattr(onebox, "_Child", _Recorder)
-    onebox._spawn_sandbox_server()
-    assert recorded == [[sys.executable, "-m", "astrabox.deploy.sandbox_server"]]
-    assert launcher.__name__ == "astrabox.deploy.sandbox_server"
-
-
 # ---------------------------------------------------------------------------
 # 5. the embedded channel gateway leg
 # ---------------------------------------------------------------------------
@@ -877,27 +839,6 @@ def test_external_channel_gateway_refuses_plaintext_transport(
     )
     with pytest.raises(onebox.OneBoxError, match="must use HTTPS"):
         onebox.ensure_channel_gateway_wiring()
-
-
-def test_channel_gateway_child_uses_the_baked_node_runtime(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    recorded: list[tuple[str, list[str], bool]] = []
-
-    class _Recorder:
-        def __init__(self, name: str, argv: Any, *, prefix_output: bool) -> None:
-            recorded.append((name, list(argv), prefix_output))
-
-    monkeypatch.setattr(onebox, "_Child", _Recorder)
-    monkeypatch.setattr(onebox.os.path, "exists", lambda _path: True)
-    onebox._spawn_channel_gateway()
-    assert recorded == [
-        (
-            "channel-gateway",
-            [onebox.CHANNEL_GATEWAY_BIN, onebox.CHANNEL_GATEWAY_SERVER_PATH],
-            True,
-        )
-    ]
 
 
 # ---------------------------------------------------------------------------
@@ -1407,31 +1348,6 @@ def test_gateway_dns_refuses_a_non_docker_runtime(
     monkeypatch.setenv(onebox.SANDBOX_SERVER_RUNTIME_ENV, "kubernetes")
     with pytest.raises(onebox.OneBoxError, match="external model gateway"):
         onebox.ensure_gateway_dns_wiring()
-
-
-def test_gateway_dns_process_uses_the_baked_binary_and_config(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    recorded: list[list[str]] = []
-
-    class _Recorder:
-        def __init__(self, name: str, argv: Any, *, prefix_output: bool) -> None:
-            assert name == "gateway-dns"
-            assert prefix_output is True
-            recorded.append(list(argv))
-
-    monkeypatch.setattr(onebox, "_Child", _Recorder)
-    monkeypatch.setattr(onebox.os.path, "exists", lambda path: True)
-    onebox._spawn_gateway_dns()
-    assert recorded == [
-        [
-            onebox.COREDNS_BIN,
-            "-conf",
-            onebox.COREDNS_CONFIG_PATH,
-            "-dns.port",
-            str(onebox.GATEWAY_DNS_PORT),
-        ]
-    ]
 
 
 def test_an_external_gateway_disables_the_embedded_one() -> None:

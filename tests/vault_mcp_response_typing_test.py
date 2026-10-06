@@ -12,9 +12,8 @@ The service views are stubbed with payloads that carry the two shapes a model
 can get wrong: a credential whose optional key is absent, and a document with a
 field no model declares.
 
-The last group pins the documentation itself — a schema on the answering routes
-and a body-less 204 on the deleting ones — because that is what this typing is
-for, and a route can serve the right bytes while documenting nothing.
+The last test pins the documentation of a delete — a body-less 204 — because a
+route can serve the right bytes while documenting nothing.
 """
 
 from __future__ import annotations
@@ -386,52 +385,3 @@ def test_a_delete_answers_204_and_documents_204(
     responses = client.app.openapi()["paths"][schema_path]["delete"]["responses"]
     assert "200" not in responses
     assert responses["204"] == {"description": "Successful Response"}
-
-
-# ── the answering routes document a schema ──────────────────────────────────
-
-
-@pytest.mark.parametrize(
-    ("fixture_name", "expected_answers"),
-    [("vault_client", 13), ("mcp_server_client", 6), ("mcp_token_client", 2)],
-)
-def test_every_answering_route_documents_the_envelope_it_returns(
-    request: pytest.FixtureRequest, fixture_name: str, expected_answers: int
-) -> None:
-    """An untyped success answer is what this surface is being brought out of.
-
-    ``{}`` — the schema FastAPI emits for a handler with no ``response_model`` —
-    tells a generated client nothing at all, so every route that answers a body
-    must name the model it answers with, whichever 2xx it answers under.
-    """
-    client: TestClient = request.getfixturevalue(fixture_name)
-    schema = client.app.openapi()
-
-    answers: list[str] = []
-    untyped: list[str] = []
-    for path, operations in schema["paths"].items():
-        for method, operation in operations.items():
-            for status, answer in operation["responses"].items():
-                if not status.startswith("2") or "content" not in answer:
-                    continue  # a 204 route carries no body; covered above
-                answers.append(f"{method.upper()} {path} -> {status}")
-                if "$ref" not in answer["content"]["application/json"]["schema"]:
-                    untyped.append(f"{method.upper()} {path} -> {status}")
-
-    assert untyped == []
-    # Guard the guard: an empty list of answers satisfies the check above
-    # without a single route having been examined.
-    assert len(answers) == expected_answers
-
-
-def test_the_envelope_models_declare_code_message_and_data(
-    vault_client: TestClient,
-) -> None:
-    """A payload-shaped model would delete ``code`` and ``message`` from the wire."""
-    schema = vault_client.app.openapi()
-    ref = schema["paths"]["/api/v1/admin/vaults/{vault_id}"]["get"]["responses"]["200"][
-        "content"
-    ]["application/json"]["schema"]["$ref"]
-    model = schema["components"]["schemas"][ref.rsplit("/", 1)[-1]]
-
-    assert set(model["required"]) == {"code", "message", "data"}

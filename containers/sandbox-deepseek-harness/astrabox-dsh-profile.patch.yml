@@ -23,8 +23,19 @@
     root: !!js dshHomePath('sessions')
     compression: none
 
-# Only the platform collector uses this exclusive carrier. The vendor's mux,
-# authentication and native browser routes remain owned by the web profile.
+# Native normalization and immutable publication stay in attachment-local.
+# The image-owned subclass acknowledges database custody before returning refs.
+# A patch's name is a match guard, not a replacement module. Disable the
+# supplier row and insert the subclass through the supported composition path.
+- id: attachment-local
+  disabled: true
+
 - insert:
+    - id: astrabox-attachments
+      name: /opt/dsh/attachments.mjs
+    # Only the platform collector uses this exclusive carrier. The vendor's mux,
+    # authentication and native browser routes remain owned by the web profile.
     - id: astrabox-output
       name: /opt/dsh/output.mjs
+    - id: astrabox-platform-mcp
+      name: /opt/dsh/platform-mcp.mjs

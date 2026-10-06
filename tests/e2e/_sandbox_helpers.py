@@ -4,8 +4,8 @@ Leading-underscore module → never collected as a test. Centralizes the
 ``{code,message,data}`` envelope unwrap, the session create/READY poll, the
 AI-SDK Data-Stream-Protocol SSE reader, the file API, and the interaction
 respond / settle helpers so the per-capability test files stay readable. Mirrors
-the wiring of the existing ``test_live_turn.py`` / ``test_files.py`` exactly (same
-endpoints, same envelope, same READY contract) — no divergent paths.
+the wiring of ``test_files.py`` exactly (same endpoints, same envelope, same
+READY contract) — no divergent paths.
 """
 
 from __future__ import annotations
@@ -916,6 +916,7 @@ class StreamResult:
     text: str = ""
     interactions: list[dict] = field(default_factory=list)
     tool_names: list[str] = field(default_factory=list)
+    results: list[dict] = field(default_factory=list)
     finish_reason: str | None = None
     error: str | None = None
     saw_ui_header: bool = False
@@ -994,6 +995,10 @@ def stream_turn(
                 name = ev.get("toolName")
                 if name:
                     res.tool_names.append(str(name))
+            elif etype == "data-result":
+                result = ev.get("data")
+                assert isinstance(result, dict), "reply result is not an object"
+                res.results.append(result)
             elif etype == "finish":
                 res.finish_reason = str(ev.get("finishReason") or "")
             elif etype == "error":

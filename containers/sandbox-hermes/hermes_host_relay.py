@@ -3,8 +3,8 @@
 `hermes serve` binds 127.0.0.1 (`astrabox-hermes-serve` explains why) and then
 accepts a request only when its `Host` header names that bind. The HTTP check
 is `host_header_middleware` and the WebSocket check is
-`_ws_host_origin_reason`, both in `hermes_cli/web_server.py` of hermes-agent
-0.21.0 (commit 29112bef): Hermes' DNS-rebinding defence, advisory
+`_ws_host_origin_reason`, in `hermes_cli/web_server.py` and
+`hermes_cli/web_server_chat.py` of hermes-agent 0.21.5 (commit f97608f1): Hermes' DNS-rebinding defence, advisory
 GHSA-ppp5-vxwm-4cf7. A refused WebSocket upgrade closes with code 4403 and
 logs `host_mismatch`.
 
@@ -16,7 +16,7 @@ WebSocket proxy sends on). This relay therefore names its upstream in `Host`,
 as a reverse proxy does.
 
 On that bind Hermes also takes its credential only as a `?token=` query
-parameter (`_ws_auth_reason` in the same file), and every proxy in front of
+parameter (`_ws_auth_reason` in `web_server_chat.py`), and every proxy in front of
 the box logs the request line. The platform therefore sends the credential in
 the `X-AstraBox-Hermes-Token` header, and this relay moves it into the query
 on the loopback hop. Every other header, including the WebSocket upgrade,

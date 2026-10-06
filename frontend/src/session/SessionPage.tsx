@@ -1,4 +1,4 @@
-import React, { useCallback } from 'react';
+import React, { useCallback, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useParams, useNavigate } from 'react-router-dom';
 import type { UIMessage as SDKUIMessage } from 'ai';
@@ -52,6 +52,8 @@ import { SessionConversationView } from './components/SessionConversationView';
 import { SessionPendingInteractionFooter } from './components/SessionPendingInteractionFooter';
 import { SessionComposerBox } from './components/SessionComposerBox';
 import { SessionRightPanel } from './components/SessionRightPanel';
+import { ArtifactNavigationProvider } from '@/artifacts/navigation';
+import { useArtifactPanelNavigation } from '@/artifacts/useArtifactPanelNavigation';
 import { useFrontendReleaseHold } from '@/hooks/useFrontendReleaseHold';
 
 const NO_DURABLE_RECORDS: ReturnType<typeof useFirstPageMessages>['durableRecords'] = [];
@@ -119,6 +121,12 @@ export function SessionPage({
     firstPage,
     onSessionChanged,
   });
+  // The composer may already be on screen while the Session is still creating.
+  // History that arrives, or fails, after that point fills the open page; it
+  // must not swap the page for a loader, which would remount the composer and
+  // drop what the reader is typing.
+  const composerShownForRef = useRef<string | null>(null);
+  const composerShown = composerShownForRef.current === sessionId;
 
   if (effectiveLifecycleState === 'loading') {
     return <SessionLoadingState />;
@@ -134,7 +142,7 @@ export function SessionPage({
     );
   }
 
-  if (shouldShowHistoryBlockingLoader({
+  if (!composerShown && shouldShowHistoryBlockingLoader({
     historyLoading: effectiveHistory.loading,
     lifecycleState: effectiveLifecycleState,
     messageCount: effectiveHistory.durableRecords.length,
@@ -144,7 +152,7 @@ export function SessionPage({
     return <SessionHistoryBlockingState historyError={effectiveHistory.error} />;
   }
 
-  if (shouldShowInitialHistoryLoadError({
+  if (!composerShown && shouldShowInitialHistoryLoadError({
     historyLoading: effectiveHistory.loading,
     lifecycleState: effectiveLifecycleState,
     messageCount: effectiveHistory.durableRecords.length,
@@ -160,6 +168,7 @@ export function SessionPage({
       ? initialMessagesRef.current.messages
       : prepareInitialMessages(effectiveHistory.durableRecords, effectiveHistory.overlay, effectiveSession);
 
+  composerShownForRef.current = sessionId;
   return (
     <SessionPageReady
       key={sessionId}
@@ -395,6 +404,8 @@ function SessionPageReady({
     t,
   });
 
+  const artifacts = useArtifactPanelNavigation(initialMessages, () => setRightTab('artifacts'));
+
   // ── Subagent (Agent / Task tool) registry + overlay drawer ──
   const {
     subagentRegistry,
@@ -437,6 +448,7 @@ function SessionPageReady({
   // ── Render ───────────────────────────────────────────────────
 
   return (
+    <ArtifactNavigationProvider open={artifacts.open} appeared={artifacts.appeared} setComposer={setDraft}>
     <SubagentNavigationProvider openSubagent={openSubagent} agents={subagentRegistry.agents}>
     {/* react-resizable-panels' Group overwrites a data-testid prop with its
         own `id ?? useId()` — the id prop is therefore the only way to get a
@@ -571,6 +583,11 @@ function SessionPageReady({
       <ResizableHandle withHandle />
 
       <SessionRightPanel
+        artifactSelection={artifacts.selectedId}
+        setArtifactSelection={artifacts.setSelectedId}
+        artifactRevision={artifacts.revision}
+        assistantId={session.assistant_id}
+        assistantConversation={isAssistantConversation}
         rightTab={rightTab}
         setRightTab={setRightTab}
         rightPanelCaps={rightPanelCaps}
@@ -596,5 +613,6 @@ function SessionPageReady({
       />
     </ResizablePanelGroup>
     </SubagentNavigationProvider>
+    </ArtifactNavigationProvider>
   );
 }

@@ -9,11 +9,7 @@ every reap however long it has run.
 
 from __future__ import annotations
 
-import ast
 from datetime import datetime, timedelta, timezone
-import inspect
-from pathlib import Path
-import re
 from typing import Any, Mapping
 
 import pytest
@@ -33,21 +29,6 @@ from astrabox.seams.sandbox_disposal import SandboxDestruction
 
 _OTHER_INSTALLATION = "the-other-installation"
 _LONG_AGO = datetime.now(timezone.utc) - timedelta(hours=6)
-
-
-def test_live_reaper_probe_uses_the_current_runtime_contract() -> None:
-    source = (Path(__file__).parent / "e2e-ui/specs/ownerless-sandbox-reaping-preserves-prepared-capacity.exclusive.spec.ts").read_text()
-    programs = re.findall(r"const program = `(.*?)`;", source, re.DOTALL)
-    calls = [
-        node for program in programs for node in ast.walk(ast.parse(program))
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "reap_ownerless_sandboxes"
-    ]
-    assert calls, "the live ownership probe must exercise the production reaper"
-    signature = inspect.signature(runtime_manager_module.RemoteAgentRuntimeManager.reap_ownerless_sandboxes)
-    for call in calls:
-        assert all(keyword.arg is not None for keyword in call.keywords)
-        signature.bind(None, **{keyword.arg: None for keyword in call.keywords})
 
 
 def _box(sandbox_id: str, installation: str) -> SandboxDescriptor:

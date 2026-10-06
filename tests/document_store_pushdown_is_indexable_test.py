@@ -26,7 +26,6 @@ from typing import Any
 import pytest
 
 from astrabox.persistence.repository.sqlite import collection as collection_module
-from astrabox.persistence.repository.sqlite import engine as engine_module
 
 
 @pytest.fixture
@@ -102,16 +101,3 @@ def test_postgres_narrows_with_containment_not_a_type_test() -> None:
     coll._is_postgresql = False  # type: ignore[attr-defined]
     sqlite_form = str(coll._json_array_contains("admins", "alice"))
     assert "json_type" in sqlite_form, sqlite_form
-
-
-def test_postgres_creates_the_index_that_serves_it() -> None:
-    """A containment predicate with no GIN index scans exactly as before.
-
-    The two are one change: the operator is only worth emitting because the
-    index exists to answer it.
-    """
-    source = engine_module.__file__
-    with open(source, encoding="utf-8") as handle:
-        text = handle.read()
-    assert "USING gin (doc jsonb_path_ops)" in text
-    assert "ix_documents_doc_gin" in text

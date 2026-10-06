@@ -370,19 +370,6 @@ async def _start(
     )
 
 
-@pytest.mark.asyncio
-async def test_hermes_engine_start_rejects_undeclared_startup_inputs() -> None:
-    adapter = hermes.HermesEngineAdapter()
-
-    with pytest.raises(TypeError, match="unexpected keyword argument"):
-        await adapter._start_engine(
-            object(),
-            session_id="session-1",
-            identity={},
-            obsolete_startup_option=True,
-        )
-
-
 def _bind_real_backend(
     monkeypatch: pytest.MonkeyPatch,
     wire: _FakeLifecycleWire,

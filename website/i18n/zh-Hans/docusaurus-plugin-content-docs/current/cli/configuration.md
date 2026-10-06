@@ -1022,6 +1022,7 @@ astrabox schema agent --output json
 | `engine_options` | ❌ | Agent 程序定义的设置。 |
 | `skills` | ❌ | Agent 可以使用的 Skill。 |
 | `mcp_servers` | ❌ | Agent 自己的 MCP Server 配置。 |
+| `artifacts_enabled` | ❌ | 布尔值；Agent 的对话是否提供内置 `artifacts` 工具。创建时省略：开启。 |
 | `terminal_panel` | ❌ | 布尔值；是否显示终端面板，不控制命令执行权限。 |
 | `diff_panel` | ❌ | 布尔值；是否显示文件差异面板，不控制文件修改权限。 |
 | `default_repo` | ❌ | 主代码仓库。 |

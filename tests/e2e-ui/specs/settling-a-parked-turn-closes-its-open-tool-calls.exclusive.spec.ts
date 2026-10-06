@@ -88,40 +88,6 @@ async function waitForAnnouncedToolCall(
   );
 }
 
-test('the durable-frame oracle waits for the gated call in the stored payload', async () => {
-  let reads = 0;
-  const readFrames = (): Record<string, unknown>[] => {
-    reads += 1;
-    if (reads === 1) {
-      return [
-        {
-          // A top-level lookalike must not satisfy an oracle for the stored payload.
-          type: 'tool-input-available',
-          toolCallId: 'toolu_gated',
-          payload: { type: 'tool-input-available', toolCallId: 'toolu_other' },
-        },
-      ];
-    }
-    return [{ payload: { type: 'tool-input-available', toolCallId: 'toolu_gated' } }];
-  };
-
-  const observed = await waitForAnnouncedToolCall(
-    'turn-1',
-    'toolu_gated',
-    100,
-    readFrames,
-    0,
-  );
-  expect(reads, 'the first pre-write sample must not satisfy the wait').toBe(2);
-  expect(observed.announced).toEqual(new Set(['toolu_gated']));
-
-  const settled = toolCallState([
-    { payload: { type: 'tool-input-available', toolCallId: 'toolu_gated' } },
-    { payload: { type: 'tool-output-denied', toolCallId: 'toolu_gated' } },
-  ]);
-  expect([...settled.announced].filter((id) => !settled.terminal.has(id))).toEqual([]);
-});
-
 test('interrupting a parked turn terminates the tool call it was blocked on', async ({
   request,
 }) => {

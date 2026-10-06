@@ -20,7 +20,6 @@ from typing import Any
 
 import pytest
 
-from astrabox.core.service.orchestrator.engine.pi import PiEngineAdapter
 from astrabox.core.service.orchestrator.engine.pi_child_runs import (
     ASYNC_SNAPSHOT_PREFIX,
     PiChildResources,
@@ -124,62 +123,6 @@ def test_the_status_widget_opens_a_stoppable_run() -> None:
     assert facts[0]["controlRef"] == RUN
     assert facts[0]["description"] == "delegate"
     assert facts[0]["taskType"] == "subagent"
-
-
-def test_a_workflow_and_its_worker_keep_their_native_kinds_after_cold_replay() -> None:
-    """A background workflow publishes two native jobs, not one duplicated worker."""
-
-    workflow_id = "0d5052a6-7ee2-4a0f-9018-02255ba261c5"
-    journal = []
-    for workflow_status, worker_status in (
-        ("running", "running"),
-        ("running", "complete"),
-        ("complete", "complete"),
-    ):
-        worker = _run_node(
-            worker_status,
-            children=[{
-                "id": "step:0", "kind": "step", "label": "delegate",
-                "state": worker_status,
-            }],
-        )
-        workflow = {
-            **_run_node(workflow_status),
-            "id": workflow_id,
-            "kind": "workflow",
-            "children": [{
-                "id": "child", "kind": "step", "label": "child",
-                "state": worker_status,
-            }],
-        }
-        journal.append(_widget([worker, workflow]))
-
-    projector = PiChildResources()
-    live = [
-        fact
-        for record in journal
-        for fact in _facts(projector.observe_ui_request(record))
-    ]
-    cold = [
-        fact.as_frame()["data"]
-        for _, fact in PiEngineAdapter().durable_child_resource_facts(
-            json.loads(json.dumps(journal))
-        )
-    ]
-
-    assert cold == live
-    assert [
-        (fact["engineRef"], fact["taskType"], fact["event"], fact["engineStatus"])
-        for fact in live
-    ] == [
-        (RUN, "subagent", "opened", "running"),
-        (workflow_id, "workflow", "opened", "running"),
-        (RUN, "subagent", "closed", "complete"),
-        (workflow_id, "workflow", "closed", "complete"),
-    ]
-    assert all("parentEngineRef" not in fact for fact in live)
-    assert all(fact["description"] == "delegate" for fact in live)
-    assert all(fact["operations"] == [] for fact in live[-2:])
 
 
 def test_a_single_delegation_is_one_row_from_queued_to_done() -> None:
@@ -540,12 +483,13 @@ def test_the_launch_settings_carry_the_images_sub_agent_package() -> None:
 
     from astrabox.core.service.orchestrator.engine.pi import (
         PI_SUBAGENT_PACKAGE_PATH,
+        PI_PLATFORM_MCP_PACKAGE_PATH,
         _settings,
     )
 
     settings = _settings(SimpleNamespace(engine_options=None))
 
-    assert settings["packages"] == [PI_SUBAGENT_PACKAGE_PATH]
+    assert settings["packages"] == [PI_SUBAGENT_PACKAGE_PATH, PI_PLATFORM_MCP_PACKAGE_PATH]
 
 
 def test_an_agents_own_packages_do_not_displace_it() -> None:
@@ -555,6 +499,7 @@ def test_an_agents_own_packages_do_not_displace_it() -> None:
 
     from astrabox.core.service.orchestrator.engine.pi import (
         PI_SUBAGENT_PACKAGE_PATH,
+        PI_PLATFORM_MCP_PACKAGE_PATH,
         _settings,
     )
 
@@ -569,7 +514,7 @@ def test_an_agents_own_packages_do_not_displace_it() -> None:
         )
     )
 
-    assert settings["packages"] == ["npm:pi-goal-x", PI_SUBAGENT_PACKAGE_PATH]
+    assert settings["packages"] == ["npm:pi-goal-x", PI_SUBAGENT_PACKAGE_PATH, PI_PLATFORM_MCP_PACKAGE_PATH]
     assert settings["defaultThinkingLevel"] == "medium"
 
 
@@ -578,6 +523,7 @@ def test_the_package_is_never_listed_twice() -> None:
 
     from astrabox.core.service.orchestrator.engine.pi import (
         PI_SUBAGENT_PACKAGE_PATH,
+        PI_PLATFORM_MCP_PACKAGE_PATH,
         _settings,
     )
 
@@ -587,7 +533,7 @@ def test_the_package_is_never_listed_twice() -> None:
         )
     )
 
-    assert settings["packages"] == [PI_SUBAGENT_PACKAGE_PATH]
+    assert settings["packages"] == [PI_SUBAGENT_PACKAGE_PATH, PI_PLATFORM_MCP_PACKAGE_PATH]
 
 
 # ── what the child said ──────────────────────────────────────────────────

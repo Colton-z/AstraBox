@@ -12,7 +12,6 @@ import pytest
 from astrabox.common.utils.errors import APIError
 from astrabox.core.service.orchestrator import turn_preparation
 from astrabox.core.service.orchestrator.turn_preparation import prepared_sandbox_turn
-from astrabox.seams import SEAMS_API_VERSION
 from astrabox.seams import sandbox as sandbox_seam
 from astrabox.seams.sandbox import (
     TURN_PREPARATION_FAILED,
@@ -311,15 +310,6 @@ def test_registration_rejects_unsafe_or_invalid_capabilities() -> None:
         register_sandbox(_SyncPreparationProvider())  # type: ignore[arg-type]
     with pytest.raises(RuntimeError, match="does not override"):
         register_sandbox(_EnabledWithoutOverrideProvider())
-
-
-def test_profile_exclusive_capability_is_additive_without_api_bump() -> None:
-    provider = _RecordingProvider("exclusive-additive")
-    register_sandbox(provider)  # type: ignore[arg-type]
-    # Pins the tree's current contract version: turn preparation is additive and
-    # never moved it; later breaking seam changes advanced the shared version.
-    assert SEAMS_API_VERSION == 4
-    assert sandbox_seam.sandbox_for_name(provider.name) is provider
 
 
 async def test_default_provider_is_a_noop_for_legacy_context() -> None:

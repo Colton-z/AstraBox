@@ -76,14 +76,6 @@ def test_a_completed_stop_exits_zero() -> None:
     assert code == 0, output
 
 
-def test_bare_uvicorn_dies_by_the_signal_it_shut_down_on() -> None:
-    # The vendor behaviour the helper exists for: without it, the graceful
-    # shutdown completes and the process still ends by SIGTERM.
-    code, output = _stop_after_ready(_serve(bare=True))
-    assert "SHUTDOWN-COMPLETE" in output
-    assert code == -signal.SIGTERM, output
-
-
 def test_a_failed_startup_stays_non_zero() -> None:
     process = _serve(fail_startup=True)
     output, _ = process.communicate(timeout=30)

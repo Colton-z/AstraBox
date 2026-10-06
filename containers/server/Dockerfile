@@ -200,6 +200,11 @@ RUN python -m venv /opt/litellm \
     && chmod -R a+rX "$PRISMA_BINARY_CACHE_DIR" "$PRISMA_NODEENV_CACHE_DIR" \
     && ln -s /opt/litellm/bin/prisma /usr/local/bin/prisma
 
+# Apply LiteLLM's native-header provider hook to the pinned DeepSeek adapter.
+# Other providers retain their normal remotely maintained beta-header policy.
+COPY --chmod=u=rwX,go=rX containers/litellm/deepseek_beta_headers.py /opt/astrabox/litellm/deepseek_beta_headers.py
+RUN /opt/litellm/bin/python /opt/astrabox/litellm/deepseek_beta_headers.py --install
+
 # Install the wheel + its resolved dependencies from the build stage. Keep this
 # application-dependent layer after the independently pinned LiteLLM venv: an
 # AstraBox source edit rebuilds the wheel, but must not download and install the
@@ -244,6 +249,7 @@ COPY --chmod=u=rwX,go=rX containers/litellm/custom_auth.py /opt/astrabox/litellm
 COPY --chmod=u=rwX,go=rX containers/litellm/langfuse_session_hook.py /opt/astrabox/litellm/langfuse_session_hook.py
 COPY --chmod=u=rwX,go=rX containers/litellm/langfuse_tracing.py /opt/astrabox/litellm/langfuse_tracing.py
 COPY --chmod=u=rwX,go=rX containers/litellm/stream_normalization_hook.py /opt/astrabox/litellm/stream_normalization_hook.py
+COPY --chmod=u=rwX,go=rX containers/litellm/native_protocol_hook.py /opt/astrabox/litellm/native_protocol_hook.py
 
 # Credential Vault bindings require an FQDN. The private RFC 2606 `.test` name
 # is resolved inside the deployment, never through public DNS; onebox starts

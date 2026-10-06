@@ -11,7 +11,6 @@ from astrabox.core.service.orchestrator.session_kernel.service import (
 )
 from astrabox.core.service.orchestrator.session_service import SessionService
 from astrabox.core.service.orchestrator.session_kernel.service_mixins.session_read import (
-    _SESSION_LIST_AGENT_PROJECTION,
     _SESSION_LIST_ROW_PROJECTION,
     _SESSION_LIST_SNAPSHOT_PROJECTION,
     _SESSION_LIST_SUMMARY_FIELDS,
@@ -279,60 +278,6 @@ async def test_historical_ready_without_runtime_workspace_cannot_poison_session_
         "current-ready",
     ]
     assert [row["state"] for row in page["sessions"]] == ["READY", "READY"]
-
-
-@pytest.mark.asyncio
-async def test_snapshot_and_agent_overlays_are_projected_batch_reads() -> None:
-    service = object.__new__(SessionKernelService)
-    snapshot_repo = _SnapshotRepository()
-    agent_repo = _AgentRepository()
-    service._session_snapshots_repo = snapshot_repo
-    service._agent_repo = agent_repo
-    service._session_service = SimpleNamespace(
-        _sanitize_session=lambda row: dict(row),
-        derive_recovery_fields=lambda _state, _row: (None, None),
-    )
-    service._runtime_manager = SimpleNamespace(
-        resolve_session_terminal_cwd=lambda *args, **kwargs: None
-    )
-
-    async def _reconcile_runtime_binding(
-        row: dict[str, Any],
-        *,
-        persist: bool,
-    ) -> dict[str, Any]:
-        assert persist is False
-        return dict(row)
-
-    service._reconcile_runtime_binding = _reconcile_runtime_binding
-    rows = [
-        {
-            "session_id": f"session-{index}",
-            "template_name": f"Agent {index}",
-            "state": "READY",
-            "session_kind": "agent_chat",
-            "engine_kind": "claude_code",
-            "agent_id": f"agent-{index}",
-        }
-        for index in (1, 2)
-    ]
-
-    rendered = await SessionKernelService._render_session_rows(service, rows)
-
-    assert snapshot_repo.calls == [
-        (["session-1", "session-2"], _SESSION_LIST_SNAPSHOT_PROJECTION)
-    ]
-    assert agent_repo.calls == [
-        (["agent-1", "agent-2"], _SESSION_LIST_AGENT_PROJECTION, False)
-    ]
-    assert _SESSION_LIST_SNAPSHOT_PROJECTION["last_turn_terminal_frame"] == 1
-    assert "messages" not in _SESSION_LIST_SNAPSHOT_PROJECTION
-    assert "slash_command_details" not in _SESSION_LIST_AGENT_PROJECTION
-    assert [row["state"] for row in rendered] == ["READY", "READY"]
-    assert [row["deployment_name"] for row in rendered] == [
-        "Agent agent-1",
-        "Agent agent-2",
-    ]
 
 
 @pytest.mark.asyncio

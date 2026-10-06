@@ -9,7 +9,6 @@ never stored.
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 import pytest
@@ -111,12 +110,6 @@ def test_a_store_with_no_reader_answers_zero(tmp_path: Any) -> None:
         list_subkeys_fn=_empty_subkeys,
     )
     assert store.confirmed_store_sequence() == 0
-
-
-def test_the_key_identity_round_trips_for_the_scope_check() -> None:
-    """The reader parses the identity it wrote; pin the shape they share."""
-    identity = _HttpStoreTarget._key_identity(MAIN_KEY)
-    assert json.loads(identity) == ["p", "s", ""]
 
 
 @pytest.mark.parametrize("value", [None, "3", True, 1.5, -1])

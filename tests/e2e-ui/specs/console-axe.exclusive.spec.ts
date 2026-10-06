@@ -1,11 +1,10 @@
 /**
  * E2E: every console surface, checked by axe rather than visual house rules.
  *
- * The visual-grammar spec beside this one asks whether a page obeys the house
- * style. This one asks a different question that those rules cannot answer: does
- * the page work for someone who is not looking at it. The two do not overlap —
- * a page can be perfectly on-grid and still hand a screen reader a button with
- * no name.
+ * Visual house rules ask whether a page obeys the house style. This spec asks
+ * a different question that those rules cannot answer: does the page work for
+ * someone who is not looking at it. The two do not overlap — a page can be
+ * perfectly on-grid and still hand a screen reader a button with no name.
  *
  * axe supplies an independently maintained WCAG rule set; hand-written checks
  * would cover only the accessibility failures already anticipated here.

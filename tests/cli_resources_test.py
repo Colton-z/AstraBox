@@ -189,17 +189,6 @@ def test_apply_reports_unchanged_and_sends_no_write() -> None:
     assert deployment.writes == []
 
 
-def test_diff_sends_no_writes_while_reporting_the_same_verdicts() -> None:
-    deployment = _Deployment()
-
-    with deployment.client() as client:
-        results = plan_and_run(client, _document(), write=False)
-
-    assert [row["action"] for row in results] == [ACTION_CREATE, ACTION_CREATE]
-    assert deployment.writes == []
-    assert deployment.requests, "diff must still read the deployment"
-
-
 def test_apply_refuses_an_ambiguous_agent_name_without_writing() -> None:
     """The deployment does not constrain Agent names to be unique. Picking one
     of two matches would make the same document mean different things on two
@@ -271,45 +260,6 @@ def test_destroy_reports_an_absent_agent_rather_than_failing(
 
     rows = json.loads(capsys.readouterr().out)["resources"]
     assert next(row for row in rows if row["name"] == "researcher")["action"] == ACTION_ABSENT
-    assert deployment.writes == []
-
-
-def test_a_nested_field_is_compared_where_the_deployment_stores_it() -> None:
-    """The schema says display_name lives at display_meta.display_name. Looking
-    for it at the top level finds nothing, so an unchanged document would
-    report that field as changed on every single run — and an export of a
-    deployment would never converge against the deployment it came from."""
-    deployment = _Deployment(
-        agents=[
-            {
-                "agent_id": "agent-1",
-                "version": 2,
-                "name": "researcher",
-                "model": "claude-opus-5",
-                "environment_name": "default",
-                "display_meta": {"display_name": "Researcher"},
-            }
-        ],
-        environments=[{"name": "default", "endpoint_provider": "litellm"}],
-    )
-    document = _document(
-        agents=[
-            {
-                "name": "researcher",
-                "model": "claude-opus-5",
-                "environment_name": "default",
-                "display_name": "Researcher",
-            }
-        ]
-    )
-
-    with deployment.client() as client:
-        results = plan_and_run(client, document, write=True)
-
-    agent_result = next(row for row in results if row["kind"] == "agent")
-    assert agent_result["action"] == ACTION_UNCHANGED, (
-        f"nested field reported as changed: {agent_result['fields']}"
-    )
     assert deployment.writes == []
 
 

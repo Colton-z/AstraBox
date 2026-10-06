@@ -6,11 +6,12 @@ import { expect, test } from '@playwright/test';
 import { AstraApi, messageText } from '../fixtures/astraApi';
 import { channelCallback } from '../fixtures/channelCallback';
 import { documentsByField, framesForTurn, replaceDocs, sessionEvents } from '../fixtures/dbOracle';
+import { messageProseBlocks, textBlockValues } from '../fixtures/dshOutput';
 import { engineProfileFor } from '../fixtures/engineProfile';
 import { absoluteBaseUrl, apiPath } from '../fixtures/env';
 import { InstalledChannelBackend } from '../fixtures/installedChannelBackend';
 import { childPrompt, expectNativeMode, launchEvidence, nativeRows } from '../fixtures/nativeChildLifecycle';
-import { finalReplies, nativeEntries, nativeText } from '../fixtures/piChildFailure';
+import { finalReplies, nativeEntries, nativeText, object } from '../fixtures/piChildFailure';
 import { openSessionView, sendPrompt } from '../fixtures/sessionPage';
 import { PlatformApi } from '../fixtures/platformApi';
 import { restartServerContainer } from '../fixtures/sandboxOps';
@@ -126,17 +127,30 @@ for (const scenario of cases) test(scenario.title, async ({ request, page }, inf
     const launches = launchEvidence(sessionId, profile, gate);
     expectNativeMode(launches, profile, 'background');
     rootScope = launches[0]!.subpath;
-    // Pi retains the workflow and its worker as distinct native runs.
-    evidence.runningChildren = await api.waitForChildRuns(sessionId, (rows) => rows.length === 2
+    // Pi retains the workflow and its materialized worker in its native tree.
+    const runningChildren = await api.waitForChildRuns(sessionId, (rows) => rows.length === 2
       && rows.every((row) => row.active)
       && rows.filter((row) => row.task_type === 'workflow').length === 1
-      && rows.filter((row) => row.task_type === 'subagent').length === 1, 15_000);
+      && rows.filter((row) => row.task_type === 'step').length === 1, 15_000);
+    const workflow = runningChildren.find((row) => row.task_type === 'workflow')!;
+    expect(workflow.depth).toBe(1);
+    expect(runningChildren.find((row) => row.task_type === 'step')).toMatchObject({
+      depth: 2, parent_child_run_id: workflow.child_run_id,
+    });
+    evidence.runningChildren = runningChildren;
     await expect.poll(() => readGate(gate.started)).toBe(gate.marker);
     expect((await api.getSession(sessionId)).current_turn_id).toBeFalsy();
     const initialHistory = await api.getMessages(sessionId, 50);
     evidence.initialHistory = initialHistory;
     evidence.launches = launches;
-    const nativeFloor = Math.max(...nativeEntries(sessionId, String(rootScope)).map((row) => row.seq));
+    const initialNative = nativeEntries(sessionId, String(rootScope));
+    const nativeFloor = Math.max(...initialNative.map((row) => row.seq));
+    const initialAssistantMessages = initialHistory.messages.filter((message) => message.role === 'assistant');
+    expect(initialAssistantMessages.flatMap(messageProseBlocks)).toEqual(initialNative
+      .flatMap(({ entry }) => object(entry.message).role === 'assistant'
+        ? textBlockValues(object(entry.message).content) : []));
+    expect(initialAssistantMessages.map((message) => messageProseBlocks(message)
+      .filter(Boolean).join('\n\n').trim())).toEqual(initialDeliveries);
     const receipt = `COMPLETED_${randomUUID()}`;
     expect(JSON.stringify(initialHistory)).not.toContain(receipt);
     if (scenario.restart) {
@@ -154,17 +168,21 @@ for (const scenario of cases) test(scenario.title, async ({ request, page }, inf
     await expect.poll(() => nativeReplies().some((reply) => reply.text.includes(receipt)), {
       timeout: 30_000,
     }).toBe(true);
-    const expectedReplies = nativeReplies().map((reply) => reply.text.trim());
+    const expectedBlocks = nativeReplies().map((reply) => textBlockValues(
+      object(native().find(({ entry }) => entry.id === reply.id)!.entry.message).content,
+    ));
+    const expectedReplies = expectedBlocks.map((parts) => parts.filter(Boolean).join('\n\n').trim());
     expect(nativeReplies().find((reply) => reply.text.includes(receipt))!.seq)
       .toBeGreaterThan(notices()[0]!.seq);
     evidence.expectedReplies = expectedReplies;
+    evidence.expectedBlocks = expectedBlocks;
     evidence.notices = notices().map((row) => ({ seq: row.seq, text: nativeText(row.entry.content) }));
     const completionReplies = async () => (await api.getMessages(sessionId, 50)).messages
       .filter((message) => message.role === 'assistant'
         && !initialHistory.messages.some((old) => old.message_id === message.message_id));
-    await expect.poll(async () => (await completionReplies()).map((message) => messageText(message).trim()), {
+    await expect.poll(async () => (await completionReplies()).map(messageProseBlocks), {
       timeout: 30_000,
-    }).toEqual(expectedReplies);
+    }).toEqual(expectedBlocks);
     await expect.poll(deliveries, { timeout: 30_000 }).toEqual([...initialDeliveries, ...expectedReplies]);
     const final = await api.getMessages(sessionId, 50);
     expect(final.messages.filter((message) => message.role === 'user').map(messageText)).toEqual([greeting, prompt]);
@@ -172,7 +190,7 @@ for (const scenario of cases) test(scenario.title, async ({ request, page }, inf
     await expect.poll(() => documentsByField('channel_outbox', '$.session_id', sessionId)
       .filter((row) => row.state === 'DELIVERED').length).toBe(initialDeliveries.length + expectedReplies.length);
     expect(final.messages.filter((message) => message.role === 'assistant')
-      .map((message) => messageText(message).trim())).toEqual(deliveries());
+      .map((message) => messageProseBlocks(message).filter(Boolean).join('\n\n').trim())).toEqual(deliveries());
     await openSessionView(page, sessionId);
     await expect(page.getByTestId('assistant-text').filter({ hasText: receipt })).toBeVisible();
     if (scenario.restart) {

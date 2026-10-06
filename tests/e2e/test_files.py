@@ -3,7 +3,7 @@
 This proves that the session sandbox exposes OpenSandbox's native Filesystem API
 and that the host's ``session_file_service`` uses it for the workspace panel.
 
-What it proves (mirrors the wiring of ``test_live_turn.py``):
+What it proves:
 
 * starting an agent conversation provisions a sandbox that reaches READY.
 * ``POST /api/v1/sessions/{id}/files/list`` returns a valid directory listing

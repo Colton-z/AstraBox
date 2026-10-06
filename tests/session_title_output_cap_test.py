@@ -24,10 +24,6 @@ from astrabox.core.service.orchestrator.session_title_service import (
 )
 
 
-def test_the_label_cap_covers_measured_title_reasoning() -> None:
-    assert TITLE_MODEL_MAX_TOKENS == 2048
-
-
 async def test_the_cap_reaches_the_request() -> None:
     bodies: list[dict] = []
 

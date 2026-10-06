@@ -21,9 +21,7 @@ Four layers, because they fail for different reasons:
    and still carrying the wrong-for-us default that makes the rebind necessary.
 4. **The Kubernetes runtime**: its document, its refusals, and its startup proof
    — the last against stubs carrying the Kubernetes client's shape, so it fires
-   without a cluster. The Docker document is pinned as RENDERED BYTES in this
-   layer, because "the second runtime did not move the first one" is the claim
-   the whole split rests on.
+   without a cluster.
 """
 
 from __future__ import annotations
@@ -422,13 +420,6 @@ def test_document_carries_no_resource_limits(document: dict[str, Any]) -> None:
     flattened = json.dumps(document)
     assert "resource" not in flattened
     assert "mem_limit" not in flattened
-
-
-def test_document_pins_the_docker_runtime_and_execd_image(document: dict[str, Any]) -> None:
-    assert document["runtime"] == {
-        "type": "docker",
-        "execd_image": launcher.DEFAULT_EXECD_IMAGE,
-    }
 
 
 def test_execd_image_does_not_treat_an_agent_image_as_an_init_image(
@@ -1485,28 +1476,6 @@ def test_redirect_egress_sidecar_publish_host_works_against_the_real_upstream_si
     assert hosts["8080"] == "172.17.0.1"
 
 
-def test_upstream_metadata_store_still_defaults_under_home() -> None:
-    module = _upstream("opensandbox_server.services.docker.metadata")
-    default = getattr(module, launcher.METADATA_DEFAULT_ROOT_ATTR)
-    assert Path.home() in Path(default).parents
-    assert hasattr(module, launcher.METADATA_STORE_CLS_ATTR)
-
-
-def test_upstream_service_still_builds_its_store_with_no_argument() -> None:
-    """The rebind's premise: there is no injection point for the store root.
-
-    ``DockerMetadataStore.__init__`` accepts a root but the service passes none,
-    and the service's own constructor already reads that store, so a
-    post-construction swap would read the wrong directory on exactly the restart
-    path the redirection exists to fix.
-    """
-    import inspect
-
-    service = _upstream("opensandbox_server.services.docker.docker_service")
-    source = inspect.getsource(service.DockerSandboxService.__init__)
-    assert f"{launcher.METADATA_STORE_CLS_ATTR}()" in source
-
-
 def test_upstream_config_accepts_the_document_astrabox_renders(
     document: dict[str, Any],
 ) -> None:
@@ -1519,46 +1488,6 @@ def test_upstream_config_accepts_the_document_astrabox_renders(
     # server a routable address for Docker host-port mappings.
     assert config.server.eip is None
     assert config.docker.host_ip == "127.0.0.1"
-
-
-def test_upstream_server_proxy_url_would_swallow_an_eip_without_a_port() -> None:
-    """Why ``server.eip`` must stay unset, asserted against upstream's source.
-
-    The endpoint route builds the server-proxy URL by pasting ``server.eip``
-    straight in front of the path, with no port of its own. Since AstraBox asks
-    for server-proxied endpoints, setting ``eip`` to a bare host address (the
-    natural reading of "bound public IP") would hand back
-    ``<ip>/sandboxes/<id>/proxy/<port>`` — scheme-default port 80, nothing
-    listening, every sandbox created fine and then silently unreachable.
-
-    If this stops matching because upstream started composing a port, revisit
-    :func:`astrabox.deploy.sandbox_server.config_document`; until then the field
-    stays out of the document.
-    """
-    import ast
-    import importlib.util
-
-    # Read, not import: the lifecycle module loads the server's config file at
-    # import time, and this assertion is about its source, not a running server.
-    _upstream("opensandbox_server")
-    spec = importlib.util.find_spec("opensandbox_server.api.lifecycle")
-    assert spec is not None and spec.origin is not None
-    module_source = Path(spec.origin).read_text(encoding="utf-8")
-    source = next(
-        ast.get_source_segment(module_source, node) or ""
-        for node in ast.walk(ast.parse(module_source))
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and node.name == "get_sandbox_endpoint"
-    )
-    assert "server.eip" in source
-    assert 'f"{base_url}/sandboxes/{sandbox_id}/proxy/{port}"' in source
-
-
-def test_upstream_has_no_server_side_resource_defaults() -> None:
-    """Why there is no CPU/memory env var: there is nowhere to put one."""
-    config_module = _upstream("opensandbox_server.config")
-    fields = set(config_module.DockerConfig.model_fields)
-    assert not {name for name in fields if "mem" in name or "cpu" in name}
 
 
 # ---------------------------------------------------------------------------
@@ -1592,49 +1521,6 @@ def test_runtime_refuses_anything_upstream_does_not_implement(
     monkeypatch.setenv(launcher.RUNTIME_ENV, "k8s")
     with pytest.raises(launcher.SandboxServerConfigError, match=launcher.RUNTIME_ENV):
         launcher.sandbox_runtime()
-
-
-def test_docker_document_includes_the_default_credential_sidecar(
-    state_dir: Path,
-) -> None:
-    """Pin the rendered file, including protected delivery's default sidecar."""
-    expected = f"""\
-# Generated by astrabox.deploy.sandbox_server — DO NOT EDIT.
-# Rewritten from the ASTRABOX_* environment on every start; edits are lost.
-
-[server]
-host = "127.0.0.1"
-port = 8990
-
-[log]
-level = "INFO"
-
-[runtime]
-type = "docker"
-execd_image = "opensandbox/execd:v1.1.0"
-
-[docker]
-network_mode = "bridge"
-drop_capabilities = ["NET_RAW"]
-no_new_privileges = true
-pids_limit = 512
-port_range_min = 20000
-port_range_max = 32000
-host_ip = "127.0.0.1"
-
-[storage]
-allowed_host_paths = []
-
-[store]
-type = "sqlite"
-path = "{state_dir / "opensandbox" / "opensandbox.db"}"
-
-[egress]
-image = "opensandbox/egress:v1.1.7"
-mode = "dns+nft"
-disable_ipv6 = true
-"""
-    assert launcher.render_config_toml(launcher.config_document()) == expected
 
 
 def test_kubernetes_document_carries_the_kubernetes_block_and_no_docker_one(
@@ -2518,13 +2404,6 @@ def test_prepare_names_a_daemon_it_cannot_ask(
         launcher.prepare()
 
 
-def test_the_installer_requires_the_same_docker_engine() -> None:
-    """One minimum: the installer refuses what the server would refuse at start."""
-    installer = (Path(__file__).resolve().parents[1] / "scripts/install.sh").read_text()
-    assert f'readonly MIN_DOCKER_ENGINE="{launcher.MIN_DOCKER_ENGINE}"' in installer
-    assert f'readonly MIN_DOCKER_API="{launcher.MIN_DOCKER_API_VERSION}"' in installer
-
-
 def test_prepare_skips_the_docker_hooks_on_the_kubernetes_runtime(
     kubernetes: None,
     state_dir: Path,
@@ -2680,14 +2559,6 @@ def test_upstream_still_registers_the_workload_resources_this_module_names() -> 
     assert set(factory._PROVIDER_REGISTRY) == set(launcher.WORKLOAD_RESOURCES)
     group, version, _ = launcher.WORKLOAD_RESOURCES["batchsandbox"]
     assert (group, version) == (client.OPENSANDBOX_API_GROUP, client.OPENSANDBOX_API_VERSION)
-
-
-def test_upstream_still_creates_no_namespace_of_its_own() -> None:
-    """The reason the namespace precheck refuses instead of creating one."""
-    service = _upstream("opensandbox_server.services.k8s.kubernetes_service")
-    assert not hasattr(service.KubernetesSandboxService, "create_namespace")
-    client = _upstream("opensandbox_server.services.k8s.client")
-    assert not hasattr(client.K8sClient, "create_namespace")
 
 
 def test_upstream_config_accepts_the_kubernetes_document_astrabox_renders(

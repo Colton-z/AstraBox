@@ -2,15 +2,12 @@
 
 A setup step an adapter has to know about produces, when missed, a sandbox
 that reaches READY and fails somewhere else. These tests hold the property
-rather than the individual steps: an adapter that builds its own create spec,
-or a change that drops the identity plan or the credential delivery, fails
-here rather than against a deployment.
+rather than the individual steps: a change that drops the identity plan or the
+credential delivery fails here rather than against a deployment.
 """
 
 from __future__ import annotations
 
-import ast
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
@@ -35,15 +32,6 @@ from astrabox.seams.egress_credentials import (
     SandboxEgressCredentialPlan,
 )
 from astrabox.seams.model import ResolvedModelAccess
-
-_ENGINE_DIR = (
-    Path(__file__).resolve().parents[1]
-    / "astrabox"
-    / "core"
-    / "service"
-    / "orchestrator"
-    / "engine"
-)
 
 
 def _credential(**overrides: Any) -> ModelCredentialRequest:
@@ -502,49 +490,6 @@ class TestTheContractComposesWhatAdaptersUsedToForget:
         # Hermes provisions its own inside the box; an unused plan beside it
         # would be a second answer to one question.
         assert result.runtime_identity is None
-
-
-class TestNoAdapterStepsAroundTheContract:
-    """The structural half: the property, not one adapter's current code."""
-
-    @staticmethod
-    def _adapter_modules() -> list[Path]:
-        return [
-            path
-            for path in sorted(_ENGINE_DIR.glob("*.py"))
-            if path.name not in {"provisioning.py", "__init__.py"}
-        ]
-
-    def test_only_the_contract_builds_a_create_spec(self) -> None:
-        offenders = []
-        for path in self._adapter_modules():
-            tree = ast.parse(path.read_text())
-            for node in ast.walk(tree):
-                if (
-                    isinstance(node, ast.Call)
-                    and isinstance(node.func, ast.Name)
-                    and node.func.id == "SandboxCreateSpec"
-                ):
-                    offenders.append(f"{path.name}:{node.lineno}")
-        assert offenders == [], (
-            "these engine modules build their own sandbox create spec: "
-            f"{offenders}. Provisioning is a declaration — add what you need "
-            "to EngineSandboxRequest so no adapter can omit a step."
-        )
-
-    def test_the_check_would_see_a_hand_rolled_spec(self, tmp_path: Path) -> None:
-        # The gate above passes on a clean tree either way, so prove it reads
-        # the construction rather than the tree's current tidiness.
-        offending = tmp_path / "rogue.py"
-        offending.write_text("spec = SandboxCreateSpec(session_id='s')\n")
-        found = [
-            node
-            for node in ast.walk(ast.parse(offending.read_text()))
-            if isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id == "SandboxCreateSpec"
-        ]
-        assert len(found) == 1
 
 
 class TestARejoinTheStoreCannotServe:

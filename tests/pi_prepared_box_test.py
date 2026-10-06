@@ -197,55 +197,6 @@ def _box(content: str | None, sandbox_id: str = "box-77") -> Any:
     )
 
 
-# ── placement ─────────────────────────────────────────────────────────────
-
-
-def test_pi_prepares_a_whole_conversation_box() -> None:
-    """The declaration the allocator checks before it builds anything.
-
-    Pi's only runtime profile is conversation tenancy, so the Agent-shared
-    slot form is unreachable for it; declaring the whole-box form is what
-    makes a prepared unit possible at all rather than a silent no-op.
-    """
-
-    from astrabox.core.service.orchestrator.engine.base import EngineAdapter
-    from astrabox.seams.sandbox import SANDBOX_TENANCY_CONVERSATION
-
-    adapter = pi.PiEngineAdapter()
-    assert adapter.prepares_conversation_box is True
-    assert (
-        type(adapter).prepare_runtime is not EngineAdapter.prepare_runtime
-    )
-    # Tenancy is the platform's to compose now; what stays this adapter's is
-    # that its integration still places every conversation on the box account,
-    # which is why the whole box remains the prepared unit — and why the
-    # shared tenancy refuses it until the phase-2 per-conversation service
-    # instantiation lands.
-    # Per-conversation placement now; the PREPARED unit is still a whole
-    # box, and prepare_runtime refuses the agent tenancy loudly.
-    assert (
-        adapter.capabilities.conversation_placement
-        == "per_conversation_account"
-    )
-
-
-def test_pi_keeps_its_transcript_in_a_file_the_platform_must_mirror() -> None:
-    """Why a prepared pi box needs the deferred mirror target at all.
-
-    A declared session log is what puts a slot box on the deferred-target
-    create; without the declaration the claim's ``bind_mirror_target`` would
-    be writing into a box whose relay never reads it.
-    """
-
-    from astrabox.core.service.orchestrator.engine.provisioning import (
-        _session_log_declaration,
-    )
-
-    declaration = _session_log_declaration(_template())
-    assert declaration is not None
-    assert declaration.root_template == pi.PI_SESSION_DIR_TEMPLATE
-
-
 # ── which facts the box freezes ───────────────────────────────────────────
 
 

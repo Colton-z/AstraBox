@@ -1,3 +1,4 @@
+import { ArtifactGallery, ArtifactPage } from './artifacts/ArtifactPages';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, Navigate, Route, Routes, useNavigate, useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -366,7 +367,7 @@ export default function App() {
           </SidebarGroup>
       }
       sidebarFooter={<UserMenu userInfo={userInfo} theme={theme} setTheme={setTheme} />}
-      topbar={isSession ? undefined : <AppTopbar crumbs={[{ label: crumb }]} trailLabel={t('shell:breadcrumb_navigation')} />}
+      topbar={isSession || location.pathname.startsWith('/artifacts') ? undefined : <AppTopbar crumbs={[{ label: crumb }]} trailLabel={t('shell:breadcrumb_navigation')} />}
       banner={
         error ? (
           /* The margin is this strip's own because `SidebarInset` stacks the
@@ -403,6 +404,8 @@ export default function App() {
                   : <HomePage activeTab="assistant" onAgentConversationCreated={onAgentConversationCreated} />
               }
             />
+            <Route path="/artifacts" element={<ArtifactGallery />} />
+            <Route path="/artifacts/:id" element={<ArtifactPage />} />
             <Route path="/sessions/:sessionId" element={<SessionPage onSessionChanged={refreshOverview} />} />
             <Route path="/v1/sessions/:sessionId" element={<Navigate to="/" replace />} />
             <Route path="/agents/:agentId" element={<Navigate to="/agents" replace />} />

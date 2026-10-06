@@ -1217,7 +1217,7 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
     (
         "ASTRABOX_AUTH_EXEMPT_PREFIXES",
         "internal",
-        "/api/v1/share/,/api/v1/deployments/,/api/v1/sandbox-callback/,/api/v1/sbxcap/,/api/v1/platform-mcp/",
+        "/api/v1/share/,/api/v1/artifact-share/,/api/v1/deployments/,/api/v1/sandbox-callback/,/api/v1/sbxcap/,/api/v1/platform-mcp/",
         "Comma-separated path prefixes that REPLACE the default auth-exempt list "
         "wholesale (machine/capability surfaces that carry their own auth).",
         "astrabox.web.identity_middleware",
@@ -1616,6 +1616,17 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "up`, which reports whether the image is present on the host rather than "
         "letting the first session fail to find it.",
         "astrabox.providers.sandbox_image",
+    ),
+    (
+        "ASTRABOX_PLATFORM_MCP_SERVERS",
+        "internal",
+        "[]",
+        "Platform MCP endpoints for image-owned Pi extensions and DeepSeek Harness "
+        "native clients, as a JSON array of {name,url}. The platform supplies "
+        "Session addresses on cold starts and slot addresses before preparation; "
+        "claim binds the slot to its Session before user input.",
+        "containers/sandbox-pi/astrabox-platform-mcp/index.js; "
+        "containers/sandbox-deepseek-harness/platform-mcp.mjs",
     ),
     # The pi engine's three. All are set BY the platform on the sandbox it
     # creates, and read inside the box by the image's boot script — never by

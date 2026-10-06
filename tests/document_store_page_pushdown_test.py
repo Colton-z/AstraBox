@@ -213,3 +213,39 @@ def test_an_unmarked_sort_still_takes_the_python_path(store) -> None:
         assert nested._sort_in_sql is False
 
     asyncio.run(run())
+
+
+def test_nested_session_cursors_read_a_page_instead_of_the_rows_before_it(store) -> None:
+    """The Session list combines owner/visibility and cursor as two conjuncts."""
+    async def run() -> None:
+        real_matches = collection_module.matches
+        seen = [0]
+
+        def counting_matches(doc: dict[str, Any], query: dict[str, Any]) -> bool:
+            seen[0] += 1
+            return real_matches(doc, query)
+
+        for total in (100, 1000):
+            docs = _sessions(total)
+            coll = await _seed(store, f"nested_sessions_{total}", docs)
+            owned = sorted(
+                (doc for doc in docs if doc["user_id"] == "u1"),
+                key=lambda doc: (doc["updated_at"], doc["session_id"]), reverse=True,
+            )
+            after = owned[-30]
+            query = {"$and": [QUERY, {"$or": [
+                {"updated_at": {"$lt": after["updated_at"]}},
+                {"updated_at": after["updated_at"], "session_id": {"$lt": after["session_id"]}},
+            ]}]}
+            seen[0] = 0
+            collection_module.matches = counting_matches  # type: ignore[assignment]
+            try:
+                page = await coll.find(query).sort(SORT, string_keyed=True).limit(20).to_list()
+            finally:
+                collection_module.matches = real_matches  # type: ignore[assignment]
+            assert page == owned[-29:-9]
+            assert seen[0] <= 20, (
+                f"a twenty-row nested cursor page examined {seen[0]} of {total} documents"
+            )
+
+    asyncio.run(run())

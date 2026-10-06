@@ -11,9 +11,7 @@ from astrabox.common.utils.api_response import error_response, success_response
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.user_context import get_current_user_context
 from astrabox.core.service.orchestrator.service_registry import get_platform_service
-
-_registered_on: int | None = None
-
+from astrabox.core.service.orchestrator.transcript_capability import verify_platform_mcp_capability
 
 class ExposedPortUrl(BaseModel):
     """A freshly minted browser-reachable URL for one sandbox port.
@@ -36,19 +34,21 @@ def _json_api_error_response(exc: APIError) -> JSONResponse:
 
 
 def register_platform_mcp_routes(app: Any) -> None:
-    global _registered_on
-    if _registered_on == id(app):
+    if getattr(app.state, "platform_mcp_routes_registered", False):
         return
-    _registered_on = id(app)
+    app.state.platform_mcp_routes_registered = True
 
     _service = get_platform_service()
 
-    @app.post("/api/v1/platform-mcp/{deployment_id}/{server_name}/mcp")
+    @app.post("/api/v1/platform-mcp/{deployment_id}/{server_name}/{capability}/mcp")
     async def platform_mcp_streamable_http(
         deployment_id: str,
         server_name: str,
+        capability: str,
         request: Request,
     ):
+        if not verify_platform_mcp_capability(deployment_id, server_name, capability):
+            return JSONResponse({"jsonrpc": "2.0", "id": None, "error": {"code": -32001, "message": "not found"}}, status_code=404)
         try:
             body = await request.json()
         except Exception as exc:

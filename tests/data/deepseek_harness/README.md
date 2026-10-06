@@ -1,7 +1,7 @@
 # DeepSeek Harness golden streams
 
-Two recordings, from two different points in the vendor's product, both used
-as contract material rather than as snapshots to diff against.
+One recording of the vendor's product, used as contract material rather than
+as a snapshot to diff against.
 
 ## `product-two-turns.mux.jsonl`
 
@@ -22,22 +22,9 @@ true of the running product and are not visible in its schemas:
 
 Re-record by driving a live server, not by editing this file.
 
-## `*.notifications.jsonl`
-
-Vendored verbatim from `deepseek-ai/deepseek-harness` (MIT), commit
-`47f943859bef60e4160492346772ded9b24f765a`, path
-`examples/jsonrpc-agent/tests/snapshots/<case>/notifications.expected.jsonl`.
-
-The vendor's own byte-exact snapshots of the same session-log events, taken
-from their SDK example runtime. They predate the product wire and carry no
-prompt `rpcId`, so they are contract material for the **translator** only —
-which reads events, not envelopes. Placeholders (`{{sessionId}}`,
-`{{system}}`, `{{tools}}`, `{{cwd}}`) are substituted by the test loader,
-never edited here. Refresh by re-copying from the pinned vendor commit.
-
 ## Current schema test input
 
-The shared `tests/deepseek_harness_fixtures.py` loader retains these files unchanged and moves
+The shared `tests/deepseek_harness_fixtures.py` loader moves
 recorded `assistant/chunk` payloads into their named `assistant/message`
 settlement's `stream`, using the raw `{type: "chunk", time, chunk}` member of
 `@deepseek-ai/dsh-llm@0.1.5-rc.2`'s `AssistantStreamRecord` union
@@ -50,7 +37,7 @@ bracket the contiguous child scene, allowing the loader to restore a distinct
 fixture address before selecting the root turn. Child catalog/follow behavior
 has separate client tests.
 
-The client, translator and UI-schema tests use that same conversion. This exercises
+The client tests use that conversion. This exercises
 the current client's durable settlement translation with recorded
 content. It is not a capture of the current live assistant-stream transport and
 does not establish real-deployment acceptance of the supplier upgrade.

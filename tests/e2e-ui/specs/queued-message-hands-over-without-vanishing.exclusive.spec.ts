@@ -120,9 +120,8 @@ test('a queued message hands over to the transcript without vanishing', async ({
     // enough to be measured, so this spec answers §11's second question about
     // them while it has the chance: the live dot in front of "Generating" sits
     // against the left edge of the message body, and a body that clips cuts the
-    // halo off on that side. Reported from the console, and invisible to the
-    // console-interaction walk, which reaches indicators through the keyboard —
-    // a pulsing dot takes no focus.
+    // halo off on that side. Reported from the console, and invisible to a
+    // keyboard walk — a pulsing dot takes no focus.
     await expect(page.getByTestId('assistant-message').last()).toBeVisible({ timeout: 60_000 });
     expect(
       await findClippedDecorations(page),

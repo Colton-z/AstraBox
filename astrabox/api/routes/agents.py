@@ -43,6 +43,8 @@ class AgentRecord(BaseModel):
     console addresses by name, and ``extra="allow"`` carries the rest. Their
     types are the ones ``agent_schema.AGENT_FIELD_SCHEMA`` enforces on write,
     plus the identity and ownership fields ``AgentConfigService`` stamps.
+    ``artifacts_enabled`` is always present because a read reports the switch
+    as it takes effect, including for an Agent stored without it.
 
     ``can_manage`` is computed per viewer and therefore present only on the
     reads that compute it (list and get), not on a write's echo of the record.
@@ -62,6 +64,7 @@ class AgentRecord(BaseModel):
     claude_options: dict[str, Any] | None = None
     skills: list[str] | None = None
     mcp_servers: dict[str, Any] | None = None
+    artifacts_enabled: bool | None = None
     default_repo: dict[str, Any] | None = None
     plugin_repos: list[dict[str, Any]] | None = None
     environment_name: str | None = None
@@ -120,8 +123,9 @@ class AgentFormField(BaseModel):
     presentation and validation members (``group``, ``required``, ``enum``,
     ``path``, ``complex``, ``advanced``) appear per field. ``item_schema``
     describes the sub-fields of a nested object with this same grammar.
-    ``default`` is the value a create stores when the field is omitted; only
-    ``prewarm_enabled`` carries one, and its value follows the deployment.
+    ``default`` is the value an Agent created without the field has. Two
+    fields carry one: ``prewarm_enabled``, whose value follows the deployment,
+    and ``artifacts_enabled``, which is on.
     """
 
     model_config = ConfigDict(extra="allow")

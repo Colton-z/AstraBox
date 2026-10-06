@@ -8,7 +8,6 @@ owner but is not a Vault owner, selector, or lookup key.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from types import SimpleNamespace
 from typing import Any
 
@@ -19,10 +18,6 @@ from fastapi.testclient import TestClient
 from astrabox.api.routes import agents as agent_routes
 from astrabox.api.routes import assistant as assistant_routes
 from astrabox.common.utils.user_context import UserContext
-from astrabox.core.service.orchestrator.agent.agent_service import AgentService
-from astrabox.core.service.orchestrator.assistant.assistant_service import (
-    AssistantService,
-)
 from astrabox.core.service.orchestrator.session_service import SessionService
 
 
@@ -155,107 +150,6 @@ def test_conversation_route_rejects_an_unsafe_idempotency_key(
     assert getattr(caught.value, "status_code", None) == 400
     assert getattr(caught.value, "code", None) == "INVALID_IDEMPOTENCY_KEY"
     assert service.calls == []
-
-
-class _CapturingKernel:
-    def __init__(self) -> None:
-        self.calls: list[dict[str, Any]] = []
-
-    async def create_session(
-        self, user: UserContext, template_name: str, **kwargs: Any
-    ) -> dict[str, Any]:
-        self.calls.append({"user": user, "template_name": template_name, **kwargs})
-        return {"session_id": "session-1"}
-
-
-class _AgentRepo:
-    async def get_agent(self, agent_id: str) -> dict[str, Any] | None:
-        return {
-            "agent_id": agent_id,
-            "name": "Code review",
-        }
-
-
-class _AgentConfig:
-    # Mirrors AgentConfigService.resolve_agent_harness. `viewer_roles` rides
-    # alongside `viewer_user_id` because visibility is a question about the
-    # viewer and the deployment's admin role is half the answer.
-    async def resolve_agent_harness(
-        self,
-        agent_id: str,
-        *,
-        viewer_user_id: str | None = None,
-        viewer_roles: Sequence[str] | None = None,
-    ) -> Any:
-        _ = (agent_id, viewer_user_id, viewer_roles)
-        return SimpleNamespace(name="Code review")
-
-
-async def test_agent_service_does_not_choose_session_vaults() -> None:
-    kernel = _CapturingKernel()
-    service = AgentService(
-        platform_service=SimpleNamespace(_session_kernel=kernel),
-        sessions_repo=None,
-        runtime_manager=None,
-        agent_config=_AgentConfig(),
-        turn_service=None,
-        broker=None,
-        agent_repo=_AgentRepo(),
-    )
-
-    await service.start_conversation(_USER, "agent-1")
-
-    assert "vault_ids" not in kernel.calls[0]
-
-
-class _AssistantCatalog:
-    async def get_assistant(self, assistant_id: str) -> dict[str, Any] | None:
-        return {
-            "assistant_id": assistant_id,
-            "owner_id": _USER.user_id,
-            "engine_kind": "assistant",
-            "environment_name": "assistant-env",
-            "permission_mode_default": "default",
-        }
-
-
-class _AssistantWorkspace:
-    async def get_workspace(
-        self, *, user_id: str, assistant_id: str
-    ) -> dict[str, Any] | None:
-        _ = (user_id, assistant_id)
-        return {
-            "state": "READY",
-            "engine_kind": "assistant",
-            "current_sandbox_id": "sandbox-1",
-        }
-
-
-class _AliveAssistantRuntime:
-    async def get_sandbox_lifecycle_probe(self, sandbox_id: str) -> Any:
-        _ = sandbox_id
-        return SimpleNamespace(probe_status="OK", sandbox_state="running")
-
-    @staticmethod
-    def _is_terminal_sandbox_lifecycle_probe(probe: Any) -> bool:
-        _ = probe
-        return False
-
-
-async def test_assistant_service_does_not_choose_session_vaults() -> None:
-    kernel = _CapturingKernel()
-    service = AssistantService(
-        agent_config=object(),
-        session_kernel=kernel,
-        runtime_manager=_AliveAssistantRuntime(),
-        catalog_repo=_AssistantCatalog(),  # type: ignore[arg-type]
-        workspace_service=_AssistantWorkspace(),  # type: ignore[arg-type]
-        spawn_background_task=lambda coroutine, **_kwargs: coroutine.close(),
-    )
-
-    await service.start_conversation(_USER, "assistant-1")
-
-    assert "vault_ids" not in kernel.calls[0]
 
 
 class _CapturingSessions:

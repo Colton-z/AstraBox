@@ -24,12 +24,12 @@ ARG SANDBOX_BASE_IMAGE=ghcr.io/agent-infra/sandbox:1.11.0
 # already holds the same verified bytes supplies them with
 # `--build-context hermes-source=DIR` instead of downloading again.
 FROM scratch AS hermes-source
-ADD --checksum=sha256:76b99a8be9b77d66833c3cfe2b35c6d6f6a58e4ff9637ef8effcfc1f420ab35a https://github.com/NousResearch/hermes-agent/archive/29112bef099274229cadff79cdff7bf7b99c4b77.tar.gz /hermes-source.tar.gz
+ADD --checksum=sha256:babbdb9706ad1c96708d75914afb45d809cd4b73dec1ceae233a6814f5ed97e3 https://github.com/NousResearch/hermes-agent/archive/f97608f178d1ffeca59860195ab7da295f7c8e5f.tar.gz /hermes-source.tar.gz
 
 FROM ${SANDBOX_BASE_IMAGE}
 
 # The installed version must match the release the pinned source belongs to.
-ARG HERMES_AGENT_VERSION=0.21.0
+ARG HERMES_AGENT_VERSION=0.21.5
 ARG HERMES_EXTRAS=all
 ARG HERMES_VENV=/opt/hermes/.venv
 # Optional memory-provider client(s) to pre-bake for fast first-use, as a

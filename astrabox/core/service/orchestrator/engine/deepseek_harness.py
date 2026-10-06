@@ -29,6 +29,7 @@ import contextlib
 import hashlib
 import json
 from typing import Any
+from urllib.parse import urlparse
 
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.config.release_images import release_image
@@ -40,6 +41,7 @@ from astrabox.core.service.orchestrator.engine.base import (
     EngineKind,
     EnginePreparationContext,
     EngineStartupContext,
+    EngineStartupMaterialRequest,
     ResidentOutputCheckpoint,
     initialize_engine_client,
 )
@@ -86,6 +88,7 @@ from astrabox.core.service.orchestrator.runtime.sandbox_client import (
 from astrabox.core.service.orchestrator.runtime.sandbox_script_writer import (
     install_verified_text_script,
 )
+from astrabox.seams.model import model_endpoint_for_name
 
 logger = get_logger(__name__)
 
@@ -167,6 +170,29 @@ def _conversation_gateway_port(runtime_identity: dict[str, Any] | None) -> int:
     return runner_port_for_uid(int(uid))
 
 
+def _native_model_base_url(model_access: Any, base_url: str) -> str:
+    """Map the harness's native wire through the selected model provider."""
+    if not base_url:
+        return base_url
+    provider = model_endpoint_for_name(str(getattr(model_access, "endpoint_provider", "") or ""))
+    native = provider.protocol_base_url(base_url=base_url, protocol="deepseek-anthropic")
+    common_url, native_url = urlparse(base_url), urlparse(native)
+    common_path = common_url.path.rstrip("/")
+    native_path = native_url.path.rstrip("/")
+    if (
+        (common_url.scheme, common_url.hostname, common_url.port)
+        != (native_url.scheme, native_url.hostname, native_url.port)
+        or native_url.query or native_url.fragment or native_url.username
+        or not (native_path == common_path or native_path.startswith(common_path + "/"))
+    ):
+        raise APIError(
+            code="MODEL_ENDPOINT_INVALID",
+            message="the native model protocol must stay under its configured gateway base URL",
+            status_code=500,
+        )
+    return native
+
+
 def _engine_sandbox_request(
     model_access: Any, base_url: str
 ) -> EngineSandboxRequest:
@@ -180,14 +206,24 @@ def _engine_sandbox_request(
     that reads as a dead box rather than as a drifted declaration.
     """
 
+    # Native and generic protocols have separate addresses on one gateway.
+    # DSH appends /v1 to its native base; pi-ai keeps the generic base unchanged.
+    native_base_url = _native_model_base_url(model_access, base_url)
+    native_path = urlparse(native_base_url).path.rstrip("/")
+    if not native_path.endswith("/v1"):
+        native_path += "/v1"
+    common_path = urlparse(base_url).path.rstrip("/")
+    messages_prefix = native_path[len(common_path):].strip("/")
+    messages_prefix = messages_prefix + "/" if messages_prefix else ""
     return EngineSandboxRequest(
         entrypoint=DSH_IMAGE_ENTRYPOINT,
         credential=ModelCredentialRequest(
             access=model_access,
-            # The gateway as-is: both harness model routes post to
-            # {base}/chat/completions, which is exactly what the sidecar
-            # is told to admit.
-            request_paths=("chat/completions",),
+            request_paths=(
+                "chat/completions", f"{messages_prefix}messages",
+                f"{messages_prefix}files", f"{messages_prefix}files/*",
+            ),
+            request_methods=("GET", "POST", "DELETE"),
             missing_code="ENGINE_CAPABILITY_UNAVAILABLE",
             missing_message=(
                 "the deepseek_harness environment resolves no model "
@@ -200,7 +236,8 @@ def _engine_sandbox_request(
         # before starting the server; the platform is what decides
         # which directory, so it names the variable and fills it.
         cwd_env_var=DSH_WORKSPACE_ENV_VAR,
-        env={DSH_BASE_URL_ENV_VAR: base_url},
+        env={DSH_BASE_URL_ENV_VAR: native_base_url},
+        platform_mcp_servers_env=True,
         # The API server starts with the box, and the image opens this
         # port only once the server answers, so blocking the create on
         # it makes READY mean "can hold a conversation" rather than
@@ -213,7 +250,7 @@ def _engine_sandbox_request(
     )
 
 
-def _slot_spawn_fingerprint(template: Any, *, base_url: str) -> str:
+def _slot_spawn_fingerprint(template: Any, *, base_url: str, native_base_url: str) -> str:
     """The box-frozen facts a prepared harness box answers for, as one digest.
 
     Covers what preparation fixes and no later RPC can change: the image
@@ -240,6 +277,7 @@ def _slot_spawn_fingerprint(template: Any, *, base_url: str) -> str:
         "image": resolve_runtime_template_name(template),
         "entrypoint": list(DSH_IMAGE_ENTRYPOINT),
         "base_url": str(base_url or ""),
+        "native_base_url": native_base_url,
         "workload_user": SANDBOX_IMAGE_WORKLOAD_USER,
         "workload_home": SANDBOX_IMAGE_WORKLOAD_HOME,
         "workspace": SANDBOX_IMAGE_WORKSPACE_DIR,
@@ -309,6 +347,7 @@ async def _publish_runtime(
     permission_mode: str | None = None,
     model: str | None = None,
     gateway_base_url: str = "",
+    model_endpoint_provider: str = "",
     session_create: dict[str, Any] | None = None,
     prepare_engine_input: Any = None,
     resident_output_sink: Any = None,
@@ -337,6 +376,7 @@ async def _publish_runtime(
         event_sink=event_sink,
         output_checkpoint=output_checkpoint,
         initial_sequence=initial_sequence,
+        model_endpoint_provider=model_endpoint_for_name(model_endpoint_provider),
     )
     engine_manifest = await initialize_engine_client(
         engine_client,
@@ -435,14 +475,10 @@ class DeepSeekHarnessEngineAdapter(EngineAdapter):
         from astrabox.core.service.orchestrator.engine.child_runs import (
             ChildRunProjectionError,
         )
-        from astrabox.core.service.orchestrator.engine.deepseek_harness_child_runs import (
-            _CHILD_ACTIVITIES,
-        )
-
         if child_run.get("closed") is True:
             return False
         activity = child_run.get("engine_status")
-        if activity not in _CHILD_ACTIVITIES:
+        if activity not in {"running", "inactive"}:
             raise ChildRunProjectionError(
                 f"DeepSeek Harness child has unknown activity {activity!r}"
             )
@@ -481,8 +517,8 @@ class DeepSeekHarnessEngineAdapter(EngineAdapter):
             engine_options_schema=DSH_ENGINE_OPTIONS_SCHEMA,
             configuration_inputs=frozenset(),
             # Bootstrap minimum for the pinned web profile. The live client
-            # reads the complete permission preset list from the Session's
-            # projection, so an additive vendor preset reaches the console
+            # reads the complete permission preset list from the process
+            # catalog, so an additive vendor preset reaches the console
             # without changing this declaration. Removing one of these is a
             # breaking profile change because the default depends on it.
             permission_modes=DSH_PERMISSION_PRESETS,
@@ -570,14 +606,15 @@ class DeepSeekHarnessEngineAdapter(EngineAdapter):
         return {
             "engine_kind": ENGINE_KIND,
             "spawn_fingerprint": _slot_spawn_fingerprint(
-                template, base_url=base_url
+                template, base_url=base_url,
+                native_base_url=_native_model_base_url(context.model_access, base_url),
             ),
             # The claim rejoins this conversation. Measured `session/create`
             # takes 9.4s of the 26s cold path.
             "prepared_native_session": prepared_native_session,
-            # Only user-identity MCP servers belong in the activation set; the
-            # harness composes its tools from its own profile and this adapter
-            # declares no MCP servers, so the set is empty.
+            # Platform MCP clients discovered tools at boot using the slot
+            # binding. Claim binds that address before rejoining this session.
+            # Agent-declared MCP servers remain unsupported.
             "activation_mcp_servers": [],
         }
 
@@ -591,6 +628,14 @@ class DeepSeekHarnessEngineAdapter(EngineAdapter):
 
         base_url = str(getattr(model_access, "base_url", "") or "").strip()
         return _engine_sandbox_request(model_access, base_url)
+
+    def startup_material_request(
+        self, *, template: Any, model_access: Any, deployment_settings: Any,
+    ) -> EngineStartupMaterialRequest:
+        """Each native profile belongs to one conversation's isolated account."""
+        return EngineStartupMaterialRequest(
+            runtime_state_store=True, runtime_state_scope="session",
+        )
 
     async def activate_runtime(
         self,
@@ -614,7 +659,10 @@ class DeepSeekHarnessEngineAdapter(EngineAdapter):
         is_prepared = context.prepared_manifest is not None
         base_url = str(getattr(context.model_access, "base_url", "") or "").strip()
         if str(prepared.get("placement") or "") == "conversation_box":
-            expected_spawn = _slot_spawn_fingerprint(template, base_url=base_url)
+            expected_spawn = _slot_spawn_fingerprint(
+                template, base_url=base_url,
+                native_base_url=_native_model_base_url(context.model_access, base_url),
+            )
             if expected_spawn != str(prepared.get("spawn_fingerprint") or ""):
                 raise APIError(
                     code="AGENT_PREWARM_CONFIG_INVALID",
@@ -640,6 +688,28 @@ class DeepSeekHarnessEngineAdapter(EngineAdapter):
         observe_only = context.attach_mode == "observe"
         link: DeepSeekHarnessLink | None = None
         try:
+            if not observe_only:
+                if not context.runtime_state_store:
+                    raise APIError(
+                        code="AGENT_RUNTIME_ERROR",
+                        message="platform startup supplied no DSH native-state target",
+                        status_code=500,
+                    )
+                home = str((context.runtime_identity or {}).get("home_dir") or "")
+                if not home.startswith("/"):
+                    raise APIError(
+                        code="AGENT_RUNTIME_ERROR",
+                        message="DSH native state requires the placed runtime home",
+                        status_code=500,
+                    )
+                await install_verified_text_script(
+                    sandbox, path=f"{home.rstrip('/')}/.dsh/astrabox-runtime-state.json",
+                    content=json.dumps(context.runtime_state_store, ensure_ascii=False, sort_keys=True),
+                    runtime_identity=context.runtime_identity, mode=0o600,
+                    owner_user=str(context.runtime_identity["linux_user"]),
+                    error_code="AGENT_RUNTIME_ERROR",
+                    error_message="failed to install the DSH native-state target",
+                )
             instructions = str(getattr(template, "system", None) or "").strip()
             if instructions and not is_prepared and not observe_only:
                 await _install_agent_instructions(
@@ -652,6 +722,8 @@ class DeepSeekHarnessEngineAdapter(EngineAdapter):
                 launch_url_path=f"{(context.runtime_identity or {}).get('home_dir') or SANDBOX_IMAGE_WORKLOAD_HOME}/.deepseek-harness/web-url",
                 observe_only=observe_only,
             )
+            if not observe_only:
+                await link.restore_attachments()
             output_checkpoint = None
             if observe_only and context.resident_output_sink is None:
                 raise RuntimeError("deepseek_harness output attachment requires the Session journal")
@@ -689,6 +761,7 @@ class DeepSeekHarnessEngineAdapter(EngineAdapter):
                 ).strip()
                 or None,
                 gateway_base_url=base_url,
+                model_endpoint_provider=str(context.model_access.endpoint_provider),
                 session_create=_session_create_options(template),
                 prepare_engine_input=context.prepare_engine_input,
                 output_checkpoint=output_checkpoint if resume_output else None,

@@ -1032,6 +1032,7 @@ astrabox schema agent --output json
 | `engine_options` | ❌ | Settings defined by the Agent program. |
 | `skills` | ❌ | Skills available to the Agent. |
 | `mcp_servers` | ❌ | Agent-owned MCP Server definitions. |
+| `artifacts_enabled` | ❌ | Boolean; give the Agent's conversations the built-in `artifacts` tools. Omitted on create: on. |
 | `terminal_panel` | ❌ | Boolean; show the terminal panel. This does not control permission to execute commands. |
 | `diff_panel` | ❌ | Boolean; show the file-diff panel. This does not control permission to change files. |
 | `default_repo` | ❌ | Main repository checkout. |

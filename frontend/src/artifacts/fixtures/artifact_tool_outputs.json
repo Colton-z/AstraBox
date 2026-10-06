@@ -1,0 +1,78 @@
+{
+  "claude_code": "{\"astrabox_artifact\": {\"id\": \"art_aaaaaaaaaaaaaaaaaaaaaaaa\", \"version\": 1, \"title\": \"Published page\", \"kind\": \"html\"}, \"url\": \"/artifacts/art_aaaaaaaaaaaaaaaaaaaaaaaa\"}",
+  "codex": {
+    "type": "mcpToolCall",
+    "tool": "create_artifact",
+    "server": "artifacts",
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"astrabox_artifact\": {\"id\": \"art_aaaaaaaaaaaaaaaaaaaaaaaa\", \"version\": 1, \"title\": \"Published page\", \"kind\": \"html\"}, \"url\": \"/artifacts/art_aaaaaaaaaaaaaaaaaaaaaaaa\"}"
+        }
+      ],
+      "structuredContent": {
+        "astrabox_artifact": {
+          "id": "art_aaaaaaaaaaaaaaaaaaaaaaaa",
+          "version": 1,
+          "title": "Published page",
+          "kind": "html"
+        },
+        "url": "/artifacts/art_aaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    }
+  },
+  "pi": {
+    "content": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"astrabox_artifact\": {\"id\": \"art_aaaaaaaaaaaaaaaaaaaaaaaa\", \"version\": 1, \"title\": \"Published page\", \"kind\": \"html\"}, \"url\": \"/artifacts/art_aaaaaaaaaaaaaaaaaaaaaaaa\"}"
+        }
+      ],
+      "details": {
+        "tool": "create_artifact",
+        "server": "artifacts"
+      },
+      "structuredContent": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"astrabox_artifact\": {\"id\": \"art_aaaaaaaaaaaaaaaaaaaaaaaa\", \"version\": 1, \"title\": \"Published page\", \"kind\": \"html\"}, \"url\": \"/artifacts/art_aaaaaaaaaaaaaaaaaaaaaaaa\"}"
+          }
+        ],
+        "structuredContent": {
+          "astrabox_artifact": {
+            "id": "art_aaaaaaaaaaaaaaaaaaaaaaaa",
+            "version": 1,
+            "title": "Published page",
+            "kind": "html"
+          },
+          "url": "/artifacts/art_aaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      }
+    },
+    "isError": false
+  },
+  "deepseek_harness": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"astrabox_artifact\": {\"id\": \"art_aaaaaaaaaaaaaaaaaaaaaaaa\", \"version\": 1, \"title\": \"Published page\", \"kind\": \"html\"}, \"url\": \"/artifacts/art_aaaaaaaaaaaaaaaaaaaaaaaa\"}"
+      }
+    ],
+    "isError": false
+  },
+  "hermes": {
+    "args": {},
+    "labels": [
+      {
+        "kind": "mcp",
+        "name": "mcp__artifacts__create_artifact"
+      }
+    ],
+    "result": {
+      "result": "{\"astrabox_artifact\": {\"id\": \"art_aaaaaaaaaaaaaaaaaaaaaaaa\", \"version\": 1, \"title\": \"Published page\", \"kind\": \"html\"}, \"url\": \"/artifacts/art_aaaaaaaaaaaaaaaaaaaaaaaa\"}"
+    }
+  }
+}

@@ -74,6 +74,7 @@ credentials.
 
 One deployment brings up the pieces a team usually assembles by hand:
 
+- **Artifacts** — Agents and Assistants publish durable, versioned pages with share links and live data. See the [artifact guide](docs/artifacts.md).
 - **Model gateway** — [LiteLLM](https://github.com/BerriAI/litellm) is bundled
   and on by default: one route name per model, upstream keys held on the
   server, budgets and usage logs, and any Anthropic, OpenAI-compatible or local

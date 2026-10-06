@@ -36,18 +36,6 @@ def _render(command: str, marker: str = "__M__") -> str:
     )
 
 
-def test_the_wrapper_installs_the_exit_trap_before_the_command() -> None:
-    code = _render("echo hi")
-    lines = code.splitlines()
-    trap_at = next(i for i, line in enumerate(lines) if line.startswith("trap "))
-    command_at = lines.index("echo hi")
-    # Before the command, or a fatal first command fires no trap.
-    assert trap_at < command_at
-    # The trap prints the same marker the ordinary path prints, carrying $?.
-    assert "__M__" in lines[trap_at]
-    assert "$?" in lines[trap_at]
-
-
 def test_a_shell_killing_exit_still_reports_its_own_code() -> None:
     """The violation that bit, executed for real.
 

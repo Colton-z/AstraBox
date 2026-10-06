@@ -29,7 +29,7 @@ from tests.e2e._service_containers import (
     SERVER_CONTAINER_HANDLE,
     require_service_container,
 )
-from tests.e2e.conftest import _wait_health
+from tests.e2e.conftest import _failed, _wait_health
 
 pytestmark = [
     pytest.mark.e2e,
@@ -56,11 +56,13 @@ def _restart_server_container(container: str) -> None:
 def restarted_backend(
     e2e_base_url: str,
     e2e_auth_headers: dict[str, str],
+    request: pytest.FixtureRequest,
 ) -> Iterator[dict[str, str]]:
     """Create a Session, restart its server, and retain the live Agent box."""
     server_container = require_service_container(SERVER_CONTAINER_HANDLE)
 
     session_id = ""
+    ready = False
     try:
         with httpx.Client(
             base_url=e2e_base_url,
@@ -87,6 +89,7 @@ def restarted_backend(
 
         _restart_server_container(server_container)
         _wait_health(e2e_base_url)
+        ready = True
         yield {
             "url": e2e_base_url,
             "sid": session_id,
@@ -94,7 +97,9 @@ def restarted_backend(
             "alpha_path": alpha_path,
         }
     finally:
-        if session_id:
+        if session_id and ready and not any(
+            _failed(item) for item in request.session.items if item.module is request.module
+        ):
             try:
                 with httpx.Client(
                     base_url=e2e_base_url,

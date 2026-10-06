@@ -933,6 +933,7 @@ def ensure_sandbox_inference_key() -> str:
     from astrabox.providers.litellm_shared_auth import (
         SANDBOX_INFERENCE_KEY_ALIAS,
         SANDBOX_INFERENCE_KEY_TYPE,
+        inference_key_metadata,
         sandbox_inference_key,
     )
 
@@ -949,7 +950,7 @@ def ensure_sandbox_inference_key() -> str:
     }
 
     def _call(
-        path: str, payload: dict[str, str] | None, *, credential: str = ""
+        path: str, payload: dict[str, Any] | None, *, credential: str = ""
     ) -> tuple[int, str]:
         request = urllib.request.Request(
             f"{base}{path}",
@@ -964,12 +965,22 @@ def ensure_sandbox_inference_key() -> str:
             return exc.code, exc.read().decode("utf-8", "replace")
 
     probe = f"/key/info?key={quote(key, safe='')}"
-    status, _ = _call(probe, None)
+
+    def _reconcile_metadata(body: str) -> str:
+        metadata = json.loads(body)["info"].get("metadata")
+        desired = inference_key_metadata(metadata)
+        if desired != metadata:
+            updated, _ = _call("/key/update", {"key": key, "metadata": desired})
+            if updated // 100 != 2:
+                raise RuntimeError(f"could not reconcile sandbox model protocol grants (HTTP {updated})")
+        return _verify_sandbox_inference_key(key, _call)
+
+    status, body = _call(probe, None)
     if status == 200:
         logger.info(
             "sandbox model key %s is already provisioned", SANDBOX_INFERENCE_KEY_ALIAS
         )
-        return _verify_sandbox_inference_key(key, _call)
+        return _reconcile_metadata(body)
 
     status, body = _call(
         "/key/generate",
@@ -977,6 +988,7 @@ def ensure_sandbox_inference_key() -> str:
             "key": key,
             "key_alias": SANDBOX_INFERENCE_KEY_ALIAS,
             "key_type": SANDBOX_INFERENCE_KEY_TYPE,
+            "metadata": inference_key_metadata(),
             "user_id": "astrabox-sandbox",
         },
     )
@@ -987,13 +999,13 @@ def ensure_sandbox_inference_key() -> str:
     # A second replica may have created it between the two calls. Re-ask rather
     # than reading the failure text: the question is whether the key exists, and
     # /key/info answers exactly that.
-    recheck, _ = _call(probe, None)
+    recheck, existing_body = _call(probe, None)
     if recheck == 200:
         logger.info(
             "sandbox model key %s was provisioned concurrently",
             SANDBOX_INFERENCE_KEY_ALIAS,
         )
-        return _verify_sandbox_inference_key(key, _call)
+        return _reconcile_metadata(existing_body)
     raise RuntimeError(
         f"could not provision the sandbox model key: /key/generate returned "
         f"{status} {body.strip()[:400]}"

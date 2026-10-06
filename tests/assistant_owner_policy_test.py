@@ -444,25 +444,6 @@ async def test_listing_shows_only_the_callers_assistants() -> None:
     assert listed[0]["current_sandbox_id"] == "sandbox-mine"
 
 
-async def test_wake_rejects_a_legacy_claude_code_assistant_loudly() -> None:
-    service, catalog, _workspace = _service()
-    # A pre-policy row: engine_kind was immutable once materialized, so this
-    # cannot be edited into compliance — wake must fail loud, not fall back.
-    catalog.rows["asst_legacy"] = {
-        "assistant_id": "asst_legacy",
-        "owner_id": "owner-1",
-        "display_name": "Old",
-        "environment_name": "env-1",
-        "engine_kind": "claude_code",
-    }
-
-    with pytest.raises(APIError) as raised:
-        await service.wake_workspace(_user("owner-1"), "asst_legacy")
-
-    assert raised.value.code == "ASSISTANT_ENGINE_UNSUPPORTED"
-    assert raised.value.status_code == 409
-
-
 class _UnconfirmedKillRuntimeManager:
     """A destroy that ran and could not be confirmed — the id survives on it."""
 

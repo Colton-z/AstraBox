@@ -56,6 +56,20 @@ it.
 The Agent program receives the model name and gateway access needed for the
 request. Upstream model-service keys stay with LiteLLM.
 
+DeepSeek Harness uses Messages for model names in its native DeepSeek catalog
+(`deepseek-flash` and `deepseek-v4-pro` in the bundled release), and Chat
+Completions for other gateway route names. The gateway must accept the selected
+protocol. Native DeepSeek image uploads also use the Files API. The bundled
+gateway provides both protocols. An external gateway must also support native
+Messages and Files for these catalog models; a Chat Completions-only endpoint
+requires a different route name.
+
+Other route names use the selected gateway's Chat Completions endpoint,
+including for image input, without uploading images through DeepSeek's Files
+API. For a custom vision model that LiteLLM does not recognize, declare
+`model_info.supports_vision: true` on its route. This setting describes the
+upstream model's capability; it does not add image support to a text-only model.
+
 ## Use the bundled gateway
 
 The standard AstraBox container starts LiteLLM alongside the AstraBox service.
@@ -190,9 +204,9 @@ configures:
 
 | Title route on the bundled gateway | What LiteLLM sends upstream |
 |---|---|
-| `deepseek/<model>` (LiteLLM's native DeepSeek adapter) | `thinking: {"type": "disabled"}` |
+| `deepseek/<model>`, `deepseek-flash`, and `deepseek-v4-pro` (LiteLLM's native DeepSeek adapter) | `thinking: {"type": "disabled"}` |
 | `claude-*` and `anthropic/<model>` (Anthropic Messages) | no `thinking` field: Anthropic's default of no extended thinking. An Anthropic-compatible service that thinks by default still thinks. |
-| `openai-compatible/<model>` and the OpenAI-wire DeepSeek routes | nothing: LiteLLM drops the option for a model it does not know to support it, and the service's own default applies |
+| `openai-compatible/<model>` | nothing: LiteLLM drops the option for a model it does not know to support it, and the service's own default applies |
 
 With DeepSeek's endpoint, AstraBox selects `deepseek/<model>` for titles
 automatically. For another service whose default model thinks, set

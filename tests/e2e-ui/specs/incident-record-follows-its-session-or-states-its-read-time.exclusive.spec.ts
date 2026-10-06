@@ -177,10 +177,10 @@ test('an incident record follows its session while the turn runs, or says when i
   await page.goto(appPath('/manage/errors'));
 
   // Addressed as the element it is: the table is laid out as CSS grid, which is
-  // why console-interaction.audit and a-sandbox-record address rows this way
-  // too. Deliberately NOT through ConsoleSearch — it does not render below
-  // SCANNABLE_ROWS (ConsoleControls.tsx:40), so on a quiet host a spec that
-  // typed into it would be green because the control was absent.
+  // why a-sandbox-record addresses rows this way too. Deliberately NOT through
+  // ConsoleSearch — it does not render below SCANNABLE_ROWS
+  // (ConsoleControls.tsx:40), so on a quiet host a spec that typed into it
+  // would be green because the control was absent.
   const row = page
     .locator('tr[tabindex], [role="row"][tabindex]')
     .filter({ hasText: sessionId.slice(0, 8) });

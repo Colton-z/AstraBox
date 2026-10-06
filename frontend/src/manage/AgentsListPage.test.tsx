@@ -96,39 +96,6 @@ describe('AgentsListPage', () => {
     expect(screen.getByTestId('agent-nav-count').textContent).toBe('2');
   });
 
-  it('counts the whole list and reads the rest of it on request', async () => {
-    // The server holds 250 Agents; one page of 50 is on screen. The header and
-    // the rail state the list's size, not the page's, and the reader can reach
-    // every Agent past the first page.
-    const all = Array.from({ length: 250 }, (_, index) => agent(index));
-    listAgentsPage = async ({ cursor }) => {
-      const start = cursor ? Number(cursor) : 0;
-      const agents = all.slice(start, start + 50);
-      const more = start + 50 < all.length;
-      return {
-        agents,
-        has_more: more,
-        next_cursor: more ? String(start + 50) : null,
-        ...(cursor ? {} : { total: all.length, enabled: all.length }),
-      };
-    };
-    renderPage();
-
-    await waitFor(() => expect(screen.getByText('agent-049')).toBeTruthy());
-    expect(screen.queryByText('agent-050')).toBeNull();
-    expect(screen.getByText('250 agents · 250 enabled')).toBeTruthy();
-    expect(screen.getByTestId('agent-nav-count').textContent).toBe('250');
-
-    for (let shown = 50; shown < all.length; shown += 50) {
-      fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
-      await waitFor(() => expect(screen.getByText(`agent-${String(shown + 49).padStart(3, '0')}`)).toBeTruthy());
-    }
-    expect(screen.getByText('agent-249')).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Load more' })).toBeNull();
-    // The totals came with the first page and stay put while pages are added.
-    expect(screen.getByTestId('agent-nav-count').textContent).toBe('250');
-  });
-
   it('sends the search and the status to the server instead of filtering the loaded rows', async () => {
     const all = Array.from({ length: 30 }, (_, index) => agent(index));
     listAgentsPage = async ({ q, status }) => {

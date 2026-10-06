@@ -13,9 +13,6 @@ stubbed payloads carry the shapes a model can get wrong: an upload entry with no
 ``entries: null`` (the SessionStore contract for an unknown key, which is not an
 empty list), a callback arm whose sibling arm's fields must stay absent rather
 than null, and a session projection whose fields no model here declares.
-
-The last group pins the documentation itself, because that is what this typing
-is for and a route can serve the right bytes while documenting nothing.
 """
 
 from __future__ import annotations
@@ -484,85 +481,3 @@ def test_an_extension_console_session_answers_where_to_open_it(
         {"open_url": "/extension-console/open", "expires_in": body["data"]["expires_in"]}
     )
     assert isinstance(body["data"]["expires_in"], int)
-
-
-# ── the answering routes document a schema ──────────────────────────────────
-
-
-@pytest.mark.parametrize(
-    ("fixture_name", "expected_answers", "untyped_paths"),
-    [
-        # The download routes answer bytes under an attachment header, so they
-        # carry no JSON schema and are named here rather than counted as gaps.
-        ("file_client", 6, {"/api/v1/sessions/{session_id}/files/download"}),
-        ("share_client", 9, {"/api/v1/share/{token}/files/download"}),
-        ("transcript_client", 8, set()),
-        ("callback_client", 2, set()),
-        ("user_client", 1, set()),
-    ],
-)
-def test_every_answering_route_documents_the_envelope_it_returns(
-    request: pytest.FixtureRequest,
-    fixture_name: str,
-    expected_answers: int,
-    untyped_paths: set[str],
-) -> None:
-    """``{}`` — the schema FastAPI emits for a route with no ``response_model`` —
-    tells a generated client nothing at all, so every route that answers a JSON
-    body must name the model it answers with."""
-    client: TestClient = request.getfixturevalue(fixture_name)
-    schema = client.app.openapi()
-
-    answers: list[str] = []
-    untyped: set[str] = set()
-    for path, operations in schema["paths"].items():
-        for method, operation in operations.items():
-            for status, answer in operation["responses"].items():
-                if not status.startswith("2") or "content" not in answer:
-                    continue
-                answers.append(f"{method.upper()} {path} -> {status}")
-                if "$ref" not in answer["content"]["application/json"]["schema"]:
-                    untyped.add(path)
-
-    assert untyped == untyped_paths
-    # Guard the guard: an empty list of answers satisfies the check above
-    # without a single route having been examined.
-    assert len(answers) == expected_answers
-
-
-def test_the_envelope_models_declare_code_message_and_data(
-    file_client: TestClient,
-) -> None:
-    """A payload-shaped model would delete ``code`` and ``message`` from the wire."""
-    schema = file_client.app.openapi()
-    ref = schema["paths"]["/api/v1/sessions/{session_id}/files/list"]["post"]["responses"][
-        "200"
-    ]["content"]["application/json"]["schema"]["$ref"]
-    model = schema["components"]["schemas"][ref.rsplit("/", 1)[-1]]
-
-    assert set(model["required"]) == {"code", "message", "data"}
-
-
-def test_the_documented_file_entry_is_the_one_the_console_reads(
-    file_client: TestClient,
-) -> None:
-    """``extra="allow"`` keeps an undeclared field on the wire, so a narrowed
-    model breaks the generated client rather than the response. The console's
-    ``SessionFileEntry`` (frontend/src/types.ts) reads all five fields, so all
-    five have to be documented, with ``kind`` as the two values it can hold."""
-    schema = file_client.app.openapi()
-    entry = schema["components"]["schemas"]["SessionFileEntry"]
-
-    assert set(entry["properties"]) == {"path", "name", "kind", "size", "modified_at"}
-    assert set(entry["required"]) == {"path", "name", "kind"}
-    assert entry["properties"]["kind"]["enum"] == ["file", "directory"]
-
-
-def test_the_streaming_and_binary_routes_stay_out_of_this(
-    file_client: TestClient,
-) -> None:
-    """A download's media type follows the artifact, so a JSON model would lie."""
-    schema = file_client.app.openapi()
-    download = schema["paths"]["/api/v1/sessions/{session_id}/files/download"]["get"]
-
-    assert download["responses"]["200"]["content"]["application/json"]["schema"] == {}

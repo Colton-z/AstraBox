@@ -81,7 +81,7 @@ class BootstrapWiringMixin:
         await self._session_events_repo.ensure_indexes()
         await self._session_snapshots_repo.ensure_indexes()
         await self._interaction_snapshots_repo.ensure_indexes()
-        await self._artifacts_repo.ensure_indexes()
+        await self._session_artifacts_repo.ensure_indexes()
         self.ensure_background_tasks_started()
 
     def ensure_background_tasks_started(self) -> None:
@@ -284,7 +284,7 @@ class BootstrapWiringMixin:
             terminal_service=self._terminal_service,
             runtime_manager=self._runtime_manager,
             broker=self._broker,
-            artifacts_repo=self._artifacts_repo,
+            session_artifacts_repo=self._session_artifacts_repo,
             session_events_repo=self._session_events_repo,
             session_snapshots_repo=self._session_snapshots_repo,
         )

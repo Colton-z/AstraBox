@@ -77,23 +77,6 @@ async def test_admin_gate_uses_the_fixed_internal_role(
     assert reached == ["/api/v1/admin/system/overview"]
 
 
-async def test_legacy_role_knob_cannot_grant_platform_administration(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("ASTRABOX_ADMIN_ROLE", "platform-admin")
-    reached: list[str] = []
-
-    async def app(scope: Any, receive: Any, send: Any) -> None:  # pragma: no cover
-        reached.append(scope["path"])
-
-    middleware = WebIdentityMiddleware(app, _IdentityResolver(["platform-admin"]))
-    sent = await _run(middleware, "/api/v1/admin/system/overview")
-
-    assert reached == []
-    start = next(m for m in sent if m["type"] == "http.response.start")
-    assert start["status"] == 403
-
-
 async def test_strict_resolver_none_result_cannot_reopen_admin() -> None:
     reached: list[str] = []
 

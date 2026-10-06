@@ -75,7 +75,7 @@ RUN set -eux; \
 # npm registry (verified via `npm view @anthropic-ai/claude-code version`); bump
 # deliberately, never float to a moving tag, so the image digest pins the exact
 # agent the host SDK speaks to.
-ARG CLAUDE_CODE_VERSION=2.1.266
+ARG CLAUDE_CODE_VERSION=2.1.287
 
 # Public npm registry only (the default registry.npmjs.org below). Overridable for
 # air-gapped/private mirrors.
@@ -179,7 +179,7 @@ RUN set -eux; \
 # because the dedicated interpreter has no PEP 668 "EXTERNALLY-MANAGED" marker.
 # The import smoke test fails the build loud if any dependency is missing or
 # broken (image-is-the-contract; no runtime pip on the hot path).
-ARG CLAUDE_AGENT_SDK_VERSION=0.2.152
+ARG CLAUDE_AGENT_SDK_VERSION=0.2.163
 ARG WEBSOCKETS_VERSION=17.1
 # The SDK accepts both MCP major versions; pin the complete server/client API
 # used by in-box tools instead of inheriting the base image's satisfied version.

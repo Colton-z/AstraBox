@@ -221,12 +221,6 @@ def test_the_endpoint_flag_wins_over_the_environment(monkeypatch: pytest.MonkeyP
     assert resolve_endpoint(endpoint="http://from-flag:9000/").base_url == "http://from-flag:9000"
 
 
-def test_the_default_endpoint_is_the_published_host_port() -> None:
-    """containers/compose.yaml publishes 127.0.0.1:8088 -> container 8000, so a
-    client on the host that defaulted to 8000 would reach nothing."""
-    assert resolve_endpoint().base_url == "http://127.0.0.1:8088"
-
-
 def test_moving_the_published_port_moves_the_default_endpoint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

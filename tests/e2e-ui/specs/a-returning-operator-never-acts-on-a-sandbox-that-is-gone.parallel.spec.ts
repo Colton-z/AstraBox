@@ -260,7 +260,7 @@ test('a console list left open answers again when the operator returns, and stop
   await page.goto(appPath('/manage/sandboxes'));
   const refresh = page.getByRole('button', { name: 'Refresh' });
   // The list disables its own Refresh until the first request has settled, which
-  // is this repo's "the list has loaded" oracle (console-sidebar-counts.audit).
+  // is this repo's "the list has loaded" oracle.
   await expect(refresh, 'the sandbox list must finish its first load').toBeEnabled();
   // Taken after the load settles, so it is never earlier than the read
   // `useKeepCurrent` throttles against — the hook stamps its clock at mount.

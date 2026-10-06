@@ -31,6 +31,7 @@ The Agent executes tasks inside a Session. AstraBox keeps the Agent available, s
 | `engine_options` | object | No | Advanced options defined by the Agent program selected through the Environment. |
 | `skills` | array | No | Skill sources loaded into the Session sandbox. |
 | `mcp_servers` | object | No | MCP server configurations, keyed by server name. |
+| `artifacts_enabled` | boolean | No | Whether the Agent's conversations receive the built-in `artifacts` tools. Omitted on create, it is `true`; see [Artifacts](artifacts.md#create-an-artifact). |
 | `default_repo` | object | No | The source repository cloned for each new Session. |
 | `plugin_repos` | array | No | Plugin repositories and the reviewed revisions to install. |
 | `environment_name` | string | Yes | The Environment that supplies the Agent program, sandbox, network policy, and model connection. |

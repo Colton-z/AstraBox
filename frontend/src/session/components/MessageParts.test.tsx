@@ -4,11 +4,13 @@
 // The browser-level twin of this check is the data-chars
 // invariant in tests/e2e-ui/specs/console-screenshots.exclusive.spec.ts.
 import React from 'react';
+import { MemoryRouter } from 'react-router-dom';
 import { afterEach, describe, expect, it } from 'vitest';
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 
 import { MessageBubble, PartRenderer } from './MessageParts';
 import i18n from '../../i18n';
+import engineOutputs from '../../artifacts/fixtures/artifact_tool_outputs.json';
 
 afterEach(cleanup);
 
@@ -333,5 +335,22 @@ describe('a settled turn keeps an unfinished call outside its fold', () => {
     expect(fold.querySelector('[data-tool-call-id="awaiting"]')).toBeNull();
     expect(container.querySelector('[data-tool-call-id="awaiting"]')).toBeTruthy();
     expect(screen.getByText('the conclusion')).toBeTruthy();
+  });
+});
+
+describe('artifact outputs', () => {
+  it.each(Object.entries(engineOutputs).flatMap(([engine, output]) => [
+    [`${engine} live`, output], [`${engine} persisted`, typeof output === 'string' ? output : JSON.stringify(output)],
+  ]))('keeps %s artifact tools outside a completed turn disclosure', (_scene, output) => {
+    render(<MemoryRouter><MessageBubble message={{ id: 'artifact-turn', role: 'assistant', parts: [
+      { type: 'dynamic-tool', toolCallId: 'read', toolName: 'Read', state: 'output-available', input: {}, output: 'Read a file' },
+      { type: 'dynamic-tool', toolCallId: 'artifact', toolName: 'any-vendor-name', state: 'output-available', input: {}, output },
+      { type: 'text', text: 'The page is ready.' },
+    ] } as never} /></MemoryRouter>);
+    const card = screen.getByTestId('artifact-tool-card');
+    expect(card.textContent).toContain('Published page');
+    expect(card.closest('[data-testid="process-block-details"]')).toBeNull();
+    expect(card.closest('[data-testid="assistant-process"]')).toBeNull();
+    expect(card.closest('[data-testid="assistant-turn-process"]')).toBeNull();
   });
 });

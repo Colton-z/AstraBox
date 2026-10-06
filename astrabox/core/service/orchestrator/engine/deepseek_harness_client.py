@@ -75,6 +75,7 @@ from astrabox.core.service.orchestrator.engine.resident_relay import (
     CountedRecord,
     ResidentRelay,
 )
+from astrabox.seams.model import ModelEndpointProvider
 
 logger = get_logger(__name__)
 
@@ -84,7 +85,7 @@ ENGINE_KIND = DSH_ENGINE_KIND
 #: The pinned web profile's bootstrap permission presets and the command that
 #: selects them. The adapter declaration requires these so its default remains
 #: usable; each live Session reads the complete current list from the vendor's
-#: ``permissions`` projection, including additive presets.
+#: permission catalog, including additive presets.
 DSH_PERMISSION_PRESETS = ("read-only", "workspace-write", "danger-full-access")
 DSH_PERMISSION_COMMAND = "/permission"
 
@@ -92,7 +93,7 @@ DSH_PERMISSION_COMMAND = "/permission"
 #: reads its key from ``DEEPSEEK_API_KEY`` and its endpoint from
 #: ``DEEPSEEK_BASE_URL``, the two variables the adapter declares. The vendor
 #: scopes it to DeepSeek models, optionally behind a gateway: its requests
-#: carry DeepSeek's wire fields and a 256,000-token output cap by default,
+#: use the Messages API and a 256,000-token output cap by default,
 #: which another model's endpoint refuses.
 DSH_MODEL_PROVIDER = "deepseek-official"
 
@@ -192,9 +193,11 @@ class DeepSeekHarnessEngineClient:
         event_sink: Any = None,
         output_checkpoint: ResidentOutputCheckpoint | None = None,
         initial_sequence: int = 0,
+        model_endpoint_provider: ModelEndpointProvider | None = None,
     ) -> None:
         self._session_id = session_id
         self._link = link
+        self._model_endpoint_provider = model_endpoint_provider
         self._resident_output_sink = resident_output_sink
         self._event_sink = event_sink
         self._output_checkpoint = output_checkpoint
@@ -237,6 +240,16 @@ class DeepSeekHarnessEngineClient:
         #: to. Only a process that observed the request holds this; an answer
         #: arriving after a restart is routed from the durable record instead.
         self._pending_interactions: dict[str, dict[str, Any]] = {}
+        #: A question's presentation does not name its owning tool. Retain the
+        #: native call identity, including the committed prefix after restart.
+        self._native_tool_names: dict[tuple[str, str], str] = {}
+        if output_checkpoint is not None and self._native_session_id:
+            for row in output_checkpoint.committed_frames:
+                tool = row.get("payload") or {}
+                if tool.get("type") == "tool-input-available":
+                    self._native_tool_names[
+                        (self._native_session_id, str(tool["toolCallId"]))
+                    ] = str(tool["toolName"])
         self._answered_interaction_ids: set[str] = set()
         #: Translation state for the engine turn, which outlives a platform
         #: stream segment: an interaction parks the turn by breaking out of
@@ -678,6 +691,13 @@ class DeepSeekHarnessEngineClient:
                 ),
                 status_code=500,
             )
+        model_entry: dict[str, Any] = {"id": model}
+        if self._model_endpoint_provider is not None:
+            modalities = await self._model_endpoint_provider.model_input_modalities(
+                model_name=model
+            )
+            if modalities is not None:
+                model_entry["input"] = list(modalities)
         await self._link.call(
             "settings/replace",
             {
@@ -690,7 +710,7 @@ class DeepSeekHarnessEngineClient:
                                 "api": DSH_GATEWAY_API,
                                 "baseURL": gateway_base_url,
                                 "apiKeyEnv": gateway_key_env,
-                                "models": [{"id": model}],
+                                "models": [model_entry],
                             }
                         }
                     },
@@ -732,13 +752,23 @@ class DeepSeekHarnessEngineClient:
         projections = history.get("projections") if isinstance(history, dict) else None
         values = projections.get("values") if isinstance(projections, dict) else None
         permissions = values.get("permissions") if isinstance(values, dict) else None
-        options = permissions.get("options") if isinstance(permissions, dict) else None
-        if not isinstance(options, list):
+        current = permissions.get("currentValue") if isinstance(permissions, dict) else None
+        if not isinstance(current, str) or not current.strip():
             raise APIError(
                 code="AGENT_RUNTIME_ERROR",
                 message=(
                     "deepseek_harness session history has no permissions projection"
                 ),
+                status_code=502,
+            )
+        # The Session projection contains only its durable current selection.
+        # Selectable presets belong to the supplier's live process catalog.
+        catalog = await self._link.call("permissionPresets/catalog", {"args": {}})
+        options = catalog.get("options") if isinstance(catalog, dict) else None
+        if not isinstance(options, list):
+            raise APIError(
+                code="AGENT_RUNTIME_ERROR",
+                message="deepseek_harness permission catalog has no options",
                 status_code=502,
             )
         permission_modes: list[str] = []
@@ -752,20 +782,16 @@ class DeepSeekHarnessEngineClient:
                 raise APIError(
                     code="AGENT_RUNTIME_ERROR",
                     message=(
-                        "deepseek_harness permissions projection has an invalid "
+                        "deepseek_harness permission catalog has an invalid "
                         f"option at index {index}"
                     ),
                     status_code=502,
                 )
-            # ``custom`` describes a current combination which is not one of
-            # the vendor's switchable presets.
-            if value == "custom":
-                continue
             if value in permission_modes:
                 raise APIError(
                     code="AGENT_RUNTIME_ERROR",
                     message=(
-                        "deepseek_harness permissions projection repeats preset "
+                        "deepseek_harness permission catalog repeats preset "
                         f"{value!r}"
                     ),
                     status_code=502,
@@ -774,7 +800,7 @@ class DeepSeekHarnessEngineClient:
         if not permission_modes:
             raise APIError(
                 code="AGENT_RUNTIME_ERROR",
-                message="deepseek_harness permissions projection has no presets",
+                message="deepseek_harness permission catalog has no presets",
                 status_code=502,
             )
         return EngineCapabilityManifest(
@@ -840,8 +866,8 @@ class DeepSeekHarnessEngineClient:
                     "ok": False,
                     "error": {
                         "name": "UserQuestionError",
-                        "code": "cancelled",
-                        "message": "the user declined the question",
+                        "code": "ASK_CANCELLED",
+                        "message": "the user cancelled ask_user_question",
                         "details": {},
                     },
                 }
@@ -949,6 +975,16 @@ class DeepSeekHarnessEngineClient:
             contract = build_approval_contract(payload)
         else:
             contract = build_question_contract(payload)
+            questions = payload.get("questions") or []
+            if len(questions) == 1 and isinstance(questions[0], dict):
+                intent = questions[0].get("intent")
+                if isinstance(intent, dict) and intent.get("kind") == "plan-review":
+                    call_id = str(intent.get("callId") or "").strip()
+                    if call_id:
+                        owner = self._native_tool_names.get((str(frame.get("agentId") or ""), call_id))
+                        if not owner:
+                            raise DeepSeekHarnessProtocolError("plan review names an unobserved native tool call")
+                        contract.update(tool_name=owner, tool_use_id=call_id)
         self._pending_interactions[interaction_id] = dict(payload)
         return {
             "type": "interaction.request",
@@ -1116,6 +1152,14 @@ class DeepSeekHarnessEngineClient:
         while True:
             frame = await self._frames.__anext__()
             self._inbound_sequence += 1
+            if frame.get("type") == _FRAME_SESSION_EVENT:
+                payload = frame.get("payload") or {}
+                event = payload.get("event") or {}
+                if event.get("type") == "tool/call":
+                    data = event.get("data") or {}
+                    self._native_tool_names[
+                        (str(payload.get("sessionId") or ""), str(data.get("callId") or ""))
+                    ] = str(data.get("name") or "")
             if not self._already_published_replay(frame):
                 break
         frame_type = str(frame.get("type") or "")

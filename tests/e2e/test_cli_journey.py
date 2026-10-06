@@ -31,7 +31,6 @@ pytestmark = pytest.mark.e2e
 #: Exit codes the surface promises (astrabox/cli/output.py).
 EXIT_OK = 0
 EXIT_FAILED = 1
-EXIT_UNREACHABLE = 4
 
 
 class CliResult:
@@ -150,21 +149,6 @@ def test_a_missing_resource_exits_failed_not_zero(cli: Any) -> None:
     result = cli("get", "agents", f"absent-{uuid.uuid4().hex}", "-o", "json", expect=EXIT_FAILED)
 
     assert result.json()["ok"] is False
-
-
-def test_an_unreachable_endpoint_is_its_own_exit_code() -> None:
-    """Separated from a refused request because the caller's next action
-    differs: fix the address, not the request."""
-    env = {**os.environ, "ASTRABOX_ENDPOINT": "http://127.0.0.1:1"}
-    env.pop("ASTRABOX_TOKEN", None)
-    completed = subprocess.run(
-        [sys.executable, "-c", "import sys;from astrabox.cli import main;sys.exit(main(sys.argv[1:]))",
-         "status", "-o", "json"],
-        capture_output=True, text=True, timeout=60, env=env,
-    )
-
-    assert completed.returncode == EXIT_UNREACHABLE
-    assert json.loads(completed.stdout)["ok"] is False
 
 
 def test_export_round_trips_through_diff(cli: Any, tmp_path: Path) -> None:

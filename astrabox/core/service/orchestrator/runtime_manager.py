@@ -1783,6 +1783,7 @@ class RemoteAgentRuntimeManager:
         template,
         *,
         sandbox_id: str | None = None,
+        user_id: str | None = None,
         engine_session_key: str | None = None,
         permission_mode: str | None = None,
         session_kind: str,
@@ -1848,7 +1849,7 @@ class RemoteAgentRuntimeManager:
                 sandbox_id=eff_sandbox,
                 template=template,
                 workspace_plan=attach_plan,
-                user_id=None,
+                user_id=user_id,
                 engine_session_key=engine_session_key,
                 permission_mode=permission_mode,
                 runtime_identity=runtime_identity,
@@ -1866,7 +1867,7 @@ class RemoteAgentRuntimeManager:
                     reason=self._quiesced_reason or "runtime publication failed",
                 )
                 raise
-            runtime.user_id = None
+            runtime.user_id = str(attach_plan.user_id or user_id or "").strip() or None
             self._runtimes[session_id] = runtime
             return runtime
 

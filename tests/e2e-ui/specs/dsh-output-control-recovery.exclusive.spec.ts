@@ -181,10 +181,10 @@ for (const scenario of cases) test(scenario.title, async ({ request, page }, inf
     expect(history.messages.filter((message) => message.role === 'user').map(messageText))
       .toEqual(scenario.input ? [greeting, prompt, nextPrompt] : [greeting, prompt]);
     const results = native().filter((event) => event.type === 'tool/result' && event.data.turn === call.data.turn)
-      .flatMap((event) => (event.data.message as { content: Array<Record<string, unknown>> }).content)
-      .filter((block) => block.type === 'tool-result' && block.toolCallId === call.data.callId);
+      .map((event) => event.data.message as Record<string, unknown>)
+      .filter((message) => message.role === 'tool' && message.toolCallId === call.data.callId);
     expect(results).toHaveLength(1);
-    expect(results[0]!.isError).toBe(false);
+    expect(results[0]!.isError ?? false).toBe(false);
     expect(textBlocks(results[0]!.content)).toContain(parentReceipt);
     const recovered = (await restored())[0]!;
     expect(recovered.turn_id).toBe(before.turn_id);

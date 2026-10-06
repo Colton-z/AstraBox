@@ -7,7 +7,8 @@ from urllib.parse import urlparse
 
 from astrabox.common.utils.errors import APIError
 
-HTML_PREVIEW_PLATFORM_SERVER = "html_preview"
+EXPOSE_PORT_PLATFORM_SERVER = "expose_port"
+ARTIFACTS_PLATFORM_SERVER = "artifacts"
 
 _LOOPBACK_MCP_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 _SSE_ALIASES = frozenset({"sse", "server_sent_events"})
@@ -30,6 +31,41 @@ def template_mcp_servers(mcp_servers: Any) -> dict[str, Any]:
         for name, config in servers.items()
         if str(name).strip()
     }
+
+
+
+def artifact_tools_enabled(source_type: str | None) -> bool:
+    """Whether a Session of this provenance may hold the ``artifacts`` tools.
+
+    Messaging-channel participants are not the execution account, so their
+    Sessions never receive personal artifact tools. The Agent's own switch is
+    the other half of the binding decision; see :func:`binds_artifact_tools`.
+    """
+    return source_type != "channel"
+
+
+def binds_artifact_tools(source_type: str | None, *, agent_artifacts_enabled: bool) -> bool:
+    """Whether a runtime binding receives the built-in ``artifacts`` server.
+
+    Both halves must allow it: the Session's provenance and the Agent's
+    ``artifacts_enabled`` switch. An Assistant has no switch and passes True.
+    """
+    return agent_artifacts_enabled and artifact_tools_enabled(source_type)
+
+
+def binding_mcp_server_definitions(
+    mcp_config: Any, *, session_source_type: str | None = None, artifacts_enabled: bool,
+) -> dict[str, Any]:
+    """The binding's servers, with ``artifacts`` added or removed by :func:`binds_artifact_tools`.
+
+    A removal also drops authored aliases of the platform ``artifacts``
+    server, so no name can reach those tools on a binding that has none.
+    """
+    servers = template_mcp_servers(mcp_config)
+    if not binds_artifact_tools(session_source_type, agent_artifacts_enabled=artifacts_enabled):
+        return {name: config for name, config in servers.items()
+                if name != ARTIFACTS_PLATFORM_SERVER and platform_mcp_server_id(name, config) != ARTIFACTS_PLATFORM_SERVER}
+    return {**servers, ARTIFACTS_PLATFORM_SERVER: {"platform_server": ARTIFACTS_PLATFORM_SERVER}}
 
 
 def prepared_slot_mcp_deployment_id(slot_id: str) -> str:
@@ -99,18 +135,11 @@ def platform_mcp_server_id(name: str, config: Any) -> str:
 
 
 def is_platform_mcp_server(config: Any) -> bool:
-    """Whether answering this server's calls requires acting on the sandbox.
+    """Whether this server terminates on an AstraBox capability route.
 
-    Only AstraBox can publish a port of the box that is asking, or a preview
-    for its session, so those calls terminate on an HTTP route here. Every
-    other server — a process inside the box, or an endpoint on the network — is
-    reached by the sandbox's own MCP client, and AstraBox's whole part in it is
-    writing the URL into the engine's config and admitting the host to the
-    egress allowlist.
-
-    There is no third kind: an upstream server's credential is attached by the
-    egress sidecar's vault, which keeps it out of the sandbox, so relaying a
-    call through this server buys nothing that would justify the hop.
+    Platform servers act on platform-owned resources: sandbox port publication
+    and durable artifacts. Other servers are reached by the sandbox's own MCP
+    client, with credentials attached at its egress seam.
     """
 
     return bool(platform_mcp_server_id("", config))
@@ -261,12 +290,20 @@ def runtime_mcp_servers_for_binding(
     *,
     proxy_base_url: str,
     deployment_id: str,
+    session_source_type: str | None = None,
+    artifacts_enabled: bool,
 ) -> dict[str, dict[str, Any]]:
-    servers = template_mcp_servers(mcp_config)
-    if not servers:
-        return {}
+    from astrabox.core.service.orchestrator.transcript_capability import mint_platform_mcp_capability
+
     base = str(proxy_base_url or "").strip().rstrip("/")
     bid = str(deployment_id or "").strip()
+    bound = binds_artifact_tools(session_source_type, agent_artifacts_enabled=artifacts_enabled)
+    servers = (binding_mcp_server_definitions(
+                   mcp_config, session_source_type=session_source_type,
+                   artifacts_enabled=artifacts_enabled,
+               )
+               if (base and bid) or not bound
+               else template_mcp_servers(mcp_config))
     result: dict[str, dict[str, Any]] = {}
 
     for name, config in servers.items():
@@ -283,7 +320,7 @@ def runtime_mcp_servers_for_binding(
             )
         result[name] = {
             "type": "http",
-            "url": f"{base}/api/v1/platform-mcp/{bid}/{name}/mcp",
+            "url": f"{base}/api/v1/platform-mcp/{bid}/{name}/{mint_platform_mcp_capability(bid, name)}/mcp",
         }
 
     return result

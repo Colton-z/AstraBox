@@ -104,6 +104,19 @@ provider 只在符合规则的受保护出站请求上加入凭证，让密钥�
 
 系统提示词和所有扩展都可以不配置。只选择这个 Agent 需要的能力，然后点击「创建」或「保存」。
 
+### 仓库需要鉴权时 {#repository-authentication}
+
+如果 Plugin 或 Skill 仓库需要 HTTPS 鉴权，请**平台管理员**打开**管理台 → 凭证**，
+添加 **HTTP Basic（Git HTTPS）** 凭证，填写仓库的完整 HTTPS 地址、用户名和访问
+Token，再将所在 Vault 分配给需要下载扩展的 Agent。
+
+Plugin 或 Skill 配置中的仓库 URL 保持不含 Token，完成分配后新建 Session。
+完整的管理台操作步骤、Gitee 示例和拉取报错排查见
+[私有 Git 仓库鉴权](credentials.md#private-git-repositories)。
+
+这项凭证用于下载扩展。如果 Plugin 内的 MCP 服务也需要认证，还需配置对应的服务
+凭证，参见 [MCP 凭证配置](credentials.md#2-add-a-credential)。
+
 ## 扩展配置示例
 
 ### 最小配置（仅远程 MCP）

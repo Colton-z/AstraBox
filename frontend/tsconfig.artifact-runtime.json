@@ -1,0 +1,5 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "types": ["vite/client"], "noEmit": true },
+  "include": ["artifact-runtime/**/*.ts", "artifact-runtime/**/*.tsx"]
+}

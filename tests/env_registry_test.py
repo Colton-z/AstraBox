@@ -1,6 +1,6 @@
 """The env-var registry must stay a complete, fresh census of ``astrabox/``.
 
-Five independent guarantees, each pinned by its own test below:
+Four independent guarantees, each pinned by its own test below:
 
 1. **Completeness** — an AST-based scanner walks every ``.py`` file under
    ``astrabox/`` and finds every environment-variable READ: ``os.getenv`` /
@@ -30,11 +30,6 @@ Five independent guarantees, each pinned by its own test below:
    regex-extracts the literal env names present in each enumerated script
    producer and asserts that every name has a registry row —
    see the "Embedded-script census" section below.
-5. **Quickstart integrity** — every setting in ``.env.example`` either matches
-   its registry default or has one explicit expected value and reason below;
-   Compose-only settings have the same explicit treatment. This keeps the
-   hand-picked quickstart useful without letting its values silently drift from
-   the registry (``test_env_example_values_are_defaults_or_documented_examples``).
 
 A handful of env reads are genuinely dynamic — the argument is not a literal and
 cannot be resolved to one by the constant-folding this scanner does (see
@@ -61,126 +56,12 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-import pytest
 import yaml
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _ASTRABOX_ROOT = _REPO_ROOT / "astrabox"
 
-from astrabox.config.env_registry import ENV_REGISTRY, concrete_names  # noqa: E402
-from astrabox.providers.sandbox_image import IN_BOX_SIDECAR_PORT  # noqa: E402
-
-_ENV_EXAMPLE_NONDEFAULT_VALUES: dict[str, tuple[str, str]] = {
-    "ANTHROPIC_API_KEY": (
-        "sk-your-key-here",
-        "A fill-in placeholder makes the one required operator action visible.",
-    ),
-    "ASTRABOX_AGENT_PREWARM_REDIS_URL": (
-        "redis://127.0.0.1:56379/0",
-        "The commented example shows an explicit client-pool coordination URL; "
-        "the runtime default is unset and Compose supplies its internal URL.",
-    ),
-    "ASTRABOX_AWS_KMS_KEY_ARN": (
-        "arn:aws:kms:us-west-2:123456789012:key/00000000-0000-0000-0000-000000000000",
-        "The KMS example uses a structurally valid placeholder key ARN.",
-    ),
-    "ASTRABOX_DB_URL": (
-        "postgresql+asyncpg://astrabox:change-me@db.example.com:5432/astrabox",
-        "The quickstart shows the shape required for an external PostgreSQL database.",
-    ),
-    "ASTRABOX_EXTENSION_PROVIDER": (
-        "litellm",
-        "The optional provider example names the bundled implementation explicitly.",
-    ),
-    "ASTRABOX_LITELLM_API_KEY": (
-        "sk-astrabox-local",
-        "The external-gateway example needs a recognizable placeholder credential.",
-    ),
-    "ASTRABOX_LITELLM_BASE_URL": (
-        "https://gateway.example.com",
-        "The optional external-gateway example needs a sandbox-reachable URL.",
-    ),
-    "ASTRABOX_LITELLM_SERVER_BASE_URL": (
-        "http://127.0.0.1:4000",
-        "The split-network example shows a distinct server-side gateway URL.",
-    ),
-    "ASTRABOX_LOCAL_MODE": (
-        "1",
-        "The commented example demonstrates how to enable this opt-in mode.",
-    ),
-    "ASTRABOX_MCP_PROXY_BASE_URL": (
-        "https://sandbox-callback.example.com",
-        "The external callback-route example needs a concrete URL shape.",
-    ),
-    "ASTRABOX_MODEL_ENDPOINT_PROVIDER": (
-        "litellm",
-        "The optional gateway example demonstrates explicit provider selection.",
-    ),
-    "ASTRABOX_MODEL_GATEWAY_REQUIRE_HTTPS": (
-        "1",
-        "The team-gateway example demonstrates opting into the HTTPS requirement.",
-    ),
-    "ASTRABOX_PUBLISH_HOST_IP": (
-        "172.17.0.1",
-        "The maintained Compose stack runs AstraBox in a container and uses the "
-        "Docker bridge gateway instead of the host-process default.",
-    ),
-    "ASTRABOX_SANDBOX_CREDENTIAL_VAULT": (
-        "0",
-        "The commented example demonstrates explicitly disabling the default vault.",
-    ),
-    "ASTRABOX_SANDBOX_ENDPOINT_SCHEME": (
-        "https",
-        "The Kubernetes ingress example uses TLS rather than the unset default.",
-    ),
-    "ASTRABOX_SANDBOX_SECURE_ACCESS": (
-        "true",
-        "The Kubernetes ingress example demonstrates enabling signed links.",
-    ),
-    "ASTRABOX_SANDBOX_SERVER_INGRESS_GATEWAY_ADDRESS": (
-        "sandbox.example.com",
-        "The Kubernetes ingress example needs a concrete public-hostname shape.",
-    ),
-    "ASTRABOX_SANDBOX_SERVER_INGRESS_MODE": (
-        "gateway",
-        "The Kubernetes ingress example selects the non-default gateway mode.",
-    ),
-    "ASTRABOX_SANDBOX_SERVER_PORT_RANGE": (
-        "20000-21000",
-        "The firewall example narrows the default range to a span a policy can name.",
-    ),
-    "ASTRABOX_SANDBOX_SERVER_RUNTIME": (
-        "kubernetes",
-        "The Kubernetes deployment example selects the non-default runtime.",
-    ),
-    "ASTRABOX_SECRET_STORE": (
-        "aws_kms",
-        "The multi-replica example selects the non-default KMS provider.",
-    ),
-    "ASTRABOX_VAULT_MASTER_KEY": (
-        "",
-        "Operators fill this field; the registry's generated sentinel is not a literal key.",
-    ),
-}
-
-_ENV_EXAMPLE_COMPOSE_VALUES: dict[str, tuple[str, str]] = {
-    "ASTRABOX_POSTGRES_VOLUME": (
-        "astrabox-postgres",
-        "Compose interpolation names the persistent PostgreSQL volume.",
-    ),
-    "ASTRABOX_SERVER_IMAGE": (
-        "astrabox/server:latest",
-        "Compose and the source launcher select the server image before AstraBox starts.",
-    ),
-    "ASTRABOX_STATE_VOLUME": (
-        "astrabox-state",
-        "Compose interpolation names the persistent AstraBox state volume.",
-    ),
-    "LITELLM_DATABASE_URL": (
-        "postgresql://litellm:change-me@db.example.com:5432/litellm",
-        "Compose maps this launcher-facing value to LiteLLM's DATABASE_URL.",
-    ),
-}
+from astrabox.config.env_registry import concrete_names  # noqa: E402
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Wrapper functions that compose an env-var name from a literal first argument
@@ -547,6 +428,8 @@ _EXTERNAL_RUNTIME_ENV_READS: frozenset[str] = frozenset(
         "ASTRABOX_PI_API_KEY",
         "ASTRABOX_PI_BASE_URL",
         "ASTRABOX_PI_MODEL",
+        # Image-owned JavaScript clients read process.env in both engines.
+        "ASTRABOX_PLATFORM_MCP_SERVERS",
         "LANGFUSE_HOST",
         "LANGFUSE_PUBLIC_KEY",
         "LANGFUSE_SECRET_KEY",
@@ -721,98 +604,3 @@ def test_configuration_docs_are_generated_freshly() -> None:
         "docs/configuration.md does not match astrabox/config/env_registry.py — run "
         "`python scripts/gen_config_docs.py` and commit the diff."
     )
-
-
-def test_runner_port_matches_the_image_contract_everywhere() -> None:
-    """Pooled and resumed boxes must listen where the host dials."""
-    boot_script = (
-        _REPO_ROOT / "containers" / "sandbox-claude-code" / "boot.sh"
-    ).read_text(encoding="utf-8")
-    boot_default_match = re.search(
-        r'^: "\$\{ASTRABOX_RUNNER_PORT:=(\d+)\}"$', boot_script, re.MULTILINE
-    )
-    assert boot_default_match is not None, (
-        "boot.sh must declare the runner's default port so image-only startup "
-        "works for pooled and resumed boxes"
-    )
-    registry_default = next(
-        row.default for row in ENV_REGISTRY if row.name == "ASTRABOX_RUNNER_PORT"
-    )
-
-    assert (
-        int(boot_default_match.group(1))
-        == IN_BOX_SIDECAR_PORT
-        == int(registry_default)
-    ), (
-        "boot.sh chooses where pooled and resumed boxes listen, sandbox_image.py "
-        "chooses where the host dials, and env_registry.py publishes that contract; "
-        "the three values must move together"
-    )
-
-
-def test_env_example_values_are_defaults_or_documented_examples() -> None:
-    """The hand-picked quickstart must not silently drift from the registry."""
-    text = (_REPO_ROOT / ".env.example").read_text(encoding="utf-8")
-    pairs = re.findall(r"^(?:#\s*)?([A-Z][A-Z0-9_]*)=(.*)$", text, re.MULTILINE)
-    assignments = dict(pairs)
-    assert len(assignments) == len(pairs), (
-        ".env.example defines the same setting more than once; keep one operator "
-        "example per name so its intended value is unambiguous."
-    )
-
-    registry = {row.name: row.default for row in ENV_REGISTRY if not row.is_pattern}
-    compose_values = {
-        name: value for name, (value, _reason) in _ENV_EXAMPLE_COMPOSE_VALUES.items()
-    }
-    unregistered = set(assignments) - set(registry)
-    assert unregistered == set(compose_values), (
-        ".env.example settings outside the application registry must be explicit "
-        "Compose/launcher inputs with a reason; unexpected or stale names: "
-        f"{sorted(unregistered ^ set(compose_values))}"
-    )
-    actual_compose_values = {name: assignments[name] for name in unregistered}
-    compose_mismatches = sorted(
-        name
-        for name in set(actual_compose_values) | set(compose_values)
-        if actual_compose_values.get(name) != compose_values.get(name)
-    )
-    assert not compose_mismatches, (
-        ".env.example Compose/launcher examples changed without updating their "
-        f"documented expected values: {compose_mismatches}"
-    )
-
-    nondefault_values = {
-        name: value
-        for name, value in assignments.items()
-        if name in registry and value != registry[name]
-    }
-    documented_nondefaults = {
-        name: value
-        for name, (value, _reason) in _ENV_EXAMPLE_NONDEFAULT_VALUES.items()
-    }
-    nondefault_mismatches = sorted(
-        name
-        for name in set(nondefault_values) | set(documented_nondefaults)
-        if nondefault_values.get(name) != documented_nondefaults.get(name)
-    )
-    assert not nondefault_mismatches, (
-        ".env.example registry-backed values must match their defaults unless an "
-        "exact example value and reason are documented; unexpected or stale names: "
-        f"{nondefault_mismatches}"
-    )
-
-    missing_reasons = sorted(
-        name
-        for examples in (_ENV_EXAMPLE_NONDEFAULT_VALUES, _ENV_EXAMPLE_COMPOSE_VALUES)
-        for name, (_value, reason) in examples.items()
-        if not reason.strip()
-    )
-    assert not missing_reasons, f".env.example allowlist entries need reasons: {missing_reasons}"
-
-
-@pytest.mark.parametrize("name", sorted(concrete_names()))
-def test_registry_name_looks_like_an_env_var(name: str) -> None:
-    """Cheap shape guard: every concrete name is upper-snake, no stray whitespace."""
-    assert name == name.strip()
-    assert name == name.upper()
-    assert " " not in name

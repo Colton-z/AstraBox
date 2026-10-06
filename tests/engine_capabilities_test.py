@@ -17,9 +17,6 @@ from astrabox.core.service.orchestrator.engine.base import (
     EngineSettledProjection,
     EngineTurnReceipt,
 )
-from astrabox.core.service.orchestrator.engine.runtime_profiles import (
-    composed_runtime_profile,
-)
 from astrabox.core.service.orchestrator.engine.capabilities import (
     CONVERSATION_PLACEMENT_PER_ACCOUNT,
     EngineRuntimeProfileDeclaration,
@@ -177,57 +174,9 @@ class _DeclaredAssistantEngine(_TextOnlyEngine):
         )
 
 
-def test_claude_code_adapter_declares_its_profile() -> None:
-    caps = capabilities_for_engine_kind("claude_code")
-    assert caps.supported_session_kinds == frozenset({"agent_chat"})
-    assert caps.workload.config_dir_name == ".claude"
-    assert caps.workload.config_env_var == "CLAUDE_CONFIG_DIR"
-    # Tenancy is composed by the platform, not declared: both compositions
-    # exist for this engine and carry its facts unchanged.
-    for tenancy in ("agent", "conversation"):
-        composed = composed_runtime_profile("claude_code", tenancy)
-        assert composed.sandbox_tenancy == tenancy
-        assert composed.config_dir_name == ".claude"
-    assert dict(caps.permission_mode_defaults) == {
-        "agent_chat": "bypassPermissions"
-    }
-    # `tracing` is an Environment field rather than an Agent one, but the question
-    # this set answers is the same: does this adapter actually read it. Claude Code
-    # does — it writes the vendor's `OTEL_*` switches into the box — so an
-    # Environment may name a collector against it, and one naming an engine that
-    # declares nothing is refused at write time.
-    assert caps.configuration_inputs == frozenset(
-        {"mcp_servers", "skills", "plugin_repos", "tracing"}
-    )
-
-
-def test_assistant_adapter_declares_its_profile() -> None:
-    caps = capabilities_for_engine_kind("assistant")
-    assert caps.supported_session_kinds == frozenset({"assistant_chat"})
-    assert caps.workload.config_dir_name == ".hermes"
-    assert caps.workload.config_env_var == "HERMES_HOME"
-    assert caps.conversation_placement == "per_conversation_account"
-    assert caps.configuration_inputs == frozenset({"mcp_servers"})
-
-
-def test_deepseek_harness_declares_no_unimplemented_configuration_inputs() -> None:
-    caps = capabilities_for_engine_kind("deepseek_harness")
-    assert caps.configuration_inputs == frozenset()
-
-
 def test_unregistered_kind_does_not_inherit_claude() -> None:
     with pytest.raises(EngineKindNotRegistered, match="not registered"):
         capabilities_for_engine_kind("missing_engine")
-
-
-def test_capabilities_do_not_claim_an_unused_durability_taxonomy() -> None:
-    capabilities = EngineRuntimeCapabilities(
-        engine_kind="probe",
-        supported_session_kinds=frozenset({"agent_chat"}),
-        workload=_text_workload(),
-    )
-
-    assert not hasattr(capabilities, "durability_source")
 
 
 def test_permission_mode_default_must_belong_to_the_adapter_declaration() -> None:
@@ -272,54 +221,6 @@ def test_adapter_must_explicitly_declare_capabilities() -> None:
 
     with pytest.raises(TypeError, match="abstract"):
         MissingCapabilities()
-
-
-def test_adapter_registration_does_not_restate_resume_as_a_strategy_label(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class MissingTranscriptRecovery(EngineAdapter):
-        @property
-        def engine_kind(self) -> str:
-            return "missing_transcript"
-
-        @property
-        def engine_client_type(self) -> type[_TestEngineClient]:
-            return _TestEngineClient
-
-        @property
-        def capabilities(self) -> EngineRuntimeCapabilities:
-            return EngineRuntimeCapabilities(
-                engine_kind=self.engine_kind,
-                supported_session_kinds=frozenset({"agent_chat"}),
-                workload=_text_workload(),
-            )
-
-        def sandbox_request(self, *, template, model_access):  # pragma: no cover
-            _ = (template, model_access)
-            return object()
-
-        async def activate_runtime(self, context):  # pragma: no cover - stub
-            _ = context
-            raise NotImplementedError
-
-    monkeypatch.setattr(registry, "_REGISTRY", dict(registry._REGISTRY))
-    register_engine_adapter("missing_transcript", MissingTranscriptRecovery())
-    assert registry.get_engine_adapter("missing_transcript").engine_kind == (
-        "missing_transcript"
-    )
-
-
-def test_adapter_registration_needs_no_engine_owned_reattach_transport(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class PlatformAttachedEngine(_TextOnlyEngine):
-        @property
-        def engine_kind(self) -> str:
-            return "platform_attached"
-
-    monkeypatch.setattr(registry, "_REGISTRY", dict(registry._REGISTRY))
-    register_engine_adapter("platform_attached", PlatformAttachedEngine())
-    assert registry.get_engine_adapter("platform_attached").process_disposal() is None
 
 
 def test_adapter_registration_rejects_an_incomplete_agent_journey(

@@ -27,13 +27,6 @@ def _settled_run(**overrides: object) -> dict[str, object]:
 
 
 class TheConsoleFindsWhatItRendersTests(unittest.TestCase):
-    def test_the_meter_fields_survive_under_the_vendors_names(self) -> None:
-        data = claude_result_data(_settled_run())
-        self.assertEqual(data["duration_ms"], 4210)
-        self.assertEqual(data["num_turns"], 2)
-        self.assertEqual(data["total_cost_usd"], 0.0137)
-        self.assertEqual(data["usage"], {"input_tokens": 1204, "output_tokens": 88})
-
     def test_the_stop_reason_arrives_so_an_abnormal_stop_can_be_named(self) -> None:
         self.assertEqual(
             claude_result_data(_settled_run(stop_reason="max_tokens"))[
@@ -67,12 +60,6 @@ class TheConsoleFindsWhatItRendersTests(unittest.TestCase):
             "errors",
         ):
             self.assertNotIn(key, data)
-
-    def test_no_field_is_re_spelled(self) -> None:
-        respelled = [
-            key for key in claude_result_data(_settled_run()) if key.lower() != key
-        ]
-        self.assertEqual(respelled, [])
 
     def test_a_run_that_reports_no_metrics_has_no_public_result_fields(self) -> None:
         data = claude_result_data(

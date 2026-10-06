@@ -50,7 +50,6 @@ from astrabox.core.service.orchestrator.runtime.mcp_credentials import (
 from astrabox.core.service.orchestrator.runtime.mcp_servers import (
     make_mcp_deployment_id,
     sandbox_mcp_egress_hosts,
-    template_mcp_servers,
 )
 from astrabox.seams.egress_credentials import workload_placeholder_context
 from astrabox.secrets import SecretProvider
@@ -99,6 +98,12 @@ def _startup_material_request(
             status_code=500,
         )
     normalized = tuple(str(name or "").strip() for name in request.secret_names)
+    if request.runtime_state_scope not in {"workspace", "session"}:
+        raise APIError(
+            code="AGENT_RUNTIME_ERROR",
+            message=f"engine {adapter.engine_kind!r} declared an invalid native state scope",
+            status_code=500,
+        )
     if any(not name for name in normalized) or len(set(normalized)) != len(normalized):
         raise APIError(
             code="AGENT_RUNTIME_ERROR",
@@ -110,6 +115,7 @@ def _startup_material_request(
     return EngineStartupMaterialRequest(
         transcript_store=bool(request.transcript_store),
         runtime_state_store=bool(request.runtime_state_store),
+        runtime_state_scope=request.runtime_state_scope,
         sandbox_death_notice=bool(request.sandbox_death_notice),
         secret_names=normalized,
     )
@@ -118,11 +124,12 @@ def _startup_material_request(
 def _runtime_state_target(
     request: EngineStartupMaterialRequest,
     *,
+    session_id: str,
     workspace_plan: Any,
     user_id: str | None,
     deployment_settings: Any,
 ) -> dict[str, Any] | None:
-    """Bind database custody to the workspace, not the Session claiming it."""
+    """Bind database custody to the declared native profile's platform owner."""
     if not request.runtime_state_store:
         return None
     from dataclasses import asdict
@@ -136,20 +143,26 @@ def _runtime_state_target(
         RuntimeStateOwner,
     )
 
-    workspace = workspace_from_subject_kind(
-        workspace_plan.subject_kind,
-        user_id=user_id,
-        agent_id=workspace_plan.agent_id,
-        assistant_id=workspace_plan.assistant_id,
-        engine_kind=workspace_plan.engine_kind,
-    )
-    ref = workspace.ref
-    owner = RuntimeStateOwner(
-        user_id=str(ref.user_id or user_id or ""),
-        subject_kind=ref.kind,
-        subject_id=str(ref.assistant_id or ref.agent_id or ""),
-        engine_kind=str(workspace_plan.engine_kind),
-    )
+    if request.runtime_state_scope == "session":
+        owner = RuntimeStateOwner(
+            user_id=str(user_id or ""), subject_kind="session",
+            subject_id=session_id, engine_kind=str(workspace_plan.engine_kind),
+        )
+    else:
+        workspace = workspace_from_subject_kind(
+            workspace_plan.subject_kind,
+            user_id=user_id,
+            agent_id=workspace_plan.agent_id,
+            assistant_id=workspace_plan.assistant_id,
+            engine_kind=workspace_plan.engine_kind,
+        )
+        ref = workspace.ref
+        owner = RuntimeStateOwner(
+            user_id=str(ref.user_id or user_id or ""),
+            subject_kind=ref.kind,
+            subject_id=str(ref.assistant_id or ref.agent_id or ""),
+            engine_kind=str(workspace_plan.engine_kind),
+        )
     base = str(deployment_settings.mcp_proxy_base_url or "").strip().rstrip("/")
     if not base:
         raise APIError(
@@ -256,8 +269,6 @@ async def _publish_platform_mcp_binding(
     prepared-slot binding paths and deliberately do not enter this branch.
     """
 
-    if not template_mcp_servers(getattr(template, "mcp_servers", None)):
-        return None
     if str(getattr(workspace_plan, "subject_kind", "") or "") != "assistant_runtime":
         return None
     effective_user_id = str(getattr(workspace_plan, "user_id", None) or user_id or "").strip()
@@ -422,6 +433,7 @@ async def start_platform_runtime(
                 transcript_store=transcript_store,
                 runtime_state_store=_runtime_state_target(
                     material_request,
+                    session_id=session_id,
                     workspace_plan=workspace_plan,
                     user_id=user_id,
                     deployment_settings=platform.deployment_settings,
@@ -794,6 +806,7 @@ async def attach_platform_runtime(
                 transcript_store=transcript_store,
                 runtime_state_store=_runtime_state_target(
                     material_request,
+                    session_id=session_id,
                     workspace_plan=workspace_plan,
                     user_id=user_id,
                     deployment_settings=platform.deployment_settings,

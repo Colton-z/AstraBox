@@ -24,6 +24,7 @@ from astrabox.core.model import AgentState
 from astrabox.core.service.orchestrator.agent_access import can_manage_agent, can_view_agent
 from astrabox.core.service.orchestrator.agent_schema import (
     AGENT_PRIVATE_STORED_FIELDS,
+    agent_artifacts_enabled,
 )
 from astrabox.core.service.orchestrator.sandbox_names import keep_name_updates
 from astrabox.seams.sandbox import sandbox_name_for_template
@@ -145,7 +146,7 @@ class AgentService:
         self._raise_if_quiesced()
         created = await self._agent_config.create_agent_config(user, config)
         self._schedule_runtime_reconciliation(str(created.get("agent_id") or ""))
-        return created
+        return self._sanitize(created)
 
     async def update_agent(
         self,
@@ -158,7 +159,7 @@ class AgentService:
         self._raise_if_quiesced()
         updated = await self._agent_config.upsert_agent_config(user, agent_id, config)
         self._schedule_runtime_reconciliation(agent_id)
-        return updated
+        return self._sanitize(updated)
 
     def schedule_runtime_reconciliation(self, agent_id: str) -> bool:
         """Reconcile current configuration after a write or capacity claim."""
@@ -804,6 +805,7 @@ class AgentService:
         agent_id: str,
         *,
         idempotency_key: str | None = None,
+        source_type: str = "agent",
     ) -> dict[str, Any]:
         """Create a new user-visible conversation session with an agent.
 
@@ -818,7 +820,7 @@ class AgentService:
         )
         if harness is None:
             raise APIError(code="TEMPLATE_NOT_ALLOWED", message="agent not found", status_code=403)
-        return await self._create_conversation(user, agent_id, agent, idempotency_key=idempotency_key)
+        return await self._create_conversation(user, agent_id, agent, idempotency_key=idempotency_key, source_type=source_type)
 
     async def start_integration_conversation(
         self, user: UserContext, agent_id: str,
@@ -830,11 +832,12 @@ class AgentService:
         or changing the browser's Agent visibility checks.
         """
         agent = await self._must_access(agent_id)
-        return await self._create_conversation(user, agent_id, agent)
+        return await self._create_conversation(user, agent_id, agent, source_type="channel")
 
     async def _create_conversation(
         self, user: UserContext, agent_id: str, agent: dict[str, Any], *,
         idempotency_key: str | None = None,
+        source_type: str = "agent",
     ) -> dict[str, Any]:
         kernel = getattr(self._platform, "_session_kernel", None)
         if kernel is None:
@@ -848,7 +851,7 @@ class AgentService:
             # (agent_chat, engine) declared once in engine/capabilities.py.
             "session_kind": "agent_chat",
             "workspace_ref": {"kind": "agent", "agent_id": agent_id},
-            "source_type": "agent",
+            "source_type": source_type,
             "agent_id": agent_id,
             "deployment_name": agent.get("name"),
             "title": agent.get("name"),
@@ -926,9 +929,14 @@ class AgentService:
     def _sanitize(doc: dict[str, Any]) -> dict[str, Any]:
         # The API response carries only the public Agent shape: every
         # leading-underscore internal field is dropped, plus the named keys
-        # a stored document may carry but no client may see.
+        # a stored document may carry but no client may see. The Artifacts
+        # switch is reported as it takes effect, so an Agent stored without
+        # it reads as on rather than as a missing value a form shows as off.
         return {
-            k: v
-            for k, v in doc.items()
-            if not k.startswith("_") and k not in AGENT_PRIVATE_STORED_FIELDS
+            **{
+                k: v
+                for k, v in doc.items()
+                if not k.startswith("_") and k not in AGENT_PRIVATE_STORED_FIELDS
+            },
+            "artifacts_enabled": agent_artifacts_enabled(doc),
         }

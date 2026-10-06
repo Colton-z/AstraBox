@@ -66,7 +66,7 @@ from astrabox.core.service.orchestrator.runtime.diagnostics import (
 )
 from astrabox.core.service.orchestrator.runtime.mcp_servers import (
     is_platform_mcp_server,
-    template_mcp_servers,
+    binding_mcp_server_definitions,
 )
 from astrabox.core.service.orchestrator.runtime.plugin_repos import plugin_repo_egress_hosts
 from astrabox.core.service.orchestrator.runtime.sandbox_client import (
@@ -608,12 +608,14 @@ def _runner_configure_options(options: Any) -> dict[str, Any]:
 
 
 def _template_platform_mcp_servers(template: Any) -> list[str]:
-    """Declared MCP servers the platform itself hosts behind the proxy."""
+    """Platform-hosted MCP servers available to this runtime binding."""
 
     return sorted(
         str(name)
-        for name, config in template_mcp_servers(
-            getattr(template, "mcp_servers", None)
+        for name, config in binding_mcp_server_definitions(
+            getattr(template, "mcp_servers", None),
+            session_source_type=getattr(template, "session_source_type", None),
+            artifacts_enabled=getattr(template, "artifacts_enabled", True),
         ).items()
         if isinstance(config, dict) and is_platform_mcp_server(config)
     )

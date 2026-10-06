@@ -57,6 +57,7 @@ from astrabox.core.service.orchestrator.engine.provisioning import (
 from astrabox.core.service.orchestrator.engine.registry import (
     register_engine_adapter,
 )
+from astrabox.core.service.orchestrator.engine.emissions import ChildResourceFact
 from astrabox.core.service.orchestrator.engine.hermes_client import (
     HermesTuiEngineClient,
     decode_turn_anchor,
@@ -81,7 +82,7 @@ from astrabox.core.service.orchestrator.runtime.sandbox_client import (
 from astrabox.seams.model import ResolvedModelAccess
 from astrabox.core.service.orchestrator.runtime.mcp_servers import (
     runtime_mcp_servers_for_binding,
-    template_mcp_servers,
+    binding_mcp_server_definitions,
 )
 from astrabox.core.service.orchestrator.runtime.conversation_identity import (
     normalize_runtime_identity,
@@ -216,6 +217,23 @@ class HermesEngineClient(HermesTuiEngineClient):
 class HermesEngineAdapter(EngineAdapter):
     """EngineAdapter for Hermes — declares and connects its gateway client."""
 
+    def stored_child_resource_facts(
+        self,
+        *,
+        native_session_key: str | None,
+        runtime_state: bytes | None,
+        live_frames: list[dict[str, Any]],
+    ) -> list[ChildResourceFact]:
+        from astrabox.core.service.orchestrator.engine.hermes_child_transcript import (
+            stored_child_resource_facts,
+        )
+
+        return stored_child_resource_facts(
+            native_session_key=native_session_key,
+            runtime_state=runtime_state,
+            live_frames=live_frames,
+        )
+
     def child_run_is_active(self, child_run: dict[str, Any]) -> bool:
         from astrabox.core.service.orchestrator.engine.child_runs import (
             ChildRunProjectionError,
@@ -227,6 +245,9 @@ class HermesEngineAdapter(EngineAdapter):
 
         if child_run.get("closed") is True:
             return False
+        native_state = child_run.get("_native_state")
+        if isinstance(native_state, dict) and "ended_at" in native_state:
+            return native_state["ended_at"] is None
         event = child_run.get("engine_event")
         if event == "subagent.complete":
             return False
@@ -561,6 +582,7 @@ class HermesEngineAdapter(EngineAdapter):
 
     def process_disposal(self) -> Any:
         return _HERMES_PROCESS_DISPOSAL
+
 
 # The shared assistant workspace root baked into the Hermes runtime image (WORKDIR).
 # Per-(user, assistant) profile homes live under it; used as the container cwd when
@@ -1197,13 +1219,16 @@ def _build_hermes_config_overwrite(
         ],
         "auxiliary": {"title_generation": {"enabled": False}},
     }
-    if template_mcp_servers(getattr(template, "mcp_servers", None)):
+    artifacts_enabled = getattr(template, "artifacts_enabled", True)
+    if binding_mcp_server_definitions(getattr(template, "mcp_servers", None), session_source_type=getattr(template, "session_source_type", None), artifacts_enabled=artifacts_enabled):
         mcp_servers = runtime_mcp_servers_for_binding(
             getattr(template, "mcp_servers", None),
             proxy_base_url=str(
                 getattr(deployment_settings, "mcp_proxy_base_url", "") or ""
             ),
             deployment_id=str(mcp_deployment_id or "").strip(),
+            session_source_type=getattr(template, "session_source_type", None),
+            artifacts_enabled=artifacts_enabled,
         )
         if mcp_servers:
             payload["mcp_servers"] = mcp_servers
@@ -1322,6 +1347,7 @@ class HermesProcessDisposal:
                 anchor["tui_session_id"],
                 exc,
             )
+
 
 _HERMES_PROCESS_DISPOSAL = HermesProcessDisposal()
 

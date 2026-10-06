@@ -7,20 +7,25 @@ from mcp_types.version import LATEST_PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIO
 
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
+from astrabox.core.service.orchestrator.agent_schema import agent_artifacts_enabled
 from astrabox.core.service.orchestrator.runtime.mcp_servers import (
-    HTML_PREVIEW_PLATFORM_SERVER,
+    ARTIFACTS_PLATFORM_SERVER,
+    artifact_tools_enabled,
+    binds_artifact_tools,
+    EXPOSE_PORT_PLATFORM_SERVER,
     is_platform_mcp_server,
     mcp_server_enabled,
     platform_mcp_server_id,
     template_mcp_servers,
 )
 
+from astrabox.common.utils.user_context import UserContext
+from astrabox.core.service.artifacts.service import invalid
+from astrabox.core.service.artifacts.tools import GUIDE, artifact_tools
+
 logger = get_logger(__name__)
 
 _EXPOSE_PORT_TOOL = "expose_port"
-# Keep accepting the old tool name so existing templates/agents don't 404.
-_LEGACY_PUBLISH_HTML_PREVIEW_TOOL = "publish_html_preview"
-_ACCEPTED_TOOLS = {_EXPOSE_PORT_TOOL, _LEGACY_PUBLISH_HTML_PREVIEW_TOOL}
 
 
 class PlatformMCPService:
@@ -31,13 +36,32 @@ class PlatformMCPService:
         agent_config: Any,
         binding_repo: Any,
         expose_port_service: Any,
+        artifact_service: Any = None,
     ) -> None:
         self._sessions_repo = sessions_repo
         self._agent_config = agent_config
         self._binding_repo = binding_repo
         self._expose_port_service = expose_port_service
+        self._artifacts = artifact_service
+        self._servers = {
+            EXPOSE_PORT_PLATFORM_SERVER: (self._expose_tools, self._handle_expose_tool),
+            ARTIFACTS_PLATFORM_SERVER: (artifact_tools, self._handle_artifact_tool),
+        }
 
     async def resolve_server(self, deployment_id: str, server_name: str) -> dict[str, Any] | None:
+        if server_name == ARTIFACTS_PLATFORM_SERVER:
+            binding = await self._binding_repo.get_binding(deployment_id)
+            sid = (binding or {}).get("session_id") or (deployment_id if not binding else None)
+            session = await self._sessions_repo.get_session(sid) if sid else None
+            if not artifact_tools_enabled((session or binding or {}).get("source_type")):
+                return None
+            if not binding and not session:
+                return None
+            if not await self._origin_agent_artifacts_enabled(binding, session):
+                return None
+            return {"deployment_id": deployment_id, "server_name": server_name,
+                    "platform_server": ARTIFACTS_PLATFORM_SERVER,
+                    "allowed_tools": {t["name"] for t in artifact_tools()}}
         template = await self._resolve_template_for_mcp_binding(deployment_id)
         if not template:
             return None
@@ -50,19 +74,50 @@ class PlatformMCPService:
         if not is_platform_mcp_server(config):
             return None
         platform_server = platform_mcp_server_id(server_name, config)
-        if platform_server != HTML_PREVIEW_PLATFORM_SERVER:
+        if platform_server not in self._servers:
+            return None
+        if platform_server == ARTIFACTS_PLATFORM_SERVER and not binds_artifact_tools(
+            getattr(template, "session_source_type", None),
+            agent_artifacts_enabled=getattr(template, "artifacts_enabled", True),
+        ):
             return None
         tools = config.get("tools")
         if isinstance(tools, list):
             allowed_tools = {str(item).strip() for item in tools if str(item or "").strip()}
         else:
-            allowed_tools = set(_ACCEPTED_TOOLS)
+            allowed_tools = {t["name"] for t in self._servers[platform_server][0]()}
         return {
             "deployment_id": str(deployment_id or "").strip(),
             "server_name": str(server_name or "").strip(),
             "platform_server": platform_server,
             "allowed_tools": allowed_tools,
         }
+
+    async def _origin_agent_artifacts_enabled(
+        self, binding: dict[str, Any] | None, session: dict[str, Any] | None,
+    ) -> bool:
+        """The binding's Agent switch, read at call time; Assistants have none.
+
+        Reading the Agent on every call makes turning the switch off refuse
+        the tools at once, including in conversations whose engine received
+        the server before the change. An unclaimed prepared-slot binding names
+        its Agent in ``template_name``. A binding whose Agent cannot be read
+        has no switch to consult, so it is refused.
+        """
+
+        ref = (session or {}).get("workspace_ref") or {}
+        if ref.get("kind") == "assistant" or ref.get("assistant_id") or (binding or {}).get("assistant_id"):
+            return True
+        agent_id = str(
+            ref.get("agent_id")
+            or (session or {}).get("agent_id")
+            or (binding or {}).get("template_name")
+            or ""
+        ).strip()
+        if not agent_id:
+            return False
+        agent = await self._agent_config.get_agent_access_doc(agent_id)
+        return isinstance(agent, dict) and agent_artifacts_enabled(agent)
 
     async def handle_jsonrpc(
         self,
@@ -120,26 +175,120 @@ class PlatformMCPService:
     ) -> dict[str, Any]:
         params = body.get("params") if isinstance(body.get("params"), dict) else {}
         tool_name = str(params.get("name") or "").strip()
-        if tool_name not in server["allowed_tools"] and tool_name not in _ACCEPTED_TOOLS:
+        if tool_name not in server["allowed_tools"]:
             return self._error(request_id, -32602, f"tool not allowed: {tool_name}")
         arguments = params.get("arguments")
-        arguments = arguments if isinstance(arguments, dict) else {}
-        # Both expose_port and publish_html_preview route through here.
-        if tool_name in _ACCEPTED_TOOLS:
-            port = arguments.get("port")
-            if type(port) is not int or not 1 <= port <= 65535:
-                return self._error(
-                    request_id,
-                    -32602,
-                    "port is required: start your web server on a port of its own and pass that port",
-                )
-            result = await self._expose_port_service.expose_port(
-                deployment_id=server["deployment_id"],
-                port=port,
-                title=str(arguments.get("title") or "").strip() or None,
-            )
-            return self._tool_result(request_id, result)
-        return self._error(request_id, -32601, f"unknown tool: {tool_name}")
+        if not isinstance(arguments, dict):
+            return self._error(request_id, -32602, "arguments must be an object")
+        server_id = server.get("platform_server", EXPOSE_PORT_PLATFORM_SERVER)
+        tools, handler = self._servers[server_id]
+        schema = next(t["inputSchema"] for t in tools() if t["name"] == tool_name)
+        if server_id == EXPOSE_PORT_PLATFORM_SERVER and type(arguments.get("port")) is not int:
+            return self._error(request_id, -32602, "port is required: start your web server on a port of its own and pass that port")
+        if set(arguments) - set(schema["properties"]) or set(schema["required"]) - set(arguments):
+            return self._error(request_id, -32602, "missing or unknown tool arguments")
+        if server_id == EXPOSE_PORT_PLATFORM_SERVER and (type(arguments.get("port")) is not int or not 1 <= arguments["port"] <= 65535):
+            return self._error(request_id, -32602, "port is required: start your web server on a port of its own and pass that port")
+        result = await handler(server, tool_name, arguments)
+        return self._tool_result(request_id, result)
+
+    async def _handle_expose_tool(self, server: dict[str, Any], tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        port = arguments.get("port")
+        if type(port) is not int or not 1 <= port <= 65535:
+            raise APIError(code="INVALID_REQUEST", message="port is required: start your web server on a port of its own and pass that port", status_code=400)
+        return await self._expose_port_service.expose_port(deployment_id=server["deployment_id"], port=port, title=arguments.get("title"))
+
+    async def _artifact_binding(self, deployment_id: str) -> dict[str, Any]:
+        binding = await self._binding_repo.get_binding(deployment_id)
+        sid = str((binding or {}).get("session_id") or (deployment_id if not binding else ""))
+        if sid:
+            session = await self._sessions_repo.get_session(sid)
+            if not session:
+                raise APIError(code="MCP_BINDING_NOT_FOUND", message="MCP binding not found", status_code=404)
+            ref = session.get("workspace_ref") or {}
+            return {**(binding or {}), **session, "session_id": sid,
+                    "assistant_id": ref.get("assistant_id"), "artifact_grant": (binding or {}).get("artifact_grant")}
+        if not binding or not binding.get("user_id"):
+            raise APIError(code="MCP_BINDING_NOT_FOUND", message="MCP binding not found", status_code=404)
+        return binding
+
+    async def _handle_artifact_tool(self, server: dict[str, Any], name: str, args: dict[str, Any]) -> dict[str, Any]:
+        binding = await self._artifact_binding(server["deployment_id"])
+        if not binding.get("user_id"):
+            raise APIError(code="MCP_BINDING_NOT_FOUND", message="MCP binding has no user", status_code=404)
+        if not artifact_tools_enabled(binding.get("source_type")):
+            raise APIError(code="MCP_BINDING_NOT_FOUND", message="channel Sessions have no artifact tools", status_code=404)
+        ref = binding.get("workspace_ref") or {}
+        assistant_id = binding.get("assistant_id") or ref.get("assistant_id")
+        agent_id = binding.get("agent_id") or ref.get("agent_id")
+        scope = {"assistant_id": assistant_id} if assistant_id else {"agent_id": agent_id}
+        if not (assistant_id or agent_id):
+            raise APIError(code="MCP_BINDING_NOT_FOUND", message="artifact binding has no origin identity", status_code=404)
+        user = UserContext(binding["user_id"])
+        if name == "artifact_guide":
+            return {"guide": GUIDE}
+        if self._artifacts is None:
+            raise APIError(code="ARTIFACT_STORE_UNAVAILABLE", message="artifact service unavailable", status_code=503)
+        grant = binding.get("artifact_grant")
+        if grant is not None:
+            if name == "create_artifact":
+                raise APIError(code="ARTIFACT_NOT_WRITER", message="artifact runs cannot create artifacts", status_code=403)
+            if name != "list_artifacts" and args.get("artifact_id") != grant.get("artifact_id"):
+                raise self._artifacts._not_found()
+            granted_record = await self._artifacts.records.get(grant.get("artifact_id"))
+            if not granted_record or any(granted_record["origin"].get(k) != v for k, v in scope.items()):
+                raise self._artifacts._not_found()
+            granted_viewer = await self._artifacts.resolve_viewer(user=user, artifact_id=grant.get("artifact_id"), grant=grant)
+        if name == "create_artifact":
+            origin = {**scope, "session_kind": binding.get("session_kind") or "assistant_chat"}
+            for key in ("session_id",):
+                if binding.get(key):
+                    origin[key] = binding[key]
+            created = await self._artifacts.create(user, args, origin=origin, binding=binding)
+            return self._artifacts.marker(created)
+        if name == "list_artifacts":
+            if grant is not None:
+                runtime = await self._artifacts.runtime(granted_viewer)
+                return {"items": [self._artifacts.marker(runtime["artifact"])], "next_cursor": None}
+            listing = await self._artifacts.list(user, q=args.get("query"), limit=args.get("limit", 50), **scope)
+            return {**listing, "items": [self._artifacts.marker(item) for item in listing["items"]]}
+        aid = args.get("artifact_id")
+        if not isinstance(aid, str) or not aid:
+            raise invalid("artifact_id is required")
+        record = await self._artifacts.records.get(aid)
+        if not record or any(record["origin"].get(k) != v for k, v in scope.items()):
+            raise self._artifacts._not_found()
+        viewer = await self._artifacts.resolve_viewer(user=user, artifact_id=aid, grant=grant)
+        if name == "update_artifact":
+            if viewer.level != "owner":
+                raise APIError(code="ARTIFACT_NOT_WRITER", message="only the artifact owner may update it", status_code=403)
+            updated = await self._artifacts.update(user, aid, {k: v for k, v in args.items() if k != "artifact_id"}, binding=binding)
+            return self._artifacts.marker(updated)
+        if name == "get_artifact":
+            if "version" in args and (type(args["version"]) is not int or args["version"] < 1):
+                raise invalid("version must be positive")
+            if viewer.level == "owner":
+                fetched = await self._artifacts.get(user, aid, args.get("version"))
+                version = fetched["version"]
+            else:
+                viewer, record, version = await self._artifacts.refresh(viewer)
+                if "version" in args and args["version"] != version["version"]:
+                    raise self._artifacts._not_found()
+            return {"description": record["description"], "manifest": version["manifest"],
+                    "content": version["content"], "viewer": viewer.projection(), **self._artifacts.marker(version)}
+        action = args.get("action")
+        if action == "get":
+            rows = await self._artifacts.data_get(viewer, args.get("path"))
+        elif action in {"list", "query"}:
+            rows = await self._artifacts.data_query(viewer, args.get("collection"), where=args.get("where"), order_by=args.get("order_by"), limit=args.get("limit", 100))
+        elif action in {"set", "update", "delete"}:
+            rows = await self._artifacts.data_write(viewer, [{"action": action, "path": args.get("path"), "data": args.get("data")}])
+        elif action == "batch":
+            rows = await self._artifacts.data_write(viewer, args.get("writes"))
+        else:
+            raise invalid("invalid artifact_data action")
+        _, _, version = await self._artifacts.refresh(viewer)
+        return {**rows, **self._artifacts.marker(version)}
 
     async def _resolve_template_name(self, deployment_id: str) -> str | None:
         normalized = str(deployment_id or "").strip()
@@ -165,6 +314,10 @@ class PlatformMCPService:
                     return resolved
 
         binding = await self._binding_repo.get_binding(normalized)
+        if isinstance(binding, dict) and binding.get("assistant_id"):
+            return await self._agent_config.resolve_session_harness(
+                {"workspace_ref": {"kind": "assistant", "assistant_id": binding["assistant_id"]}}
+            )
         template_name = ""
         if isinstance(binding, dict):
             template_name = str(binding.get("template_name") or "").strip()
@@ -179,13 +332,15 @@ class PlatformMCPService:
             resolved = await agent_resolver(template_name)
             if resolved is not None:
                 return resolved
-        legacy_resolver = getattr(self._agent_config, "get_template", None)
-        if callable(legacy_resolver):
-            return await legacy_resolver(template_name)
         return None
 
     @staticmethod
     def _tools(server: dict[str, Any]) -> list[dict[str, Any]]:
+        tools = artifact_tools() if server.get("platform_server") == ARTIFACTS_PLATFORM_SERVER else PlatformMCPService._expose_tools()
+        return [t for t in tools if t["name"] in server["allowed_tools"]]
+
+    @staticmethod
+    def _expose_tools() -> list[dict[str, Any]]:
         return [
             {
                 "name": _EXPOSE_PORT_TOOL,

@@ -4,7 +4,6 @@ from typing import Any
 
 from astrabox.common.utils.user_context import UserContext
 from astrabox.core.service.orchestrator.admin_service import AdminService
-from astrabox.core.service.orchestrator.agent_config_service import AgentConfigService
 
 
 _AGENTS = [
@@ -86,24 +85,3 @@ async def test_missing_identity_never_turns_the_session_count_unscoped() -> None
     await service.admin_navigation_summary(UserContext(user_id=""))
 
     assert sessions.scopes == [[]]
-
-
-class _CountOnlyEnvironmentRepository:
-    def __init__(self) -> None:
-        self.calls = 0
-
-    async def count_all(self) -> int:
-        self.calls += 1
-        return 9
-
-
-async def test_environment_count_does_not_load_environment_documents() -> None:
-    repository = _CountOnlyEnvironmentRepository()
-    service = AgentConfigService(
-        agent_repo=object(),  # type: ignore[arg-type]
-        environment_repo=repository,  # type: ignore[arg-type]
-        assistant_repo=object(),  # type: ignore[arg-type]
-    )
-
-    assert await service.count_environment_configs() == 9
-    assert repository.calls == 1

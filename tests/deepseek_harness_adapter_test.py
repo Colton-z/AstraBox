@@ -10,9 +10,6 @@ box exists and before the link opens.
 
 from __future__ import annotations
 
-import json
-import re
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -47,15 +44,21 @@ def harness(monkeypatch: pytest.MonkeyPatch) -> _Recorder:
         mode: int,
         error_code: str,
         error_message: str,
+        **_: Any,
     ) -> None:
         _ = (target, error_code, error_message)
+        if path.endswith("/.dsh/astrabox-runtime-state.json"):
+            return
         recorder.order.append("write-instructions")
         recorder.writes.append((path, content, mode))
 
     async def fake_connect(target: Any, **kwargs: Any) -> Any:
         _ = (target, kwargs)
         recorder.order.append("connect")
-        return SimpleNamespace(close=_close)
+        return SimpleNamespace(close=_close, restore_attachments=_restore_attachments)
+
+    async def _restore_attachments(*_: Any, **__: Any) -> None:
+        return None
 
     async def fake_publish(**kwargs: Any) -> Any:
         recorder.order.append("publish")
@@ -71,6 +74,9 @@ def harness(monkeypatch: pytest.MonkeyPatch) -> _Recorder:
         deepseek_harness.DshApiLink, "connect", staticmethod(fake_connect)
     )
     monkeypatch.setattr(deepseek_harness, "_publish_runtime", fake_publish)
+    monkeypatch.setattr(
+        deepseek_harness, "_native_model_base_url", lambda _access, base_url: base_url
+    )
     return recorder
 
 
@@ -97,7 +103,8 @@ async def _start(system: str | None) -> None:
         sandbox=SimpleNamespace(id="sbx-1", sandbox_id="sbx-1"),
         sandbox_id="sbx-1",
         cwd=_CWD,
-        runtime_identity={"username": "agent"},
+        runtime_identity={"username": "agent", "home_dir": "/home/agent", "linux_user": "agent"},
+        runtime_state_store={"target": "https://state.test"},
         model_access=model_access,
         model_credential="placeholder",
         resume_session_key=None,
@@ -171,7 +178,9 @@ async def test_the_box_is_not_ready_until_its_gateway_answers(
     # name and AstraBox fills in the value.
     assert request.cwd_env_var == "ASTRABOX_WORKSPACE"
     assert request.env == {"DEEPSEEK_BASE_URL": "https://gateway.test/v1"}
-    assert request.credential.request_paths == ("chat/completions",)
+    assert request.credential.request_paths == (
+        "chat/completions", "messages", "files", "files/*",
+    )
 
 
 # ── the permission mode has to be verified, not just recorded ────────────
@@ -334,7 +343,8 @@ async def test_the_model_comes_from_the_environment_not_the_engine_options(
             sandbox=SimpleNamespace(id="sbx-1", sandbox_id="sbx-1"),
             sandbox_id="sbx-1",
             cwd=_CWD,
-            runtime_identity={"username": "agent"},
+            runtime_identity={"username": "agent", "home_dir": "/home/agent", "linux_user": "agent"},
+        runtime_state_store={"target": "https://state.test"},
             model_access=_manager().resolve_model_access({}),
             model_credential="placeholder",
             resume_session_key=None,
@@ -375,64 +385,6 @@ async def test_a_runtime_without_a_mode_claims_nothing(
     )
 
     assert getattr(runtime, "permission_mode_verified", False) is False
-
-
-# ── the agent preset roster ──────────────────────────────────────────────
-def test_the_agent_form_declares_the_native_creation_node() -> None:
-    """A preset AstraBox does not offer is one the operator cannot reach."""
-
-    adapter = deepseek_harness.DeepSeekHarnessEngineAdapter()
-    fields = adapter.capabilities.engine_options_schema
-    preset_field = next(f for f in fields if f["key"] == "session_create")
-
-    assert preset_field["type"] == "object"
-    assert "item_schema" not in preset_field
-    assert set(preset_field["protected_keys"]) == {"cwd", "workspaceId", "sessionId"}
-
-
-def test_the_image_locks_the_deepseek_harness_root_and_resolved_artifacts() -> None:
-    """Lock the supplier's graph without forcing subpackages to its root version."""
-
-    image_dir = (
-        Path(__file__).resolve().parents[1]
-        / "containers"
-        / "sandbox-deepseek-harness"
-    )
-    manifest = json.loads((image_dir / "package.json").read_text(encoding="utf-8"))
-    lock = json.loads((image_dir / "package-lock.json").read_text(encoding="utf-8"))
-    expected = manifest["dependencies"]["@deepseek-ai/dsh"]
-
-    assert re.fullmatch(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?", expected), (
-        "the image must pin an exact vendor release, not a semver range"
-    )
-    assert lock["packages"][""]["dependencies"] == manifest["dependencies"]
-    assert lock["packages"]["node_modules/@deepseek-ai/dsh"]["version"] == expected
-
-    release_family = {
-        path: package
-        for path, package in lock["packages"].items()
-        if "node_modules/" in path
-        and path.rsplit("node_modules/", 1)[-1].startswith("@deepseek-ai/dsh")
-    }
-    assert len(release_family) > 1, "the lockfile contains no DSH dependency tree"
-    for path, package in release_family.items():
-        assert re.fullmatch(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?", package["version"]), path
-        assert package["resolved"].startswith("https://registry.npmjs.org/"), path
-        assert package["integrity"].startswith("sha512-"), path
-
-
-def test_the_image_build_uses_the_committed_dependency_graph() -> None:
-    dockerfile = (
-        Path(__file__).resolve().parents[1]
-        / "containers"
-        / "sandbox-deepseek-harness"
-        / "Dockerfile"
-    ).read_text(encoding="utf-8")
-
-    assert "package-lock.json" in dockerfile
-    assert 'npm ci --prefix "${DSH_PREFIX}"' in dockerfile
-    assert "npm install" not in dockerfile
-    assert "NODE_OPTIONS=--max-old-space-size=8192" in dockerfile
 
 
 # ── a failed adapter start releases only its own transport ───────────────

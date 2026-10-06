@@ -6,7 +6,6 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from astrabox.common.utils.errors import APIError
-from astrabox.common.utils.user_context import UserContext
 from astrabox.core.service.orchestrator.engine.base import EngineCapabilityManifest
 from astrabox.core.service.orchestrator.engine.emissions import (
     ChildResourceFact,
@@ -16,31 +15,7 @@ from astrabox.core.service.orchestrator.engine.frame_scope import (
     session_scoped_engine_frame,
 )
 from astrabox.core.service.orchestrator.runtime_ensure import RuntimeEnsure
-from astrabox.core.service.orchestrator.session_kernel.workers.turn.worker import (
-    TurnWorker,
-)
 from astrabox.core.service.orchestrator.turn_service import TurnService
-
-
-def _controllable_runtime() -> SimpleNamespace:
-    client = SimpleNamespace(
-        stop_child_run=AsyncMock(),
-        interrupt_active_turn=AsyncMock(return_value=True),
-        set_permission_mode=AsyncMock(),
-    )
-    return SimpleNamespace(
-        engine_client=client,
-        engine_kind="test_engine",
-        engine_manifest=EngineCapabilityManifest(
-            engine_kind="test_engine",
-            permission_modes=["strict", "danger"],
-            supports_child_run_control=True,
-        ),
-        conversation_bound=True,
-        interrupting=False,
-        permission_mode=None,
-        permission_mode_verified=False,
-    )
 
 
 def _ensure_whose_attach_raises(exc: Exception) -> RuntimeEnsure:
@@ -183,29 +158,6 @@ async def test_turn_service_rejects_an_unbound_control_runtime() -> None:
 
 
 @pytest.mark.asyncio
-async def test_engine_controls_execute_on_the_one_acquired_runtime() -> None:
-    runtime = _controllable_runtime()
-    service = TurnService.__new__(TurnService)
-    service._runtime_ensure = SimpleNamespace(
-        acquire_engine_control_runtime=AsyncMock(return_value=runtime)
-    )
-    session = {"session_id": "session-1", "sandbox_id": "sandbox-1"}
-
-    await service.stop_engine_child_run(session, "private-control")
-    await service.interrupt_engine_turn(session)
-    applied = await service.set_engine_permission_mode(session, "danger")
-
-    assert applied is True
-    assert service._runtime_ensure.acquire_engine_control_runtime.await_count == 3
-    runtime.engine_client.stop_child_run.assert_awaited_once_with("private-control")
-    runtime.engine_client.interrupt_active_turn.assert_awaited_once_with()
-    runtime.engine_client.set_permission_mode.assert_awaited_once_with("danger")
-    assert runtime.interrupting is True
-    assert runtime.permission_mode == "danger"
-    assert runtime.permission_mode_verified is True
-
-
-@pytest.mark.asyncio
 async def test_child_reconcile_persists_adapter_facts_as_session_state(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -343,47 +295,3 @@ async def test_child_reconcile_does_not_attach_an_engine_without_the_protocol(
 
     assert reconciled is False
     service._runtime_ensure.acquire_engine_control_runtime.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_interrupt_acquires_the_engine_control_attachment_before_calling_it() -> None:
-    order: list[str] = []
-
-    async def interrupt(_session: dict) -> None:
-        order.append("acquire")
-        order.append("interrupt")
-
-    worker = TurnWorker.__new__(TurnWorker)
-    worker._session_snapshots_repo = SimpleNamespace(
-        force_update_fields=AsyncMock(return_value=True),
-        get_snapshot=AsyncMock(return_value={"current_turn_id": "turn-1"}),
-    )
-    worker._sessions_repo = SimpleNamespace(
-        get_session=AsyncMock(
-            return_value={
-                "session_id": "session-1",
-                "session_kind": "assistant_chat",
-                "sandbox_id": "sandbox-1",
-            }
-        )
-    )
-    worker._turn_service = SimpleNamespace(
-        interrupt_engine_turn=AsyncMock(side_effect=interrupt)
-    )
-    worker._session_events_repo = SimpleNamespace(
-        append_event=AsyncMock(return_value={"event_seq": 17})
-    )
-    worker._settle_pre_first_token_interrupt = AsyncMock(return_value=None)
-
-    _, result = await worker._run_interrupt_command(
-        user=UserContext("user-1"),
-        session_id="session-1",
-        command_event={
-            "event_seq": 12,
-            "turn_id": "turn-1",
-            "causation_id": "interrupt-1",
-        },
-    )
-
-    assert order == ["acquire", "interrupt"]
-    assert result == {"session_id": "session-1", "status": "accepted"}

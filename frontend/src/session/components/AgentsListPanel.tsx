@@ -48,9 +48,9 @@ function formatDuration(ms?: number): string | null {
 }
 
 function UsageChip({ entry }: { entry: SubagentEntry }) {
-  const usage = entry.usage;
-  if (!usage) return null;
+  const usage = entry.usage ?? {};
   const parts: string[] = [];
+  if (entry.model) parts.push(entry.model);
   // Skip `0 tok`: the SDK reports total_tokens=0 for local_agent subagents that
   // dispatch tools without invoking the LLM (tool_uses + duration_ms populate
   // but the token account is left at 0). Showing "0 tok" reads as a real

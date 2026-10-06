@@ -53,7 +53,7 @@ const sidebars: SidebarsConfig = {
     {
       type: 'category',
       label: 'Manage Agent context',
-      items: ['files', 'assistants'],
+      items: ['files', 'artifacts', 'assistants'],
     },
     {
       type: 'category',

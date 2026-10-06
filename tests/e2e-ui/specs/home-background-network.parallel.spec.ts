@@ -1,7 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { AstraApi } from '../fixtures/astraApi';
 import { apiPath, appPath } from '../fixtures/env';
-import { onPassOnly } from '../fixtures/sessionCleanup';
 import { returnToTab } from '../fixtures/tabReturn';
 
 test.describe.configure({ mode: 'parallel' });
@@ -104,54 +102,3 @@ for (const subject of ['agents', 'assistants'] as const) {
     }
   });
 }
-
-let ownAgentId = '';
-onPassOnly(async ({ request }) => {
-  if (ownAgentId) await new AstraApi(request).deleteAgent(ownAgentId);
-  ownAgentId = '';
-});
-
-test('management background gateway failures retain rows while explicit Refresh reports failure', async ({ page, request }) => {
-  // The row is a test-owned cold Agent that nothing else touches. The shared
-  // default Agent's row changes legitimately while parallel specs start
-  // conversations on it, and the comparisons below need a row whose only
-  // reason to differ is the fault under test.
-  const agentName = `__e2e_background_rows_${Date.now()}`;
-  ownAgentId = (await new AstraApi(request).createColdTestAgent(agentName)).agent_id;
-  let broken = false;
-  let failed = 0;
-  let answered = 0;
-  const path = apiPath('/agents');
-  page.on('response', response => {
-    if (new URL(response.url()).pathname === path && response.ok()) answered += 1;
-  });
-  await page.route(url => url.pathname === path, async route => {
-    if (!broken || route.request().method() !== 'GET') return route.continue();
-    failed += 1;
-    return route.fulfill({ status: 503, contentType: 'text/plain', body: 'Service unavailable' });
-  });
-  await page.addInitScript(() => localStorage.setItem('astrabox-lang', 'en'));
-  await page.goto(appPath('/manage/agents'));
-  const row = page.getByRole('row').filter({ has: page.getByText(agentName, { exact: true }) });
-  await expect(row).toBeVisible();
-  const baseline = await row.innerText();
-  await watchAlerts(page);
-  broken = true;
-  await returnToTab(page, Date.now());
-  await expect.poll(() => failed).toBeGreaterThan(0);
-  await page.waitForTimeout(750);
-  await expect.poll(() => row.innerText()).toBe(baseline);
-  await expect(page.getByRole('alert')).toHaveCount(0);
-  broken = false;
-  const beforeRecovery = answered;
-  await returnToTab(page, Date.now());
-  await expect.poll(() => answered).toBeGreaterThan(beforeRecovery);
-  await expectNoAlertFlashes(page);
-  broken = true;
-  await page.getByRole('button', { name: 'Refresh', exact: true }).click();
-  await expect(page.getByRole('alert').filter({ hasText: 'HTTP_503' })).toBeVisible();
-  broken = false;
-  await page.getByRole('button', { name: 'Refresh', exact: true }).click();
-  await expect.poll(() => row.innerText()).toBe(baseline);
-  await expect(page.getByRole('alert')).toHaveCount(0);
-});

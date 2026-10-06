@@ -3,7 +3,7 @@
 The chunk store composes the existing idempotent transcript batch writer in a
 separate collection. Its sequence allocator is not a completeness signal. A
 single owner-scoped head is the only publication point; interrupted writes leave
-the previous head readable. No chat Session identity is involved.
+the previous head readable. The owner identifies the native runtime profile.
 """
 
 from __future__ import annotations
@@ -48,8 +48,8 @@ class RuntimeStateOwner:
             value = getattr(self, field)
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"runtime state owner {field} must be non-empty")
-        if self.subject_kind not in {"assistant", "agent"}:
-            raise ValueError("runtime state owner subject_kind must be assistant or agent")
+        if self.subject_kind not in {"assistant", "agent", "session"}:
+            raise ValueError("runtime state owner subject_kind must be assistant, agent or session")
 
     def canonical_key(self) -> str:
         return json.dumps(
@@ -136,7 +136,8 @@ class RuntimeStateSnapshotRepository:
         self._validate_head(owner, head)
         try:
             entries = await self._chunks.load_entries(
-                owner.canonical_key(), owner.subject_id, head["snapshot_id"]
+                owner.canonical_key(), owner.subject_id, head["snapshot_id"],
+                append_id=head["snapshot_id"],
             )
         except (ValueError, TypeError, KeyError) as exc:
             raise RuntimeStateSnapshotCorrupt("runtime state snapshot chunks are invalid") from exc

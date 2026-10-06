@@ -1,11 +1,9 @@
 /**
  * E2E: a console nobody touched stops claiming the Assistant workspace is Ready.
  *
- * Both sibling workspace specs drive recovery with a user action — one clicks
- * the card, the other opens the conversation — and
- * `assistant-workspace-oob-death-recovers.exclusive.spec.ts:90` even calls what
- * it clicks "the stale READY card". Neither asserts that the card ever stops
- * being stale. This spec removes the action. The box goes, the durable lease
+ * The sibling workspace spec drives recovery with a user action — it opens the
+ * conversation — and never asserts that the card stops being stale. This spec
+ * removes the action. The box goes, the durable lease
  * lapses, the platform's own background sweep converges the workspace row with
  * nobody looking (`expiration_watcher._sweep_dead_bindings` →
  * `converge_dead_sandbox_owners` → workspace RECOVERY_REQUIRED), and the page

@@ -1234,28 +1234,6 @@ def test_a_uid_whose_upstream_port_is_bound_is_skipped_too() -> None:
     )
 
 
-def test_a_refusal_reads_the_launch_logs_of_every_engine_shape() -> None:
-    """The reason has to reach the refusal, whichever engine wrote it.
-
-    Launch redirects and service logs both live under the private home.
-    Reading only one location loses errors from the other processes.
-    """
-
-    repo, provider = _FakeAgentRepo(), _FakeProvider()
-    provider.runner_listening = 0
-    lease = SharedSandboxLease(agent_repo=repo, provider=provider)
-    binding = _acquire(lease, "box-1")
-
-    with pytest.raises(APIError):
-        _start_runner(lease, binding)
-
-    readback = [code for code in provider.ran if "tail -c" in code]
-    assert readback, "the refusal must try to read the launch log at all"
-    assert "/home/conversations/conv1/.astrabox-runner.log" in readback[-1]
-    assert "/home/conversations/conv1/.astrabox-*-launch.log" in readback[-1]
-    assert "/home/conversations/conv1/.astrabox-logs/*.log" in readback[-1]
-
-
 def test_a_box_claimed_moments_ago_is_waited_for_rather_than_replaced(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

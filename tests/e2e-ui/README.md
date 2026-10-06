@@ -41,8 +41,8 @@ npx playwright test specs/real-slack-feishu-dingtalk.external.spec.ts \
 ```bash
 cd tests/e2e-ui
 ASTRABOX_E2E_BASE_URL=http://<host>:<server-port> \
-npx playwright test 'specs/postgresql-persistence.parallel.spec.ts' \
-  --grep 'API writes are durable in the real PostgreSQL document store'
+npx playwright test 'specs/app-shell.parallel.spec.ts' \
+  --grep 'console shell loads and lists the seeded agent'
 ```
 
 单个用例通过不等于 lane 通过：完整验收需要覆盖当前清单的全部引擎和两个存储分区，

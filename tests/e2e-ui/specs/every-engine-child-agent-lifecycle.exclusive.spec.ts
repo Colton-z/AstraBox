@@ -132,11 +132,11 @@ for (const declared of profiles) {
       }).toBeGreaterThan(0);
       await expect(panel.getByTestId('empty-state')).toHaveCount(0);
 
-      // Pi publishes the workflow and its detached subagent as separate native
-      // runs. Preserve both; only the supplier's subagent row owns this workload.
+      // Pi's native status tree nests the materialized worker as a workflow
+      // step. Retain both identities; the step owns the actual child transcript.
       if (profile.engine_kind === 'pi' && mode === 'background') {
-        await expect(panel.locator('[data-subagent-task-type="subagent"]'),
-          'the native worker must appear alongside its workflow').toHaveCount(1, { timeout: 15_000 });
+        await expect(panel.locator('[data-subagent-task-type="step"]'),
+          'the native worker must appear beneath its workflow').toHaveCount(1, { timeout: 15_000 });
         await expect(panel.locator('[data-subagent-task-type="workflow"]'),
           'the native workflow remains visible, not discarded as a duplicate').toHaveCount(1);
       }
@@ -145,7 +145,7 @@ for (const declared of profiles) {
         taskType: node.getAttribute('data-subagent-task-type'),
       })));
       const workers = profile.engine_kind === 'pi' && mode === 'background'
-        ? rowIdentities.filter((row) => row.taskType === 'subagent') : rowIdentities;
+        ? rowIdentities.filter((row) => row.taskType === 'step') : rowIdentities;
       const deepest = Math.max(...workers.map((row) => row.depth));
       const leaves = workers.filter((row) => row.depth === deepest);
       expect(leaves, 'exactly one native worker owns this workload').toHaveLength(1);
@@ -202,6 +202,15 @@ for (const declared of profiles) {
       const running = (await api.listChildRuns(sessionId)).child_runs;
       const liveChild = running.find((child) => child.child_run_id === childId);
       expect(liveChild).toMatchObject({ engine_kind: profile.engine_kind, closed: false, active: true });
+      if (profile.engine_kind === 'pi' && mode === 'background') {
+        const workflow = running.filter((child) => child.task_type === 'workflow');
+        expect(workflow).toHaveLength(1);
+        expect(workflow[0]).toMatchObject({ depth: 1, description: 'delegate', operations: ['stop'] });
+        expect(liveChild).toMatchObject({
+          task_type: 'step', depth: 2, parent_child_run_id: workflow[0]!.child_run_id,
+          description: 'child', operations: ['stop'],
+        });
+      }
       await expect.poll(() => childToolEvidence(sessionId, profile, gate, launched[0]!.subpath), {
         message: 'the child native history must identify the real held tool, independently of its drawer',
       }).toHaveLength(1);
@@ -258,12 +267,13 @@ for (const declared of profiles) {
         .toContainText(receipt, { timeout: 30_000 });
       if (profile.engine_kind === 'pi' && mode === 'background') {
         await expect.poll(async () => (await api.listChildRuns(sessionId)).child_runs
-          .map((child) => ({ kind: child.task_type, active: child.active, closed: child.closed, status: child.engine_status }))
+          .map((child) => ({ kind: child.task_type, active: child.active, closed: child.closed,
+            status: child.engine_status, operations: child.operations }))
           .sort((left, right) => String(left.kind).localeCompare(String(right.kind))), {
           timeout: 30_000, message: 'both native workflow and worker must settle before the cold snapshot',
         }).toEqual([
-          { kind: 'subagent', active: false, closed: true, status: 'complete' },
-          { kind: 'workflow', active: false, closed: true, status: 'complete' },
+          { kind: 'step', active: false, closed: true, status: 'complete', operations: [] },
+          { kind: 'workflow', active: false, closed: true, status: 'complete', operations: [] },
         ]);
       }
       const completed = (await api.listChildRuns(sessionId)).child_runs;
@@ -317,7 +327,16 @@ for (const declared of profiles) {
       const coldTranscript = await api.getChildRunMessages(sessionId, childId!);
       expectToolBlocks(coldTranscript, finalTool, receipt);
       expect(coldTranscript.messages).toEqual(finalTranscript.messages);
-      expect((await api.listChildRuns(sessionId)).child_runs).toEqual(completed);
+      const coldChildren = (await api.listChildRuns(sessionId)).child_runs;
+      // DSH may dispose the live child after turn/end. That advances its last
+      // native event without changing the completed, continuable child or its
+      // durable history. Every other field must survive reload unchanged.
+      const retainedChildren = completed.map((child) => {
+        if (child.engine_kind !== 'deepseek_harness') return child;
+        expect(child.engine_event).toMatch(/^(turn\/end|api-session\/removed)$/);
+        return { ...child, engine_event: expect.stringMatching(/^(turn\/end|api-session\/removed)$/) };
+      });
+      expect(coldChildren).toEqual(retainedChildren);
       const coldSettled = await api.getSession(sessionId);
       expect(coldSettled.state).toBe('READY');
       expect(coldSettled.current_turn_id).toBeFalsy();

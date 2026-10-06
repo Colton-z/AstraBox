@@ -19,10 +19,12 @@ Design notes:
   JSON-serializable for the GET endpoint.
 - Validation here is intentionally thin: types / required / enum only. Deep
   normalization (plugin_repos, default_repo, mcp) stays in its existing owners.
-  The payload is never rewritten here and defaults are never filled in: the
-  one create-time default, ``prewarm_enabled``, is written by the create path
-  from :func:`agents_prewarm_by_default` and served on its field so the form
-  shows it. The top-level wire shape and fixed nested objects are closed:
+  The payload is never rewritten here and defaults are never filled in. Two
+  fields serve a ``default`` so the form shows what an Agent saved without
+  touching them gets: ``prewarm_enabled``, which the create path writes from
+  :func:`agents_prewarm_by_default`, and ``artifacts_enabled``, whose absence
+  :func:`agent_artifacts_enabled` reads as on. The top-level wire shape and
+  fixed nested objects are closed:
   undeclared input fails loud instead of entering the Agent document's open
   storage shape.
 - ``model`` validates as a required free-text string. Self-hosted BYO-key has
@@ -33,6 +35,7 @@ Design notes:
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from astrabox.core.service.orchestrator.schema_validation import (
@@ -145,6 +148,9 @@ AGENT_FIELD_SCHEMA: list[dict[str, Any]] = [
         "complex": True,
     },
     # ── tools ─────────────────────────────────────────────────────────────
+    # The built-in `artifacts` platform MCP server, which every Agent
+    # conversation receives unless its owner turns it off here.
+    {"key": "artifacts_enabled", "type": "boolean", "group": GROUP_TOOLS, "default": True},
     {"key": "skills", "type": "string_list", "group": GROUP_TOOLS},
     # mcp_servers is a name-keyed map of server definitions; the console edits
     # it as a list and serializes to and from the map.
@@ -230,6 +236,7 @@ _AGENT_UPDATE_REQUEST_FIELDS = AGENT_EDITABLE_REQUEST_FIELDS | {"version"}
 AGENT_PRIVATE_STORED_FIELDS = frozenset(
     {
         "main_session_id",
+        "session_source_type",
         "credential_vault_ids",
         "credentials_updated_by",
         "credentials_updated_at",
@@ -254,6 +261,16 @@ _DISPLAY_META_REQUEST_FIELDS = frozenset(
 )
 _DEFAULT_REPO_REQUEST_FIELDS = frozenset(str(field["key"]) for field in _DEFAULT_REPO_ITEM_SCHEMA)
 _PLUGIN_REPO_REQUEST_FIELDS = frozenset(str(field["key"]) for field in _PLUGIN_REPO_ITEM_SCHEMA)
+
+
+def agent_artifacts_enabled(agent: Mapping[str, Any]) -> bool:
+    """Whether a stored Agent's conversations receive the ``artifacts`` tools.
+
+    Only an explicit ``false`` turns them off. An Agent stored without the
+    field, including one written before the field existed, keeps the tools.
+    """
+
+    return agent.get("artifacts_enabled") is not False
 
 
 def agents_prewarm_by_default(settings: Any) -> bool:

@@ -32,6 +32,7 @@ async def test_instruction_publication_uses_the_owned_workspace_before_vendor_st
     unrelated = common / "AGENTS.md"
     unrelated.write_text("unrelated box content\n")
     installed: list[tuple[Path, str]] = []
+    install = dsh.install_verified_text_script
 
     for number in range(2):
         home = tmp_path / f"conversation-{number}"
@@ -73,9 +74,20 @@ async def test_instruction_publication_uses_the_owned_workspace_before_vendor_st
         monkeypatch.setattr(pi, "_park_pi_child", park)
         monkeypatch.setattr(pi_client, "connect_pi_client", vendor_start)
         monkeypatch.setattr(pi, "_publish_runtime", publish)
-        monkeypatch.setattr(dsh.DshApiLink, "connect", vendor_start)
+        async def dsh_connect(*args: Any, **kwargs: Any) -> Any:
+            await vendor_start()
+            return SimpleNamespace(restore_attachments=AsyncMock(), close=AsyncMock())
+
+        monkeypatch.setattr(dsh.DshApiLink, "connect", dsh_connect)
         monkeypatch.setattr(dsh, "create_harness_session", create)
         monkeypatch.setattr(dsh, "_publish_runtime", publish)
+        async def install_except_native_state(target_box: Any, *, path: str, **kwargs: Any) -> Any:
+            # The harness's private state file is not the instruction under test.
+            if path.endswith("/.dsh/astrabox-runtime-state.json"):
+                return None
+            return await install(target_box, path=path, **kwargs)
+
+        monkeypatch.setattr(dsh, "install_verified_text_script", install_except_native_state)
         common_inputs = dict(
             template=SimpleNamespace(
                 system=instructions, engine_options={}, model_config={},
@@ -83,7 +95,9 @@ async def test_instruction_publication_uses_the_owned_workspace_before_vendor_st
             ),
             sandbox=box, sandbox_id="one-box", cwd=str(cwd),
             runtime_identity=identity,
-            model_access=SimpleNamespace(base_url="https://model.test/v1", model_name="test-model"),
+            model_access=SimpleNamespace(
+                base_url="https://model.test/v1", model_name="test-model", endpoint_provider="litellm",
+            ),
             model_credential="placeholder",
         )
         if prepared:
@@ -96,6 +110,7 @@ async def test_instruction_publication_uses_the_owned_workspace_before_vendor_st
             await adapter.activate_runtime(EngineStartupContext(
                 **common_inputs, session_id=f"session-{number}",
                 workspace_plan=SimpleNamespace(), resume_session_key=None,
+                runtime_state_store={"target": "https://state.test"},
             ))
         assert native_starts == ["started"]
         assert target.read_text() == instructions

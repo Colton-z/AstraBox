@@ -373,7 +373,7 @@ def _label(node: dict[str, Any]) -> str | None:
 
 
 def _lifecycle_fact(
-    state: _ChildState, *, event: str, engine_event: str, engine_status: str
+    state: _ChildState, *, source_id: str, event: str, engine_event: str, engine_status: str
 ) -> dict[str, Any]:
     can_stop = event != "closed" and engine_status in _STOPPABLE_STATES
     data: dict[str, Any] = {
@@ -396,7 +396,7 @@ def _lifecycle_fact(
     return session_scoped_engine_frame(
         {
             "type": "data-subagent",
-            "id": f"pi-child:lifecycle:{state.reference}:{engine_event}:{event}",
+            "id": f"pi-child:lifecycle:{state.reference}:{source_id}:{event}",
             "data": canonical,
         }
     )
@@ -438,6 +438,14 @@ def _message_ref(role: str, text: str) -> str:
     return digest[:16]
 
 
+def _native_record_ref(record: dict[str, Any]) -> str:
+    """Keep each supplier update distinct and its durable replay identical."""
+
+    return hashlib.sha256(
+        json.dumps(record, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
 class PiChildResources:
     """Fold Pi's async status snapshots and tool results into child facts."""
 
@@ -464,6 +472,7 @@ class PiChildResources:
         runs = snapshot.get("runs")
         if not isinstance(runs, list):
             return []
+        source_id = _native_record_ref(record)
         frames: list[dict[str, Any]] = []
         for run in runs:
             if not isinstance(run, dict):
@@ -472,7 +481,7 @@ class PiChildResources:
             if not run_id:
                 raise PiChildRunError("pi async status snapshot run carries no id")
             frames.extend(
-                self._fold_node(run, run_id=run_id, child_id=None, parent=None)
+                self._fold_node(run, source_id=source_id, run_id=run_id, child_id=None, parent=None)
             )
         return frames
 
@@ -480,6 +489,7 @@ class PiChildResources:
         self,
         node: dict[str, Any],
         *,
+        source_id: str,
         run_id: str,
         child_id: str | None,
         parent: str | None,
@@ -490,22 +500,17 @@ class PiChildResources:
         which is what the package takes back: a child id is "exactly the node
         id the host received in the status snapshot".
 
-        The run is the row. It is the identity the package hands out at
-        launch and keeps through every state — a queued run has no steps yet,
-        and they appear once it starts — so the run is what a reader follows
-        from beginning to end. One delegation makes one step, and the package
-        states that stopping such a run and stopping its child are the same
-        act, so the step shares that row and its stop handle. Inspection still
-        addresses the step's session file rather than the run summary.
-        Steps are shown only when a launch fanned out into several,
-        nested under the run that holds them, because then each is an agent
-        of its own with its own stop.
+        A single subagent's own step shares its row and stop handle;
+        inspection addresses that step's session file. A workflow's steps
+        are distinct workers, even when there is only one. Preserve their
+        native identities and hierarchy so each worker owns its transcript.
         """
 
         reference = child_reference(run_id, child_id)
         state = _snapshot_state(node)
         frames = self._publish(
             reference,
+            source_id=source_id,
             parent=parent,
             label=_label(node),
             status=state,
@@ -531,7 +536,8 @@ class PiChildResources:
             else []
         )
         inspect_reference = reference
-        if len(child_nodes) == 1:
+        single_agent_step = node.get("kind") == "subagent" and len(child_nodes) == 1
+        if single_agent_step:
             node_id = str(child_nodes[0].get("id") or "").strip()
             if not node_id:
                 raise PiChildRunError("pi async status snapshot child carries no id")
@@ -539,7 +545,7 @@ class PiChildResources:
         if not child_state.closed and inspect_reference != child_state.inspect_reference:
             child_state.inspect_pending = True
         child_state.inspect_reference = inspect_reference
-        if len(child_nodes) < 2:
+        if single_agent_step:
             return frames
         for child in child_nodes:
             node_id = str(child.get("id") or "").strip()
@@ -547,7 +553,7 @@ class PiChildResources:
                 raise PiChildRunError("pi async status snapshot child carries no id")
             frames.extend(
                 self._fold_node(
-                    child, run_id=run_id, child_id=node_id, parent=reference
+                    child, source_id=source_id, run_id=run_id, child_id=node_id, parent=reference
                 )
             )
         return frames
@@ -700,6 +706,7 @@ class PiChildResources:
             frames.extend(
                 self._publish(
                     reference,
+                    source_id=_native_record_ref(record),
                     parent=state.parent_reference,
                     label=None,
                     status=status,
@@ -741,6 +748,7 @@ class PiChildResources:
         rows = details.get("results")
         if not isinstance(rows, list):
             return []
+        source_id = _native_record_ref(event)
         frames: list[dict[str, Any]] = []
         for row in rows:
             if not isinstance(row, dict):
@@ -760,6 +768,7 @@ class PiChildResources:
             frames.extend(
                 self._publish(
                     reference,
+                    source_id=source_id,
                     # A blocking launch reports only its rows, never the run
                     # they belong to, so each row is its own root here.
                     parent=None,
@@ -777,6 +786,7 @@ class PiChildResources:
         self,
         reference: str,
         *,
+        source_id: str,
         parent: str | None,
         label: str | None,
         status: str,
@@ -791,10 +801,12 @@ class PiChildResources:
             self._children[reference] = state
         if state.closed:
             return []
+        previous_metadata = (state.label, state.task_type)
         if label:
             state.label = label
         if task_type:
             state.task_type = task_type
+        metadata_changed = previous_metadata != (state.label, state.task_type)
 
         frames: list[dict[str, Any]] = []
         if not state.opened:
@@ -803,17 +815,19 @@ class PiChildResources:
             frames.append(
                 _lifecycle_fact(
                     state,
+                    source_id=source_id,
                     event="opened",
                     engine_event=engine_event,
                     engine_status=status,
                 )
             )
-        elif status != state.status:
+        elif status != state.status or metadata_changed:
             state.status = status
             if not settled:
                 frames.append(
                     _lifecycle_fact(
                         state,
+                        source_id=source_id,
                         event="updated",
                         engine_event=engine_event,
                         engine_status=status,
@@ -824,6 +838,7 @@ class PiChildResources:
             frames.append(
                 _lifecycle_fact(
                     state,
+                    source_id=source_id,
                     event="closed",
                     engine_event=engine_event,
                     engine_status=status,

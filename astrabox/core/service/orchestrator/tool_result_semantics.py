@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 TOOL_RESULT_STATE_AVAILABLE = "output-available"
@@ -85,7 +86,8 @@ def tool_result_block(
     return {
         "type": "tool_result",
         "tool_use_id": tool_call_id,
-        "content": str(content or ""),
+        "content": json.dumps(content, ensure_ascii=False)
+        if isinstance(content, (dict, list)) else str(content or ""),
         "is_error": state != TOOL_RESULT_STATE_AVAILABLE,
         "tool_result_state": state,
     }

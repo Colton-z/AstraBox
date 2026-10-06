@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import importlib
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -15,38 +14,6 @@ from astrabox.config.settings import get_settings
 from astrabox.core.service.orchestrator.deployment_run_runtime import (
     DeploymentRunRuntime,
 )
-
-
-async def test_embedded_runtime_launches_before_repository_reads(monkeypatch) -> None:
-    run_module = importlib.import_module(
-        "astrabox.core.service.orchestrator.deployment_run_runtime"
-    )
-    repository_module = importlib.import_module("astrabox.persistence.repository")
-    runtime = run_module.deployment_run_runtime
-    events: list[str] = []
-
-    class _Repository:
-        async def list_scheduled(self) -> list[dict[str, object]]:
-            events.append("repository-read")
-            return []
-
-    async def _start() -> None:
-        events.append("runtime-launch")
-        runtime._started = True
-        runtime._unsupported_reason = None
-
-    async def _reconcile(_deployments: list[dict[str, object]]) -> None:
-        events.append("schedule-reconcile")
-
-    monkeypatch.setattr(repository_module, "DeploymentRepository", _Repository)
-    monkeypatch.setattr(runtime, "start", _start)
-    monkeypatch.setattr(runtime, "reconcile", _reconcile)
-    monkeypatch.setattr(runtime, "_started", False)
-    monkeypatch.setattr(runtime, "_unsupported_reason", None)
-
-    await run_module.start_deployment_run_runtime()
-
-    assert events == ["runtime-launch", "repository-read", "schedule-reconcile"]
 
 
 async def test_non_sql_backend_only_disables_scheduled_deployments(

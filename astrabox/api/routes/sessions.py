@@ -145,6 +145,7 @@ class SessionRecord(BaseModel):
     title: str | None = None
     source_type: str | None = None
     agent_id: str | None = None
+    assistant_id: str | None = None
     deployment_name: str | None = None
     agent_runtime: AgentRuntimeView | None = None
     session_kind: str | None = None
@@ -283,7 +284,7 @@ class ChildRunRecord(BaseModel):
     child_run_id: str
     engine_kind: str
     depth: int
-    engine_event: str
+    engine_event: str | None = None
     engine_status: str | None = None
     engine_reason: str | None = None
     closed: bool
@@ -300,6 +301,7 @@ class ChildRunRecord(BaseModel):
     task_type: str | None = None
     last_tool_name: str | None = None
     summary: str | None = None
+    model: str | None = None
     usage: dict[str, Any] | None = None
 
 

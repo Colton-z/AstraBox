@@ -95,10 +95,17 @@ RUN set -eux; \
 # AstraBox the curator of someone else's agent.
 COPY --chmod=u=rwX,go=rX containers/sandbox-deepseek-harness/astrabox-dsh-profile.patch.yml ${DSH_PREFIX}/profile.patch.yml
 COPY --chmod=u=rwX,go=rX containers/sandbox-deepseek-harness/astrabox-dsh-output.mjs ${DSH_PREFIX}/output.mjs
+COPY --chmod=u=rwX,go=rX containers/sandbox-deepseek-harness/astrabox-dsh-attachments.mjs ${DSH_PREFIX}/attachments.mjs
+COPY --chmod=u=rwX,go=rX containers/sandbox-deepseek-harness/platform-mcp.mjs ${DSH_PREFIX}/platform-mcp.mjs
+COPY --chmod=u=rwX,go=rX containers/sandbox-deepseek-harness/prove-platform-mcp.mjs ${DSH_PREFIX}/prove-platform-mcp.mjs
 RUN set -eux; \
+    node --check "${DSH_PREFIX}/platform-mcp.mjs"; \
+    node "${DSH_PREFIX}/prove-platform-mcp.mjs"; \
     DSH_HOME=/tmp/dsh-build-home \
       "${DSH_PREFIX}/node_modules/.bin/dsh" --profile web \
-      --patch "${DSH_PREFIX}/profile.patch.yml" --dump-config > /dev/null; \
+      --patch "${DSH_PREFIX}/profile.patch.yml" --dump-config > /tmp/dsh-build-profile.yml; \
+    grep -q 'astrabox-platform-mcp' /tmp/dsh-build-profile.yml; \
+    rm /tmp/dsh-build-profile.yml; \
     rm -rf /tmp/dsh-build-home
 
 COPY --chmod=u=rwX,go=rX containers/sandbox-deepseek-harness/astrabox-dsh-serve ${DSH_PREFIX}/serve.sh

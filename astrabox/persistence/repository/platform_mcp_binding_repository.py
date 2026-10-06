@@ -56,6 +56,14 @@ class PlatformMCPBindingRepository:
                 upsert=True,
             ),
         )
+        if payload.get("session_id"):
+            from astrabox.persistence.repository.session_repository import SessionRepository
+            session = await SessionRepository().get_session(payload["session_id"])
+            if session and session.get("artifact_grant"):
+                await run_mongo_with_retry(
+                    "platform_mcp_bindings.grant",
+                    lambda: collection.update_one({"deployment_id": deployment_id}, {"$set": {"artifact_grant": session["artifact_grant"]}}),
+                )
         stored = await run_mongo_with_retry(
             "platform_mcp_bindings.read_after_upsert",
             lambda: collection.find_one({"deployment_id": deployment_id}),
@@ -90,3 +98,26 @@ class PlatformMCPBindingRepository:
             lambda: collection.delete_one({"deployment_id": normalized}),
         )
         return bool(getattr(result, "deleted_count", 0))
+
+
+    async def attach_session_grant(self, session_id: str, grant: dict[str, Any]) -> None:
+        """Attach after creation; slot upserts also hydrate the Session's grant."""
+        await self.ensure_indexes()
+        collection = await get_async_collection(COLLECTION_NAME)
+        await run_mongo_with_retry(
+            "platform_mcp_bindings.attach_grant",
+            lambda: collection.update_many({"session_id": session_id}, {"$set": {"artifact_grant": grant}}),
+        )
+        from astrabox.persistence.repository.session_repository import SessionRepository
+        session = await SessionRepository().get_session(session_id)
+        if not session:
+            raise ValueError("artifact grant requires a Session")
+        await self.upsert_binding({"deployment_id": session_id, "scope_kind": "session", "session_id": session_id,
+                                   "template_name": session.get("agent_id") or session.get("template_name"),
+                                   "user_id": session["user_id"], "artifact_grant": grant})
+        ref = session.get("workspace_ref", {})
+        if ref.get("assistant_id"):
+            await run_mongo_with_retry(
+                "platform_mcp_bindings.attach_assistant_grant",
+                lambda: collection.update_many({"assistant_id": ref["assistant_id"], "user_id": session["user_id"]}, {"$set": {"artifact_grant": grant}}),
+            )

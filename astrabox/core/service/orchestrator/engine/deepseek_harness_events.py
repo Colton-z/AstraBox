@@ -95,6 +95,20 @@ _FINISH_REASONS = {
 }
 
 
+def tool_result_message(data: dict[str, Any]) -> dict[str, Any]:
+    """Read the supplier's V4 ToolResultMessage shared by live and child history."""
+    message = data.get("message")
+    if not isinstance(message, dict) or message.get("role") != "tool":
+        raise DeepSeekHarnessProtocolError("tool/result carries no tool-role message")
+    if not isinstance(message.get("toolCallId"), str) or not message["toolCallId"].strip():
+        raise DeepSeekHarnessProtocolError("tool/result message has no toolCallId")
+    if not isinstance(message.get("content"), list):
+        raise DeepSeekHarnessProtocolError("tool/result message has no content blocks")
+    if "isError" in message and not isinstance(message["isError"], bool):
+        raise DeepSeekHarnessProtocolError("tool/result message has invalid isError")
+    return message
+
+
 def raw_event_frame(subtype: str, raw: dict[str, Any]) -> dict[str, Any]:
     return {
         "type": "data-raw-event",
@@ -479,47 +493,36 @@ class DeepSeekHarnessTurnTranslator:
         })
 
     def _translate_tool_result(self, data: dict[str, Any]) -> Iterator[dict[str, Any]]:
-        message = data.get("message")
-        content = message.get("content") if isinstance(message, dict) else None
-        blocks = [
-            block
-            for block in (content if isinstance(content, list) else [])
-            if isinstance(block, dict) and block.get("type") == "tool-result"
-        ]
-        if not blocks:
-            raise DeepSeekHarnessProtocolError("tool/result carries no tool-result block")
-        for block in blocks:
-            tool_call_id = str(block.get("toolCallId") or "").strip()
-            if not tool_call_id:
-                raise DeepSeekHarnessProtocolError("tool-result block has no toolCallId")
-            yield {
-                "type": "tool-output-available",
-                "toolCallId": tool_call_id,
-                "output": {
-                    "content": block.get("content"),
-                    "isError": bool(block.get("isError")),
-                },
-            }
-            file_tool = self._file_tools.pop(tool_call_id, None)
-            if not file_tool or block.get("isError"):
-                continue
-            name, path = file_tool
-            meta = data.get("meta")
-            hunks = meta.get("diffs") if isinstance(meta, dict) else None
-            changes: list[FileChange] = []
-            if isinstance(hunks, list) and hunks:
-                grouped: dict[str, list[ContentDiff]] = {}
-                for hunk in hunks:
-                    grouped.setdefault(hunk["path"], []).append(ContentDiff(
-                        before=hunk["oldText"] if hunk["oldText"] is not None else "",
-                        after=hunk["newText"],
-                    ))
-                changes = [FileChange(path=p, diff=ExcerptDiff(excerpts=parts))
-                           for p, parts in grouped.items()]
-            else:
-                # A success receipt identifies a write, not its previous bytes.
-                changes = [FileChange(path=path, diff=None)]
-            yield file_changes_frame(tool_call_id, name, changes)
+        message = tool_result_message(data)
+        tool_call_id = message["toolCallId"]
+        yield {
+            "type": "tool-output-available",
+            "toolCallId": tool_call_id,
+            "output": {
+                "content": message["content"],
+                "isError": message.get("isError", False),
+            },
+        }
+        file_tool = self._file_tools.pop(tool_call_id, None)
+        if not file_tool or message.get("isError"):
+            return
+        name, path = file_tool
+        meta = data.get("meta")
+        hunks = meta.get("diffs") if isinstance(meta, dict) else None
+        changes: list[FileChange] = []
+        if isinstance(hunks, list) and hunks:
+            grouped: dict[str, list[ContentDiff]] = {}
+            for hunk in hunks:
+                grouped.setdefault(hunk["path"], []).append(ContentDiff(
+                    before=hunk["oldText"] if hunk["oldText"] is not None else "",
+                    after=hunk["newText"],
+                ))
+            changes = [FileChange(path=p, diff=ExcerptDiff(excerpts=parts))
+                       for p, parts in grouped.items()]
+        else:
+            # A success receipt identifies a write, not its previous bytes.
+            changes = [FileChange(path=path, diff=None)]
+        yield file_changes_frame(tool_call_id, name, changes)
 
     # ── turn terminal ────────────────────────────────────────────────────
     def _translate_turn_end(self, data: dict[str, Any]) -> dict[str, Any]:

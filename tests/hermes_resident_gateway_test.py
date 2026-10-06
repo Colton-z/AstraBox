@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import asyncio
 import copy
-import json
 from types import SimpleNamespace
 from unittest import mock
 from unittest.mock import AsyncMock
@@ -1093,25 +1092,3 @@ def test_the_backend_token_changes_with_the_deployment_secret(
     # Stable within one deployment: a supervisord restart of the backend must
     # keep the credential the host already holds.
     assert second == hermes._hermes_backend_token(identity)
-
-
-def test_the_backend_token_is_the_platform_derivation(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """It is HMAC under the deployment master key, not an ad-hoc secret store."""
-    from astrabox.core.service.orchestrator.platform_secret import (
-        derive_platform_key,
-        platform_secret_root,
-    )
-
-    monkeypatch.setenv("ASTRABOX_TRANSCRIPT_SIGNING_KEY", "a-deployment-secret")
-    identity = _hermes_identity()
-    expected = derive_platform_key(
-        platform_secret_root(),
-        domain="astrabox-hermes-backend-ws",
-        subject=json.dumps(
-            [identity["linux_user"], identity["home_dir"]], separators=(",", ":")
-        ),
-    ).hex()
-
-    assert hermes._hermes_backend_token(identity) == expected

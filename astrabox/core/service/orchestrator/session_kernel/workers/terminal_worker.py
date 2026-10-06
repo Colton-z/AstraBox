@@ -41,7 +41,7 @@ class TerminalWorker(KernelWorkerBase):
         terminal_service: Any,
         runtime_manager: Any,
         broker: Any,
-        artifacts_repo: Any,
+        session_artifacts_repo: Any,
         session_events_repo: Any,
         session_snapshots_repo: Any,
     ) -> None:
@@ -50,7 +50,7 @@ class TerminalWorker(KernelWorkerBase):
         self._terminal_service = terminal_service
         self._runtime_manager = runtime_manager
         self._broker = broker
-        self._artifacts_repo = artifacts_repo
+        self._session_artifacts_repo = session_artifacts_repo
         self._session_events_repo = session_events_repo
         self._session_snapshots_repo = session_snapshots_repo
 
@@ -127,7 +127,7 @@ class TerminalWorker(KernelWorkerBase):
 
         async def _append_terminal_artifact(event: dict[str, Any]) -> None:
             nonlocal terminal_seq
-            stored = await self._artifacts_repo.append_terminal_event(
+            stored = await self._session_artifacts_repo.append_terminal_event(
                 {
                     "session_id": wakeup.session_id,
                     "command_id": command_id,
@@ -535,7 +535,7 @@ class TerminalWorker(KernelWorkerBase):
         async def _append_terminal_artifact(event: dict[str, Any]) -> None:
             nonlocal terminal_seq
             if terminal_seq is None:
-                existing_events = await self._artifacts_repo.list_terminal_events(
+                existing_events = await self._session_artifacts_repo.list_terminal_events(
                     wakeup.session_id,
                     command_id=active_command_id,
                     after_seq=-1,
@@ -547,7 +547,7 @@ class TerminalWorker(KernelWorkerBase):
                     )
                     + 1
                 )
-            await self._artifacts_repo.append_terminal_event(
+            await self._session_artifacts_repo.append_terminal_event(
                 {
                     "session_id": wakeup.session_id,
                     "command_id": active_command_id,

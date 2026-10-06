@@ -34,6 +34,29 @@ SANDBOX_INFERENCE_KEY_ALIAS = "astrabox-sandbox-inference"
 #: deployed gateway.
 SANDBOX_INFERENCE_KEY_TYPE = "llm_api"
 
+# Native Files has a provider-specific request shape. LiteLLM separately gates
+# auth=true passthrough routes using key metadata, even for llm_api keys.
+MODEL_INFERENCE_PASSTHROUGH_ROUTES = (
+    "/v1/deepseek/v1/files",
+)
+
+
+def inference_key_metadata(metadata: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Retain key identity and add the gateway's native model protocol grants."""
+    if metadata is not None and not isinstance(metadata, Mapping):
+        raise ValueError("model key metadata must be a mapping")
+    result = dict(metadata or {})
+    existing = result.get("allowed_passthrough_routes")
+    routes = [] if existing is None else existing
+    if not isinstance(routes, list) or any(not isinstance(route, str) or not route.strip() for route in routes):
+        raise ValueError("model key allowed_passthrough_routes must be a list of non-empty paths")
+    routes = list(routes)
+    for route in MODEL_INFERENCE_PASSTHROUGH_ROUTES:
+        if route not in routes:
+            routes.append(route)
+    result["allowed_passthrough_routes"] = routes
+    return result
+
 
 def sandbox_inference_key(secret: str) -> str:
     """Derive the sandbox's virtual key value from the deployment's signing key.
@@ -161,6 +184,8 @@ __all__ = [
     "AGENT_CONSOLE_PURPOSE",
     "SANDBOX_INFERENCE_KEY_ALIAS",
     "SANDBOX_INFERENCE_KEY_TYPE",
+    "MODEL_INFERENCE_PASSTHROUGH_ROUTES",
+    "inference_key_metadata",
     "sandbox_inference_key",
     "CAPABILITY_AUDIENCE",
     "CAPABILITY_PREFIX",

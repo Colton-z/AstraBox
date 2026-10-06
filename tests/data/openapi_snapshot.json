@@ -1446,7 +1446,7 @@
       },
       "AgentFormField": {
         "additionalProperties": true,
-        "description": "One field of the Agent authoring form, as ``agent_schema`` declares it.\n\n``key`` and ``type`` are the two members every entry carries; the optional\npresentation and validation members (``group``, ``required``, ``enum``,\n``path``, ``complex``, ``advanced``) appear per field. ``item_schema``\ndescribes the sub-fields of a nested object with this same grammar.\n``default`` is the value a create stores when the field is omitted; only\n``prewarm_enabled`` carries one, and its value follows the deployment.",
+        "description": "One field of the Agent authoring form, as ``agent_schema`` declares it.\n\n``key`` and ``type`` are the two members every entry carries; the optional\npresentation and validation members (``group``, ``required``, ``enum``,\n``path``, ``complex``, ``advanced``) appear per field. ``item_schema``\ndescribes the sub-fields of a nested object with this same grammar.\n``default`` is the value an Agent created without the field has. Two\nfields carry one: ``prewarm_enabled``, whose value follows the deployment,\nand ``artifacts_enabled``, which is on.",
         "properties": {
           "advanced": {
             "anyOf": [
@@ -1795,7 +1795,7 @@
       },
       "AgentRecord": {
         "additionalProperties": true,
-        "description": "One stored Agent as these routes project it.\n\nThe Agent document is open — ``AgentService._sanitize`` passes through\nevery key that is not internal — so the fields named here are the ones the\nconsole addresses by name, and ``extra=\"allow\"`` carries the rest. Their\ntypes are the ones ``agent_schema.AGENT_FIELD_SCHEMA`` enforces on write,\nplus the identity and ownership fields ``AgentConfigService`` stamps.\n\n``can_manage`` is computed per viewer and therefore present only on the\nreads that compute it (list and get), not on a write's echo of the record.",
+        "description": "One stored Agent as these routes project it.\n\nThe Agent document is open — ``AgentService._sanitize`` passes through\nevery key that is not internal — so the fields named here are the ones the\nconsole addresses by name, and ``extra=\"allow\"`` carries the rest. Their\ntypes are the ones ``agent_schema.AGENT_FIELD_SCHEMA`` enforces on write,\nplus the identity and ownership fields ``AgentConfigService`` stamps.\n``artifacts_enabled`` is always present because a read reports the switch\nas it takes effect, including for an Agent stored without it.\n\n``can_manage`` is computed per viewer and therefore present only on the\nreads that compute it (list and get), not on a write's echo of the record.",
         "properties": {
           "admins": {
             "anyOf": [
@@ -1828,6 +1828,17 @@
               }
             ],
             "title": "Allowed User Ids"
+          },
+          "artifacts_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artifacts Enabled"
           },
           "can_manage": {
             "anyOf": [
@@ -2776,6 +2787,138 @@
           "data"
         ],
         "title": "ApiEnvelope[AgentRecord]",
+        "type": "object"
+      },
+      "ApiEnvelope_ArtifactAgentRun_": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/ArtifactAgentRun"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[ArtifactAgentRun]",
+        "type": "object"
+      },
+      "ApiEnvelope_ArtifactAgentStatus_": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/ArtifactAgentStatus"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[ArtifactAgentStatus]",
+        "type": "object"
+      },
+      "ApiEnvelope_ArtifactPage_": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/ArtifactPage"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[ArtifactPage]",
+        "type": "object"
+      },
+      "ApiEnvelope_ArtifactRecord_": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/ArtifactRecord"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[ArtifactRecord]",
+        "type": "object"
+      },
+      "ApiEnvelope_ArtifactRuntime_": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/ArtifactRuntime"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[ArtifactRuntime]",
+        "type": "object"
+      },
+      "ApiEnvelope_ArtifactShare_": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/ArtifactShare"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[ArtifactShare]",
         "type": "object"
       },
       "ApiEnvelope_AssistantDeletion_": {
@@ -4144,6 +4287,32 @@
         "title": "ApiEnvelope[dict[str, Any]]",
         "type": "object"
       },
+      "ApiEnvelope_dict_str__bool__": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "additionalProperties": {
+              "type": "boolean"
+            },
+            "title": "Data",
+            "type": "object"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[dict[str, bool]]",
+        "type": "object"
+      },
       "ApiEnvelope_list_AgentEnvironmentOption__": {
         "properties": {
           "code": {
@@ -4325,6 +4494,827 @@
           "data"
         ],
         "title": "ApiEnvelope[list[dict[str, Any]]]",
+        "type": "object"
+      },
+      "ArtifactAddRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "collection": {
+            "title": "Collection",
+            "type": "string"
+          },
+          "data": {
+            "additionalProperties": true,
+            "title": "Data",
+            "type": "object"
+          }
+        },
+        "required": [
+          "data",
+          "collection"
+        ],
+        "title": "ArtifactAddRequest",
+        "type": "object"
+      },
+      "ArtifactAgentRun": {
+        "properties": {
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "session_id",
+          "url"
+        ],
+        "title": "ArtifactAgentRun",
+        "type": "object"
+      },
+      "ArtifactAgentRunRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "prompt": {
+            "minLength": 1,
+            "title": "Prompt",
+            "type": "string"
+          }
+        },
+        "required": [
+          "prompt"
+        ],
+        "title": "ArtifactAgentRunRequest",
+        "type": "object"
+      },
+      "ArtifactAgentStatus": {
+        "properties": {
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "running",
+              "waiting_input",
+              "completed",
+              "failed"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "session_id"
+        ],
+        "title": "ArtifactAgentStatus",
+        "type": "object"
+      },
+      "ArtifactDataRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "additionalProperties": true,
+            "title": "Data",
+            "type": "object"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "title": "ArtifactDataRequest",
+        "type": "object"
+      },
+      "ArtifactMetadataPatch": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          }
+        },
+        "title": "ArtifactMetadataPatch",
+        "type": "object"
+      },
+      "ArtifactOrder": {
+        "additionalProperties": false,
+        "properties": {
+          "direction": {
+            "default": "asc",
+            "enum": [
+              "asc",
+              "desc"
+            ],
+            "title": "Direction",
+            "type": "string"
+          },
+          "field": {
+            "minLength": 1,
+            "title": "Field",
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "title": "ArtifactOrder",
+        "type": "object"
+      },
+      "ArtifactPage": {
+        "properties": {
+          "has_more": {
+            "title": "Has More",
+            "type": "boolean"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ArtifactRecord"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items",
+          "has_more",
+          "next_cursor"
+        ],
+        "title": "ArtifactPage",
+        "type": "object"
+      },
+      "ArtifactPresenceRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "state": {
+            "title": "State"
+          }
+        },
+        "required": [
+          "state"
+        ],
+        "title": "ArtifactPresenceRequest",
+        "type": "object"
+      },
+      "ArtifactPublishRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "base_version": {
+            "minimum": 1.0,
+            "title": "Base Version",
+            "type": "integer"
+          },
+          "content": {
+            "title": "Content",
+            "type": "string"
+          }
+        },
+        "required": [
+          "content",
+          "base_version"
+        ],
+        "title": "ArtifactPublishRequest",
+        "type": "object"
+      },
+      "ArtifactQueryRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "collection": {
+            "title": "Collection",
+            "type": "string"
+          },
+          "limit": {
+            "default": 100,
+            "maximum": 10000.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "order_by": {
+            "items": {
+              "$ref": "#/components/schemas/ArtifactOrder"
+            },
+            "title": "Order By",
+            "type": "array"
+          },
+          "where": {
+            "items": {
+              "$ref": "#/components/schemas/ArtifactWhere"
+            },
+            "title": "Where",
+            "type": "array"
+          }
+        },
+        "required": [
+          "collection"
+        ],
+        "title": "ArtifactQueryRequest",
+        "type": "object"
+      },
+      "ArtifactRecord": {
+        "additionalProperties": true,
+        "properties": {
+          "artifact_id": {
+            "title": "Artifact Id",
+            "type": "string"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "current_version": {
+            "title": "Current Version",
+            "type": "integer"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "html",
+              "react",
+              "svg",
+              "markdown",
+              "mermaid",
+              "code"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "language": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Language"
+          },
+          "manifest": {
+            "additionalProperties": true,
+            "title": "Manifest",
+            "type": "object"
+          },
+          "origin": {
+            "additionalProperties": true,
+            "title": "Origin",
+            "type": "object"
+          },
+          "share": {
+            "$ref": "#/components/schemas/ArtifactShare"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "artifact_id",
+          "title",
+          "description",
+          "kind",
+          "current_version",
+          "manifest",
+          "origin",
+          "share",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "ArtifactRecord",
+        "type": "object"
+      },
+      "ArtifactRoomRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "title": "Data"
+          },
+          "topic": {
+            "title": "Topic",
+            "type": "string"
+          }
+        },
+        "required": [
+          "topic",
+          "data"
+        ],
+        "title": "ArtifactRoomRequest",
+        "type": "object"
+      },
+      "ArtifactRuntime": {
+        "properties": {
+          "after_seq": {
+            "title": "After Seq",
+            "type": "integer"
+          },
+          "artifact": {
+            "$ref": "#/components/schemas/ArtifactRuntimeRecord"
+          },
+          "content": {
+            "title": "Content",
+            "type": "string"
+          },
+          "manifest": {
+            "additionalProperties": true,
+            "title": "Manifest",
+            "type": "object"
+          },
+          "pinned": {
+            "title": "Pinned",
+            "type": "boolean"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          },
+          "viewer": {
+            "additionalProperties": true,
+            "title": "Viewer",
+            "type": "object"
+          }
+        },
+        "required": [
+          "artifact",
+          "version",
+          "content",
+          "manifest",
+          "viewer",
+          "pinned",
+          "after_seq"
+        ],
+        "title": "ArtifactRuntime",
+        "type": "object"
+      },
+      "ArtifactRuntimeRecord": {
+        "properties": {
+          "artifact_id": {
+            "title": "Artifact Id",
+            "type": "string"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "current_version": {
+            "title": "Current Version",
+            "type": "integer"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "html",
+              "react",
+              "svg",
+              "markdown",
+              "mermaid",
+              "code"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "language": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Language"
+          },
+          "manifest": {
+            "additionalProperties": true,
+            "title": "Manifest",
+            "type": "object"
+          },
+          "origin": {
+            "additionalProperties": true,
+            "title": "Origin",
+            "type": "object"
+          },
+          "share": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ArtifactShareView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "artifact_id",
+          "title",
+          "description",
+          "kind",
+          "current_version",
+          "manifest",
+          "origin",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "ArtifactRuntimeRecord",
+        "type": "object"
+      },
+      "ArtifactSampleMessage": {
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content"
+          },
+          "role": {
+            "enum": [
+              "user",
+              "assistant",
+              "tool"
+            ],
+            "title": "Role",
+            "type": "string"
+          },
+          "tool_call_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tool Call Id"
+          },
+          "tool_calls": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tool Calls"
+          }
+        },
+        "required": [
+          "role",
+          "content"
+        ],
+        "title": "ArtifactSampleMessage",
+        "type": "object"
+      },
+      "ArtifactSampleRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "input": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ArtifactSampleMessage"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input"
+          },
+          "max_tokens": {
+            "default": 4096,
+            "minimum": 1.0,
+            "title": "Max Tokens",
+            "type": "integer"
+          },
+          "messages": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ArtifactSampleMessage"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Messages"
+          },
+          "modelTier": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Modeltier"
+          },
+          "tools": {
+            "items": {
+              "$ref": "#/components/schemas/ArtifactSampleTool"
+            },
+            "title": "Tools",
+            "type": "array"
+          }
+        },
+        "title": "ArtifactSampleRequest",
+        "type": "object"
+      },
+      "ArtifactSampleTool": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "input_schema": {
+            "additionalProperties": true,
+            "title": "Input Schema",
+            "type": "object"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "description",
+          "input_schema"
+        ],
+        "title": "ArtifactSampleTool",
+        "type": "object"
+      },
+      "ArtifactShare": {
+        "properties": {
+          "access": {
+            "enum": [
+              "view",
+              "interact"
+            ],
+            "title": "Access",
+            "type": "string"
+          },
+          "audience": {
+            "enum": [
+              "anyone",
+              "signed_in"
+            ],
+            "title": "Audience",
+            "type": "string"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "token": {
+            "title": "Token",
+            "type": "string"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version"
+          }
+        },
+        "required": [
+          "enabled",
+          "token",
+          "access",
+          "audience",
+          "version",
+          "created_at",
+          "expires_at"
+        ],
+        "title": "ArtifactShare",
+        "type": "object"
+      },
+      "ArtifactShareRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "access": {
+            "default": "view",
+            "enum": [
+              "view",
+              "interact"
+            ],
+            "title": "Access",
+            "type": "string"
+          },
+          "audience": {
+            "default": "anyone",
+            "enum": [
+              "anyone",
+              "signed_in"
+            ],
+            "title": "Audience",
+            "type": "string"
+          },
+          "expires_in_seconds": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires In Seconds"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version"
+          }
+        },
+        "title": "ArtifactShareRequest",
+        "type": "object"
+      },
+      "ArtifactShareView": {
+        "properties": {
+          "access": {
+            "enum": [
+              "view",
+              "interact"
+            ],
+            "title": "Access",
+            "type": "string"
+          },
+          "audience": {
+            "enum": [
+              "anyone",
+              "signed_in"
+            ],
+            "title": "Audience",
+            "type": "string"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version"
+          }
+        },
+        "required": [
+          "version",
+          "access",
+          "audience"
+        ],
+        "title": "ArtifactShareView",
+        "type": "object"
+      },
+      "ArtifactWhere": {
+        "additionalProperties": false,
+        "properties": {
+          "field": {
+            "minLength": 1,
+            "title": "Field",
+            "type": "string"
+          },
+          "op": {
+            "enum": [
+              "==",
+              "!=",
+              "<",
+              "<=",
+              ">",
+              ">=",
+              "in",
+              "array-contains"
+            ],
+            "title": "Op",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value"
+          }
+        },
+        "required": [
+          "field",
+          "op",
+          "value"
+        ],
+        "title": "ArtifactWhere",
         "type": "object"
       },
       "Assistant": {
@@ -4967,8 +5957,15 @@
             "title": "Description"
           },
           "engine_event": {
-            "title": "Engine Event",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Engine Event"
           },
           "engine_kind": {
             "title": "Engine Kind",
@@ -5006,6 +6003,17 @@
               }
             ],
             "title": "Last Tool Name"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
           },
           "operations": {
             "items": {
@@ -5072,7 +6080,6 @@
           "child_run_id",
           "engine_kind",
           "depth",
-          "engine_event",
           "closed",
           "active",
           "operations"
@@ -6547,7 +7554,7 @@
       },
       "RuntimeStateOwnerPayload": {
         "additionalProperties": false,
-        "description": "The platform-issued owner, independent of a provisioning Session.",
+        "description": "The platform-issued owner of a native runtime profile.",
         "properties": {
           "engine_kind": {
             "minLength": 1,
@@ -6562,7 +7569,8 @@
           "subject_kind": {
             "enum": [
               "assistant",
-              "agent"
+              "agent",
+              "session"
             ],
             "title": "Subject Kind",
             "type": "string"
@@ -7433,6 +8441,17 @@
                 "type": "null"
               }
             ]
+          },
+          "assistant_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assistant Id"
           },
           "background_task_state": {
             "anyOf": [
@@ -8898,7 +9917,7 @@
   "info": {
     "summary": "Self-hosted agent runtime that runs installed Agent programs in isolated sandboxes and streams responses over the AI SDK Data Stream Protocol (SSE).",
     "title": "AstraBox",
-    "version": "0.1.2"
+    "version": "0.1.3"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -11745,6 +12764,2461 @@
         "summary": "Wake Agent"
       }
     },
+    "/api/v1/artifact-share/{token}/runtime": {
+      "get": {
+        "operationId": "artifact_runtime_api_v1_artifact_share__token__runtime_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "token",
+            "required": true,
+            "schema": {
+              "title": "Token",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "guest_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Guest Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_ArtifactRuntime_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Artifact Runtime"
+      }
+    },
+    "/api/v1/artifact-share/{token}/runtime/agent-runs": {
+      "post": {
+        "operationId": "artifact_agent_run_api_v1_artifact_share__token__runtime_agent_runs_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "token",
+            "required": true,
+            "schema": {
+              "title": "Token",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "guest_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Guest Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ArtifactAgentRunRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_ArtifactAgentRun_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Artifact Agent Run"
+      }
+    },
+    "/api/v1/artifact-share/{token}/runtime/agent-runs/{run_id}": {
+      "get": {
+        "operationId": "artifact_agent_status_api_v1_artifact_share__token__runtime_agent_runs__run_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "token",
+            "required": true,
+            "schema": {
+              "title": "Token",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "guest_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Guest Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_ArtifactAgentStatus_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Artifact Agent Status"
+      }
+    },
+    "/api/v1/artifact-share/{token}/runtime/data-add": {
+      "post": {
+        "operationId": "artifact_data_add_api_v1_artifact_share__token__runtime_data_add_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "token",
+            "required": true,
+            "schema": {
+              "title": "Token",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "guest_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Guest Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ArtifactAddRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_dict_str__Any__"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Artifact Data Add"
+      }
+    },
+    "/api/v1/artifact-share/{token}/runtime/data-query": {
+      "post": {
+        "operationId": "artifact_data_query_api_v1_artifact_share__token__runtime_data_query_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "token",
+            "required": true,
+            "schema": {
+              "title": "Token",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "guest_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Guest Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ArtifactQueryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_dict_str__Any__"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Artifact Data Query"
+      }
+    },
+    "/api/v1/artifact-share/{token}/runtime/data/{path}": {
+      "delete": {
+        "operationId": "artifact_data_delete_api_v1_artifact_share__token__runtime_data__path__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "path",
+            "required": true,
+            "schema": {
+              "title": "Path",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "token",
+            "required": true,
+            "schema": {
+              "title": "Token",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "guest_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Guest Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_dict_str__Any__"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Artifact Data Delete"
+      },
+      "get": {
+        "operationId": "artifact_data_get_api_v1_artifact_share__token__runtime_data__path__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "path",
+            "required": true,
+            "schema": {
+              "title": "Path",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "token",
+            "required": true,
+            "schema": {
+              "title": "Token",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "guest_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Guest Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_dict_str__Any__"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Artifact Data Get"
+      },
+      "patch": {
+        "operationId": "artifact_data_update_api_v1_artifact_share__token__runtime_data__path__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "path",
+            "required": true,
+            "schema": {
+              "title": "Path",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "token",
+            "required": true,
+            "schema": {
+              "title": "Token",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "guest_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Guest Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ArtifactDataRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_dict_str__Any__"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Artifact Data Update"
+      },
+      "put": {
+        "operationId": "artifact_data_set_api_v1_artifact_share__token__runtime_data__path__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "path",
+            "required": true,
+            "schema": {
+              "title": "Path",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "token",
+            "required": true,
+            "schema": {
+              "title": "Token",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "guest_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Guest Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ArtifactDataRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_dict_str__Any__"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Artifact Data Set"
+      }
+    },
+    "/api/v1/artifact-share/{token}/runtime/live": {
+      "get": {
+        "operationId": "artifact_live_api_v1_artifact_share__token__runtime_live_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "token",
+            "required": true,
+            "schema": {
+              "title": "Token",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "after_seq",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "After Seq",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "guest_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Guest Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {}
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Artifact Live"
+      }
+    },
+    "/api/v1/artifact-share/{token}/runtime/publish": {
+      "post": {
+        "operationId": "artifact_publish_api_v1_artifact_share__token__runtime_publish_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "token",
+            "required": true,
+            "schema": {
+              "title": "Token",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "guest_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Guest Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ArtifactPublishRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_ArtifactRecord_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Artifact Publish"
+      }
+    },
+    "/api/v1/artifact-share/{token}/runtime/room/{room}/emit": {
+      "post": {
+        "operationId": "artifact_room_emit_api_v1_artifact_share__token__runtime_room__room__emit_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "room",
+            "required": true,
+            "schema": {
+              "title": "Room",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "token",
+            "required": true,
+            "schema": {
+              "title": "Token",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "guest_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Guest Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ArtifactRoomRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_dict_str__Any__"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Artifact Room Emit"
+      }
+    },
+    "/api/v1/artifact-share/{token}/runtime/room/{room}/presence": {
+      "post": {
+        "operationId": "artifact_room_presence_api_v1_artifact_share__token__runtime_room__room__presence_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "room",
+            "required": true,
+            "schema": {
+              "title": "Room",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "token",
+            "required": true,
+            "schema": {
+              "title": "Token",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "guest_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Guest Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ArtifactPresenceRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_dict_str__Any__"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Artifact Room Presence"
+      }
+    },
+    "/api/v1/artifact-share/{token}/runtime/sample": {
+      "post": {
+        "operationId": "artifact_sample_api_v1_artifact_share__token__runtime_sample_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "token",
+            "required": true,
+            "schema": {
+              "title": "Token",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "guest_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Guest Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ArtifactSampleRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {}
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Artifact Sample"
+      }
+    },
+    "/api/v1/artifact-share/{token}/runtime/viewers": {
+      "get": {
+        "operationId": "artifact_viewers_api_v1_artifact_share__token__runtime_viewers_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "token",
+            "required": true,
+            "schema": {
+              "title": "Token",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "ids",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ids",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "guest_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Guest Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_dict_str__Any__"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Artifact Viewers"
+      }
+    },
+    "/api/v1/artifacts": {
+      "get": {
+        "operationId": "list_artifacts_api_v1_artifacts_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "session_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Session Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "assistant_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Assistant Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_ArtifactPage_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Artifacts"
+      }
+    },
+    "/api/v1/artifacts/{artifact_id}": {
+      "delete": {
+        "operationId": "delete_artifact_api_v1_artifacts__artifact_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "artifact_id",
+            "required": true,
+            "schema": {
+              "title": "Artifact Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_dict_str__bool__"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Artifact"
+      },
+      "get": {
+        "operationId": "get_artifact_api_v1_artifacts__artifact_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "artifact_id",
+            "required": true,
+            "schema": {
+              "title": "Artifact Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_dict_str__Any__"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Artifact"
+      },
+      "patch": {
+        "operationId": "patch_artifact_api_v1_artifacts__artifact_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "artifact_id",
+            "required": true,
+            "schema": {
+              "title": "Artifact Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ArtifactMetadataPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_ArtifactRecord_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Patch Artifact"
+      }
+    },
+    "/api/v1/artifacts/{artifact_id}/runtime": {
+      "get": {
+        "operationId": "artifact_runtime_api_v1_artifacts__artifact_id__runtime_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "artifact_id",
+            "required": true,
+            "schema": {
+              "title": "Artifact Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "guest_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Guest Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_ArtifactRuntime_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Artifact Runtime"
+      }
+    },
+    "/api/v1/artifacts/{artifact_id}/runtime/agent-runs": {
+      "post": {
+        "operationId": "artifact_agent_run_api_v1_artifacts__artifact_id__runtime_agent_runs_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "artifact_id",
+            "required": true,
+            "schema": {
+              "title": "Artifact Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "guest_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Guest Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ArtifactAgentRunRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_ArtifactAgentRun_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Artifact Agent Run"
+      }
+    },
+    "/api/v1/artifacts/{artifact_id}/runtime/agent-runs/{run_id}": {
+      "get": {
+        "operationId": "artifact_agent_status_api_v1_artifacts__artifact_id__runtime_agent_runs__run_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "artifact_id",
+            "required": true,
+            "schema": {
+              "title": "Artifact Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "guest_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Guest Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_ArtifactAgentStatus_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Artifact Agent Status"
+      }
+    },
+    "/api/v1/artifacts/{artifact_id}/runtime/data-add": {
+      "post": {
+        "operationId": "artifact_data_add_api_v1_artifacts__artifact_id__runtime_data_add_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "artifact_id",
+            "required": true,
+            "schema": {
+              "title": "Artifact Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "guest_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Guest Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ArtifactAddRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_dict_str__Any__"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Artifact Data Add"
+      }
+    },
+    "/api/v1/artifacts/{artifact_id}/runtime/data-query": {
+      "post": {
+        "operationId": "artifact_data_query_api_v1_artifacts__artifact_id__runtime_data_query_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "artifact_id",
+            "required": true,
+            "schema": {
+              "title": "Artifact Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "guest_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Guest Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ArtifactQueryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_dict_str__Any__"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Artifact Data Query"
+      }
+    },
+    "/api/v1/artifacts/{artifact_id}/runtime/data/{path}": {
+      "delete": {
+        "operationId": "artifact_data_delete_api_v1_artifacts__artifact_id__runtime_data__path__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "path",
+            "required": true,
+            "schema": {
+              "title": "Path",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "artifact_id",
+            "required": true,
+            "schema": {
+              "title": "Artifact Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "guest_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Guest Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_dict_str__Any__"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Artifact Data Delete"
+      },
+      "get": {
+        "operationId": "artifact_data_get_api_v1_artifacts__artifact_id__runtime_data__path__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "path",
+            "required": true,
+            "schema": {
+              "title": "Path",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "artifact_id",
+            "required": true,
+            "schema": {
+              "title": "Artifact Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "guest_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Guest Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_dict_str__Any__"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Artifact Data Get"
+      },
+      "patch": {
+        "operationId": "artifact_data_update_api_v1_artifacts__artifact_id__runtime_data__path__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "path",
+            "required": true,
+            "schema": {
+              "title": "Path",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "artifact_id",
+            "required": true,
+            "schema": {
+              "title": "Artifact Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "guest_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Guest Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ArtifactDataRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_dict_str__Any__"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Artifact Data Update"
+      },
+      "put": {
+        "operationId": "artifact_data_set_api_v1_artifacts__artifact_id__runtime_data__path__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "path",
+            "required": true,
+            "schema": {
+              "title": "Path",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "artifact_id",
+            "required": true,
+            "schema": {
+              "title": "Artifact Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "guest_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Guest Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ArtifactDataRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_dict_str__Any__"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Artifact Data Set"
+      }
+    },
+    "/api/v1/artifacts/{artifact_id}/runtime/live": {
+      "get": {
+        "operationId": "artifact_live_api_v1_artifacts__artifact_id__runtime_live_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "artifact_id",
+            "required": true,
+            "schema": {
+              "title": "Artifact Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "after_seq",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "After Seq",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "guest_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Guest Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {}
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Artifact Live"
+      }
+    },
+    "/api/v1/artifacts/{artifact_id}/runtime/publish": {
+      "post": {
+        "operationId": "artifact_publish_api_v1_artifacts__artifact_id__runtime_publish_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "artifact_id",
+            "required": true,
+            "schema": {
+              "title": "Artifact Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "guest_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Guest Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ArtifactPublishRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_ArtifactRecord_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Artifact Publish"
+      }
+    },
+    "/api/v1/artifacts/{artifact_id}/runtime/room/{room}/emit": {
+      "post": {
+        "operationId": "artifact_room_emit_api_v1_artifacts__artifact_id__runtime_room__room__emit_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "room",
+            "required": true,
+            "schema": {
+              "title": "Room",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "artifact_id",
+            "required": true,
+            "schema": {
+              "title": "Artifact Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "guest_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Guest Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ArtifactRoomRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_dict_str__Any__"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Artifact Room Emit"
+      }
+    },
+    "/api/v1/artifacts/{artifact_id}/runtime/room/{room}/presence": {
+      "post": {
+        "operationId": "artifact_room_presence_api_v1_artifacts__artifact_id__runtime_room__room__presence_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "room",
+            "required": true,
+            "schema": {
+              "title": "Room",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "artifact_id",
+            "required": true,
+            "schema": {
+              "title": "Artifact Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "guest_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Guest Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ArtifactPresenceRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_dict_str__Any__"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Artifact Room Presence"
+      }
+    },
+    "/api/v1/artifacts/{artifact_id}/runtime/sample": {
+      "post": {
+        "operationId": "artifact_sample_api_v1_artifacts__artifact_id__runtime_sample_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "artifact_id",
+            "required": true,
+            "schema": {
+              "title": "Artifact Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "guest_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Guest Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ArtifactSampleRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {}
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Artifact Sample"
+      }
+    },
+    "/api/v1/artifacts/{artifact_id}/runtime/viewers": {
+      "get": {
+        "operationId": "artifact_viewers_api_v1_artifacts__artifact_id__runtime_viewers_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "artifact_id",
+            "required": true,
+            "schema": {
+              "title": "Artifact Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "ids",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ids",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "guest_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Guest Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_dict_str__Any__"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Artifact Viewers"
+      }
+    },
+    "/api/v1/artifacts/{artifact_id}/share": {
+      "delete": {
+        "operationId": "disable_artifact_share_api_v1_artifacts__artifact_id__share_delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "artifact_id",
+            "required": true,
+            "schema": {
+              "title": "Artifact Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_ArtifactShare_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Disable Artifact Share"
+      },
+      "get": {
+        "operationId": "get_artifact_share_api_v1_artifacts__artifact_id__share_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "artifact_id",
+            "required": true,
+            "schema": {
+              "title": "Artifact Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_ArtifactShare_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Artifact Share"
+      },
+      "post": {
+        "operationId": "enable_artifact_share_api_v1_artifacts__artifact_id__share_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "artifact_id",
+            "required": true,
+            "schema": {
+              "title": "Artifact Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ArtifactShareRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_ArtifactShare_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Enable Artifact Share"
+      }
+    },
+    "/api/v1/artifacts/{artifact_id}/versions": {
+      "get": {
+        "operationId": "list_artifact_versions_api_v1_artifacts__artifact_id__versions_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "artifact_id",
+            "required": true,
+            "schema": {
+              "title": "Artifact Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_list_dict_str__Any___"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Artifact Versions"
+      }
+    },
+    "/api/v1/artifacts/{artifact_id}/versions/{version}": {
+      "get": {
+        "operationId": "get_artifact_version_api_v1_artifacts__artifact_id__versions__version__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "artifact_id",
+            "required": true,
+            "schema": {
+              "title": "Artifact Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "version",
+            "required": true,
+            "schema": {
+              "title": "Version",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_dict_str__Any__"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Artifact Version"
+      }
+    },
+    "/api/v1/artifacts/{artifact_id}/versions/{version}/restore": {
+      "post": {
+        "operationId": "restore_artifact_version_api_v1_artifacts__artifact_id__versions__version__restore_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "artifact_id",
+            "required": true,
+            "schema": {
+              "title": "Artifact Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "version",
+            "required": true,
+            "schema": {
+              "title": "Version",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_ArtifactRecord_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Restore Artifact Version"
+      }
+    },
     "/api/v1/assistants": {
       "get": {
         "operationId": "list_assistants_api_v1_assistants_get",
@@ -12338,9 +15812,9 @@
         "summary": "Revoke Mcp Token"
       }
     },
-    "/api/v1/platform-mcp/{deployment_id}/{server_name}/mcp": {
+    "/api/v1/platform-mcp/{deployment_id}/{server_name}/{capability}/mcp": {
       "post": {
-        "operationId": "platform_mcp_streamable_http_api_v1_platform_mcp__deployment_id___server_name__mcp_post",
+        "operationId": "platform_mcp_streamable_http_api_v1_platform_mcp__deployment_id___server_name___capability__mcp_post",
         "parameters": [
           {
             "in": "path",
@@ -12357,6 +15831,15 @@
             "required": true,
             "schema": {
               "title": "Server Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "capability",
+            "required": true,
+            "schema": {
+              "title": "Capability",
               "type": "string"
             }
           }

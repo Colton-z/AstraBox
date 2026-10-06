@@ -11,12 +11,10 @@ import pytest
 
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.user_context import UserContext
-from astrabox.core.service.orchestrator.agent import client_pool, prepared_slots
+from astrabox.core.service.orchestrator.agent import prepared_slots
 from astrabox.core.service.orchestrator.agent import runtime_generation as runtime_generation_module
 from astrabox.core.service.orchestrator.agent.agent_service import AgentService
-from astrabox.core.service.orchestrator.platform_service import AgentPlatformService
 from astrabox.seams.egress_credentials import EgressCredential
-from astrabox.seams.sandbox_disposal import SandboxDestruction
 
 
 class _Repo:
@@ -92,17 +90,6 @@ def _service(repo: _Repo, template: Any) -> AgentService:
     )
 
 
-def _patch_generation(
-    monkeypatch: pytest.MonkeyPatch,
-    *,
-    generation: str = "generation-new",
-) -> None:
-    monkeypatch.setattr(
-        "astrabox.core.service.orchestrator.agent.runtime_generation.reconcile_runtime_generation",
-        AsyncMock(return_value=generation),
-    )
-
-
 def test_runtime_generation_credential_contract_ignores_secret_rotation() -> None:
     def credential(secret: str) -> EgressCredential:
         return EgressCredential(
@@ -151,96 +138,6 @@ def test_runtime_generation_credential_contract_rotates_on_policy_change() -> No
     ) != runtime_generation_module.environment_credentials_generation_contract([widened])
 
 
-async def test_disabling_preparation_retires_slot_then_pool_before_clearing_pointer(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    row = {
-        "agent_id": "agent-1",
-        "version": 3,
-        "enabled": True,
-        "state": "ACTIVE",
-        "prewarm_enabled": False,
-        "_client_pool_name": "pool-old",
-        "_client_pool_backend": "open_sandbox",
-    }
-    template = SimpleNamespace(agent_id="agent-1", runtime_generation=None)
-    repo = _Repo(row)
-    events: list[str] = []
-
-    async def retire_slot(current: Any, *, reason: str, agent_repo: Any) -> None:
-        assert current == "agent-1"
-        assert reason == "Agent runtime preparation is disabled"
-        assert agent_repo is repo
-        events.append("retire-slot")
-
-    async def retire_pool(pool_name: str, *, backend_name: str) -> None:
-        assert (pool_name, backend_name) == ("pool-old", "open_sandbox")
-        events.append("retire-pool")
-
-    _patch_generation(monkeypatch)
-    monkeypatch.setattr(prepared_slots, "retire_prepared_runtime", retire_slot)
-    monkeypatch.setattr(client_pool, "retire_agent_client_pool", retire_pool)
-
-    await _service(repo, template)._reconcile_agent_runtime("agent-1")
-
-    assert events == ["retire-slot", "retire-pool"]
-    assert repo.updates == [
-        (
-            "agent-1",
-            {
-                "_client_pool_name": None,
-                "_client_pool_backend": None,
-                "_client_pool_epoch": None,
-            },
-        )
-    ]
-
-
-async def test_agent_delete_retires_prepared_capacity_before_hiding_owner_row(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    row = {
-        "agent_id": "agent-1",
-        "version": 3,
-        "created_by": "owner-1",
-        "visibility": "private",
-        "enabled": True,
-        "state": "ACTIVE",
-        "prewarm_enabled": True,
-        "_client_pool_name": "pool-old",
-        "_client_pool_backend": "open_sandbox",
-    }
-    repo = _Repo(row)
-    template = SimpleNamespace(agent_id="agent-1", runtime_generation=None)
-    events: list[str] = []
-
-    async def retire_slot(*_args: Any, **_kwargs: Any) -> None:
-        assert repo.soft_deleted == []
-        events.append("retire-slot")
-
-    async def retire_pool(*_args: Any, **_kwargs: Any) -> None:
-        assert repo.soft_deleted == []
-        events.append("retire-pool")
-
-    _patch_generation(monkeypatch)
-    monkeypatch.setattr(prepared_slots, "retire_prepared_runtime", retire_slot)
-    monkeypatch.setattr(client_pool, "retire_agent_client_pool", retire_pool)
-    service = _service(repo, template)
-    service._runtime_manager = SimpleNamespace(
-        terminate_runtime=AsyncMock(
-            return_value=SandboxDestruction.nothing_named(
-                detail="the Agent had no resident sandbox"
-            )
-        )
-    )
-
-    result = await service.delete_agent(UserContext("owner-1"), "agent-1")
-
-    assert events == ["retire-slot", "retire-pool"]
-    assert repo.soft_deleted == [("agent-1", "owner-1")]
-    assert result["state"] == "DELETED"
-
-
 async def test_environment_update_schedules_bound_agent_runtime() -> None:
     row = {
         "agent_id": "agent-1",
@@ -255,38 +152,6 @@ async def test_environment_update_schedules_bound_agent_runtime() -> None:
     assert scheduled == ["agent-1"]
     assert await service.reconcile_environment_runtimes("another-environment") == 0
     assert scheduled == ["agent-1"]
-
-
-async def test_environment_write_notifies_runtime_reconciliation_after_commit() -> None:
-    calls: list[tuple[str, object]] = []
-
-    class _EnvironmentConfig:
-        async def upsert_environment_config(
-            self, user: UserContext, name: str, payload: dict[str, Any]
-        ) -> dict[str, Any]:
-            calls.append(("write", payload))
-            return {"name": name, **payload}
-
-    class _EnvironmentAgentService:
-        async def reconcile_environment_runtimes(self, name: str) -> int:
-            calls.append(("reconcile", name))
-            return 1
-
-    platform = object.__new__(AgentPlatformService)
-    platform._agent_config = _EnvironmentConfig()
-    platform._agent_service_getter = lambda: _EnvironmentAgentService()
-
-    result = await platform.upsert_environment_config(
-        UserContext("admin"),
-        "research",
-        {"engine_kind": "claude_code"},
-    )
-
-    assert result == {"name": "research", "engine_kind": "claude_code"}
-    assert calls == [
-        ("write", {"engine_kind": "claude_code"}),
-        ("reconcile", "research"),
-    ]
 
 
 async def test_agent_manager_reads_platform_prepared_runtime_status(

@@ -178,7 +178,7 @@ class TurnSnapshot:
         self.updated_at = updated_at
 
 
-class ArtifactRecord:
+class SessionArtifactRecord:
     """Generic durable artifact emitted by a worker."""
 
     __slots__ = (

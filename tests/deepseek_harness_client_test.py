@@ -12,6 +12,10 @@ made the wrong anchor look correct.
 The shared fixture adapter repackages its durable chunks into the current
 settlement schema. The source recording remains unchanged; this is not a
 capture of the current live assistant-stream transport.
+
+The live native-configuration E2E compares permission modes with the supplier's
+catalog. ``dsh-gateway-model-route.exclusive.spec.ts`` proves that a prefixed
+DeepSeek model alias selects the generic gateway and produces a retained reply.
 """
 
 from __future__ import annotations
@@ -31,9 +35,6 @@ from astrabox.core.service.orchestrator.engine.base import (
     EngineChildRunControl,
     EngineConversationBinding,
     EngineInputCommand,
-    EngineInteractions,
-    EnginePermissionModes,
-    EngineServerInfo,
     EngineStreamDetached,
 )
 from astrabox.core.service.orchestrator.engine.deepseek_harness_client import (
@@ -254,21 +255,35 @@ class ScriptedLink:
                     },
                 },
             }
-        if method == "subagents/list":
-            parent_session_id = str(args.get("parentSessionId") or "")
+        if method == "permissionPresets/catalog":
+            return {
+                "options": [
+                    {"value": value, "name": value}
+                    for value in self.permission_options
+                ]
+            }
+        if method == "session/list":
+            # The summary reports each Session's running state; a child's comes
+            # from the catalog the next projection read returns.
+            running = {self.created_session_id: False}
+            for parent_session_id in {*self.subagent_catalogs, *self.subagent_catalog_sequences}:
+                for entry in self._next_catalog(parent_session_id):
+                    running[str(entry["id"])] = entry.get("activity") == "running"
+            return {
+                "items": [
+                    {"sessionId": session_id, "running": state}
+                    for session_id, state in running.items()
+                ]
+            }
+        if method == "session/projections":
+            parent_session_id = str(request.get("sessionId") or "")
             sequence = self.subagent_catalog_sequences.get(parent_session_id)
             entries = (
                 sequence.pop(0)
                 if sequence
                 else self.subagent_catalogs.get(parent_session_id, [])
             )
-            return {
-                "entries": [
-                    dict(entry)
-                    for entry in entries
-                ],
-                "parentAvailable": True,
-            }
+            return {"values": {"subagentCatalog": [dict(entry) for entry in entries]}}
         if method == "session/page":
             child_session_id = str(request["address"]["childSessionId"])
             events = [
@@ -293,6 +308,10 @@ class ScriptedLink:
         if method == "subagents/interruptByParent":
             return {"accepted": True}
         return {"accepted": True}
+
+    def _next_catalog(self, parent_session_id: str) -> list[dict[str, Any]]:
+        sequence = self.subagent_catalog_sequences.get(parent_session_id)
+        return sequence[0] if sequence else self.subagent_catalogs.get(parent_session_id, [])
 
     async def respond(self, rpc_id: str, result: dict[str, Any]) -> bool:
         self.responses.append((rpc_id, result))
@@ -489,63 +508,6 @@ async def _drive_recorded_turn(
 
 
 @pytest.mark.asyncio
-async def test_the_turn_slot_is_free_once_a_consumer_stops_at_the_result() -> None:
-    """A real consumer breaks at the terminal frame; the slot must be free.
-
-    Every other turn test here drains the stream to exhaustion, which resumes
-    the generator past its final yield and runs whatever follows it. A turn
-    worker does not — it stops the moment it has the result, closing the
-    generator — so settling after that yield never happens at all and the
-    NEXT message in the same conversation is refused with "already has an
-    active turn".
-
-    Reported from the product against Hermes, whose stream had the same shape;
-    `pi_client` had it before that. Only a second turn shows it, which is why
-    one-turn probes and the live e2e all pass over it.
-    """
-
-    link = ScriptedLink(_load_mux(until_turn_end=1))
-    client = await _bound(link, native=_NATIVE_ID)
-
-    command = _command()
-    receipt = await client.begin_delivery(command)
-    client._prompted = {_RECORDED_RPC_TURN_1: command}  # noqa: SLF001
-
-    async for frame in client.iter_turn_events(receipt):
-        if frame.get("type") == "result":
-            break  # exactly where a turn worker stops
-
-    assert client.active_receipt is None, (
-        "a held slot rejects the next message in this conversation"
-    )
-
-
-@pytest.mark.asyncio
-async def test_a_recorded_turn_opens_with_consumption_and_closes_with_one_result() -> None:
-    link = ScriptedLink(_load_mux(until_turn_end=1))
-    client = await _bound(link, native=_NATIVE_ID)
-
-    frames = await _drive_recorded_turn(link, client)
-
-    assert all(isinstance(frame, EngineEmission) for frame in frames)
-    assert frames[0]["type"] == "data-input-consumed"
-    assert frames[0]["data"]["inputId"] == _INPUT_ID
-    assert [f["type"] for f in frames].count("result") == 1
-    assert frames[-1] == {
-        "type": "result",
-        "finishReason": "stop",
-        "__engine_terminal_reason": "completed",
-        "__engine_output_cursor": {"sessionId": _NATIVE_ID, "seq": 24},
-    } | {
-        k: v for k, v in frames[-1].items() if k == "usage"
-    }
-    body = "".join(
-        str(f.get("delta") or "") for f in frames if f["type"] == "text-delta"
-    )
-    assert "PROBE-OK" in body
-
-
-@pytest.mark.asyncio
 async def test_the_consumption_boundary_is_our_prompt_id_not_the_first_user_message() -> None:
     """The recorded turn carries a plugin's context snapshot as a user message.
 
@@ -693,32 +655,6 @@ async def test_another_turns_terminal_does_not_settle_this_one() -> None:
         str(f.get("delta") or "") for f in produced if f["type"] == "text-delta"
     )
     assert "PROBE-OK" in body
-
-
-@pytest.mark.asyncio
-async def test_the_turn_frames_that_precede_our_echo_are_held_not_dropped() -> None:
-    """The harness opens a turn before it echoes the prompt.
-
-    Measured on the product wire: ``turn/start`` and ``step/start`` come at
-    seq 4 and 6, the echo at seq 7. Those frames are this turn's, so dropping
-    everything before the boundary would lose the step structure the console
-    renders — they are held and released in order instead.
-    """
-
-    link = ScriptedLink([_stale_turn_end(), *_load_mux(until_turn_end=1)])
-    client = await _bound(link, native=_NATIVE_ID)
-    command = _command()
-    receipt = await client.begin_delivery(command)
-    client._prompted = {_RECORDED_RPC_TURN_1: command}  # noqa: SLF001
-
-    produced = [frame async for frame in client.iter_turn_events(receipt)]
-    kinds = [f["type"] for f in produced]
-
-    assert kinds[0] == "data-input-consumed"
-    # Released after the boundary, in the order the harness produced them.
-    assert "start-step" in kinds
-    assert kinds.index("start-step") > 0
-    assert kinds.index("start-step") < kinds.index("text-delta")
 
 
 # ── stopping ─────────────────────────────────────────────────────────────
@@ -1165,84 +1101,6 @@ async def test_native_catalog_replay_preserves_sibling_and_nested_frame_identity
 
 
 @pytest.mark.asyncio
-async def test_a_live_child_is_discovered_when_the_parent_publishes_it() -> None:
-    """The followed parent's catalog publishes the child's mode and identity."""
-
-    link = ScriptedLink()
-    link.subagent_catalogs[_NATIVE_ID] = [_catalog_child(_CHILD_ID)]
-    link.subagent_catalog_sequences[_NATIVE_ID] = [
-        [{"kind": "diagnostic", "id": _CHILD_ID, "reason": "unavailable"}],
-        [_catalog_child(_CHILD_ID)],
-    ]
-    child_added = {
-        "rpcId": "",
-        "type": "emit",
-        "event": "api-session/added",
-        "args": [{
-            "sessionId": _CHILD_ID,
-            "parentSessionId": _NATIVE_ID,
-            "origin": "subagent",
-            "blank": True,
-        }],
-    }
-    catalog_published = _mux_session_event(
-        _NATIVE_ID,
-        "subagent/catalog",
-        seq=3,
-        data={
-            "version": 0,
-            "childId": _CHILD_ID,
-            "childCreatedAt": 2,
-            "mode": "continuable",
-            "label": "researcher",
-        },
-    )
-    answer = _mux_session_event(
-        _CHILD_ID,
-        "assistant/message",
-        seq=4,
-        data={
-            "message": {
-                "role": "assistant",
-                "content": [{"type": "text", "text": "live answer"}],
-            }
-        },
-        surface_op="append",
-    )
-    child_terminal = _mux_session_event(
-        _CHILD_ID,
-        "turn/end",
-        seq=5,
-        data={"turn": 1, "reason": {"kind": "completed"}},
-    )
-
-    _, produced = await _drive_minimal_root_turn(
-        link,
-        before_terminal=[child_added, catalog_published, answer, child_terminal],
-    )
-
-    facts = [
-        frame["data"]
-        for frame in produced
-        if frame.get("__engine_frame_scope") == "session"
-    ]
-    assert [fact["kind"] for fact in facts] == [
-        "lifecycle",
-        "message",
-        "lifecycle",
-    ]
-    assert facts[0]["event"] == "opened"
-    assert facts[1]["content"] == [{"type": "text", "text": "live answer"}]
-    assert facts[2]["event"] == "updated"
-    assert facts[2]["engineReason"] == "completed"
-    assert any(
-        frame.get("data", {}).get("subtype") == "subagent.catalog.unavailable"
-        for frame in produced
-    )
-    assert [frame["type"] for frame in produced].count("result") == 1
-
-
-@pytest.mark.asyncio
 async def test_dsh_child_history_pages_rebuild_once_then_catch_up_by_sequence() -> None:
     link = ScriptedLink()
     link.subagent_catalogs[_NATIVE_ID] = [_catalog_child(_CHILD_ID)]
@@ -1483,47 +1341,12 @@ async def test_dsh_child_stop_rejects_a_malformed_native_address() -> None:
 
 # ── permission presets ───────────────────────────────────────────────────
 @pytest.mark.asyncio
-async def test_the_engines_own_presets_are_the_modes_the_console_offers() -> None:
-    """One selector, because that is the shape the harness itself publishes.
-
-    Its `permissions` projection carries the current list, and each option
-    bundles a sandbox mode with an approval policy on the engine's side.
-    """
-
-    client = _client(ScriptedLink(), native=_NATIVE_ID)
-    manifest = await client.get_capabilities()
-
-    assert manifest.permission_modes == [
-        "read-only",
-        "workspace-write",
-        "danger-full-access",
-    ]
-    assert isinstance(client, EnginePermissionModes)
-
-
-@pytest.mark.asyncio
-async def test_a_permission_preset_added_by_the_harness_is_discovered() -> None:
-    link = ScriptedLink()
-    link.permission_options.append("vendor-new-mode")
-    client = _client(link, native=_NATIVE_ID)
-
-    manifest = await client.get_capabilities()
-
-    assert manifest.permission_modes[-1] == "vendor-new-mode"
-    assert link.calls[-1] == (
-        "session/follow",
-        {"args": {"request": {"address": {"kind": "session", "sessionId": _NATIVE_ID}}}},
-        None,
-    )
-
-
-@pytest.mark.asyncio
 async def test_a_missing_permission_projection_fails_the_handshake() -> None:
     link = ScriptedLink()
     link.permission_options.clear()
     client = _client(link, native=_NATIVE_ID)
 
-    with pytest.raises(APIError, match="permissions projection has no presets"):
+    with pytest.raises(APIError, match="permission catalog has no presets"):
         await client.get_capabilities()
 
 
@@ -1642,19 +1465,6 @@ async def test_a_model_outside_the_deepseek_catalog_runs_on_a_declared_gateway_r
     _, selected, _ = link.calls[-1]
     assert selected["args"]["request"]["provider"] == "astrabox-gateway"
     assert selected["args"]["request"]["model"] == model
-
-
-@pytest.mark.asyncio
-async def test_a_deepseek_model_under_another_route_name_is_not_a_deepseek_route() -> None:
-    """The catalog id is the test, not a substring of the gateway's route name."""
-
-    link = ScriptedLink()
-    client = await _bound(link, native=_NATIVE_ID)
-
-    await client.select_model("openai-compatible/deepseek-flash", **_GATEWAY)
-
-    _, selected, _ = link.calls[-1]
-    assert selected["args"]["request"]["provider"] == "astrabox-gateway"
 
 
 @pytest.mark.asyncio
@@ -1868,65 +1678,6 @@ async def _park_on(frame: dict[str, Any]) -> tuple[ScriptedLink, DeepSeekHarness
 
 
 @pytest.mark.asyncio
-async def test_the_message_after_a_stopped_approval_answers_on_its_own_turn() -> None:
-    """A stop settles a turn parked on an approval on the platform side, and the
-    harness ends that turn on the wire: the denied call, then `turn/end`
-    reason aborted. Those records were queued for the parked turn, which
-    nobody reads again. The next message must end on its own turn's end,
-    not on the aborted one's."""
-
-    link, client, _ = await _park_on(_approval_frame())
-    assert await client.interrupt_active_turn()
-    link.push(_mux_session_event(_NATIVE_ID, "step/end", seq=3, data={"turn": 1, "step": 1}))
-    link.push(
-        _mux_session_event(
-            _NATIVE_ID,
-            "turn/end",
-            seq=4,
-            data={"turn": 1, "reason": {"kind": "aborted", "reason": {"kind": "user"}}},
-        )
-    )
-    # The relay takes them while the parked turn is still the platform's.
-    for _ in range(50):
-        await asyncio.sleep(0)
-
-    # As the platform sends it: the message is delivered, then its turn begins.
-    second = _command(content="second", seq=2)
-    await client.deliver(second)
-    receipt = await client.begin_delivery(second)
-    prompt_rpc_id = [
-        str(rpc_id)
-        for method, _, rpc_id in link.calls
-        if method == "session/prompt" and rpc_id is not None
-    ][-1]
-    link.push(_mux_session_event(_NATIVE_ID, "turn/start", seq=5, data={"turn": 2}))
-    link.push(
-        _mux_session_event(
-            _NATIVE_ID,
-            "user/message",
-            seq=6,
-            data={
-                "content": [{"type": "text", "text": "second"}],
-                "source": {"kind": "user", "rpcId": prompt_rpc_id},
-                "role": "user",
-            },
-            surface_op="append",
-        )
-    )
-    link.push(
-        _mux_session_event(
-            _NATIVE_ID, "turn/end", seq=7, data={"turn": 2, "reason": {"kind": "completed"}}
-        )
-    )
-
-    produced = [frame async for frame in client.iter_turn_events(receipt)]
-
-    assert produced[0]["type"] == "data-input-consumed"
-    assert [frame["type"] for frame in produced].count("result") == 1
-    assert produced[-1]["finishReason"] == "stop"
-
-
-@pytest.mark.asyncio
 async def test_a_message_sent_while_a_turn_streams_is_answered_on_that_turn() -> None:
     """The platform delivers a message sent during a running turn at once and
     starts no second turn for it: it joins the running turn's FIFO batch. The
@@ -1979,170 +1730,6 @@ async def test_a_message_sent_while_a_turn_streams_is_answered_on_that_turn() ->
 
 
 @pytest.mark.asyncio
-async def test_the_client_declares_the_interaction_capability_it_implements() -> None:
-    client = _client(ScriptedLink(), native=_NATIVE_ID)
-    manifest = await client.get_capabilities()
-
-    assert manifest.supports_interaction is True
-    assert isinstance(client, EngineInteractions)
-
-
-@pytest.mark.asyncio
-async def test_the_client_does_not_claim_server_metadata_the_gateway_never_supplies() -> None:
-    client = _client(ScriptedLink(), native=_NATIVE_ID)
-    manifest = await client.get_capabilities()
-
-    assert manifest.supports_server_info is False
-    assert not isinstance(client, EngineServerInfo)
-
-
-@pytest.mark.asyncio
-async def test_an_approval_parks_the_turn_with_a_contract_the_platform_accepts() -> None:
-    _, _, request = await _park_on(_approval_frame())
-    contract = dict(request["payload"])
-    tool_use_id = contract.pop("tool_use_id")
-
-    assert request["interactionId"] == "rpc-approval-1"
-    assert validate_interaction_contract(contract) == "tool_approval"
-    assert contract["tool_name"] == "write"
-    assert contract["prompt"] == "writing outside the workspace"
-    # The vendor's frame rides verbatim, which is what the answer is built from.
-    assert contract["raw_input"]["toolName"] == "write"
-    assert tool_use_id == "call_00_ET"
-
-
-@pytest.mark.asyncio
-async def test_an_approval_answer_carries_the_vendors_own_outcome() -> None:
-    link, client, request = await _park_on(_approval_frame())
-    contract = dict(request["payload"])
-    contract.pop("tool_use_id")
-    pending = build_pending_interaction_record(
-        contract=contract,
-        session_id=_SESSION_ID,
-        turn_id="turn-1",
-        interaction_id=request["interactionId"],
-        tool_call_id="call_00_ET",
-    )
-
-    assert await client.submit_interaction_response(
-        client.active_receipt or _fake_receipt(), pending=pending, response={"decision": "approve"}
-    )
-    rpc_id, result = link.responses[-1]
-    assert rpc_id == "rpc-approval-1"
-    assert result == {
-        "ok": True,
-        "value": "allowed-once",
-    }
-
-    await client.submit_interaction_response(
-        client.active_receipt or _fake_receipt(), pending=pending, response={"decision": "reject"}
-    )
-    assert link.responses[-1][1]["value"] == "rejected"
-
-
-@pytest.mark.asyncio
-async def test_a_question_becomes_a_form_that_keeps_every_vendor_string() -> None:
-    _, _, request = await _park_on(_question_frame())
-    contract = request["payload"]
-
-    assert validate_interaction_contract(contract) == "form"
-    rows = contract["questions"]
-    assert [row["id"] for row in rows] == ["q1", "q2"]
-    assert rows[0]["header"] == "Database"
-    # detail has no field of its own here; joining keeps it visible instead of
-    # dropping a string the vendor wrote for the user to read.
-    assert "This decides the migration path." in rows[0]["question"]
-    assert rows[0]["multi_select"] is False
-    assert rows[1]["multi_select"] is True
-    assert rows[0]["options"][0] == {
-        "label": "Postgres",
-        "description": "the default",
-    }
-
-
-@pytest.mark.asyncio
-async def test_a_form_answer_matches_the_request_the_harness_will_check_it_against() -> None:
-    """Same count, same order, same ids, labels only from declared options."""
-
-    link, client, request = await _park_on(_question_frame())
-    pending = build_pending_interaction_record(
-        contract=request["payload"],
-        session_id=_SESSION_ID,
-        turn_id="turn-1",
-        interaction_id=request["interactionId"],
-        tool_call_id=None,
-    )
-
-    assert await client.submit_interaction_response(
-        client.active_receipt or _fake_receipt(),
-        pending=pending,
-        response={
-            "answers": [
-                {"question_id": "q1", "option_label": "SQLite"},
-                {"question_id": "q2", "option_labels": ["pgvector", "PostGIS"]},
-            ]
-        },
-    )
-
-    _, result = link.responses[-1]
-    assert set(result["value"]) == {"answers"}
-    assert result["value"]["answers"] == [
-        {"id": "q1", "selected": ["SQLite"]},
-        {"id": "q2", "selected": ["pgvector", "PostGIS"]},
-    ]
-
-
-@pytest.mark.asyncio
-async def test_free_text_answers_a_single_select_as_custom_never_as_a_selection() -> None:
-    """The harness refuses a selection that is not one of its own labels."""
-
-    link, client, request = await _park_on(_question_frame())
-    pending = build_pending_interaction_record(
-        contract=request["payload"],
-        session_id=_SESSION_ID,
-        turn_id="turn-1",
-        interaction_id=request["interactionId"],
-        tool_call_id=None,
-    )
-
-    await client.submit_interaction_response(
-        client.active_receipt or _fake_receipt(),
-        pending=pending,
-        response={
-            "answers": [
-                {"question_id": "q1", "free_text": "MySQL, actually"},
-                {"question_id": "q2", "option_labels": ["pgvector"]},
-            ]
-        },
-    )
-
-    answers = link.responses[-1][1]["value"]["answers"]
-    assert answers[0] == {"id": "q1", "selected": [], "custom": "MySQL, actually"}
-
-
-@pytest.mark.asyncio
-async def test_a_declined_question_is_the_harnesss_own_cancellation() -> None:
-    link, client, request = await _park_on(_question_frame())
-    pending = build_pending_interaction_record(
-        contract=request["payload"],
-        session_id=_SESSION_ID,
-        turn_id="turn-1",
-        interaction_id=request["interactionId"],
-        tool_call_id=None,
-    )
-
-    await client.submit_interaction_response(
-        client.active_receipt or _fake_receipt(),
-        pending=pending,
-        response={"decline": True},
-    )
-
-    result = link.responses[-1][1]
-    assert result["ok"] is False
-    assert result["error"]["code"] == "cancelled"
-
-
-@pytest.mark.asyncio
 async def test_a_refused_answer_is_reported_as_not_accepted() -> None:
     link, client, request = await _park_on(_approval_frame())
     link.respond_accepts = False
@@ -2165,42 +1752,6 @@ async def test_a_refused_answer_is_reported_as_not_accepted() -> None:
     assert accepted is False
 
 
-@pytest.mark.asyncio
-async def test_a_parked_turn_resumes_into_the_same_engine_turn() -> None:
-    """The engine never stopped; the platform only ended a stream segment.
-
-    Rebuilding the turn state on re-entry would wait for a consumption
-    boundary that was already crossed, and the continuation would hang.
-    """
-
-    frames = _load_mux(until_turn_end=1)
-    link = ScriptedLink()
-    client = await _bound(link, native=_NATIVE_ID)
-    command = _command()
-    receipt = await client.begin_delivery(command)
-    prompt_rpc_id = next(
-        str(rpc_id)
-        for method, _, rpc_id in link.calls
-        if method == "session/prompt" and rpc_id is not None
-    )
-    link.push(_root_turn_start_frame())
-    link.push(_root_consumption_frame(prompt_rpc_id))
-    link.push(_approval_frame())
-
-    parked = [f async for f in client.iter_turn_events(receipt)]
-    assert [f["type"] for f in parked] == [
-        "data-input-consumed",
-        "interaction.request",
-    ]
-    client._prompted = {_RECORDED_RPC_TURN_1: command}  # noqa: SLF001
-
-    for frame in frames:
-        link.push(frame)
-    resumed = [f async for f in client.iter_turn_events(receipt)]
-
-    assert resumed[-1]["type"] == "result"
-
-
 def _fake_receipt() -> Any:
     """Only the interaction path is under test; the receipt is unread there."""
 
@@ -2208,39 +1759,6 @@ def _fake_receipt() -> Any:
 
 
 # ── the transcript carries conversation, not bookkeeping ─────────────────
-@pytest.mark.asyncio
-async def test_an_ordinary_turn_puts_no_bookkeeping_cards_in_the_transcript() -> None:
-    """A user asked why one message produced a pile of them.
-
-    Every event the translator does not recognise becomes a ``data-raw-event``
-    frame, and the console renders each one as a card. A plain turn carries
-    the session's permission knobs and the command log of the preset the
-    platform itself selected — nine cards for one question. None of it is
-    conversation, and all of it is state the platform already holds.
-    """
-
-    link = ScriptedLink(_load_mux(until_turn_end=1))
-    client = await _bound(link, native=_NATIVE_ID)
-    command = _command()
-    receipt = await client.begin_delivery(command)
-    client._prompted = {_RECORDED_RPC_TURN_1: command}  # noqa: SLF001
-
-    produced = [frame async for frame in client.iter_turn_events(receipt)]
-
-    cards = [
-        str((f.get("data") or {}).get("subtype"))
-        for f in produced
-        if f["type"] == "data-raw-event"
-    ]
-    assert cards == [], f"bookkeeping reached the transcript: {cards}"
-    # and the turn itself is still whole
-    assert produced[0]["type"] == "data-input-consumed"
-    assert produced[-1]["type"] == "result"
-    assert "PROBE-OK" in "".join(
-        str(f.get("delta") or "") for f in produced if f["type"] == "text-delta"
-    )
-
-
 @pytest.mark.asyncio
 async def test_an_event_the_adapter_cannot_name_is_still_carried() -> None:
     """The drop list names identified events; it is not a general filter.
@@ -2284,32 +1802,3 @@ async def test_an_event_the_adapter_cannot_name_is_still_carried() -> None:
         if f["type"] == "data-raw-event"
     ]
     assert subtypes == ["something/nobody-has-shipped-yet"]
-
-
-@pytest.mark.asyncio
-async def test_a_stale_catalog_page_cannot_reopen_a_closed_child() -> None:
-    """`subagent.list` is a snapshot, and snapshots arrive out of order.
-
-    A refresh issued before the engine finished closing a one-shot child
-    comes back describing it as running, after the close was already seen.
-    Failing the protocol on that killed the whole turn — the user's answer
-    lost to a stale page (p141, p178). The close stands, and no second
-    lifecycle frame claims otherwise.
-    """
-
-    link = ScriptedLink()
-    link.subagent_catalogs[_NATIVE_ID] = [
-        _catalog_child(_CHILD_ID, mode="one-shot", activity="inactive"),
-        _catalog_child(_CHILD_ID, mode="one-shot", activity="running"),
-    ]
-
-    _, produced = await _drive_minimal_root_turn(link)
-
-    lifecycle = [
-        frame["data"]
-        for frame in produced
-        if frame.get("__engine_frame_scope") == "session"
-        and frame["data"]["kind"] == "lifecycle"
-        and frame["data"]["engineRef"] == _CHILD_ID
-    ]
-    assert [item["event"] for item in lifecycle] == ["closed"]

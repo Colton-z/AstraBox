@@ -780,6 +780,17 @@ async def prepare_slot_for_agent(
             slot_id,
             identity=identity,
         )
+        from astrabox.core.service.orchestrator.engine.platform_mcp import request_with_platform_mcp
+        from astrabox.core.service.orchestrator.runtime.mcp_servers import prepared_slot_mcp_deployment_id
+
+        request = request_with_platform_mcp(
+            request, template=template, deployment_settings=runtime_manager.deployment_settings,
+            deployment_id=prepared_slot_mcp_deployment_id(slot_id),
+        )
+        await _publish_prepared_platform_mcp_binding(
+            template, agent_id=agent_id, slot_id=slot_id,
+            sandbox_id=binding.sandbox_id, sandbox_backend=str(provider.name),
+        )
         # The engine environment lands before either the service or engine
         # starts. Its protected values are placeholders whose complete Vault
         # plan was accepted before the ledger named this slot.
@@ -821,13 +832,6 @@ async def prepare_slot_for_agent(
             # placeholder; without it the child keeps the shared placeholder
             # and its calls attribute to the box identity.
             identity = {**identity, "gateway_substitution": True}
-        await _publish_prepared_platform_mcp_binding(
-            template,
-            agent_id=agent_id,
-            slot_id=slot_id,
-            sandbox_id=binding.sandbox_id,
-            sandbox_backend=str(provider.name),
-        )
         from astrabox.core.service.orchestrator.agent.runtime_preparation import (
             prepare_engine_runtime,
         )
@@ -1199,20 +1203,6 @@ async def clear_claimed_slot(
     )
 
 
-def _has_platform_mcp_server(template: Any) -> bool:
-    from astrabox.core.service.orchestrator.runtime.mcp_servers import (
-        is_platform_mcp_server,
-        template_mcp_servers,
-    )
-
-    return any(
-        isinstance(config, dict) and is_platform_mcp_server(config)
-        for config in template_mcp_servers(
-            getattr(template, "mcp_servers", None)
-        ).values()
-    )
-
-
 async def _publish_prepared_platform_mcp_binding(
     template: Any,
     *,
@@ -1223,8 +1213,6 @@ async def _publish_prepared_platform_mcp_binding(
 ) -> None:
     """Publish the slot address before an engine can connect its MCP client."""
 
-    if not _has_platform_mcp_server(template):
-        return
     from astrabox.core.service.orchestrator.runtime.mcp_servers import (
         prepared_slot_mcp_deployment_id,
     )
@@ -1254,8 +1242,6 @@ async def bind_claimed_platform_mcp_binding(
 ) -> None:
     """Bind a prepared slot's stable MCP address to its claiming Session."""
 
-    if not _has_platform_mcp_server(template):
-        return
     from astrabox.core.service.orchestrator.runtime.mcp_servers import (
         prepared_slot_mcp_deployment_id,
     )

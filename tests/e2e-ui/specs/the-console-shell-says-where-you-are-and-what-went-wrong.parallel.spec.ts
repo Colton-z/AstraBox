@@ -207,8 +207,7 @@ test('navigation, language, filters and failure cards each change something the 
   // `/manage/errors` rather than the MCP-clients page: this is `ConsoleErrorState`,
   // the console's full-card failure — `data-slot="error-state"`, `role="alert"`,
   // Retry — and `McpTokensPage` renders the inline `ConsoleError` note instead,
-  // which carries neither the slot nor a retry. The slot is not decoration: the
-  // visual-grammar audit waits on it to know a record page has settled.
+  // which carries neither the slot nor a retry.
   let errorListingCalls = 0;
   await page.route(ERRORS_LISTING, async (route) => {
     errorListingCalls += 1;

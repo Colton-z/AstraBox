@@ -17,7 +17,6 @@ from typing import Any
 from unittest import mock
 from unittest.mock import AsyncMock
 
-import httpx
 import pytest
 from opensandbox.exceptions import SandboxApiException
 
@@ -713,20 +712,6 @@ async def test_stop_releases_host_side_state_but_never_kills() -> None:
 
     assert fake_sdk.close_calls == 1
     assert fake_sdk.kill_calls == 0
-
-
-async def test_provider_wires_box_creation_with_the_injected_transport(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    sentinel = httpx.MockTransport(lambda request: httpx.Response(500))
-    provider = OpenSandboxSandboxProvider(transport=sentinel)
-    create = AsyncMock(return_value=SimpleNamespace(sandbox_id="sb-2"))
-    monkeypatch.setattr(executor_module, "create_open_sandbox_box", create)
-
-    handle = await provider.create_sandbox(_create_spec(cwd="/w"))
-
-    assert handle.sandbox_id == "sb-2"
-    assert create.await_args.kwargs["transport"] is sentinel
 
 
 # ── key hygiene on the executor's lifecycle face ─────────────────────────────

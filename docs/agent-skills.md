@@ -34,6 +34,13 @@ Skills use a Git source and an optional revision:
 AstraBox does not create a second Skill-content format. It prepares the Skill
 in the native Skill directory used by the selected Agent program.
 
+For a private HTTPS source, a platform administrator must configure an
+**HTTP Basic (Git HTTPS)** credential and assign its Vault to the Agent before
+the Skill is downloaded. Use only the repository URL as the credential
+destination; keep `@ref` and `#path` in the Skill source. This applies to both
+direct sources and administrator-managed Skills. See the
+[configuration steps](credentials.md#private-git-repositories).
+
 ## What Skills Do
 
 - **Inject domain knowledge** — give a generalist Agent specialized abilities (code review, document generation, etc.).

@@ -185,3 +185,21 @@ def verify_runtime_state_capability_token(owner_key: str, token: str) -> bool:
     return bool(token) and hmac.compare_digest(
         token, mint_runtime_state_capability_token(owner_key)
     )
+
+
+
+def mint_platform_mcp_capability(deployment_id: str, server_name: str) -> str:
+    """Authorize exactly one platform server on one runtime binding."""
+    if not deployment_id or not server_name or "\x00" in deployment_id or "\x00" in server_name:
+        raise ValueError("platform MCP capability requires a deployment and server")
+    subject = b"astrabox-platform-mcp\x00" + deployment_id.encode() + b"\x00" + server_name.encode()
+    return hmac.new(_signing_key(), subject, hashlib.sha256).hexdigest()
+
+
+def verify_platform_mcp_capability(deployment_id: str, server_name: str, token: str) -> bool:
+    """Reject capabilities for another deployment, server or capability domain."""
+    try:
+        expected = mint_platform_mcp_capability(deployment_id, server_name)
+        return bool(token) and hmac.compare_digest(token, expected)
+    except (ValueError, TypeError):
+        return False

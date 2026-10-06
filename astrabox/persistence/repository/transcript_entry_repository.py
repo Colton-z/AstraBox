@@ -590,6 +590,7 @@ class TranscriptEntryRepository:
         subpath: str | None,
         *,
         platform_session_id: str | None = None,
+        append_id: str | None = None,
     ) -> list[dict[str, Any]] | None:
         scope = self._scope(project_key, session_id, subpath)
         # Tenant fence: when a caller is authorized only for one platform
@@ -602,6 +603,14 @@ class TranscriptEntryRepository:
         psid = str(platform_session_id or "").strip()
         if psid:
             scope = {**scope, "platform_session_id": psid}
+        if append_id is not None:
+            # A native snapshot is one complete append batch. Its persisted
+            # identity selects that batch without inspecting older payloads.
+            scope = {
+                **scope,
+                "scope_id": self._scope_id(psid or None, project_key, session_id, subpath),
+                "append_id": append_id,
+            }
 
         async def _op() -> list[dict[str, Any]]:
             collection = await self._collection()

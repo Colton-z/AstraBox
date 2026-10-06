@@ -257,17 +257,7 @@ class ExpirationWatcher:
                 if probe_status == "OK":
                     summary["alive"] += owner_count
                     try:
-                        real_expiry = await runtime_manager.get_sandbox_expires_at(
-                            sandbox_id
-                        )
-                        await lifecycle.realign_live_sandbox_owners(
-                            sandbox_id,
-                            expires_at=(
-                                real_expiry.isoformat()
-                                if real_expiry is not None
-                                else None
-                            ),
-                        )
+                        await lifecycle.realign_live_sandbox_owners(sandbox_id)
                     except Exception:
                         logger.exception(
                             "expiration_watcher: live-owner realignment failed "

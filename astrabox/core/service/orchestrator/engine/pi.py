@@ -142,6 +142,7 @@ PI_MIRROR_SUBPATH_PREFIX = "pi/"
 #: because that write REPLACES the file: a copy placed in the image would be
 #: overwritten before Pi ever read it, which is exactly what happened.
 PI_SUBAGENT_PACKAGE_PATH = "/opt/pi/node_modules/pi-subagents"
+PI_PLATFORM_MCP_PACKAGE_PATH = "/opt/pi/node_modules/astrabox-platform-mcp"
 PI_PACKAGES_SETTING = "packages"
 
 PI_ENGINE_OPTIONS_SCHEMA: tuple[dict[str, Any], ...] = (
@@ -156,7 +157,7 @@ PI_ENGINE_OPTIONS_SCHEMA: tuple[dict[str, Any], ...] = (
             "its native defaults and trusted project overrides. Use "
             "defaultThinkingLevel for thinking. Model/provider selection "
             "and sessionDir are platform-owned CLI arguments. "
-            "https://github.com/earendil-works/pi/blob/v0.85.1/packages/coding-agent/docs/settings.md"
+            "https://github.com/earendil-works/pi/blob/v1.0.0/packages/coding-agent/docs/settings.md"
         ),
     },
 )
@@ -184,6 +185,7 @@ def build_pi_rpc_command(
     resume_session_key: str | None = None,
     engine_env_file: str | None = None,
     isolated: bool = False,
+    platform_mcp_servers: dict[str, Any] | None = None,
 ) -> str:
     """Build the secret-free command execd starts for one conversation.
 
@@ -203,6 +205,8 @@ def build_pi_rpc_command(
     workload user before startup. Empty settings clear the previous Agent
     configuration; Pi owns project merging and interpretation of inner keys.
     """
+
+    from astrabox.core.service.orchestrator.engine.platform_mcp import platform_mcp_environment
 
     values = {
         "linux_user": str(linux_user or "").strip(),
@@ -247,6 +251,9 @@ def build_pi_rpc_command(
             f"export USER={shlex.quote(values['linux_user'])}",
             f"export LOGNAME={shlex.quote(values['linux_user'])}",
             f"export PI_SUBAGENTS_TEMP_ROOT={shlex.quote(_subagent_temp_root(values['home']))}",
+            *(f"export {key}={shlex.quote(value)}" for key, value in platform_mcp_environment(
+                platform_mcp_servers or {},
+            ).items()),
             'mkdir -p "$PI_CODING_AGENT_DIR"',
             "printf '%s\\n' "
             + shlex.quote(json.dumps(settings or {}, ensure_ascii=False))
@@ -318,20 +325,20 @@ def _conversation_execd_port(runtime_identity: dict[str, Any] | None) -> int:
 
 
 def _settings(template: Any) -> dict[str, Any]:
-    """The Agent's native Pi settings, carrying the image's own package.
+    """The Agent's native Pi settings, carrying the image's own packages.
 
-    Vendor keys are not interpreted. The one addition is the sub-agent package
-    the image installs: an Agent may declare packages of its own, and this
-    appends rather than replaces so naming one cannot silently take the
-    engine's child runs away with it.
+    Vendor keys are not interpreted. The image's sub-agent and MCP-registration
+    packages are appended to the Agent's declarations so custom packages
+    cannot displace those capabilities.
     """
 
     bag = getattr(template, "engine_options", None)
     settings = dict(bag.get("settings") or {}) if isinstance(bag, dict) else {}
     declared = settings.get(PI_PACKAGES_SETTING)
     packages = list(declared) if isinstance(declared, list) else []
-    if PI_SUBAGENT_PACKAGE_PATH not in packages:
-        packages.append(PI_SUBAGENT_PACKAGE_PATH)
+    for package in (PI_SUBAGENT_PACKAGE_PATH, PI_PLATFORM_MCP_PACKAGE_PATH):
+        if package not in packages:
+            packages.append(package)
     settings[PI_PACKAGES_SETTING] = packages
     return settings
 
@@ -347,6 +354,7 @@ async def _park_pi_child(
     engine_env_file: str | None = None,
     runtime_identity: dict[str, Any] | None = None,
     service_credential: str | None = None,
+    platform_mcp_servers: dict[str, Any] | None = None,
 ) -> str:
     """Start pi in the prepared box and prove it answers; return its pipe id.
 
@@ -383,6 +391,7 @@ async def _park_pi_child(
             resume_session_key=None,
             engine_env_file=engine_env_file,
             isolated=(runtime_identity or {}).get("sandbox_tenancy") == "agent",
+            platform_mcp_servers=platform_mcp_servers,
         ),
         resume_session_key=None,
     )
@@ -837,12 +846,19 @@ class PiEngineAdapter(EngineAdapter):
                 instructions=instructions,
                 runtime_identity=identity,
             )
+        from astrabox.core.service.orchestrator.engine.platform_mcp import platform_mcp_servers
+        from astrabox.core.service.orchestrator.runtime.mcp_servers import prepared_slot_mcp_deployment_id
+
         parked_pty_session_id = await _park_pi_child(
             context.sandbox,
             template,
             cwd=context.cwd,
             runtime_identity=identity,
             service_credential=context.service_credential,
+            platform_mcp_servers=platform_mcp_servers(
+                template, deployment_settings=context.deployment_settings,
+                deployment_id=prepared_slot_mcp_deployment_id(target_slot),
+            ),
             model=model,
             linux_user=(
                 str(identity.get("linux_user") or "") or None
@@ -871,8 +887,7 @@ class PiEngineAdapter(EngineAdapter):
             "spawn_fingerprint": _slot_spawn_fingerprint(
                 template, base_url=base_url, model=model
             ),
-            # Only user-identity MCP servers belong in the activation set; pi
-            # declares none, so the set is empty.
+            # Platform tools are already registered against the slot address.
             "activation_mcp_servers": [],
             # The claim adopts this PTY because it holds a pi that answered
             # `get_state`; pipe creation, child boot and the proof take a
@@ -977,6 +992,10 @@ class PiEngineAdapter(EngineAdapter):
             # restore, and naming it anyway would make pi exit with
             # `No session found matching '<id>'` instead of answering.
             resume_key = str(context.resume_session_key or "").strip()
+            from astrabox.core.service.orchestrator.engine.platform_mcp import (
+                platform_mcp_servers, startup_mcp_deployment_id,
+            )
+
             command = build_pi_rpc_command(
                 linux_user=str(identity.get("linux_user") or SANDBOX_IMAGE_WORKLOAD_USER),
                 home=str(identity.get("home_dir") or SANDBOX_IMAGE_WORKLOAD_HOME),
@@ -986,6 +1005,10 @@ class PiEngineAdapter(EngineAdapter):
                 resume_session_key=resume_key or None,
                 engine_env_file=_shared_engine_env_file(identity),
                 isolated=identity.get("sandbox_tenancy") == "agent",
+                platform_mcp_servers=platform_mcp_servers(
+                    template, deployment_settings=context.deployment_settings,
+                    deployment_id=startup_mcp_deployment_id(context),
+                ),
             )
             from astrabox.core.service.orchestrator.engine.pi_client import (
                 connect_pi_client,

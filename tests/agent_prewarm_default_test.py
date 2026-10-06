@@ -158,7 +158,7 @@ def test_the_form_schema_serves_the_deployments_default(
     schema = get_agent_schema(SimpleNamespace(agent_prewarm_redis_url=redis_url))
 
     defaults = {f["key"]: f["default"] for f in schema["fields"] if "default" in f}
-    assert defaults == {"prewarm_enabled": expected}
+    assert defaults["prewarm_enabled"] is expected
 
 
 @pytest.mark.parametrize(

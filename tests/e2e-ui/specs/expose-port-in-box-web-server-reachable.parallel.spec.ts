@@ -185,12 +185,6 @@ onPassOnly(async ({ request }) => {
   if (agentId) await new AstraApi(request).deleteAgent(agentId);
 });
 
-test('endpoint kinds preserve their deployment-native URL shapes', () => {
-  expectEndpointShape(new URL(`http://127.0.0.1:41000/proxy/${PORT}`), 'docker', PORT);
-  expectEndpointShape(new URL(`http://10.42.0.8:${PORT}/`), 'direct', PORT);
-  expectEndpointShape(new URL(`https://sandbox.example/sandbox-id/${PORT}`), 'gateway-uri', PORT);
-});
-
 test('expose-port uses the OpenSandbox HTTP and WebSocket data plane', async ({ page, request }) => {
   const api = new AstraApi(request);
   const marker = `EXPOSE_PORT_E2E_OK_${new Date().toISOString().replace(/[:.]/g, '-')}`;

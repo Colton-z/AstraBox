@@ -1,6 +1,6 @@
 from .agent_repository import AgentRepository
 from .deployment_repository import DeploymentRepository
-from .artifact_repository import ArtifactRepository
+from .session_artifact_repository import SessionArtifactRepository
 from .environment_repository import EnvironmentRepository
 from .interaction_snapshot_repository import InteractionSnapshotRepository
 from .message_repository import MessageRepository
@@ -14,7 +14,7 @@ from .transcript_entry_repository import TranscriptEntryRepository
 __all__ = [
     "AgentRepository",
     "DeploymentRepository",
-    "ArtifactRepository",
+    "SessionArtifactRepository",
     "EnvironmentRepository",
     "InteractionSnapshotRepository",
     "MessageRepository",

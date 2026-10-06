@@ -38,6 +38,7 @@ _OWNER_SESSION_FIELDS = frozenset(
         "title",
         "source_type",
         "agent_id",
+        "assistant_id",
         "deployment_name",
         "session_kind",
         "engine_kind",
@@ -234,10 +235,8 @@ def project_public_message_block(value: Any) -> dict[str, Any] | None:
         usage = public.get("usage")
         if not isinstance(usage, dict):
             raise PublicProjectionError("result usage must be an object")
-        public["usage"] = _copy_fields(
-            usage,
-            frozenset({"input_tokens", "output_tokens"}),
-        )
+        # Usage is the supplier's public metrics map, already carried intact
+        # by data-result. Preserve the same map across a history read.
     return public
 
 

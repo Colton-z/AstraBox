@@ -125,7 +125,7 @@ def test_a_strangers_request_is_nobodys() -> None:
 def test_parent_catalog_and_gateway_status_carry_child_facts() -> None:
     seam = _seam()
 
-    assert not seam.carries_child_facts({"type": "emit", "event": "api-session/added", "args": [{}]})
+    assert seam.carries_child_facts({"type": "emit", "event": "api-session/added", "args": [{}]})
     assert seam.carries_child_facts(_event(ROOT, "subagent/catalog", data={
         "version": 0, "childId": CHILD, "childCreatedAt": 1,
         "mode": "continuable", "label": "researcher",

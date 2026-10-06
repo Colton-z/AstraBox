@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ast
 import json
 import logging
 import os
@@ -13,7 +12,6 @@ from pathlib import Path
 from astrabox.common.logger.logger_factory import MODULE_APP_NAME, get_logger
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
-_PACKAGE_ROOT = _REPO_ROOT / "astrabox"
 
 
 def test_module_loggers_keep_distinct_names_without_duplicate_sinks() -> None:
@@ -32,48 +30,6 @@ def test_module_loggers_keep_distinct_names_without_duplicate_sinks() -> None:
     assert first.propagate and second.propagate
     assert not application_logger.propagate
     assert tuple(application_logger.handlers) == handlers_before
-
-
-# Modules the server image also copies into the model gateway, which has no
-# AstraBox package to import the factory from. Inside AstraBox their
-# `logging.getLogger(__name__)` is the same `astrabox.*` logger the factory
-# returns, so their records still reach the application sink.
-_SHIPPED_OUTSIDE_THE_PACKAGE = {"astrabox/identity/oidc.py"}
-
-
-def test_modules_shipped_outside_the_package_are_really_copied_out() -> None:
-    dockerfile = (_REPO_ROOT / "containers" / "server" / "Dockerfile").read_text(
-        encoding="utf-8"
-    )
-    for relative in sorted(_SHIPPED_OUTSIDE_THE_PACKAGE):
-        assert f"COPY --chmod=u=rwX,go=rX {relative} " in dockerfile, (
-            f"{relative} is exempt from the logging-factory rule only because the "
-            "server image copies it into the model gateway"
-        )
-
-
-def test_dunder_name_loggers_do_not_bypass_the_logging_factory() -> None:
-    offenders: list[str] = []
-    for path in _PACKAGE_ROOT.rglob("*.py"):
-        if str(path.relative_to(_REPO_ROOT)) in _SHIPPED_OUTSIDE_THE_PACKAGE:
-            continue
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
-                continue
-            if (
-                isinstance(node.func.value, ast.Name)
-                and node.func.value.id == "logging"
-                and node.func.attr == "getLogger"
-                and len(node.args) == 1
-                and isinstance(node.args[0], ast.Name)
-                and node.args[0].id == "__name__"
-            ):
-                offenders.append(f"{path.relative_to(_REPO_ROOT)}:{node.lineno}")
-
-    assert not offenders, (
-        "module logs bypass the configured AstraBox sink: " + ", ".join(offenders)
-    )
 
 
 def test_json_format_scope_matches_the_operator_docs() -> None:

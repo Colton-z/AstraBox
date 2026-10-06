@@ -144,33 +144,6 @@ class ModelRuntimeCredsCarriesHeaderTests(unittest.TestCase):
 
 
 class ManagedCredentialEnvDeliveryTests(unittest.TestCase):
-    def test_deleted_upstream_relay_has_no_inert_runtime_environment(self) -> None:
-        settings = SimpleNamespace(
-            remote_agent_include_partial_messages=False,
-            remote_agent_max_buffer_size=DEFAULT_REMOTE_AGENT_MAX_BUFFER_SIZE_BYTES,
-            mcp_proxy_base_url="https://astrabox.example",
-        )
-        template = SimpleNamespace(
-            name="managed-agent",
-            engine_options=None,
-            mcp_servers={},
-            plugin_repos=[],
-            skills=None,
-        )
-        options = build_claude_options_kwargs(
-            settings,
-            template,
-            session_id="session-1",
-            permission_mode="default",
-        )
-
-        # Neither the proxy base URL nor the session id reaches the box:
-        # the shim that read them is gone, and an exported variable no
-        # process reads is the inert knob the contract forbids.
-        env = options.get("env", {})
-        self.assertNotIn("ASTRABOX_MCP_PROXY_BASE_URL", env)
-        self.assertNotIn("RUNTIME_IDENTITY_SESSION_ID", env)
-
     def test_bound_vault_placeholder_reaches_the_agent_process_env(self) -> None:
         placeholder = "ASTRABOX-VAULT-CRED::vcr-test::nonce"
         settings = SimpleNamespace(

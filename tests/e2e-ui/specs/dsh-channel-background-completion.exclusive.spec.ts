@@ -214,10 +214,10 @@ for (const scenario of cases) test(scenario.title, async ({ request, page }, inf
       expect(messageText(restored)).toContain(parentReceipt);
       const nativeResults = native().filter((event) => event.type === 'tool/result'
         && event.data.turn === parentCall!.data.turn)
-        .flatMap((event) => (event.data.message as { content: Array<Record<string, unknown>> }).content)
-        .filter((block) => block.type === 'tool-result' && block.toolCallId === parentCall!.data.callId);
+        .map((event) => event.data.message as Record<string, unknown>)
+        .filter((message) => message.role === 'tool' && message.toolCallId === parentCall!.data.callId);
       expect(nativeResults).toHaveLength(1);
-      expect(nativeResults[0]!.isError).toBe(false);
+      expect(nativeResults[0]!.isError ?? false).toBe(false);
       expect(textBlocks(nativeResults[0]!.content)).toContain(parentReceipt);
       expect(restored.blocks?.filter((block) => block.type === 'tool_use')).toEqual([
         expect.objectContaining({ id: parentCall.data.callId, name: 'bash', input: JSON.parse(String(parentCall.data.arguments)) }),

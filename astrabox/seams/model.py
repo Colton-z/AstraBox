@@ -27,6 +27,7 @@ ENTRY_POINT_GROUP = "astrabox.providers.model"
 
 
 ModelCredentialKind = Literal["api_key", "bearer"]
+ModelInputModality = Literal["text", "image"]
 
 
 @dataclass(frozen=True)
@@ -128,6 +129,19 @@ class ModelEndpointProvider(ABC):
         _ = (provider_access, settings)
         return []
 
+    async def model_input_modalities(
+        self, *, model_name: str
+    ) -> tuple[ModelInputModality, ...] | None:
+        """Return the selected route's declared input types, when known.
+
+        The model connection owns this metadata; an engine must not infer it
+        from a gateway alias. ``None`` leaves the runtime's native defaults
+        intact. Query failures must raise rather than masquerade as a model
+        without image support.
+        """
+        _ = model_name
+        return None
+
     def request_headers(
         self,
         *,
@@ -138,6 +152,19 @@ class ModelEndpointProvider(ABC):
 
         _ = (endpoint, context)
         return {}
+
+    def protocol_base_url(self, *, base_url: str, protocol: str) -> str:
+        """Address a native protocol on the same configured gateway.
+
+        Most protocols use the common base. A gateway may namespace a native
+        provider's wire when resource paths would otherwise collide, such as
+        OpenAI Files and DeepSeek's Anthropic-format Files. The protocol name
+        comes from the runtime's native transport. The returned address must
+        stay on the same origin and under the common base path so one scoped
+        gateway credential can serve both native and generic model routes.
+        """
+        _ = protocol
+        return base_url
 
     def session_credential(self, *, context: ModelRequestContext) -> str | None:
         """The credential one Session's own identity spends at this gateway.
@@ -282,6 +309,7 @@ __all__ = [
     "ModelEndpointProvider",
     "ModelRequestContext",
     "ModelCredentialKind",
+    "ModelInputModality",
     "ResolvedModelAccess",
     "default_model_endpoint_name",
     "register_model_endpoint",

@@ -127,6 +127,17 @@ class DshApiLink:
             )
         return _unwrap_result(method, response.json())
 
+    async def restore_attachments(self) -> None:
+        """Await the image's native attachment restore before opening a Session."""
+        async with self._http_client() as client:
+            response = await client.post(
+                f"{self.endpoint.origin}/api/astrabox.attachments.restore"
+            )
+        if response.status_code != 200 or response.json().get("restored") is not True:
+            raise EngineStreamDetached(
+                f"deepseek_harness attachment restore failed (HTTP {response.status_code})"
+            )
+
     async def respond(self, rpc_id: str, result: dict[str, Any]) -> bool:
         if self._event_client_id is None:
             raise EngineStreamDetached("deepseek_harness Remote event stream is not ready")

@@ -1540,7 +1540,7 @@ export interface SessionChildRun {
   child_run_id: string;
   engine_kind: string;
   depth: number;
-  engine_event: string;
+  engine_event?: string | null;
   engine_status?: string | null;
   engine_reason?: string | null;
   closed: boolean;
@@ -1552,6 +1552,7 @@ export interface SessionChildRun {
   task_type?: string | null;
   last_tool_name?: string | null;
   summary?: string | null;
+  model?: string | null;
   usage?: { total_tokens?: number; tool_uses?: number; duration_ms?: number } | null;
 }
 

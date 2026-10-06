@@ -32,6 +32,7 @@ API documentation use top-level paths.
 |---|---|---|
 | Agents | Create, read, update, delete, and authorize Agents | `/agents` |
 | Assistants | Manage Assistants and their persistent workspaces | `/assistants` |
+| Artifacts | Manage durable pages, versions, sharing, and viewer capabilities | `/artifacts`, `/artifact-share/{token}/runtime` |
 | Environments | Manage the infrastructure available to Agents | `/admin/environments` |
 | Sessions | Read Session state, submit turns, stream events, and manage lifecycle | `/sessions` |
 | Files | List, upload, move, download, and delete files in a Session workspace | `/sessions/{session_id}/files` |
@@ -45,6 +46,74 @@ API documentation use top-level paths.
 
 A Session is created through an Agent or Assistant conversation endpoint; there
 is no independent `POST /sessions` payload.
+
+## Artifacts
+
+All paths below are relative to `/api/v1`. JSON results use `ApiEnvelope`
+(`{"code": "OK", "message": "success", "data": ...}`); live and model
+responses use SSE. Only the owner can use the management surface; a foreign
+artifact and a missing one both return `404 ARTIFACT_NOT_FOUND`.
+
+| Method | Path | Input or result |
+| --- | --- | --- |
+| GET | `/artifacts` | Filters: `cursor`, `limit`, `session_id`, `assistant_id`, `q`; result: `items`, `next_cursor`, `has_more` |
+| GET | `/artifacts/{id}` | Artifact metadata, `manifest`, origin, content, and a nested current `version` record |
+| PATCH | `/artifacts/{id}` | `{title?, description?}` |
+| DELETE | `/artifacts/{id}` | Delete the artifact, its versions, data, and share state |
+| GET | `/artifacts/{id}/versions` | Version metadata without content |
+| GET | `/artifacts/{id}/versions/{n}` | Version metadata and content |
+| POST | `/artifacts/{id}/versions/{n}/restore` | Publish the saved content as a new version; returns an artifact record |
+| GET | `/artifacts/{id}/share` | Share configuration |
+| POST | `/artifacts/{id}/share` | `{access, audience, version?, expires_in_seconds?}` |
+| DELETE | `/artifacts/{id}/share` | Revoke the link |
+
+`access` is `view` or `interact`; `audience` is `anyone` or `signed_in`.
+`version: null` follows the latest publication; a number pins that version.
+Share state contains `enabled`, `token`, `access`, `audience`, `version`,
+`created_at`, and `expires_at`. An anonymous visitor receives only `view`.
+Artifacts declaring `sample` or `agent` refuse `anyone` with
+`ARTIFACT_SHARE_AUDIENCE_RESTRICTED`; their anonymous runtime access returns
+`401 ARTIFACT_SIGN_IN_REQUIRED`. Revoked, expired, and invalid tokens return 404.
+
+The viewer runtime has one surface exposed through two prefixes:
+`/artifacts/{id}/runtime` for the logged-in owner and
+`/artifact-share/{token}/runtime` for link viewers. The latter accepts signed-in
+credentials when present; the token does not elevate an anonymous viewer to
+Interact. Each call checks the artifact, token, served manifest, and viewer
+permissions. Substitute either prefix for `{runtime}` below.
+Anonymous calls include the same per-load `guest_id` query parameter on every
+runtime request. The server prefixes this id with `guest_`; it is not a profile id.
+
+| Method | Path | Input or result |
+| --- | --- | --- |
+| GET | `{runtime}` | `{artifact, version, content, manifest, viewer: {level, id, guest}, pinned, after_seq}`; share views include `artifact.share: {version, access, audience}` |
+| GET | `{runtime}/live?after_seq=N` | SSE `version`, `data`, `room`, `presence`, `deleted`, and `error`; journal events carry their sequence as the SSE id |
+| POST | `{runtime}/publish` | `{content, base_version}`; owner only, requires `artifact`, unavailable on pinned links |
+| GET | `{runtime}/data/{path}` | `{path, exists, data}`; missing data is `null`; denied reads return `403 ARTIFACT_DATA_DENIED` |
+| PUT | `{runtime}/data/{path}` | `{data}` replaces a document |
+| PATCH | `{runtime}/data/{path}` | `{data}` updates a document |
+| DELETE | `{runtime}/data/{path}` | Delete a document |
+| POST | `{runtime}/data-query` | `{collection, where: [{field, op, value}], order_by: [{field, direction}], limit}` → `{items: [{id, path, data}]}` |
+| POST | `{runtime}/data-add` | `{collection, data}` → `{id, path}` |
+| POST | `{runtime}/sample` | `{input, max_tokens?, tools?}`; SSE `delta {text}`, `done {text, tool_calls, truncated}`, `error {code, message, text}` |
+| POST | `{runtime}/room/{room}/emit` | `{topic, data}` |
+| POST | `{runtime}/room/{room}/presence` | `{state}` or `{state: null}` |
+| GET | `{runtime}/viewers?ids=...` | `{profiles: [{id, display_name}]}` for opaque per-artifact viewer ids |
+| POST | `{runtime}/agent-runs` | `{prompt}` → `{run_id, session_id, url}` |
+| GET | `{runtime}/agent-runs/{run_id}` | `{state, session_id, error?}` |
+
+Artifact creation and content edits use the built-in `artifacts` MCP tools:
+`create_artifact`, `update_artifact`, `get_artifact`, `list_artifacts`,
+`artifact_data`, and `artifact_guide`. There is no owner REST creation endpoint.
+Content updates, page publications, and restores create immutable versions.
+`update_artifact` accepts `content`, `file_path`, or
+`edits: [{old_string, new_string, replace_all?}]`, with optional `base_version`.
+Stale edits return `ARTIFACT_VERSION_CONFLICT`. Tool results that identify an
+artifact carry `astrabox_artifact: {id, version, title, kind}`.
+
+The artifact journal is separate from the conversation event stream; it does
+not introduce a conversation-stream event type. See the [artifact manual](artifacts.md)
+for capability declarations, consent, isolation, and size limits.
 
 ## Request size limits
 

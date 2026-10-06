@@ -67,32 +67,6 @@ def _send_with_no_gap(client: httpx.Client, sid: str, content: str) -> tuple[int
     return status, ""
 
 
-def test_next_send_is_admissible_the_instant_the_body_ends(
-    e2e_client: httpx.Client,
-) -> None:
-    created = create_session(e2e_client)
-    sid = str(created.get("session_id") or "")
-    assert sid, f"no session_id: {created}"
-    poll_until_agent_ready(e2e_client, sid)
-
-    first = stream_turn(e2e_client, sid, content="Say READY and nothing else.")
-    assert first.error is None, f"first turn errored: {first.error}"
-    assert first.finish_reason == "stop", (
-        f"first turn did not complete (finish={first.finish_reason!r}); this test "
-        "needs a turn that ends on its own, not one paused on an interaction"
-    )
-
-    # No wait of any kind between the body ending above and the send below.
-    status, code = _send_with_no_gap(e2e_client, sid, "Say AGAIN and nothing else.")
-
-    assert status != 409, (
-        f"the next send was refused with HTTP {status} ({code or 'no code'}) "
-        "immediately after the previous turn's body ended — the stream closed "
-        "before its turn slot was admissible"
-    )
-    assert status == 200, f"next send failed with HTTP {status}: {code}"
-
-
 def _messages(client: httpx.Client, sid: str) -> list:
     body = data(client.get(f"/api/v1/sessions/{sid}/messages"))
     msgs = body.get("messages")

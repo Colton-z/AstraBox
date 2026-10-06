@@ -55,7 +55,10 @@ def native_history(path, native_session_id):
         )]
         assert 'sessions' in tables and 'messages' in tables, tables
         session = con.execute('SELECT id FROM sessions WHERE id=?', (native_session_id,)).fetchone()
-        messages = [dict(row) for row in con.execute(
+        # Hermes stores display_identity as a BLOB. Keep every column and
+        # every byte in the JSON probe so recovery still compares full rows.
+        messages = [{key: {'sqlite_blob_hex': value.hex()} if isinstance(value, bytes) else value
+                     for key, value in dict(row).items()} for row in con.execute(
             'SELECT * FROM messages WHERE session_id=? ORDER BY id', (native_session_id,)
         )]
         return {'session_exists': session is not None, 'messages': messages, 'tables': tables}
@@ -341,6 +344,16 @@ def _read_after_recovery(
     )
 
 
+def _assert_retained_usage(client: httpx.Client, session_id: str, turns: dict) -> None:
+    """The history read must retain the metrics the actual reply stream published."""
+    history = data(client.get(f"/api/v1/sessions/{session_id}/messages", params={"limit": 50}))
+    for turn_id, usage in turns.items():
+        results = [block for message in history["messages"] if message["turn_id"] == turn_id
+                   for block in message.get("blocks", []) if block["type"] == "result"]
+        assert len(results) == 1, "each settled reply must retain its result"
+        assert results[0].get("usage") == usage, "history dropped or changed reply metrics"
+
+
 @pytest.mark.assistant_live
 def test_an_assistant_remembers_its_conversations_after_its_box_is_destroyed(
     e2e_client: httpx.Client,
@@ -394,7 +407,10 @@ def test_an_assistant_remembers_its_conversations_after_its_box_is_destroyed(
         )
         assert planted.error is None, f"planting turn errored: {planted.error}"
         assert planted.n_text_delta > 0 and planted.text.strip(), "first turn produced no reply"
-        wait_until_settled(e2e_client, session_id)
+        settled = wait_until_settled(e2e_client, session_id)
+        assert len(planted.results) == 1, "first reply published no unique result"
+        usage_by_turn = {settled["last_turn_id"]: planted.results[0].get("usage")}
+        _assert_retained_usage(e2e_client, session_id, usage_by_turn)
         detail = get_admin_session_detail(e2e_client, session_id)
         native_session_id = str(detail.get("engine_session_key") or "")
         assert native_session_id and detail.get("sandbox_id") == old_sandbox, detail
@@ -423,13 +439,17 @@ def test_an_assistant_remembers_its_conversations_after_its_box_is_destroyed(
         )
         new_sandbox = str(replacement.get("current_sandbox_id") or "")
         assert new_sandbox and new_sandbox != old_sandbox, replacement
+        _assert_retained_usage(e2e_client, session_id, usage_by_turn)
 
         resumed = stream_turn(e2e_client, session_id, content=next_prompt)
         assert resumed.error is None, f"same-conversation native resume failed: {resumed.error}"
         assert resumed.n_text_delta > 0 and token in resumed.text, (
             f"replacement answered without the original conversation context: {resumed.text!r}"
         )
-        wait_until_settled(e2e_client, session_id)
+        settled = wait_until_settled(e2e_client, session_id)
+        assert len(resumed.results) == 1, "resumed reply published no unique result"
+        usage_by_turn[settled["last_turn_id"]] = resumed.results[0].get("usage")
+        _assert_retained_usage(e2e_client, session_id, usage_by_turn)
         recovered = get_admin_session_detail(e2e_client, session_id)
         assert recovered.get("sandbox_id") == new_sandbox, recovered
         assert recovered.get("engine_session_key") == native_session_id, recovered

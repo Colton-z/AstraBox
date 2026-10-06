@@ -190,6 +190,11 @@ async def runtime_generations(
         "agent_program": {
             "system": _value(template, "system"),
             "mcp_servers": _value(template, "mcp_servers"),
+            # The platform ``artifacts`` server is synthesized per binding
+            # rather than stored in ``mcp_servers``, and prepared engines fix
+            # their MCP servers before any Session exists, so the switch must
+            # retire capacity prepared under the other value.
+            "artifacts_enabled": bool(_value(template, "artifacts_enabled", True)),
             "skills": list(_value(template, "skills", []) or []),
             "engine_options": _value(template, "engine_options"),
             "default_repo": _value(template, "default_repo"),

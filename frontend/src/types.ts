@@ -453,6 +453,7 @@ export interface EngineCapabilityManifest {
 }
 
 export interface SessionRecord {
+  assistant_id?: string | null;
   /** Which workspace surfaces this session's Agent declares. Platform's, not the engine's. */
   workspace_panels?: { terminal?: boolean; diff?: boolean } | null;
   session_id: string;

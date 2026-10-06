@@ -30,11 +30,15 @@ _FILTER_MARKER_ATTR = "_astrabox_sbxcap_mask"
 #: to the next ``/`` (or whitespace / quote, for a bare-prefix request line) is
 #: credential material; the trailing subpath is routing, not secret.
 _SBXCAP_TOKEN_RE = re.compile(r"(/api/v1/sbxcap/)[^/\s\"']+")
+_PLATFORM_MCP_TOKEN_RE = re.compile(r"(/api/v1/platform-mcp/[^/\s]+/[^/\s]+/)[^/\s\"']+")
+_ARTIFACT_SHARE_TOKEN_RE = re.compile(r"(/api/v1/artifact-share/)[^/\s\"']+")
 
 
 def mask_capability_tokens(text: str) -> str:
-    """Return ``text`` with every sbxcap token segment replaced by ``***``."""
-    return _SBXCAP_TOKEN_RE.sub(r"\1***", text)
+    """Mask transcript, platform MCP and artifact share path capabilities."""
+    for pattern in (_SBXCAP_TOKEN_RE, _PLATFORM_MCP_TOKEN_RE, _ARTIFACT_SHARE_TOKEN_RE):
+        text = pattern.sub(r"\1***", text)
+    return text
 
 
 class _SbxcapTokenMaskFilter(logging.Filter):
@@ -48,7 +52,7 @@ class _SbxcapTokenMaskFilter(logging.Filter):
 
     def filter(self, record: logging.LogRecord) -> bool:
         try:
-            if isinstance(record.msg, str) and "/api/v1/sbxcap/" in record.msg:
+            if isinstance(record.msg, str):
                 record.msg = mask_capability_tokens(record.msg)
             args = record.args
             if isinstance(args, tuple):
@@ -63,7 +67,7 @@ class _SbxcapTokenMaskFilter(logging.Filter):
 
     @staticmethod
     def _mask_value(value: Any) -> Any:
-        if isinstance(value, str) and "/api/v1/sbxcap/" in value:
+        if isinstance(value, str):
             return mask_capability_tokens(value)
         return value
 

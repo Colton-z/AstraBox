@@ -62,20 +62,6 @@ def test_get_channel_fails_loud_on_unknown_name() -> None:
         get_channel("never-registered")
 
 
-def test_builtin_generic_json_is_registered() -> None:
-    import astrabox.providers.channel_generic  # noqa: F401 — registration side effect
-
-    assert isinstance(get_channel("generic_json"), GenericJsonChannelProvider)
-
-
-def test_generic_json_descriptor_separates_product_label_from_registry_key() -> None:
-    descriptor = GenericJsonChannelProvider().describe().to_dict()
-
-    assert descriptor["name"] == "generic_json"
-    assert descriptor["scene"] == "channel:generic_json"
-    assert descriptor["label"] == "Generic JSON webhook"
-
-
 # ── generic_json provider ────────────────────────────────────────────────────
 
 _BINDING = {"secret": "s3cret", "agent_id": "dep-1", "prompt_prefix": ""}

@@ -50,10 +50,7 @@ export default defineConfig({
   retries: process.env.CI ? 1 : 0,
   // Stops at the first failure, matching the pytest live suite's forced
   // maxfail=1: a failing walk leaves its scene readable, and every spec after
-  // the first failure spends live sandboxes proving nothing new. Each audit
-  // walk test (visual-grammar, console-interaction) aggregates every route it
-  // covers before failing, but a run holds several such tests — an audit that
-  // wants all of them past the first red passes --max-failures=0 on the CLI.
+  // the first failure spends live sandboxes proving nothing new.
   maxFailures: 1,
   outputDir: path.join(outputRoot, 'test-results'),
   reporter: [

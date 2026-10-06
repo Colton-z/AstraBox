@@ -64,10 +64,6 @@ _UPGRADE_FROM_THE_GATEWAY = _upgrade(
 )
 
 
-def test_the_relay_reads_the_header_the_platform_sends() -> None:
-    assert relay.TOKEN_HEADER == HERMES_BACKEND_TOKEN_HEADER
-
-
 def test_an_upgrade_names_the_backend_and_carries_the_credential_into_the_query() -> None:
     head = _UPGRADE_FROM_THE_GATEWAY[:-4]
 

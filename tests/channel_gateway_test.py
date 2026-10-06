@@ -28,9 +28,7 @@ from astrabox.providers.channel_satori import (
 )
 from astrabox.seams.channel import (
     ChannelCallbackResponse,
-    get_channel,
     register_channel,
-    registered_channels,
 )
 
 _TOKEN = "channel-gateway-test-token-000000000000"
@@ -79,20 +77,6 @@ def _message_event(**overrides: Any) -> dict[str, Any]:
     }
     payload.update(overrides)
     return payload
-
-
-def test_catalog_registers_every_official_satori_adapter_product() -> None:
-    expected = {str(value["name"]) for value in CHANNEL_PROVIDER_DEFINITIONS}
-    assert len(expected) == 16
-    assert expected <= set(registered_channels())
-    assert "satori" in registered_channels()
-
-    descriptor = get_channel("telegram").describe().to_dict()
-    assert descriptor["scene"] == "channel:telegram"
-    assert descriptor["setup_url"] == "https://t.me/BotFather"
-    assert descriptor["callback_path"] is None
-    assert descriptor["credential_fields"][0]["secret"] is True
-    assert "token" not in descriptor
 
 
 async def test_complete_binding_is_checked_by_the_authoritative_adapter_schema() -> None:

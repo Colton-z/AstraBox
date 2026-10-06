@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections import defaultdict
 from typing import Any
@@ -9,6 +10,7 @@ from typing import Any
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.core.service.orchestrator.engine.base import (
     ENGINE_MESSAGE_EVENT_TYPE,
+    EngineStoredChildResources,
     EngineStoredChildTranscript,
     EngineStoredChildToolResults,
 )
@@ -228,6 +230,7 @@ def _apply_lifecycle(entry: dict[str, Any], data: dict[str, Any]) -> None:
         ("taskType", "task_type"),
         ("lastToolName", "last_tool_name"),
         ("summary", "summary"),
+        ("model", "model"),
     ):
         value = data.get(source_name)
         if isinstance(value, str) and value.strip():
@@ -254,7 +257,10 @@ def _apply_lifecycle(entry: dict[str, Any], data: dict[str, Any]) -> None:
             event,
         )
         entry["closed"] = False
-    entry["engine_event"] = str(data["engineEvent"])
+    if "engineEvent" in data:
+        entry["engine_event"] = str(data["engineEvent"])
+    if "nativeState" in data:
+        entry["_native_state"] = dict(data["nativeState"])
     if "engineStatus" in data:
         entry["engine_status"] = str(data["engineStatus"])
     if "engineReason" in data:
@@ -364,6 +370,7 @@ def project_session_child_runs(
     include_messages: bool = False,
     include_control: bool = False,
     include_engine_ref: bool = False,
+    include_native_state: bool = False,
 ) -> list[dict[str, Any]]:
     """Project every child run without assigning it to a root platform turn."""
 
@@ -522,7 +529,7 @@ def project_session_child_runs(
 
     projected: list[dict[str, Any]] = []
     for entry in _tree_order(entries):
-        if not str(entry.get("engine_event") or "").strip():
+        if not str(entry.get("engine_event") or "").strip() and not entry.get("_native_state"):
             raise ChildRunProjectionError(
                 "child-run has messages but no lifecycle fact "
                 f"child_run_id={entry['child_run_id']!r}"
@@ -536,6 +543,8 @@ def project_session_child_runs(
             clean["control_ref"] = str(entry["_control_ref"])
         if include_engine_ref:
             clean["_engine_ref"] = str(entry["_engine_ref"])
+        if include_native_state and entry.get("_native_state"):
+            clean["_native_state"] = dict(entry["_native_state"])
         projected.append(clean)
     return projected
 
@@ -544,10 +553,17 @@ class SessionChildRunView:
     """Read child-run summaries and transcripts from canonical session facts."""
 
     def __init__(
-        self, session_events_repo: Any, *, transcript_entries_repo: Any = None
+        self,
+        session_events_repo: Any,
+        *,
+        transcript_entries_repo: Any = None,
+        sessions_repo: Any = None,
+        runtime_state_snapshots_repo: Any = None,
     ) -> None:
         self._session_events_repo = session_events_repo
         self._transcript_entries_repo = transcript_entries_repo
+        self._sessions_repo = sessions_repo
+        self._runtime_state_snapshots_repo = runtime_state_snapshots_repo
 
     async def _events(self, session_id: str) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
@@ -607,6 +623,56 @@ class SessionChildRunView:
             block = _child_block_from_frame(frame)
             if block is not None and block["id"] not in persisted_child_ids:
                 frames.append(frame)
+        if self._sessions_repo is not None:
+            session = await self._sessions_repo.get_session(session_id)
+            if session is None:
+                raise ChildRunProjectionError("child history's platform Session is absent")
+            adapter = get_engine_adapter(str(session["engine_kind"]))
+            if isinstance(adapter, EngineStoredChildResources):
+                if self._runtime_state_snapshots_repo is None:
+                    raise ChildRunProjectionError(
+                        "native child archive repository is not configured"
+                    )
+                from astrabox.persistence.repository.runtime_state_snapshot_repository import (
+                    RuntimeStateOwner,
+                )
+
+                ref = session["workspace_ref"]
+                if ref.get("user_id") != session["user_id"]:
+                    raise ChildRunProjectionError(
+                        "native child archive owner differs from its Session"
+                    )
+                owner = RuntimeStateOwner(
+                    user_id=session["user_id"],
+                    subject_kind=ref["kind"],
+                    subject_id=ref.get("assistant_id") or ref.get("agent_id") or "",
+                    engine_kind=str(session["engine_kind"]),
+                )
+                snapshot = await self._runtime_state_snapshots_repo.load(owner)
+                facts = await asyncio.to_thread(
+                    adapter.stored_child_resource_facts,
+                    native_session_key=session.get("engine_session_key"),
+                    runtime_state=snapshot.payload if snapshot is not None else None,
+                    live_frames=frames,
+                )
+                frames = []
+                for index, fact in enumerate(facts):
+                    if not isinstance(fact, ChildResourceFact):
+                        raise ChildRunProjectionError(
+                            "native child reader returned a non-child fact"
+                        )
+                    payload = fact.as_frame()
+                    frames.append(
+                        {
+                            "scope": pop_engine_frame_scope(payload),
+                            "turn_id": None,
+                            "frame_seq": index,
+                            "payload": payload,
+                        }
+                    )
+                # The native catalog is authoritative for its resource identities;
+                # retained progress previews are not a second historical catalog.
+                events = []
         return events, frames
 
     async def list_child_runs(self, session_id: str) -> list[dict[str, Any]]:
@@ -615,11 +681,14 @@ class SessionChildRunView:
             session_id=session_id,
             events=events,
             frames=frames,
+            include_native_state=True,
         )
         for child_run in child_runs:
             child_run["active"] = get_engine_adapter(
                 str(child_run["engine_kind"])
             ).child_run_is_active(child_run)
+            child_run.pop("_native_state", None)
+            child_run.setdefault("engine_event", None)
         return child_runs
 
     async def get_child_run_messages(

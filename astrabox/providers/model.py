@@ -48,6 +48,7 @@ from astrabox.seams.model import (
     ModelEndpoint,
     ModelEndpointConfigurationError,
     ModelEndpointProvider,
+    ModelInputModality,
     ModelRequestContext,
     register_model_endpoint,
 )
@@ -225,6 +226,15 @@ class LiteLLMModelEndpointProvider(ModelEndpointProvider):
             credential_kind="bearer",
         )
 
+    def protocol_base_url(self, *, base_url: str, protocol: str) -> str:
+        """Keep native DeepSeek Files separate from the gateway's OpenAI Files."""
+        if protocol != "deepseek-anthropic":
+            return base_url
+        root = base_url.rstrip("/")
+        if not urlsplit(root).path.endswith("/v1"):
+            root += "/v1"
+        return root + "/deepseek"
+
     def list_models(self, *, provider_access: Any = None, settings: Any = None) -> list[str]:
         """Query the LiteLLM proxy's OpenAI-standard ``GET /v1/models`` for the
         routing keys its ``model_list`` serves — the console's model dropdown.
@@ -269,6 +279,50 @@ class LiteLLMModelEndpointProvider(ModelEndpointProvider):
             if isinstance(item, dict) and str(item.get("id") or "").strip()
         }
         return sorted(models)
+
+    async def model_input_modalities(
+        self, *, model_name: str
+    ) -> tuple[ModelInputModality, ...] | None:
+        """Read vision support for a route from LiteLLM's model-group API.
+
+        LiteLLM resolves upstream models and administrator overrides behind
+        aliases. Only its declared boolean grants or denies image input;
+        absent metadata leaves the runtime's own default in place.
+        """
+        import httpx
+
+        endpoint = self.server_endpoint()
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.get(
+                str(endpoint.base_url).rstrip("/") + "/model_group/info",
+                params={"model_group": model_name},
+                headers={"Authorization": f"Bearer {endpoint.api_key}"},
+            )
+            response.raise_for_status()
+            payload = response.json()
+        groups = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(groups, list):
+            raise ModelEndpointConfigurationError(
+                "LiteLLM returned no model-group capability list"
+            )
+        entries = [
+            entry for entry in groups
+            if isinstance(entry, dict) and entry.get("model_group") == model_name
+        ]
+        if not entries:
+            return None
+        if len(entries) != 1:
+            raise ModelEndpointConfigurationError(
+                f"LiteLLM returned ambiguous capabilities for {model_name!r}"
+            )
+        vision = entries[0].get("supports_vision")
+        if vision is None:
+            return None
+        if not isinstance(vision, bool):
+            raise ModelEndpointConfigurationError(
+                f"LiteLLM returned invalid vision support for {model_name!r}"
+            )
+        return ("text", "image") if vision else ("text",)
 
     def request_headers(
         self,

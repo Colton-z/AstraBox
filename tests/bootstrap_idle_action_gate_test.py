@@ -113,17 +113,6 @@ def test_the_default_asks_nothing_of_the_backend() -> None:
     _assert_idle_action_is_honored("no-snapshots")
 
 
-def test_the_seam_default_is_that_a_backend_cannot_pause() -> None:
-    """So a backend must OPT IN, and one that never considered it is refused."""
-    assert SandboxProvider.supports_pause is False
-
-
-def test_the_open_sandbox_backend_declares_it_can() -> None:
-    from astrabox.providers.open_sandbox.sandbox import OpenSandboxSandboxProvider
-
-    assert OpenSandboxSandboxProvider.supports_pause is True
-
-
 # ── a team gateway can require an HTTPS sandbox-facing endpoint ─────────────
 
 

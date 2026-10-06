@@ -1,3 +1,4 @@
+import { ArtifactPanel } from '@/artifacts/ArtifactPanel';
 import { useTranslation } from 'react-i18next';
 import { ResizablePanel } from '@/components/ui/resizable';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -15,10 +16,15 @@ import {
 import SessionFilesPanel from './SessionFilesPanel';
 import { AgentsListPanel } from './AgentsListPanel';
 
-// Right-side tabbed panel for files, terminal, agents, and diffs. It owns its
+// Right-side tabbed panel for files, terminal, agents, diffs, and artifacts. It owns its
 // ResizablePanel so the parent only assembles it beside the left pane and the
 // handle between them.
 export function SessionRightPanel({
+  artifactSelection,
+  setArtifactSelection,
+  artifactRevision,
+  assistantId,
+  assistantConversation,
   rightTab,
   setRightTab,
   rightPanelCaps,
@@ -42,6 +48,11 @@ export function SessionRightPanel({
   selectedDiffFile,
   setSelectedDiffFile,
 }: {
+  artifactSelection?: string | null;
+  setArtifactSelection?: (id: string | null) => void;
+  artifactRevision?: number;
+  assistantId?: string | null;
+  assistantConversation?: boolean;
   rightTab: SessionRightPanelTab;
   setRightTab: (tab: SessionRightPanelTab) => void;
   rightPanelCaps: SessionRightPanelCapabilities;
@@ -76,7 +87,7 @@ export function SessionRightPanel({
             generated selectors win the cascade. */}
         <TabsList
           variant="line"
-          className="w-full shrink-0 justify-start gap-0 border-b border-border bg-transparent px-2"
+          className="w-full shrink-0 justify-start gap-0 overflow-x-auto border-b border-border bg-transparent px-2"
         >
           {rightPanelCaps.tabs.map((tab) => (
             <TabsTrigger
@@ -107,6 +118,18 @@ export function SessionRightPanel({
             `hidden` behavior controls visibility. The panels in `App.tsx` set
             `flex` and therefore need an explicit `not-data-hidden:flex`
             guard. */}
+        {enabledTabs.has('artifacts') && (
+          <TabsContent value="artifacts" className="flex-1 min-h-0 overflow-hidden">
+            <ArtifactPanel
+              sessionId={sessionId}
+              assistantId={assistantId}
+              assistantConversation={assistantConversation}
+              selectedId={artifactSelection ?? null}
+              onSelect={setArtifactSelection ?? (() => {})}
+              refreshSignal={artifactRevision ?? 0}
+            />
+          </TabsContent>
+        )}
         {enabledTabs.has('files') && (
           <TabsContent value="files" className="flex-1 min-h-0 overflow-hidden">
             <SessionFilesPanel

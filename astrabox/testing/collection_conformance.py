@@ -352,6 +352,79 @@ class CollectionContractSuite:
 
         assert seen == expected, f"pages {seen} != whole set {expected}"
 
+    async def test_nested_filtered_keyset_pages_keep_owner_and_visibility(self) -> None:
+        """The Session repository combines visibility and cursor with ``$and``."""
+        coll = await self.make_collection("conf_nested_keyset_pages")
+        keys = ["echo", "Echo", "echo", "a b", "a-b", "ab", "b", "echo", "B", "é", "a"]
+        docs: list[dict[str, Any]] = []
+        for index, key in enumerate(keys):
+            visible: dict[str, Any] = {"_id": f"v{index}", "k": key, "rid": f"r{index:02d}", "user_id": "reader"}
+            if index % 2:
+                visible["hidden"] = False
+            docs.extend([
+                visible,
+                {**visible, "_id": f"f{index}", "rid": f"f{index:02d}", "user_id": "other"},
+                {**visible, "_id": f"h{index}", "rid": f"h{index:02d}", "hidden": True},
+                {**visible, "_id": f"d{index}", "rid": f"d{index:02d}", "deleted": True},
+                {**visible, "_id": f"n{index}", "rid": f"n{index:02d}", "hidden": 0},
+            ])
+        for doc in docs:
+            await coll.insert_one(doc)
+
+        expected = sorted(
+            ((key, f"r{index:02d}") for index, key in enumerate(keys)), reverse=True,
+        )
+        visibility = {
+            "user_id": "reader", "deleted": {"$ne": True},
+            "$or": [{"hidden": {"$exists": False}}, {"hidden": False}],
+        }
+        seen: list[tuple[str, str]] = []
+        after: tuple[str, str] | None = None
+        for _page in range(10):
+            query: dict[str, Any] = visibility
+            if after is not None:
+                query = {"$and": [visibility, {"$or": [
+                    {"k": {"$lt": after[0]}},
+                    {"k": after[0], "rid": {"$lt": after[1]}},
+                ]}]}
+            page = await (
+                coll.find(query).sort([("k", -1), ("rid", -1)], string_keyed=True).limit(3)
+            ).to_list(None)
+            assert all(doc["user_id"] == "reader" for doc in page)
+            seen.extend((doc["k"], doc["rid"]) for doc in page)
+            if len(page) < 3:
+                break
+            after = (page[-1]["k"], page[-1]["rid"])
+        assert seen == expected
+
+    async def test_nested_disjunction_retains_unpushable_arms_and_array_matches(self) -> None:
+        """An OR arm without a safe SQL predicate must still contribute rows."""
+        coll = await self.make_collection("conf_nested_disjunction")
+        docs = [
+            {"_id": "a", "rid": "a", "scope": "s", "tag": ["wanted", "other"]},
+            {"_id": "b", "rid": "b", "scope": "s", "tag": "wanted"},
+            {"_id": "c", "rid": "c", "scope": "s", "tag": 7},
+            {"_id": "d", "rid": "d", "scope": "s", "note": "only this arm"},
+            {"_id": "e", "rid": "e", "scope": "other", "tag": "wanted", "note": "foreign"},
+            {"_id": "f", "rid": "f", "scope": "s", "tag": "unwanted"},
+            {"_id": "g", "rid": "g", "scope": "s", "tag": [7, "other"]},
+        ]
+        for doc in docs:
+            await coll.insert_one(doc)
+        for tag_query, expected in [
+            ({"tag": "wanted"}, ["a", "b", "d"]),
+            ({"tag": {"$in": ["wanted", 7]}}, ["a", "b", "c", "d", "g"]),
+        ]:
+            for note_query in ({"note": {"$exists": True}}, {"note": "only this arm"}):
+                query = {"$and": [{"scope": "s"}, {"$or": [
+                    {"$and": [tag_query, {"rid": {"$gte": "a"}}]},
+                    note_query,
+                ]}]}
+                rows = await (
+                    coll.find(query).sort([("rid", 1)], string_keyed=True).limit(20)
+                ).to_list(None)
+                assert [doc["_id"] for doc in rows] == expected
+
     async def test_find_inclusion_projection(self) -> None:
         coll = await self.make_collection("conf_projection")
         await coll.insert_one({"_id": "p1", "keep": "yes", "drop": "no", "n": 1})

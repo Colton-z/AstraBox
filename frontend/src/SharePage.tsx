@@ -1,3 +1,4 @@
+import { ArtifactNavigationProvider } from '@/artifacts/navigation';
 import { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -22,7 +23,7 @@ export default function SharePage() {
   const access = useMemo(() => sharedTranscriptAccess(token), [token]);
   return (
     <TranscriptAccessContext.Provider value={access}>
-      <SharedConversation key={token} token={token} />
+      <ArtifactNavigationProvider sharedTranscript><SharedConversation key={token} token={token} /></ArtifactNavigationProvider>
     </TranscriptAccessContext.Provider>
   );
 }

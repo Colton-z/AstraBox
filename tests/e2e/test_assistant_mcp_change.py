@@ -17,6 +17,10 @@ Each test runs on a sibling of the lane's Assistant Environment that differs
 only in whether it admits MCP servers, so the outcome does not depend on how
 the lane Environment happens to be configured.
 
+Removal preserves a real command already running on the original box. Once
+that command completes, hibernate and wake must replace the box, drop the old
+host admission and retain the conversation and native context.
+
     E2E_LANE=assistant \\
       ASTRABOX_E2E_ASSISTANT_ENVIRONMENT=<assistant environment> \\
       ASTRABOX_E2E_ASSISTANT_MODEL=<model> ./scripts/e2e_live.sh
@@ -25,8 +29,10 @@ the lane Environment happens to be configured.
 from __future__ import annotations
 
 import os
+import shlex
 import time
 import uuid
+from fnmatch import fnmatchcase
 from urllib.parse import urlsplit
 
 import httpx
@@ -34,12 +40,17 @@ import pytest
 
 from tests.e2e._sandbox_helpers import (
     data,
+    file_names,
     get_session,
+    list_files,
     poll_until_ready,
     release_assistant,
     release_session,
     stream_turn,
+    wait_for_file,
+    wait_until_settled,
 )
+from tests.e2e.test_interrupt import _post_turn_until_streaming
 
 pytestmark = [pytest.mark.e2e, pytest.mark.assistant_live]
 
@@ -51,7 +62,9 @@ _MCP_URL = "https://mcp.deepwiki.com/mcp"
 _RUNTIME_FIELDS = ("engine_kind", "idle_action", "runtime_template_name")
 
 
-def _sibling_environment(e2e_client: httpx.Client, *, admits_mcp: bool) -> str:
+def _sibling_environment(
+    e2e_client: httpx.Client, *, admits_mcp: bool, suffix: str = ""
+) -> str:
     lane = os.getenv("ASTRABOX_E2E_ASSISTANT_ENVIRONMENT", "").strip()
     assert lane, "the Assistant lane requires ASTRABOX_E2E_ASSISTANT_ENVIRONMENT"
     matches = [
@@ -60,7 +73,7 @@ def _sibling_environment(e2e_client: httpx.Client, *, admits_mcp: bool) -> str:
         if item.get("name") == lane
     ]
     assert len(matches) == 1, f"expected one Environment {lane!r}: {matches}"
-    name = f"{lane}-{'mcp' if admits_mcp else 'no-mcp'}"
+    name = f"{lane}-{'mcp' if admits_mcp else 'no-mcp'}{suffix}"
     body = {key: matches[0][key] for key in _RUNTIME_FIELDS if key in matches[0]}
     body.update(
         enabled=True,
@@ -188,3 +201,109 @@ def test_a_conversation_whose_setup_fails_says_why(
     again = get_session(e2e_client, session_id)
     assert again.get("state") == "TERMINATED", again
     assert again.get("last_error") == session.get("last_error"), again
+
+
+def test_removing_an_mcp_host_keeps_active_work_and_revokes_it_on_idle_restart(
+    e2e_client: httpx.Client, live_test_deadline: float
+) -> None:
+    """A config edit preserves a running command; a fresh idle box drops its host."""
+    marker = f"mcp_remove_{uuid.uuid4().hex}"
+    environment = _sibling_environment(
+        e2e_client, admits_mcp=True, suffix=f"-{marker}"
+    )
+    assistant_id = _assistant(e2e_client, environment)
+    _add_mcp_server(e2e_client, assistant_id)
+    old_box = _wake(e2e_client, assistant_id, deadline=live_test_deadline)
+    host = str(urlsplit(_MCP_URL).hostname)
+
+    def limited_hosts(sandbox_id: str) -> set[str]:
+        posture = data(e2e_client.get(f"/api/v1/admin/sandboxes/{sandbox_id}/security"))
+        assert posture.get("available") is True, posture
+        assert posture.get("default_action") == "deny", posture
+        return {
+            str(rule.get("target"))
+            for rule in posture.get("egress_rules") or []
+            if rule.get("action") == "allow"
+        }
+
+    assert host in limited_hosts(old_box), "the original box never admitted the MCP host"
+    sid = _new_conversation(e2e_client, assistant_id)
+    poll_until_ready(e2e_client, sid)
+    root = str(list_files(e2e_client, sid).get("root_path") or "")
+    assert root == "/workspace", root
+    started_path = f"{root}/{marker}.started"
+    release_name = f"{marker}.release"
+    release_path = f"{root}/{release_name}"
+    exited_name = f"{marker}.exited"
+    exited_path = f"{root}/{exited_name}"
+    command = "sh -c " + shlex.quote(
+        f"printf started > {shlex.quote(started_path)}; "
+        f"while [ ! -e {shlex.quote(release_path)} ]; do sleep 0.1; done; "
+        f"printf completed > {shlex.quote(exited_path)}; printf {shlex.quote(marker)}"
+    )
+    prompt = (
+        f"Remember the token {marker}. Use the terminal tool to run exactly this "
+        "command in the foreground and wait for it to finish. Do not create the "
+        "release file or run another command; I will release it. When it finishes, "
+        f"reply with the token only: {command}"
+    )
+    saw_ui, saw_output = _post_turn_until_streaming(e2e_client, sid, prompt)
+    assert saw_ui and saw_output, "the original command turn never streamed"
+    assert wait_for_file(e2e_client, sid, started_path, timeout=30.0) == b"started"
+    active = get_session(e2e_client, sid)
+    assert active.get("current_turn_id"), active
+    assert active.get("state") == "PROCESSING" and not active.get("pending_interaction"), active
+    assert release_name not in file_names(e2e_client, sid)
+    assert exited_name not in file_names(e2e_client, sid)
+
+    updated = data(
+        e2e_client.patch(
+            f"/api/v1/assistants/{assistant_id}", json={"mcp_config_override": {}}
+        )
+    )
+    assert updated.get("mcp_config_override") == {}, updated
+    still_active = get_session(e2e_client, sid)
+    assert still_active.get("current_turn_id") == active["current_turn_id"], still_active
+    assert still_active.get("state") == "PROCESSING", still_active
+    assert host in limited_hosts(old_box), "editing one definition revoked a live box's host"
+    assert exited_name not in file_names(e2e_client, sid), "the held command was stopped"
+
+    released = data(
+        e2e_client.post(
+            f"/api/v1/sessions/{sid}/files/upload",
+            data={"path": ""}, files={"files": (release_name, b"release", "text/plain")},
+        )
+    )
+    assert released.get("uploaded_count") == 1, released
+    settled = wait_until_settled(e2e_client, sid)
+    assert settled.get("last_turn_id") == active["current_turn_id"], settled
+    assert settled.get("last_turn_status") == "COMPLETED", settled
+    assert not settled.get("last_turn_error"), settled
+    assert wait_for_file(e2e_client, sid, exited_path, timeout=5.0) == b"completed"
+    before = data(e2e_client.get(f"/api/v1/sessions/{sid}/messages", params={"limit": 50}))
+    messages = before.get("messages") or []
+    assert [message.get("role") for message in messages] == ["user", "assistant"], messages
+    results = [block for block in messages[-1].get("blocks") or [] if block.get("type") == "result"]
+    assert [result.get("finish_reason") for result in results] == ["stop"], results
+
+    hibernated = data(
+        e2e_client.post(f"/api/v1/assistants/{assistant_id}/workspace/hibernate", timeout=120.0)
+    )
+    assert hibernated.get("released") is True, hibernated
+    assert hibernated.get("previous_sandbox_id") == old_box, hibernated
+    new_box = _wake(e2e_client, assistant_id, deadline=live_test_deadline)
+    assert new_box != old_box, "idle restart reused the box with the obsolete host"
+    assert not any(fnmatchcase(host, allowed) for allowed in limited_hosts(new_box)), (
+        "the replacement box still admits the removed MCP host"
+    )
+    after = data(e2e_client.get(f"/api/v1/sessions/{sid}/messages", params={"limit": 50}))
+    assert after.get("messages") == messages, "idle restart changed the saved conversation"
+    reply = stream_turn(
+        e2e_client, sid,
+        content="What exact token did I previously ask you to remember? Reply with the token only; no tools.",
+    )
+    assert reply.error is None and reply.finish_reason == "stop", reply
+    assert reply.text.strip() == marker, "the replacement lost the original native context"
+    final = wait_until_settled(e2e_client, sid)
+    assert final.get("last_turn_status") == "COMPLETED" and not final.get("last_turn_error"), final
+    assert final.get("last_turn_id") != active["current_turn_id"], final

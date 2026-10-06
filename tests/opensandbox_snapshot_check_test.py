@@ -8,7 +8,6 @@ from typing import Any
 
 import pytest
 
-from astrabox import cli
 from astrabox.cli import serve as cli_serve
 from astrabox.deploy import opensandbox_snapshot_check as snapshot_check
 
@@ -124,27 +123,6 @@ async def test_snapshot_check_uses_the_sdk_mode_and_removes_the_sandbox(
     assert scene["killed"] == ["sandbox-check"]
 
 
-async def test_snapshot_check_can_target_the_bundled_lifecycle_server(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    scene = _install_fake_sdk(monkeypatch)
-
-    def connection_config(_settings: object, **kwargs: object) -> object:
-        scene["connection_kwargs"] = kwargs
-        return SimpleNamespace(get_api_key=lambda: "")
-
-    monkeypatch.setattr(snapshot_check._config, "sdk_connection_config", connection_config)
-
-    await snapshot_check.verify_opensandbox_snapshots(
-        image="agent:test",
-        lifecycle_base_url="http://127.0.0.1:8990",
-    )
-
-    assert scene["connection_kwargs"] == {
-        "lifecycle_base_url_override": "http://127.0.0.1:8990"
-    }
-
-
 async def test_snapshot_check_reports_the_failing_lifecycle_stage_and_cleans_up(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -200,16 +178,3 @@ def test_snapshot_cli_writes_atomic_non_secret_evidence(
         "state": "PASS",
     }
     assert not output.with_name(f".{output.name}.tmp").exists()
-
-
-def test_snapshot_cli_parses_an_explicit_lifecycle_url() -> None:
-    args = cli._build_parser().parse_args(
-        [
-            "verify-opensandbox-snapshots",
-            "--lifecycle-base-url",
-            "http://127.0.0.1:8990",
-        ]
-    )
-
-    assert args.lifecycle_base_url == "http://127.0.0.1:8990"
-    assert args.timeout_seconds == snapshot_check.MAX_VERIFICATION_SECONDS

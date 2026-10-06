@@ -106,7 +106,7 @@ class TrustedHostMiddlewareTest(unittest.TestCase):
         # Sandbox->host platform MCP traffic carries a bridge-IP Host.
         app = _RecordingApp()
         scope = _scope(
-            path="/api/v1/platform-mcp/deployment-1/html-preview/mcp",
+            path="/api/v1/platform-mcp/deployment-1/expose-port/capability/mcp",
             host="172.17.0.1",
         )
         sent = asyncio.run(_drive(TrustedHostMiddleware(app), scope))
@@ -187,7 +187,7 @@ class RootPathClassificationTests(unittest.TestCase):
         Host-gated."""
         app = _RecordingApp()
         scope = _scope(
-            path="/astrabox/api/v1/platform-mcp/deployment-1/html-preview/mcp",
+            path="/astrabox/api/v1/platform-mcp/deployment-1/expose-port/capability/mcp",
             host="evil.example.com",
         )
         scope["root_path"] = "/astrabox"

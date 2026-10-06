@@ -63,11 +63,7 @@
  * `/agent-configuration/environments` simply omits it, and
  * `_environment_with_engine_capabilities` catches `EngineKindNotRegistered` so
  * the admin list does not 500. No lane spec asserts an Environment count or the
- * rail's Environments badge: the one lane spec that walks /manage/environments
- * reads the AGENTS badge there
- * (a-record-created-in-the-console-is-counted-on-every-page.parallel.spec.ts:420-426),
- * and that same spec, the only other one that drives /manage/agents/new, pins
- * its picker assertions to the matrix Environment by name (:365-374).
+ * rail's Environments badge.
  *
  * WHAT IT LEAVES BEHIND. The Environment name is stable, not run-scoped, for
  * the reason its siblings give: `admin.py` offers environments only GET and PUT,
@@ -151,9 +147,9 @@ test.afterEach(async ({}, testInfo) => {
  * `NameCell` puts `envDisplayName(e)` on the first line and `e.name` on the
  * second (EnvironmentsListPage.tsx:102-117), so an exact match on the name is
  * the row's identity rather than a substring of whatever else it renders. The
- * table is laid out as CSS grid, which is why `console-interaction.audit.spec.ts`
- * and `a-sandbox-record-reports-the-box-not-an-empty-card.parallel.spec.ts:129-131`
- * address rows the same way.
+ * table is laid out as CSS grid, which is why
+ * `a-sandbox-record-reports-the-box-not-an-empty-card.parallel.spec.ts:125-127`
+ * addresses rows the same way.
  */
 function catalogueRow(page: Page, name: string): Locator {
   return page

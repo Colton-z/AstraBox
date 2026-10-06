@@ -287,6 +287,7 @@ APPROVAL_METHODS = {
     "item/commandExecution/requestApproval": "commandExecution",
     "item/fileChange/requestApproval": "fileChange",
     "item/permissions/requestApproval": "permissions",
+    "mcpServer/elicitation/request": "mcpToolCall",
 }
 QUESTION_METHOD = "item/tool/requestUserInput"
 
@@ -359,11 +360,20 @@ CODEX_PERMISSION_DECISIONS: tuple[dict[str, Any], ...] = (
     },
 )
 
+#: McpServerElicitationAction at rust-v0.160.0. A tool approval accepts an
+#: empty form; it does not grant persistent approval or fabricate form values.
+CODEX_MCP_DECISIONS: tuple[dict[str, Any], ...] = (
+    {"id": "accept", "denial": False, "reply": "Approved.", "comment_prefix": "Additional notes"},
+    {"id": "decline", "denial": True, "reply": "Declined.", "comment_prefix": "Reason"},
+    {"id": "cancel", "denial": True, "reply": "Cancelled.", "comment_prefix": "Reason"},
+)
+
 #: Which vocabulary each request is answered in.
 _DECISIONS_BY_KIND: dict[str, tuple[dict[str, Any], ...]] = {
     "commandExecution": CODEX_DECISIONS,
     "fileChange": CODEX_DECISIONS,
     "permissions": CODEX_PERMISSION_DECISIONS,
+    "mcpToolCall": CODEX_MCP_DECISIONS,
 }
 
 #: What is being asked, for a request that carries no `reason` of its own.
@@ -371,6 +381,7 @@ _APPROVAL_PROMPTS = {
     "commandExecution": "Codex is asking to run a command.",
     "fileChange": "Codex is asking to change files.",
     "permissions": "Codex is asking for additional permissions.",
+    "mcpToolCall": "Codex is asking to call an MCP tool.",
 }
 
 #: The scope a granting decision asks for. `PermissionGrantScope`, verbatim;
@@ -416,6 +427,10 @@ def _approval_body(kind: str, params: dict[str, Any]) -> str | None:
         grant_root = str(params.get("grantRoot") or "").strip()
         if grant_root:
             lines.append(f"Write access under: {grant_root}")
+    elif kind == "mcpToolCall":
+        lines.append(f"MCP server: {params.get('serverName', '')}")
+        if isinstance(params.get("_meta"), dict):
+            lines.append(json.dumps(params["_meta"], ensure_ascii=False, sort_keys=True))
     elif kind == "permissions":
         cwd = str(params.get("cwd") or "").strip()
         if cwd:
@@ -476,9 +491,15 @@ def build_approval_contract(method: str, params: dict[str, Any]) -> dict[str, An
 
     kind = APPROVAL_METHODS[method]
     tool_use_id = str(params.get("itemId") or "").strip()
-    if not tool_use_id:
+    if kind == "mcpToolCall":
+        schema = params.get("requestedSchema")
+        if params.get("mode") != "form" or not isinstance(schema, dict) or schema.get("properties") != {}:
+            raise CodexProtocolError("platform MCP approvals require an empty native elicitation form")
+        # The vendor cannot correlate elicitations with a tool item id.
+        # The client retains the JSON-RPC id separately for the response.
+    elif not tool_use_id:
         raise CodexProtocolError(f"{method} carries no itemId")
-    reason = str(params.get("reason") or "").strip()
+    reason = str(params.get("message") if kind == "mcpToolCall" else params.get("reason") or "").strip()
     prompt = _APPROVAL_PROMPTS[kind]
     if kind == "commandExecution" and isinstance(params.get("networkApprovalContext"), dict):
         prompt = "Codex is asking for network access."
@@ -567,6 +588,8 @@ def approval_response_value(
             f"codex approval answered with {chosen!r}, which is not one of the "
             "decisions this request declared"
         )
+    if kind == "mcpToolCall":
+        return {"action": chosen, "content": {} if chosen == "accept" else None, "_meta": None}
     if kind != "permissions":
         return {"decision": chosen}
 

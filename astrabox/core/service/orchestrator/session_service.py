@@ -353,6 +353,8 @@ class SessionService:
             engine_kind = str(workspace_ref.get("engine_kind") or "").strip()
             if engine_kind and not str(clean.get("engine_kind") or "").strip():
                 clean["engine_kind"] = engine_kind
+            if clean.get("session_kind") == "assistant_chat":
+                clean["assistant_id"] = str(workspace_ref.get("assistant_id") or "").strip() or None
         clean.pop("_id", None)
         clean.pop("sandbox_generation", None)
         clean.pop("_runtime_recovery_owner", None)

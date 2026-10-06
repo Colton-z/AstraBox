@@ -243,6 +243,14 @@ async def build_agent_client_pool_plan(
             if conversation_owned
             else member.assignment_id
         )
+        from astrabox.core.service.orchestrator.engine.platform_mcp import request_with_platform_mcp
+        from astrabox.core.service.orchestrator.runtime.mcp_servers import prepared_slot_mcp_deployment_id
+
+        if conversation_owned:
+            request = request_with_platform_mcp(
+                request, template=template, deployment_settings=runtime_manager.deployment_settings,
+                deployment_id=prepared_slot_mcp_deployment_id(workload_id),
+            )
         credential, network_policy, vault_plan = resolve_model_credential_delivery(
             template=template,
             backend_adapter=provider,
@@ -331,7 +339,26 @@ async def build_agent_client_pool_plan(
         )
         from astrabox.core.service.orchestrator.runtime.storage.mounts import create_sandbox_with_storage
 
-        handle = await create_sandbox_with_storage(provider, create_spec)
+        from astrabox.core.service.orchestrator.agent.prepared_slots import (
+            _delete_prepared_platform_mcp_binding,
+            _publish_prepared_platform_mcp_binding,
+            _suppress_and_log,
+        )
+
+        # Resident engines discover tools during boot, before the provider
+        # returns a sandbox id. Discovery needs the Agent, never user authority.
+        if conversation_owned:
+            await _publish_prepared_platform_mcp_binding(
+                template, agent_id=agent_id, slot_id=workload_id,
+                sandbox_id="", sandbox_backend=str(provider.name),
+            )
+        try:
+            handle = await create_sandbox_with_storage(provider, create_spec)
+        except BaseException:
+            if conversation_owned:
+                with _suppress_and_log("pool create binding delete", workload_id):
+                    await _delete_prepared_platform_mcp_binding(workload_id)
+            raise
         sandbox_id = extract_sandbox_id(handle)
         try:
             await workspace_is_ready(
@@ -353,6 +380,9 @@ async def build_agent_client_pool_plan(
                     sandbox_id,
                     destruction.detail,
                 )
+            if conversation_owned:
+                with _suppress_and_log("pool candidate binding delete", workload_id):
+                    await _delete_prepared_platform_mcp_binding(workload_id)
             raise
         return handle
 

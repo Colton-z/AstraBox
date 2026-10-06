@@ -21,6 +21,7 @@ from astrabox.common.utils.errors import APIError
 from astrabox.identity.session_signing import session_signing_secret
 from astrabox.providers.litellm_shared_auth import (
     SANDBOX_INFERENCE_KEY_TYPE,
+    inference_key_metadata,
     session_inference_key,
 )
 
@@ -38,8 +39,8 @@ async def ensure_session_inference_key(
     """Create (or confirm) this Session's virtual key; return its value.
 
     Idempotent by construction: the value is derived, so a re-claim after
-    recovery asks the gateway for the same key and treats "already exists" as
-    success. Any other refusal is raised — a Session whose key cannot exist
+    recovery asks the gateway for the same key and reconciles its native
+    model protocol grants when it already exists. Any other refusal is raised — a Session whose key cannot exist
     would spend an identity the gateway refuses on its first model call, and
     that must fail the claim, not the turn.
     """
@@ -69,14 +70,14 @@ async def ensure_session_inference_key(
         "key": key,
         "key_alias": f"astrabox-session-{target}",
         "key_type": SANDBOX_INFERENCE_KEY_TYPE,
-        "metadata": {
+        "metadata": inference_key_metadata({
             SESSION_KEY_METADATA_SESSION_FIELD: target,
             **(
                 {SESSION_KEY_METADATA_USER_FIELD: str(user_id or "").strip()}
                 if str(user_id or "").strip()
                 else {}
             ),
-        },
+        }),
     }
     async with httpx.AsyncClient(timeout=15.0) as client:
         response = await client.post(
@@ -87,12 +88,32 @@ async def ensure_session_inference_key(
                 "Content-Type": "application/json",
             },
         )
-    if response.status_code == 200:
-        logger.info("minted session model key: session=%s", target)
-        return key
-    body = response.text[:300]
-    if "already exists" in body or "duplicate" in body.lower():
-        return key
+        if response.status_code == 200:
+            logger.info("minted session model key: session=%s", target)
+            return key
+        body = response.text[:300]
+        if "already exists" in body or "duplicate" in body.lower():
+            headers = {"Authorization": f"Bearer {master_key}"}
+            current = await client.get(f"{base}/key/info", params={"key": key}, headers=headers)
+            if current.status_code != 200:
+                raise APIError(
+                    code="AGENT_RUNTIME_ERROR",
+                    message=f"cannot read existing Session model key grants (HTTP {current.status_code})",
+                    status_code=502,
+                )
+            metadata = current.json()["info"].get("metadata")
+            desired = inference_key_metadata(metadata)
+            if desired != metadata:
+                updated = await client.post(
+                    f"{base}/key/update", json={"key": key, "metadata": desired}, headers=headers,
+                )
+                if updated.status_code != 200:
+                    raise APIError(
+                        code="AGENT_RUNTIME_ERROR",
+                        message=f"cannot reconcile existing Session model key grants (HTTP {updated.status_code})",
+                        status_code=502,
+                    )
+            return key
     raise APIError(
         code="AGENT_RUNTIME_ERROR",
         message=(

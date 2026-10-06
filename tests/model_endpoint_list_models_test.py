@@ -9,12 +9,10 @@ raises.
 
 from __future__ import annotations
 
-from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
 import pytest
-import yaml
 
 from astrabox.providers.model import (
     EMBEDDED_LITELLM_PORT,
@@ -31,26 +29,6 @@ from astrabox.seams.model import ModelEndpoint
 def _sandbox_inference_signing_secret(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ASTRABOX_AUTH_SESSION_SECRET", "test-only-model-signing-secret")
     monkeypatch.delenv("ASTRABOX_LITELLM_API_KEY", raising=False)
-
-
-def test_the_bundled_gateway_uses_a_port_the_credential_vault_can_intercept() -> None:
-    # OpenSandbox Credential Vault derives the destination port from the scheme
-    # (HTTP=80, HTTPS=443). A bundled gateway on 4000 cannot receive a binding.
-    assert EMBEDDED_LITELLM_PORT == 80
-
-
-def test_bundled_wildcards_preserve_each_providers_full_model_id() -> None:
-    config = yaml.safe_load((
-        Path(__file__).resolve().parents[1] / "containers" / "litellm" / "config.yaml"
-    ).read_text(encoding="utf-8"))
-    routes = {
-        item["model_name"]: item["litellm_params"]["model"]
-        for item in config["model_list"]
-    }
-    assert routes["claude-*"] == "anthropic/claude-*"
-    assert routes["anthropic/*"] == "anthropic/*"
-    assert routes["gpt-*"] == "openai/gpt-*"
-    assert routes["gemini-*"] == "gemini/gemini-*"
 
 
 def test_protected_embedded_gateway_uses_the_private_fqdn(

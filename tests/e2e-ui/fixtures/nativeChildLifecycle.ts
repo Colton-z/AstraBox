@@ -118,7 +118,7 @@ export function childToolEvidence(
     .map((call) => {
       const results = rows.filter((row) => row.subpath === call.subpath).flatMap((row) => objects(row.entry))
         .filter((block) => (block.type === 'tool_result' && block.tool_use_id === call.id)
-          || ((block.type === 'tool-result' || block.role === 'toolResult') && block.toolCallId === call.id));
+          || ((block.role === 'tool' || block.role === 'toolResult') && block.toolCallId === call.id));
       const result = results.at(-1);
       return { ...call, ...(result ? {
         result: { output: result.content, isError: result.is_error === true || result.isError === true },
@@ -130,6 +130,16 @@ export function nativeCalls(value: unknown, subpath: unknown): NativeCall[] {
   if (Array.isArray(value)) return value.flatMap((item) => nativeCalls(item, subpath));
   if (!value || typeof value !== 'object') return [];
   const block = value as Record<string, unknown>;
+  if (block.type === 'assistant/message') {
+    const data = block.data as Record<string, unknown> | undefined;
+    const message = data?.message as Record<string, unknown> | undefined;
+    if (!Array.isArray(message?.content)) {
+      throw new Error('Native DSH assistant message has no content blocks');
+    }
+    // The supplier's replayState and attempt stream are provider-private
+    // metadata; only committed message content contains these tool calls.
+    return nativeCalls(message.content, subpath);
+  }
   if (block.type === 'tool/call') {
     const data = block.data as Record<string, unknown>;
     return [{ id: String(data.callId), name: String(data.name),
@@ -153,9 +163,16 @@ export function nativeCalls(value: unknown, subpath: unknown): NativeCall[] {
 export function launchEvidence(sessionId: string, profile: EngineProfile, gate: ChildGate): NativeCall[] {
   const names = profile.engine_kind === 'claude_code' ? ['Agent', 'Task']
     : profile.engine_kind === 'codex' ? ['spawn_agent'] : ['subagent'];
-  const calls = nativeRows(sessionId).flatMap((row) =>
-    nativeCalls(JSON.parse(String(row.entry_json)), row.subpath))
-    .filter((call) => names.includes(call.name) && JSON.stringify(call.input).includes(gate.marker));
+  const calls = nativeRows(sessionId).flatMap((row) => {
+    const entry = JSON.parse(String(row.entry_json));
+    // Pi's workflow:true consumes the fenced script in the same assistant
+    // message. The tool arguments carry the mode, not the child task.
+    const hasPiScript = profile.engine_kind === 'pi' && objects(entry).some((block) =>
+      block.type === 'text' && typeof block.text === 'string'
+      && block.text.includes('```js workflow') && block.text.includes(gate.marker));
+    return nativeCalls(entry, row.subpath).filter((call) => names.includes(call.name)
+      && (JSON.stringify(call.input).includes(gate.marker) || (hasPiScript && call.input.workflow === true)));
+  });
   return [...new Map(calls.map((call) => [call.id, call])).values()];
 }
 
@@ -199,10 +216,13 @@ export function childPrompt(profile: EngineProfile, mode: ChildMode, gate: Child
   ].filter(Boolean).join('\n');
   let launch: string;
   if (profile.engine_kind === 'pi') {
-    launch = `Call subagent exactly once with ${JSON.stringify({
-      workflowScript: `return runs.run("child", { agent: "delegate", task: ${JSON.stringify(task)} })`,
-      async: mode === 'background', isolation: 'none', mission: false,
-    })}.`;
+    launch = 'In the same reply as your one subagent call, emit this exact workflow block:\n'
+      + '```js workflow\n'
+      + `return runs.run("child", { agent: "delegate", task: ${JSON.stringify(task)} })\n`
+      + '```\n'
+      + `Call subagent exactly once with ${JSON.stringify({
+        workflow: true, async: mode === 'background', isolation: 'none', mission: false,
+      })}. Do not pass script text as the workflow argument.`;
   } else if (profile.engine_kind === 'codex') {
     launch = `Call spawn_agent exactly once with message=${JSON.stringify(task)}. `
       + (mode === 'foreground'

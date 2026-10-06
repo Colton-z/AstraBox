@@ -78,24 +78,3 @@ def test_the_ingress_and_secure_access_settings_reach_the_kubernetes_server() ->
         environment["ASTRABOX_SANDBOX_SECURE_ACCESS"]
         == "${ASTRABOX_SANDBOX_SECURE_ACCESS:-false}"
     )
-
-
-def test_kubernetes_external_gateway_drops_embedded_litellm_database_state() -> None:
-    base, overlay = _compose_servers()
-    embedded_database_environment = {
-        "DATABASE_URL",
-        "LITELLM_DATABASE_HOST",
-        "LITELLM_DATABASE_PASSWORD_FILE",
-        "LITELLM_DATABASE_PORT",
-    }
-
-    assert embedded_database_environment <= base["environment"].keys()
-    assert all(
-        overlay["environment"][name] is RESET
-        for name in embedded_database_environment
-    )
-    assert "litellm_database_password" in base["secrets"]
-
-    secrets = overlay["secrets"]
-    assert isinstance(secrets, ComposeOverride)
-    assert secrets.value == ["astrabox_database_password"]

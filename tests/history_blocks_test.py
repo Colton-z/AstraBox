@@ -13,14 +13,29 @@ have to stay on the page, where the Diff panel reads them.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any
 
+import pytest
+
 from astrabox.core.service.orchestrator.history_blocks import (
+    process_atoms,
     process_summary_input,
     project_record,
 )
+from astrabox.core.service.artifacts.tools import has_artifact_marker
+from astrabox.core.service.orchestrator.tool_result_semantics import (
+    tool_result_block_from_ai_sdk_frame,
+)
 
 MESSAGE_ID = "message-1"
+ENGINE_OUTPUTS = json.loads(
+    (
+        Path(__file__).resolve().parents[1]
+        / "frontend/src/artifacts/fixtures/artifact_tool_outputs.json"
+    ).read_text()
+)
 
 
 def _tool_work() -> list[dict[str, Any]]:
@@ -154,3 +169,85 @@ def test_a_cancelled_result_folds_the_stopped_turn_and_names_its_work() -> None:
     summary_input = process_summary_input(record)
     assert summary_input is not None
     assert summary_input.turn_completed is False
+
+
+@pytest.mark.parametrize("content_shape", ["json", "text_blocks", "mcp_result", "structured", *ENGINE_OUTPUTS])
+@pytest.mark.parametrize("tool_state", ["output-available", "output-error"])
+@pytest.mark.parametrize("ending", ["answer", "no_answer", "cancelled", "failed", "unsettled"])
+def test_artifact_outputs_never_join_process_work(
+    content_shape: str, tool_state: str, ending: str
+) -> None:
+    marker = {
+        "astrabox_artifact": {
+            "id": "art_" + "a" * 24, "version": 1, "title": "Page", "kind": "html",
+        },
+        "url": "/artifacts/art_" + "a" * 24,
+    }
+    text = json.dumps(marker)
+    content = {
+        "json": text,
+        "text_blocks": [{"type": "text", "text": text}],
+        "mcp_result": {"content": [{"type": "text", "text": text}], "isError": False},
+        "structured": marker,
+        **ENGINE_OUTPUTS,
+    }[content_shape]
+    result = tool_result_block_from_ai_sdk_frame({
+        "type": "tool-output-available", "toolCallId": "publish", "output": content,
+    })
+    assert result is not None
+    if isinstance(content, (dict, list)):
+        assert json.loads(result["content"]) == content
+    result.update(is_error=tool_state == "output-error", tool_result_state=tool_state)
+    artifact_blocks = [
+        {"type": "tool_use", "id": "publish", "name": "vendor_artifacts", "input": {}},
+        result,
+    ]
+    endings = {
+        "answer": [{"type": "text", "text": "Ready"}, {"type": "result"}],
+        "no_answer": [{"type": "result"}],
+        "cancelled": [{"type": "result", "finish_reason": "cancelled"}],
+        "failed": [{"type": "turn_failure", "error": "compute lost"}],
+        "unsettled": [],
+    }
+    record = _record([*_tool_work(), *artifact_blocks, *endings[ending]])
+    atoms = process_atoms(record["blocks"])
+    artifact_atom = next(atom for atom in atoms if atom.is_artifact)
+    assert artifact_atom.is_process is False
+    projected = project_record(record)
+    assert [b for b in projected.record["blocks"] if b in artifact_blocks] == artifact_blocks
+    assert all(b not in artifact_blocks for details in projected.details.values() for b in details)
+    summary = process_summary_input(record)
+    if summary:
+        assert "astrabox_artifact" not in summary.process_text
+
+
+def test_mentions_and_malformed_markers_remain_ordinary_process_work() -> None:
+    for content in ("astrabox_artifact", '{"astrabox_artifact":{"id":"wrong"}}'):
+        blocks = _tool_work()
+        blocks[2]["content"] = content
+        assert all(not atom.is_artifact for atom in process_atoms(blocks))
+
+
+@pytest.mark.parametrize("engine", ENGINE_OUTPUTS)
+def test_artifact_marker_walk_reads_native_engine_outputs(engine: str) -> None:
+    output = ENGINE_OUTPUTS[engine]
+    assert has_artifact_marker(output)
+    assert has_artifact_marker(output if isinstance(output, str) else json.dumps(output))
+
+
+def test_artifact_marker_walk_bounds_depth_values_and_json_text() -> None:
+    output = ENGINE_OUTPUTS["deepseek_harness"]
+    nested = output
+    for _ in range(13):
+        nested = {"result": nested}
+    assert not has_artifact_marker(nested)
+    assert not has_artifact_marker([None] * 4096 + [output])
+    text = json.dumps(output)
+    assert not has_artifact_marker(" " * (8 * 1024 * 1024) + text)
+    assert not has_artifact_marker([" " * (4 * 1024 * 1024)] * 2 + [text])
+    cycle: dict[str, Any] = {}
+    cycle["self"] = cycle
+    cycle["result"] = output
+    assert has_artifact_marker(cycle)
+    assert not has_artifact_marker(f"Published: {text}")
+    assert not has_artifact_marker(json.dumps(text))

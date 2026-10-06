@@ -374,7 +374,24 @@ class OpenSandboxClientPoolRegistry:
 
             provider = OpenSandboxSandboxProvider(transport=self._transport)
             await self._reclaim_unpublished_member(spec, provider)
-            handle = await creator(_pool_member(spec))
+            member = _pool_member(spec)
+            try:
+                handle = await creator(member)
+            except asyncio.CancelledError:
+                # The lifecycle server can allocate the box before its create
+                # response reaches the SDK. The SDK then has no id to clean up.
+                # This invocation has not returned to the pool, so its exact
+                # member cannot have been published or claimed. An older
+                # member with the same slot assignment may have been claimed;
+                # leave that member to retirement's handoff protection.
+                from astrabox.providers.open_sandbox.executor import (
+                    destroy_open_sandbox_box,
+                )
+
+                candidate = await provider.find_sandbox_by_assignment(member.assignment_id)
+                if candidate is not None and candidate.session_id == member.session_id:
+                    await destroy_open_sandbox_box(provider, candidate.sandbox_id)
+                raise
             if not isinstance(handle, OpenSandboxHandle):
                 raise TypeError("OpenSandbox client-pool creator returned a foreign handle")
             return handle.sidecar_faces

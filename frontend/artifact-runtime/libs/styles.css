@@ -1,0 +1,141 @@
+:root {
+  color-scheme: light dark;
+  --background: Canvas;
+  --foreground: CanvasText;
+  --muted: color-mix(in srgb, CanvasText 8%, Canvas);
+  --muted-foreground: color-mix(in srgb, CanvasText 65%, Canvas);
+  --border: color-mix(in srgb, CanvasText 20%, Canvas);
+  --primary: CanvasText;
+  --primary-foreground: Canvas;
+  --radius: 8px;
+}
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: system-ui, sans-serif;
+  padding: 16px;
+}
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+button {
+  cursor: pointer;
+}
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+:focus-visible {
+  outline: 2px solid Highlight;
+  outline-offset: -2px;
+}
+.art-button,
+.art-input {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+}
+.art-button {
+  background: var(--primary);
+  color: var(--primary-foreground);
+}
+.art-button-outline,
+.art-button-ghost,
+.art-button-secondary {
+  background: var(--muted);
+  color: var(--foreground);
+}
+.art-button:hover {
+  filter: brightness(0.9);
+}
+.art-input {
+  background: var(--background);
+  color: var(--foreground);
+  width: 100%;
+}
+.art-size-sm {
+  padding: 4px 8px;
+}
+.art-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.art-card-header,
+.art-card-content,
+.art-card-footer {
+  padding: 16px;
+}
+.art-title {
+  font-weight: 500;
+  font-size: 20px;
+}
+.art-muted {
+  color: var(--muted-foreground);
+}
+.art-badge {
+  background: var(--muted);
+  border-radius: var(--radius);
+  padding: 2px 8px;
+  font-size: 12px;
+}
+.art-alert {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+}
+.art-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  background: var(--muted);
+  border-radius: var(--radius);
+}
+.art-tabs button {
+  padding: 8px 12px;
+  border-radius: var(--radius);
+}
+.art-tabs button[aria-selected='true'] {
+  background: var(--background);
+}
+.art-select {
+  position: relative;
+}
+.art-options {
+  position: absolute;
+  z-index: 10;
+  background: var(--background);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  width: 100%;
+  padding: 4px;
+}
+.art-options:not([hidden]) {
+  display: flex;
+  flex-direction: column;
+}
+.art-options button {
+  padding: 8px;
+  text-align: start;
+}
+.art-options button:hover {
+  background: var(--muted);
+}
+.art-dialog {
+  background: var(--background);
+  color: var(--foreground);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 24px;
+  max-width: min(480px, 90vw);
+}
+.art-dialog::backdrop {
+  background: color-mix(in srgb, CanvasText 40%, transparent);
+}
+.artifact-render-error {
+  white-space: pre-wrap;
+  padding: 16px;
+  border: 1px solid var(--border);
+}

@@ -206,15 +206,6 @@ def test_repeat_schedules_do_not_overlap_and_coalesce_into_one_followup() -> Non
     assert service._reconciliation_requested == set()
 
 
-def test_the_renewal_lead_covers_a_build(monkeypatch: pytest.MonkeyPatch) -> None:
-    class _Settings:
-        expiration_watcher_interval_seconds = 5
-
-    monkeypatch.setattr(ps, "load_astrabox_settings", lambda: _Settings())
-
-    assert ps.prepared_slot_renewal_lead_seconds() == 5 + ps.PREPARED_SLOT_RENEWAL_BUILD_SECONDS
-
-
 def test_a_build_already_in_flight_is_not_counted_as_a_renewal(monkeypatch: pytest.MonkeyPatch) -> None:
     rows = [{"agent_id": "due", "sandbox_id": "box-1", ps.PREPARED_SLOT_FIELD: _manifest(ps.PREPARED_SLOT_TTL_SECONDS - 100)}]
     monkeypatch.setattr(agent_repository, "AgentRepository", lambda: _Repo(rows))

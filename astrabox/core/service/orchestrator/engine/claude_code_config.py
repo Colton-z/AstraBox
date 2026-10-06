@@ -443,7 +443,7 @@ def build_claude_options_kwargs(
     if extra_args:
         options_kwargs["extra_args"] = extra_args
 
-    if include_template_capabilities and template.mcp_servers:
+    if include_template_capabilities:
         proxy_base = settings.mcp_proxy_base_url.rstrip("/")
         mcp_deployment_id = str(session_id or "").strip() or (
             prepared_slot_mcp_deployment_id(slot_scope) if slot_scope else ""
@@ -453,6 +453,8 @@ def build_claude_options_kwargs(
                 template.mcp_servers,
                 proxy_base_url=proxy_base,
                 deployment_id=mcp_deployment_id,
+                session_source_type=getattr(template, "session_source_type", None),
+                artifacts_enabled=getattr(template, "artifacts_enabled", True),
             )
             options_kwargs["mcp_servers"] = rewritten
             logger.info(

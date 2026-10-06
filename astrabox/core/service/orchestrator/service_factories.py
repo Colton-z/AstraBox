@@ -7,7 +7,7 @@ sub-services by registering an entry point at the
 by service name:
 
     session_service, turn_service, terminal_service, session_file_service,
-    expose_port_service, platform_mcp_service, session_title_service,
+    expose_port_service, artifact_service, platform_mcp_service, session_title_service,
     session_kernel, session_share_service, admin_service, deployment_service
 
 A ``ServiceFactory`` is ``factory(build_default) -> service``: it receives
@@ -48,6 +48,7 @@ KNOWN_SERVICE_NAMES: frozenset[str] = frozenset(
         "terminal_service",
         "session_file_service",
         "expose_port_service",
+        "artifact_service",
         "platform_mcp_service",
         "session_title_service",
         "session_kernel",

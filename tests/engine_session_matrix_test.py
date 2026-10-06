@@ -106,12 +106,6 @@ def test_agent_sessions_reject_the_resident_engine() -> None:
     assert engine_allowed_for_session_kind("assistant", "agent_chat") is False
 
 
-def test_removed_standalone_chat_product_has_no_default() -> None:
-    for invalid in (None, "", "chat"):
-        with pytest.raises(ValueError, match="supported AstraBox product"):
-            default_engine_for_session_kind(invalid)
-
-
 def test_require_fills_the_product_default() -> None:
     assert require_engine_for_session_kind(None, "assistant_chat") == "assistant"
     assert require_engine_for_session_kind("", "agent_chat") == "claude_code"

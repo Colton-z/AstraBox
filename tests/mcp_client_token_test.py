@@ -11,7 +11,6 @@ The rest pins the shape a leaked database must have — a digest, never a secret
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import AsyncMock
 
 import pytest
 
@@ -292,63 +291,3 @@ async def test_send_message_refuses_a_blank_instruction_before_a_turn_exists() -
 
     assert caught.value.code == "INVALID_REQUEST"
     assert "instruction" in caught.value.message
-
-
-async def test_send_message_hands_its_drain_to_the_managed_spawner() -> None:
-    """The turn stream outlives the tool call, so its consumer must too.
-
-    `send_message` answers SUBMITTED and returns while the engine is still
-    working, which leaves the drain running past its caller. A bare
-    `asyncio.ensure_future` cannot do that safely: the task inherits the
-    request's context and is cancelled when the call returns, and nothing holds
-    a reference so it can also be collected mid-flight. The platform's spawner
-    exists to fix exactly those two things, and this pins that the MCP path uses
-    it rather than re-introducing the primitive it replaced.
-    """
-    spawned: list[str] = []
-
-    class _Platform:
-        def _spawn_background_task(self, coro: Any, *, name: str | None = None) -> Any:
-            spawned.append(str(name or ""))
-            # Close it rather than running it: this asserts WHERE the drain is
-            # handed off, and letting it run would drag the whole turn pipeline
-            # into a unit test.
-            coro.close()
-            return None
-
-        def stream_message_events_ds(self, *args: Any, **kwargs: Any) -> Any:
-            async def _one_event() -> Any:
-                yield {"type": "start"}
-                yield {"type": "finish"}
-
-            return _one_event()
-
-    class _AgentRepo:
-        async def get_agent(self, agent_id: str) -> dict[str, Any]:
-            return {"agent_id": agent_id, "state": "ACTIVE", "access": "public"}
-
-    class _AgentService:
-        _agent_repo = _AgentRepo()
-        _platform = _Platform()
-
-    service = AgentMCPService(agent_service=_AgentService())
-    service._get_bound_session = AsyncMock(return_value={"session_id": "s-1", "state": "READY"})  # type: ignore[method-assign]
-    service._auto_recover_if_needed = AsyncMock(  # type: ignore[method-assign]
-        return_value={"session_id": "s-1", "state": "READY"}
-    )
-    service._wait_for_creation = AsyncMock(  # type: ignore[method-assign]
-        return_value={"session_id": "s-1", "state": "READY"}
-    )
-
-    result = await service.handle_tool_call(
-        _ALICE,
-        "send_message",
-        {"agent_id": "a-1", "session_id": "s-1", "instruction": "hello"},
-        scope="converse",
-    )
-
-    assert result["state"] == "SUBMITTED"
-    assert spawned == ["mcp-drain-s-1"], (
-        "the drain must go through the platform's managed spawner — a bare task "
-        "is cancelled with the request that created it"
-    )

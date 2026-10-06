@@ -765,7 +765,7 @@ class ChannelIngressService:
             if execution_user_id != user.user_id:
                 raise RuntimeError("channel execution identity differs from its admitted account")
             return await agent_service.start_integration_conversation(user, agent_id)
-        return await agent_service.start_conversation(user, agent_id)
+        return await agent_service.start_conversation(user, agent_id, source_type="channel")
 
     async def _acquire_conversation_lock_blocking(
         self, deployment_id: str, conversation_key: str, owner: str, *,

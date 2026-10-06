@@ -1,4 +1,4 @@
-"""E2E proof that the in-box transcript-mirror PRODUCER lands on the host store.
+"""E2E proof that the in-box transcript mirror lands on the host store and comes back.
 
 This is the load-bearing networking + producer proof for restoring a session
 into a replacement box. Every engine's box POSTs its transcript lines to the
@@ -15,15 +15,10 @@ LAN IP). That is a hard ``assert`` here, never a silent pass.
 
 What it proves, end to end:
 
-* ``create -> READY -> ai-stream`` one real turn streams ``text-delta`` frames; and
-* the mirror landed: querying the running stack's PostgreSQL directly yields
-  >=1 ``transcript_entries`` row for the session's
-  ``platform_session_id``, carrying the entry types a real turn must leave —
-  which are the ENGINE's, not the platform's: the Claude CLI writes messages
-  (``user``/``assistant``), Codex writes ``RolloutItem``s
-  (``session_meta``/``response_item``). The producer differs with them: the
-  Claude runner is handed each line by the SDK, while the Codex mirror reads
-  the rollout file the engine keeps to itself.
+* a first real turn plants a marker, and its ``transcript_entries`` rows land in
+  the running stack's PostgreSQL before the box is killed; and
+* a replacement box answers with the marker, which only the restored transcript
+  holds.
 
 Run it against the WIRED running stack (reuses it; boots nothing):
 
@@ -57,9 +52,7 @@ from tests.e2e._sandbox_helpers import (
     data,
     get_admin_session_detail,
     get_session,
-    mirror_entry_types,
     release_session,
-    create_session,
     poll_until_agent_ready,
     stream_turn,
     wait_until_settled,
@@ -74,10 +67,6 @@ pytestmark = pytest.mark.e2e
 # The mirror flush (batcher -> HTTP POST -> host persist) is async + best-effort,
 # so poll for it to land rather than reading once.
 MIRROR_LAND_TIMEOUT_S = float(os.getenv("ASTRABOX_E2E_MIRROR_TIMEOUT", "90"))
-
-PROMPT = os.getenv(
-    "ASTRABOX_E2E_MIRROR_PROMPT", "What is 7 + 5? Reply with just the number."
-)
 
 
 def _sql_literal(value: str) -> str:
@@ -187,80 +176,6 @@ def _assert_db_is_the_live_stack(sid: str, timeout: float = 15.0) -> None:
     )
 
 
-def test_transcript_mirror_lands_on_host(e2e_client: httpx.Client) -> None:
-    """create -> READY -> one turn -> the mirror lands in transcript_entries."""
-    created = create_session(e2e_client)
-    sid = str(created.get("session_id") or "")
-    assert sid, f"no session_id in create response: {created}"
-
-    try:
-        poll_until_agent_ready(e2e_client, sid)
-
-        # Reading the wrong database looks exactly like "mirror never landed";
-        # prove this PostgreSQL service is the live stack before the assertion.
-        _assert_db_is_the_live_stack(sid)
-
-        # What the turn adds is the proof, not what the mirror holds — because
-        # what it holds before a turn is the ENGINE's business. Codex creates a
-        # thread with the first turn and has written nothing yet; the DeepSeek
-        # Harness opens its log at session create and records the permission
-        # preset and sandbox mode the platform set, so a fresh session already
-        # has rows. Requiring zero would make one engine's bookkeeping look
-        # like another engine's leak.
-        before = len(_query_mirror_docs(sid))
-
-        # ── one real turn (streams text-delta or it's a fake success) ────────
-        result = stream_turn(e2e_client, sid, content=PROMPT)
-        assert result.error is None, f"ai-stream emitted an in-band error: {result.error}"
-        assert result.n_text_delta > 0, (
-            "(empty reply, exit=0): the turn produced ZERO text-delta frames "
-            f"(assembled text={result.text!r})"
-        )
-        # The batcher flushes the mirror on the SDK `result` (turn terminal); let
-        # the turn fully settle before asserting the durable copy landed.
-        wait_until_settled(e2e_client, sid)
-
-        # ── load-bearing proof: the mirror reached the host durable store ────
-        docs = _wait_for_mirror_docs(
-            sid, MIRROR_LAND_TIMEOUT_S, until=mirror_entry_types()
-        )
-        assert docs, (
-            "transcript mirror did NOT land: 0 transcript_entries rows for "
-            f"platform_session_id={sid} within {MIRROR_LAND_TIMEOUT_S:.0f}s. The "
-            "in-box producer POST never reached the host — check that the container "
-            "can reach ASTRABOX_MCP_PROXY_BASE_URL (host LAN IP + 0.0.0.0 bind)."
-        )
-
-        # The mirror is the durable transcript, so the proof is CONTENT: the
-        # turn's own user and assistant entries must be among the rows, in
-        # seq order. (The sidecar-era producer stamped every entry with
-        # __astrabox_sandbox_turn_id; the runner world's entries are the SDK's
-        # own transcript lines, and per-turn attribution of mirror rows —
-        # platform_turn_id — waits for a consumer that needs it. Asserting the
-        # dead stamp here fails a healthy mirror.)
-        assert len(docs) > before, (
-            f"the turn added no rows to the mirror (still {before}); the "
-            "conversation cannot be restored from what was already there"
-        )
-        entry_types = [json.loads(d["entry_json"]).get("type") for d in docs]
-        for required in mirror_entry_types():
-            assert required in entry_types, (
-                f"the turn left no {required!r} entry in the mirror "
-                f"(types={entry_types})"
-            )
-        seqs = [int(d.get("seq") or 0) for d in docs]
-        assert seqs == sorted(seqs), f"mirror rows out of seq order: {seqs}"
-
-        # Surface the proof in -s output.
-        first = json.loads(docs[0]["entry_json"])
-        print(
-            f"\n[mirror] platform_session_id={sid} rows={len(docs)} "
-            f"entry_types={entry_types} first_uuid={first.get('uuid')}"
-        )
-    finally:
-        release_session(sid)
-
-
 def _terminate_sandbox(client: httpx.Client, sid: str) -> str:
     """Reclaim the session's sandbox and return the id it reports killing.
 
@@ -281,11 +196,10 @@ def _terminate_sandbox(client: httpx.Client, sid: str) -> str:
 def test_a_replacement_box_answers_from_the_restored_transcript(
     e2e_client: httpx.Client,
 ) -> None:
-    """The other half: the lines come BACK, and only they can answer.
+    """The lines leave the box, come BACK, and only they can answer.
 
-    The producer test above proves the transcript leaves the box. This proves the
-    restore: a first turn plants a marker, that sandbox is terminated, recovery
-    provisions a new one, and the next turn is asked what the marker was. The box
+    A first turn plants a marker, that sandbox is terminated, recovery provisions
+    a new one, and the next turn is asked what the marker was. The box
     that heard it does not exist any more, so a correct answer can only come from
     the transcript the platform put back.
 

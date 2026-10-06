@@ -65,6 +65,7 @@ Skill 和代码仓库，通过定时任务、Webhook、API 和消息平台触发
 
 一次部署就带齐团队通常要自己拼装的几块：
 
+- **Artifacts**——Agent 和 Assistant 可发布持久化、有版本的页面，支持分享链接和实时数据。参见 [Artifact 指南](website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/artifacts.md)。
 - **模型网关**——默认内置 [LiteLLM](https://github.com/BerriAI/litellm)：每个模型一个路由名，
   上游密钥留在服务端，支持预算与用量日志，后面可以接 Anthropic、OpenAI 兼容服务或本地模型。
   参见[连接模型服务](https://www.astrabox.ai/zh-Hans/docs/models)。

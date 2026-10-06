@@ -432,7 +432,7 @@ async def test_only_referenced_direct_catalogs_are_asked_for_credentials(
             },
             "platform": {
                 "provider": "platform-catalog",
-                "platform_server": "html_preview",
+                "platform_server": "expose_port",
             },
             "disabled": {
                 "provider": "disabled-catalog",

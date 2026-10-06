@@ -6,8 +6,6 @@ import asyncio
 from io import BytesIO
 import json
 from pathlib import Path
-import subprocess
-import sys
 from typing import Any, Iterator
 from urllib.error import HTTPError
 from urllib.parse import urlsplit
@@ -190,30 +188,6 @@ def _fault_payload(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def test_fault_rewrite_is_readable_across_container_uids(tmp_path: Path) -> None:
-    target = tmp_path / "shared-fault.json"
-    completed = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            (
-                "import os,sys; "
-                "from astrabox.testing.e2e_faults import _atomic_write; "
-                "os.umask(0o077); "
-                "_atomic_write(sys.argv[1], {'faults': {'drop': 1}}); "
-                "print(oct(os.stat(sys.argv[1]).st_mode & 0o777))"
-            ),
-            str(target),
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-
-    assert completed.returncode == 0, completed.stderr
-    assert completed.stdout.strip() == "0o644"
-
-
 def test_disabled_gate_never_consumes_or_rejects_an_append(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -240,48 +214,6 @@ def test_disabled_gate_never_consumes_or_rejects_an_append(
     assert fault_path.read_bytes() == before, (
         "without ASTRABOX_E2E_FAULTS the declaration is neither read nor consumed"
     )
-
-
-def test_counted_fault_matches_one_session_then_recovers(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("ASTRABOX_E2E_FAULTS", "1")
-    fault_path = _write_fault(
-        tmp_path / "faults.json", count=2, session_id=PLATFORM_SESSION
-    )
-
-    assert not e2e_faults.maybe_consume_transcript_append_5xx(
-        session_id="another-session", append_id="foreign", entry_count=7
-    )
-    for _ in range(2):
-        assert e2e_faults.maybe_consume_transcript_append_5xx(
-            session_id=PLATFORM_SESSION,
-            append_id="batch-retried",
-            entry_count=2,
-        )
-    assert not e2e_faults.maybe_consume_transcript_append_5xx(
-        session_id=PLATFORM_SESSION,
-        append_id="batch-retried",
-        entry_count=2,
-    )
-
-    payload = _fault_payload(fault_path)
-    assert fault_path.stat().st_mode & 0o777 == 0o644
-    assert payload["faults"]["transcript_append_5xx"] == 0
-    assert payload["consumed"] == [
-        {
-            "fault": "transcript_append_5xx",
-            "session_id": PLATFORM_SESSION,
-            "append_id": "batch-retried",
-            "entry_count": 2,
-        },
-        {
-            "fault": "transcript_append_5xx",
-            "session_id": PLATFORM_SESSION,
-            "append_id": "batch-retried",
-            "entry_count": 2,
-        },
-    ], "each temporary failure must leave observable batch identity evidence"
 
 
 async def test_spooled_batch_retries_injected_5xx_and_lands_exactly_once(

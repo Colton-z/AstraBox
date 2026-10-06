@@ -1,10 +1,9 @@
 /**
  * E2E: the first product action after substrate loss is opening the conversation.
  *
- * `assistant-workspace-oob-death-recovers` drives the same fault, but it clicks
- * **Start conversation** first and only reads the pre-existing conversation once
- * that click has already driven the workspace to a replacement sandbox. The
- * conversation therefore never meets a workspace that still names the dead box.
+ * Clicking **Start conversation** first would drive the workspace to a
+ * replacement sandbox before the pre-existing conversation is read, so the
+ * conversation would never meet a workspace that still names the dead box.
  *
  * This spec removes that help. After the substrate is gone, the only thing the
  * user does is open the conversation they already had and send the next

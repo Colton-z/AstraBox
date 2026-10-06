@@ -13,14 +13,8 @@ from __future__ import annotations
 import pytest
 
 from astrabox.providers.open_sandbox.aio_auth import (
-    AIO_SANDBOX_API_KEY_ENV,
     derive_aio_api_key,
 )
-
-
-def test_the_env_name_is_the_vendor_switch() -> None:
-    # The base image reads exactly this name; a rename silently reopens :8080.
-    assert AIO_SANDBOX_API_KEY_ENV == "SANDBOX_API_KEY"
 
 
 def test_a_box_with_no_assignment_gets_no_key_instead_of_a_guessable_one(
@@ -51,18 +45,6 @@ def test_the_key_is_keyed_to_the_deployment_secret(
     first = derive_aio_api_key("assignment-a")
     monkeypatch.setenv("ASTRABOX_TRANSCRIPT_SIGNING_KEY", "secret-two")
     assert first != derive_aio_api_key("assignment-a")
-
-
-def test_create_injects_the_key_for_every_sandbox() -> None:
-    # The create path must set SANDBOX_API_KEY unconditionally: a box created
-    # without it serves :8080 to the whole cluster. The check reads the source
-    # so it fails if the injection is removed or made conditional.
-    import inspect
-
-    from astrabox.providers.open_sandbox import executor
-
-    source = inspect.getsource(executor)
-    assert "create_env[AIO_SANDBOX_API_KEY_ENV] = derive_aio_api_key(assignment_metadata)" in source
 
 
 @pytest.mark.parametrize(

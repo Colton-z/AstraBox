@@ -141,10 +141,16 @@ def canonical_child_run_data(
                 f"child-run lifecycle has unsupported event={event!r}"
             )
         engine_event = str(data.get("engineEvent") or "").strip()
-        if not engine_event:
+        native_state = data.get("nativeState")
+        if native_state is not None and (not isinstance(native_state, dict) or not native_state):
+            raise ChildRunProjectionError("child-run nativeState must be a non-empty object")
+        if not engine_event and native_state is None:
             raise ChildRunProjectionError("child-run lifecycle lacks engineEvent")
         data["event"] = event
-        data["engineEvent"] = engine_event
+        if engine_event:
+            data["engineEvent"] = engine_event
+        else:
+            data.pop("engineEvent", None)
         for field_name in ("engineStatus", "engineReason"):
             if field_name not in data:
                 continue

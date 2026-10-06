@@ -33,6 +33,7 @@ Vocabulary boundaries this translator enforces:
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
 from typing import Any
 
@@ -318,6 +319,14 @@ class PiTurnTranslator:
             raise PiProtocolError(
                 f"tool_execution_end {call_id!r} carries no isError flag"
             )
+        file_tool = self._file_tools.pop(call_id, None)
+        if event["isError"]:
+            yield {
+                "type": "tool-output-error",
+                "toolCallId": call_id,
+                "errorText": json.dumps(event.get("result"), ensure_ascii=False),
+            }
+            return
         yield {
             "type": "tool-output-available",
             "toolCallId": call_id,
@@ -326,8 +335,7 @@ class PiTurnTranslator:
                 "isError": bool(event.get("isError")),
             },
         }
-        file_tool = self._file_tools.pop(call_id, None)
-        if file_tool and not event["isError"]:
+        if file_tool:
             name, path = file_tool
             result = event.get("result")
             details = result.get("details") if isinstance(result, dict) else None

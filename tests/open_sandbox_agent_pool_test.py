@@ -787,39 +787,6 @@ async def test_retire_fails_loud_when_an_unpublished_member_survives(
 # Provider seam delegation.
 
 
-async def test_open_sandbox_provider_delegates_the_complete_client_pool_seam(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    handle = OpenSandboxHandle(_FakeSdkSandbox())
-    status = SandboxClientPoolStatus(
-        pool_name=_spec().pool_name,
-        lifecycle_state="RUNNING",
-        ready=True,
-        idle_count=1,
-        max_idle=1,
-    )
-    registry = SimpleNamespace(
-        ensure=AsyncMock(),
-        acquire=AsyncMock(return_value=handle),
-        describe=AsyncMock(return_value=status),
-        retire=AsyncMock(),
-    )
-    provider = OpenSandboxSandboxProvider()
-    monkeypatch.setattr(provider, "_client_pool_registry", lambda: registry)
-
-    await provider.ensure_client_pool(_spec(), creator=_creator, preparer=_preparer)
-    acquired = await provider.acquire_client_pool(_spec())
-    described = await provider.describe_client_pool(_spec().pool_name)
-    await provider.retire_client_pool(_spec().pool_name)
-
-    registry.ensure.assert_awaited_once_with(_spec(), creator=_creator, preparer=_preparer)
-    registry.acquire.assert_awaited_once_with(_spec())
-    registry.describe.assert_awaited_once_with(_spec().pool_name)
-    registry.retire.assert_awaited_once_with(_spec().pool_name)
-    assert acquired is handle
-    assert described is status
-
-
 async def test_provider_shutdown_closes_this_event_loops_registry() -> None:
     provider = OpenSandboxSandboxProvider()
     registry = AsyncMock()

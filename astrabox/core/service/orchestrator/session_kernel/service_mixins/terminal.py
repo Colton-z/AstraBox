@@ -98,7 +98,7 @@ class TerminalExecutionMixin:
             nonlocal last_seq
             saw_terminal = False
             payloads: list[dict[str, Any]] = []
-            events = await self._artifacts_repo.list_terminal_events(
+            events = await self._session_artifacts_repo.list_terminal_events(
                 session_id,
                 command_id=command_id,
                 after_seq=last_seq,

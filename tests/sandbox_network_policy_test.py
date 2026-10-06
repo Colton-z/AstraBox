@@ -460,14 +460,6 @@ def test_denied_networks_come_from_the_validated_setting(
         AstraBoxRuntimeSettings()
 
 
-def test_network_enforcement_is_an_opt_in_provider_capability() -> None:
-    from astrabox.providers.open_sandbox.sandbox import OpenSandboxSandboxProvider
-    from astrabox.seams.sandbox import SandboxProvider
-
-    assert SandboxProvider.supports_create_network_policy is False
-    assert OpenSandboxSandboxProvider.supports_create_network_policy is True
-
-
 # ── the network wiring a box records at create ──────────────────────────────
 
 

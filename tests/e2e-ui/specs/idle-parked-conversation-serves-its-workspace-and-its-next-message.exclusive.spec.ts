@@ -27,9 +27,7 @@ import {
 // button may exist. i18next detects ['localStorage','navigator'], so an unpinned
 // runner locale decides which spelling those are — and a UI rendering another
 // language would false-green every negative assertion, because it never emits
-// these strings in any state. Pinned in both places a user's choice lands, the
-// way reclaimed-sandbox-reads-ready.exclusive.spec.ts:41 does in the other
-// direction.
+// these strings in any state. Pinned in both places a user's choice lands.
 test.use({ locale: 'en-US' });
 
 // The masked stand-in the server returns for a stored secret

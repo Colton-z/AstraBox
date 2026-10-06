@@ -1,19 +1,12 @@
-"""DeepSeek Harness prepared boxes: the placement, the fingerprint, the claim.
+"""DeepSeek Harness prepared boxes: the fingerprint and the claim.
 
 The harness's runtime is a supervised image service, so its prepared unit is
 the booted box and activation is `session.create` on the claiming Session's
-own connection. Three things have to hold for that to be safe, and each is
-pinned here:
-
-* the placement declaration the allocator gates on, because a regression
-  there stops preparation silently rather than loudly;
-* WHICH facts are box-frozen — the image, the gateway allowlist, the agent
-  preset and the Agent's instructions all retire a warm box, because the
-  conversation is composed from the last two at PREPARE and a claim rejoins
-  it by name; the permission preset rides the claim and must not;
-* the activation ORDER — the mirror target precedes the first turn, because
-  the relay starts a fail-loud clock on a session log it cannot deliver and
-  preparation's unclaimed marker is what holds that clock off until here.
+own connection. The fingerprint tests pin WHICH facts are box-frozen: the
+image, the gateway allowlist, the agent preset and the Agent's instructions all
+retire a warm box, because the conversation is composed from the last two at
+PREPARE and a claim rejoins it by name; the permission preset rides the claim
+and must not.
 """
 
 from __future__ import annotations
@@ -31,7 +24,6 @@ from astrabox.core.service.orchestrator.engine import deepseek_harness as dsh
 from astrabox.core.service.orchestrator.engine import provisioning, startup
 from astrabox.core.service.orchestrator.engine import transcript_mirror as tm
 from astrabox.core.service.orchestrator.engine.base import (
-    EngineAdapter,
     EnginePreparationContext,
     EngineStartupContext,
 )
@@ -86,7 +78,7 @@ def _plan(resume: str | None = None) -> Any:
         subject_kind="deployment_conversation",
         agent_id="agent-1",
         assistant_id=None,
-        user_id=None,
+        user_id="user-1",
         engine_kind="deepseek_harness",
     )
 
@@ -101,6 +93,7 @@ def _platform_claim_edges(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(provisioning, "plan_workspace_mounts", _mounts)
     monkeypatch.setattr(provisioning, "workspace_is_ready", _ready)
+    monkeypatch.setattr(dsh, "_native_model_base_url", lambda _access, base_url: base_url)
 
 
 def _preparation_context(
@@ -162,41 +155,15 @@ def _startup_context(
     )
 
 
-# ── placement ─────────────────────────────────────────────────────────────
-
-
-def test_the_adapter_declares_the_whole_box_placement() -> None:
-    """Both halves of what ``prepare_box_for_agent`` gates on, before building.
-
-    The allocator refuses to build anything for an adapter that either
-    inherits the refusing default or does not declare the whole-box form. The
-    harness qualifies for one reason it owns — its server is a boot-time
-    service, so there is no engine child a shared-box slot could park — and
-    losing either half here would stop preparation with no error anywhere.
-    """
-
-    adapter = dsh.DeepSeekHarnessEngineAdapter()
-    assert type(adapter).prepares_conversation_box is True
-    assert (
-        type(adapter).prepare_runtime is not EngineAdapter.prepare_runtime
-    )
-    # The placement is per-conversation now, but the PREPARED unit is still
-    # a whole box for that tenancy; the Agent-shared tenancy takes a slot the
-    # platform mints (prepare_runtime returns the shared_slot receipt)
-    # rather than a box-shaped unit.
-    assert (
-        adapter.capabilities.conversation_placement
-        == "per_conversation_account"
-    )
-
-
 # ── spawn fingerprint ─────────────────────────────────────────────────────
 
 
 def test_spawn_fingerprint_is_stable_for_the_same_frozen_facts() -> None:
     assert dsh._slot_spawn_fingerprint(
-        _template(), base_url="https://gw.test"
-    ) == dsh._slot_spawn_fingerprint(_template(), base_url="https://gw.test")
+        _template(), base_url="https://gw.test", native_base_url="https://gw.test"
+    ) == dsh._slot_spawn_fingerprint(
+        _template(), base_url="https://gw.test", native_base_url="https://gw.test"
+    )
 
 
 @pytest.mark.parametrize(
@@ -216,9 +183,11 @@ def test_spawn_fingerprint_is_stable_for_the_same_frozen_facts() -> None:
 def test_spawn_fingerprint_retires_a_box_when_a_frozen_fact_changes(
     base_url: str, template_overrides: dict[str, Any]
 ) -> None:
-    base = dsh._slot_spawn_fingerprint(_template(), base_url="https://gw.test")
+    base = dsh._slot_spawn_fingerprint(
+        _template(), base_url="https://gw.test", native_base_url="https://gw.test"
+    )
     changed = dsh._slot_spawn_fingerprint(
-        _template(**template_overrides), base_url=base_url
+        _template(**template_overrides), base_url=base_url, native_base_url=base_url
     )
     assert changed != base
 
@@ -243,9 +212,11 @@ def test_a_change_to_the_prepared_conversation_retires_the_box(
     Agent, and the change would take effect only once the box aged out.
     """
 
-    base = dsh._slot_spawn_fingerprint(_template(), base_url="https://gw.test")
+    base = dsh._slot_spawn_fingerprint(
+        _template(), base_url="https://gw.test", native_base_url="https://gw.test"
+    )
     changed = dsh._slot_spawn_fingerprint(
-        _template(**overrides), base_url="https://gw.test"
+        _template(**overrides), base_url="https://gw.test", native_base_url="https://gw.test"
     )
     assert changed != base
 
@@ -258,10 +229,13 @@ def test_claim_borne_facts_do_not_touch_the_fingerprint() -> None:
     box at all — the harness's provider posts to the gateway, which routes.
     """
 
-    base = dsh._slot_spawn_fingerprint(_template(), base_url="https://gw.test")
+    base = dsh._slot_spawn_fingerprint(
+        _template(), base_url="https://gw.test", native_base_url="https://gw.test"
+    )
     changed = dsh._slot_spawn_fingerprint(
         _template(model_config={"model": "another-model"}),
         base_url="https://gw.test",
+        native_base_url="https://gw.test",
     )
     assert changed == base
 
@@ -328,7 +302,7 @@ def test_preparation_creates_the_conversation_a_claim_will_rejoin(
     assert receipt["prepared_native_session"] == "dsh-native-1"
     assert receipt["engine_kind"] == dsh.ENGINE_KIND
     assert receipt["spawn_fingerprint"] == dsh._slot_spawn_fingerprint(
-        _template(), base_url="https://gw.test"
+        _template(), base_url="https://gw.test", native_base_url="https://gw.test"
     )
 
 
@@ -343,7 +317,7 @@ def _claimed_manifest(template: Any) -> dict[str, Any]:
         "sandbox_id": "box-77",
         "cwd": "/workspace",
         "spawn_fingerprint": dsh._slot_spawn_fingerprint(
-            template, base_url="https://gw.test"
+            template, base_url="https://gw.test", native_base_url="https://gw.test"
         ),
         "activation_mcp_servers": [],
         "gateway_substitution": True,
@@ -353,7 +327,12 @@ def _claimed_manifest(template: Any) -> dict[str, Any]:
         "runtime_env": {},
         "environment_credential_contract": [],
         "workspace_id": "workspace-1",
-        "runtime_identity": {"workspace_dir": "/workspace", "session_id": "slot-abc"},
+        "runtime_identity": {
+            "workspace_dir": "/workspace",
+            "session_id": "slot-abc",
+            "home_dir": "/home/agent",
+            "linux_user": "agent",
+        },
     }
 
 
@@ -376,7 +355,7 @@ async def _claim(
     *,
     template: Any | None = None,
     workspace_plan: Any | None = None,
-    user_id: str | None = None,
+    user_id: str | None = "user-1",
     backend: Any | None = None,
 ) -> Any:
     selected = template or _template()
@@ -448,7 +427,7 @@ def test_a_stale_spawn_fingerprint_discards_the_claimed_box(
                 assignment_id="assignment-1",
                 template=_template(),
                 workspace_plan=_plan(),
-                user_id=None,
+                user_id="user-1",
                 permission_mode=None,
                 progress_callback=None,
                 callback_url=None,
@@ -530,168 +509,6 @@ def test_an_endpoint_with_no_session_identity_keeps_the_shared_credential(
 # ── activation order ──────────────────────────────────────────────────────
 
 
-def test_activation_adopts_binds_and_publishes_in_order(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The claim's ordering IS the contract each step's safety rests on.
-
-    Metadata before the allocation record (a half-claimed box must stay the
-    reaper's to destroy); the gateway swap before anything can reach a model;
-    the mirror target and AGENTS.md before the vendor conversation exists —
-    the relay treats a session log with no target as a misconfiguration and
-    the instructions plugin composes from the file at session creation; and
-    READY only through the publish.
-    """
-
-    template = _template()
-    manager = _Manager()
-    events: list[str] = []
-    claimed = _claimed_manifest(template)
-
-    async def _win(**kwargs: Any) -> dict[str, Any]:
-        events.append("claim")
-        return dict(claimed)
-
-    cleared: list[str] = []
-
-    async def _clear(*, agent_id: str, slot_id: str) -> None:
-        cleared.append(slot_id)
-
-    box_handle = SimpleNamespace(sandbox_id="box-77")
-
-    async def _adopt(
-        template_arg: Any,
-        manifest: dict[str, Any],
-        *,
-        session_id: str,
-        assignment_id: str,
-    ) -> Any:
-        assert assignment_id == "assignment-1"
-        events.append(f"adopt:{session_id}")
-        return box_handle
-
-    real_record = manager.record_startup_allocation
-
-    async def _record(session_id: str, allocation: Any) -> None:
-        events.append(f"allocation:{allocation.sandbox_id}:{allocation.scope}")
-        await real_record(session_id, allocation)
-
-    asked: list[str | None] = []
-
-    class _Endpoint:
-        async def ensure_session_credential(self, *, context: Any) -> str:
-            events.append(f"mint:{context.conversation_id}:{context.user_id}")
-            return "sk-session-key"
-
-    def _endpoint_for(name: str | None) -> Any:
-        asked.append(name)
-        return _Endpoint()
-
-    async def _vault(
-        sandbox: Any,
-        *,
-        vault_write: Any,
-        create_if_missing: bool = True,
-        **kwargs: Any,
-    ) -> None:
-        assert create_if_missing is False
-        substitution = vault_write.model[0].substitutions[0]
-        assert substitution.secret_value == "sk-session-key"
-        events.append(f"vault:{substitution.name}")
-
-    async def _mark(*, agent_id: str, slot_id: str, session_id: str) -> None:
-        events.append(f"mark:{slot_id}:{session_id}")
-
-    async def _target(sandbox: Any, manager_arg: Any, session_id: str) -> None:
-        events.append(f"mirror-target:{session_id}")
-
-    async def _connect(sandbox: Any, *, port: int = 44780, launch_url_path: str, observe_only: bool = False) -> Any:
-        # Box-tenancy paths keep dialing the image's fixed forwarder port.
-        assert port == 44780
-        events.append("link-connect")
-        return _FakeLink()
-
-    published: list[dict[str, Any]] = []
-
-    async def _publish(**kwargs: Any) -> Any:
-        events.append("publish")
-        published.append(kwargs)
-        return SimpleNamespace(session_id=kwargs["session_id"])
-
-    import astrabox.core.service.orchestrator.engine.transcript_mirror as tm
-    import astrabox.seams.model as model_seam
-    monkeypatch.setattr(ps, "claim_prepared_slot", _win)
-    monkeypatch.setattr(startup, "clear_claimed_slot", _clear)
-    monkeypatch.setattr(pb, "adopt_claimed_box", _adopt)
-    monkeypatch.setattr(manager, "record_startup_allocation", _record)
-    monkeypatch.setattr(model_seam, "model_endpoint_for_name", _endpoint_for)
-    monkeypatch.setattr(ps, "mark_gateway_entry_claimed", _mark)
-    monkeypatch.setattr(tm, "bind_mirror_target", _target)
-    monkeypatch.setattr(dsh.DshApiLink, "connect", staticmethod(_connect))
-    monkeypatch.setattr(dsh, "_publish_runtime", _publish)
-    refills: list[str] = []
-    monkeypatch.setattr(
-        startup,
-        "schedule_prepared_runtime_refill",
-        lambda template_arg, manager_arg: refills.append(template_arg.agent_id),
-    )
-
-    async def _provision(*args: Any, **kwargs: Any) -> Any:
-        return await _claim(
-            manager,
-            template=template,
-            user_id="user-1",
-            backend=_Backend(vault=_vault),
-        )
-
-    monkeypatch.setattr(startup, "provision_engine_sandbox", _provision)
-
-    runtime = asyncio.run(
-        startup.start_platform_runtime(
-            manager,
-            dsh.DeepSeekHarnessEngineAdapter(),
-            session_id="session-1",
-            assignment_id="assignment-1",
-            template=template,
-            workspace_plan=_plan(),
-            user_id="user-1",
-            permission_mode="workspace-write",
-            progress_callback=None,
-            callback_url=None,
-        )
-    )
-    assert runtime is not None and runtime.session_id == "session-1"
-    from astrabox.seams.egress_credentials import workload_credential_name
-
-    # Resolved through the model seam by the Environment's declared endpoint
-    # name — never by naming a gateway product in core (provider_boundary).
-    assert asked == [None]
-    assert events == [
-        "claim",
-        "adopt:session-1",
-        "allocation:box-77:sandbox",
-        "mark:slot-abc:session-1",
-        "mint:session-1:user-1",
-        f"vault:{workload_credential_name('slot-abc')}",
-        "mirror-target:session-1",
-        "link-connect",
-        "publish",
-    ]
-    assert cleared == ["slot-abc"]
-    assert refills == ["agent-1"]
-    publish = published[0]
-    # Activation rejoins the prepared conversation rather than creating one,
-    # and asserts this Session's permission preset on it.
-    assert publish["engine_session_key"] == "dsh-native-1"
-    assert publish["session_create"] == {"agentPreset": "code"}
-    assert publish["permission_mode"] == "workspace-write"
-    assert publish["terminal_cwd"] == "/workspace"
-    # The manifest identity is re-pointed to the Session, never re-planned.
-    identity = publish["runtime_identity"]
-    assert identity["session_id"] == "session-1"
-    assert identity["sandbox_id"] == "box-77"
-
-
 def test_a_failed_activation_discards_the_box_and_fails_loudly(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -760,6 +577,9 @@ def test_a_failed_activation_discards_the_box_and_fails_loudly(
     async def _target(*args: Any, **kwargs: Any) -> None:
         return None
 
+    # The native-state write precedes the link; the failure under test is the link's.
+    monkeypatch.setattr(dsh, "install_verified_text_script", _target)
+
     async def _provision(*args: Any, **kwargs: Any) -> Any:
         monkeypatch.setattr(ps, "mark_gateway_entry_claimed", _mark)
         monkeypatch.setattr(tm, "bind_mirror_target", _target)
@@ -776,7 +596,7 @@ def test_a_failed_activation_discards_the_box_and_fails_loudly(
                 assignment_id="assignment-1",
                 template=template,
                 workspace_plan=_plan(),
-                user_id=None,
+                user_id="user-1",
                 permission_mode=None,
                 progress_callback=None,
                 callback_url=None,

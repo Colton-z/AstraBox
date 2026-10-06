@@ -4,8 +4,7 @@ The site uses Docusaurus. English source documents live in `../docs`; Simplified
 Chinese translations live under `i18n/zh-Hans`.
 
 Every page is published in both languages: an English change needs the matching
-Simplified Chinese change in the same commit, and `tests/website_docs_parity_test.py`
-fails when one language moves without the other.
+Simplified Chinese change in the same commit.
 
 ## Local development
 
@@ -36,7 +35,6 @@ Run the tests and the production build from a checkout containing the candidate
 documents:
 
 ```bash
-.venv/bin/python -m pytest -q tests/check_i18n_test.py tests/website_content_facts_test.py
 python3 scripts/node-toolchain.py npm --prefix website run build
 python3 scripts/node-toolchain.py npm --prefix e2e ci
 python3 scripts/node-toolchain.py npm --prefix e2e run install:browser -- --with-deps

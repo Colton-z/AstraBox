@@ -1,0 +1,51 @@
+Backport of upstream pi-subagents commit 10694a673cb077b4d3ec6a6cfe68acb6c28b83a5
+https://github.com/nicobailon/pi-subagents/pull/2634
+Only the upstream runtime change, applied to the published 0.74.0 JavaScript.
+
+MIT License
+
+Copyright (c) 2026 Nico Bailon
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+--- a/src/runs/background/runner-aliases.js
++++ b/src/runs/background/runner-aliases.js
+@@ -16,7 +16,8 @@
+ export const HOST_PEER_ALIASES = [
+     { specifier: "@earendil-works/pi-coding-agent", pkg: "@earendil-works/pi-coding-agent", subpath: "." },
+     { specifier: "@earendil-works/pi-agent-core", pkg: "@earendil-works/pi-agent-core", subpath: "." },
+-    { specifier: "@earendil-works/pi-agent-core/node", pkg: "@earendil-works/pi-agent-core", subpath: "./node" },
++    // Optional: hosts whose pi-agent-core declares no "./node" export cannot import it, so no alias is needed.
++    { specifier: "@earendil-works/pi-agent-core/node", pkg: "@earendil-works/pi-agent-core", subpath: "./node", optional: true },
+     { specifier: "@earendil-works/pi-tui", pkg: "@earendil-works/pi-tui", subpath: "." },
+     { specifier: "@earendil-works/pi-ai", pkg: "@earendil-works/pi-ai", subpath: "./compat" },
+     { specifier: "@earendil-works/pi-ai/compat", pkg: "@earendil-works/pi-ai", subpath: "./compat" },
+@@ -139,9 +140,11 @@
+     const stableVersion = typeof hostManifest?.version === "string" ? /^0\.(\d+)\.\d+$/.exec(hostManifest.version) : null;
+     const isPreChord = stableVersion !== null && Number(stableVersion[1]) < 85;
+     const required = [...HOST_PEER_ALIASES, ...(isPreChord ? [] : CHORD_PEER_ALIASES)];
+-    for (const { specifier, pkg, subpath } of required) {
++    for (const { specifier, pkg, subpath, optional } of required) {
+         const packageDir = findPeerPackageDir(piPackageRoot, pkg, hostManifest?.name);
+         const target = packageDir ? resolvePackageSubpath(packageDir, subpath) : undefined;
++        // An optional subpath the package does not declare is unreachable, so skip it; a declared but missing file still fails.
++        if (optional && packageDir && target === undefined) continue;
+         // Native loaders short-circuit resolution, so aliases must retain the real package's dependency scope.
+         if (target && fs.existsSync(target))
+             aliases[specifier] = fs.realpathSync(target);

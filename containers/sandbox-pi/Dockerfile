@@ -41,12 +41,9 @@ FROM ${SANDBOX_BASE_IMAGE}
 # and its Node floor so npm cannot silently select a different release line.
 # The supported embedding surface remains the SDK and stdio RPC; the
 # experimental client/server source exports are not a replacement transport.
-ARG PI_VERSION=0.85.1
+ARG PI_VERSION=1.0.0
 ARG PI_NODE_MINIMUM=22.19.0
-# Pi ships no sub-agents and says so: "It intentionally does not include
-# built-in MCP, sub-agents, permission popups, plan mode, to-dos, or background
-# bash. You can build or install those workflows as extensions or packages."
-# This package is that install. It was chosen over `@everyx/pi-subagent` and
+# Pi delegates sub-agents to extensions. This package supplies them. It was chosen over `@everyx/pi-subagent` and
 # `@tintinweb/pi-subagents`, which give the same background children and the
 # same per-child stop, for one reason the platform cannot do without: it is the
 # only one whose stop is reachable by anything but the model. Theirs are tools
@@ -54,7 +51,7 @@ ARG PI_NODE_MINIMUM=22.19.0
 # <child-id>`, and pi's RPC executes an extension command sent as a prompt even
 # mid-stream. `SingleResult.index` paired with `Details.runId` is the vendor's
 # own stable child identity, which is what the platform projects.
-ARG PI_SUBAGENTS_VERSION=0.66.0
+ARG PI_SUBAGENTS_VERSION=0.74.0
 ARG PI_PREFIX=/opt/pi
 ARG NPM_REGISTRY=https://registry.npmjs.org/
 ARG DEBIAN_FRONTEND=noninteractive
@@ -145,6 +142,27 @@ RUN set -eux; \
     installed="$(node -p "require('${PI_PREFIX}/node_modules/pi-subagents/package.json').version")"; \
     test "${installed}" = "${PI_SUBAGENTS_VERSION}" \
       || { echo "requested pi-subagents ${PI_SUBAGENTS_VERSION} but ${installed} is installed" >&2; exit 1; }
+
+# Pi 1.0 does not export agent-core/node; pi-subagents 0.74.0 imports it.
+# Apply the supplier's optional-export patch with exact input/output hashes;
+# remove this backport when the pinned npm release includes that handling.
+COPY --chmod=u=rw,go=r containers/sandbox-pi/patches/pi-subagents-pi1.patch /tmp/pi-subagents-pi1.patch
+RUN set -eux; \
+    cd "${PI_PREFIX}/node_modules/pi-subagents"; \
+    echo '7d259ec64a8e8189fa54b96105c337656b42b9ed989ab6aeb09edf0835871f1c  src/runs/background/runner-aliases.js' | sha256sum -c -; \
+    git apply --check /tmp/pi-subagents-pi1.patch; \
+    git apply /tmp/pi-subagents-pi1.patch; \
+    echo '696d0d7a8b85ae3bca1563518b3b8a69a332dfffb708e7c9ebd91875f744968a  src/runs/background/runner-aliases.js' | sha256sum -c -; \
+    rm /tmp/pi-subagents-pi1.patch
+
+# Registration runs during extension load, before a cold or parked session
+# starts. Pi's native MCP support owns discovery, tool exposure and transport.
+COPY --chmod=u=rwX,go=rX containers/sandbox-pi/astrabox-platform-mcp/ \
+     ${PI_PREFIX}/node_modules/astrabox-platform-mcp/
+COPY --chmod=u=rwX,go=rX containers/sandbox-pi/prove-platform-mcp.mjs ${PI_PREFIX}/prove-platform-mcp.mjs
+RUN set -eux; \
+    node --check "${PI_PREFIX}/node_modules/astrabox-platform-mcp/index.js"; \
+    node "${PI_PREFIX}/prove-platform-mcp.mjs"
 
 # The one command the platform's child-run stop rides. Asserted at build time
 # for the reason the `agent_settled` assertion below is: without it every

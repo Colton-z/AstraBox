@@ -26,11 +26,11 @@ _registered_on: int | None = None
 
 
 class RuntimeStateOwnerPayload(BaseModel):
-    """The platform-issued owner, independent of a provisioning Session."""
+    """The platform-issued owner of a native runtime profile."""
 
     model_config = ConfigDict(extra="forbid")
     user_id: str = Field(min_length=1)
-    subject_kind: Literal["assistant", "agent"]
+    subject_kind: Literal["assistant", "agent", "session"]
     subject_id: str = Field(min_length=1)
     engine_kind: str = Field(min_length=1)
 

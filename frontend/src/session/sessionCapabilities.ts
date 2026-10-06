@@ -1,6 +1,6 @@
 import { isAssistantConversationSession } from '../utils/format';
 
-export type SessionRightPanelTab = 'files' | 'terminal' | 'diff' | 'agents';
+export type SessionRightPanelTab = 'files' | 'terminal' | 'diff' | 'agents' | 'artifacts';
 
 export interface SessionRightPanelCapabilities {
   tabs: readonly SessionRightPanelTab[];
@@ -38,7 +38,7 @@ type SessionCapabilityInput =
 // Always present, for every product shape. Files is the sandbox's own, and the
 // Agents tab stays visible when the wire has no subagents so its empty state
 // explains the capability instead of changing the panel shape per session.
-const ALWAYS_TABS: readonly SessionRightPanelTab[] = ['files', 'agents'];
+const ALWAYS_TABS: readonly SessionRightPanelTab[] = ['files', 'agents', 'artifacts'];
 
 // The surfaces the product shape can offer at all. An Agent may decline one it
 // is offered; it cannot claim one this shape does not have.
@@ -60,16 +60,17 @@ export function getSessionRightPanelCapabilities(
     : AGENT_CHAT_OFFERS;
   const declared = session?.workspace_panels ?? null;
   const optional = offered.filter((tab) => declared?.[tab as 'terminal' | 'diff'] === true);
-  // Order is the reader's, not the filter's: files, terminal, diff, agents.
-  const order: readonly SessionRightPanelTab[] = ['files', 'terminal', 'diff', 'agents'];
+  // Order is the reader's, not the filter's: files, terminal, diff, agents, artifacts.
+  const order: readonly SessionRightPanelTab[] = ['files', 'terminal', 'diff', 'agents', 'artifacts'];
   const enabled = new Set<SessionRightPanelTab>([...ALWAYS_TABS, ...optional]);
   return { tabs: order.filter((tab) => enabled.has(tab)), defaultTab: 'files' };
 }
 
 // i18n keys (chat namespace) for the localizable tab labels. Diff/Agents are
 // brand/tech identifiers kept verbatim and never go through i18n.
-const TAB_LABEL_KEYS: Record<'files' | 'terminal', string> = {
+const TAB_LABEL_KEYS: Record<'files' | 'terminal' | 'artifacts', string> = {
   files: 'chat:panel.tab.files',
+  artifacts: 'misc:artifacts.title',
   terminal: 'chat:panel.tab.terminal',
 };
 

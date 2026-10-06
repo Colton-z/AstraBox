@@ -5,6 +5,69 @@ All notable changes to AstraBox are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.3] - 2026-10-05
+
+This release adds platform-hosted artifacts, updates all five bundled engines,
+and fixes DeepSeek Harness images, plans and questions, Pi workflow children,
+Hermes history, and session recovery after a backend restart. Re-run the installer to upgrade; existing settings,
+secrets, and conversation data are retained.
+
+### Added
+
+- Platform-hosted Agent and Assistant artifacts through built-in, origin-scoped
+  `artifacts` MCP tools, with immutable versions, a console viewer and gallery,
+  revocable shares, live data and presence, downloads, and consent-controlled
+  model requests and Agent runs. Pinned shares fix content under current runtime
+  policy; messaging-channel Sessions exclude the tools, and each Agent has an
+  Artifacts switch (`artifacts_enabled`, on by default) that removes them from
+  its conversations.
+
+### Changed
+
+- Update the bundled engines to Claude Code 2.1.287 (Python SDK 0.2.163),
+  Codex 0.160.0, DeepSeek Harness 0.2.0-rc.2, Pi 1.0.0, and Hermes 0.21.5.
+- Update Pi's sub-agent extension to 0.74.0, including its upstream Pi 1.0
+  child-start compatibility fix, and use its current workflow input.
+- Support DeepSeek Harness's native Messages and Files API credential delivery
+  alongside its Chat Completions gateway route. DeepSeek catalog models now
+  require a Messages-compatible model endpoint.
+- Read DeepSeek Harness's current tool-result messages in the main conversation
+  and child transcripts, including retained output after backend restarts.
+
+### Fixed
+
+- Preserve native tool identities and complete plan text in DeepSeek Harness
+  plan reviews, including approval and the resumed conversation.
+- Preserve complete engine usage data in conversation history.
+- Route DeepSeek catalog models through LiteLLM's native provider so Messages
+  tool histories retain their order during multi-step tasks.
+- Carry gateway-declared image capabilities into DeepSeek Harness's model
+  configuration so vision-capable gateway aliases can read images.
+- Restore DeepSeek Harness image attachments from the platform database after
+  sandbox replacement, so earlier images remain usable without re-uploading.
+- Preserve conversation ownership when reattaching a runtime after a backend
+  restart, including control operations and continued messages.
+- Apply nested session cursor filters in SQL, avoiding reads of earlier pages
+  while retaining conversation ownership, visibility, and ordering.
+- Clean up newly allocated sandbox pool members when creation is cancelled,
+  preserving members already handed to a conversation.
+- Preserve Hermes's native binary session identities when saving and restoring
+  its conversation database after sandbox replacement.
+- Read complete saved Hermes child conversations, including tool arguments,
+  results, the final reply, model, and usage, without requiring the original runtime.
+- Keep Pi workflow children visible with their current names and controls,
+  including updates that do not change a child's running state.
+- Show Pi tool failures as failed in the live conversation and retained history,
+  preserving the complete error output and allowing the conversation to continue.
+- Prevent a delayed sandbox lease check from overwriting a newer renewal for
+  conversations, shared Agents, and Assistant workspaces.
+- Answer a dismissed DeepSeek Harness question with the engine's own
+  cancellation result, so the conversation continues normally afterwards.
+- Open Hermes conversations with long saved histories quickly by reading their
+  native snapshot through its indexed batch instead of scanning earlier snapshots.
+- Keep what you type into a new conversation while it starts: a history read
+  that arrives after the Session is ready no longer remounts the composer.
+
 ## [0.1.2] - 2026-10-01
 
 This release fixes conversation recovery, background reply delivery, Pi dialogs,

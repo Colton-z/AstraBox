@@ -61,24 +61,25 @@ def _clone_arguments(
     host_port: int,
     container_port: int,
     bind_ip: str = "127.0.0.1",
+    compose_replica: bool = True,
 ) -> tuple[list[str], list[str]]:
     config = source.get("Config") or {}
     args = ["run", "--detach", "--name", name]
 
-    # Compose labels are carried, not dropped. The server finds its sibling
-    # services by reading its OWN container's com.docker.compose.project label;
-    # without it the process exits 1 on "no com.docker.compose.project label"
-    # before it ever listens. A real second replica — what `--scale server=2`
-    # would produce — carries these too, so copying them is the faithful clone
-    # rather than a trick. Only the container number is re-stamped, because two
-    # containers claiming to be number 1 of one service is a state Compose
-    # never produces.
+    # Real replicas keep their Compose identity for Docker sandbox-edge discovery.
+    # Independent Kubernetes installations must not claim the source's topology.
+    environment = dict(value.split("=", 1) for value in config.get("Env") or [] if "=" in value)
+    if not compose_replica and environment.get("ASTRABOX_SANDBOX_SERVER_RUNTIME") != "kubernetes":
+        raise ValueError("an independent clone requires the Kubernetes sandbox runtime")
     for key, value in (config.get("Labels") or {}).items():
         if key == "com.docker.compose.container-number":
             continue
+        if not compose_replica and (key.startswith("com.docker.compose.") or key == LABEL):
+            continue
         args += ["--label", f"{key}={value}"]
-    args += ["--label", "com.docker.compose.container-number=2"]
-    args += ["--label", f"{LABEL}=1"]
+    if compose_replica:
+        args += ["--label", "com.docker.compose.container-number=2"]
+        args += ["--label", f"{LABEL}=1"]
 
     user = str(config.get("User") or "").strip()
     if user:

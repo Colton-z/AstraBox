@@ -497,6 +497,7 @@ def _register_feature_routes(app: FastAPI) -> None:
     from astrabox.api.routes.extensions import register_extension_routes
     from astrabox.api.routes.deployments import register_deployment_routes
     from astrabox.api.routes.share import register_share_routes
+    from astrabox.api.routes.artifacts import register_artifact_routes
 
     # The built-in OIDC login flow exists only when that identity mode is
     # selected: under local / trusted_header / jwt these routes would be a door
@@ -520,6 +521,7 @@ def _register_feature_routes(app: FastAPI) -> None:
     register_extension_routes(app)
     register_deployment_routes(app)
     register_share_routes(app)
+    register_artifact_routes(app)
 
     feat = load_astrabox_settings()
     if feat.agent_enabled:

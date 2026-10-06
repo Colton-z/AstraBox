@@ -160,6 +160,10 @@ async def prepare_box_for_agent(
     sandbox_id = provisioned.sandbox_id
     identity = {**identity, "sandbox_id": sandbox_id}
     try:
+        await prepared_slots._publish_prepared_platform_mcp_binding(
+            template, agent_id=agent_id, slot_id=slot_id,
+            sandbox_id=sandbox_id, sandbox_backend=sandbox_backend,
+        )
         from astrabox.core.service.orchestrator.engine import transcript_mirror
         from astrabox.core.service.orchestrator.engine.provisioning import (
             _session_log_declaration,
@@ -307,6 +311,12 @@ async def destroy_slot_box(
             destruction.detail,
         )
         return False
+    if slot_id:
+        from astrabox.core.service.orchestrator.agent.prepared_slots import (
+            _delete_prepared_platform_mcp_binding,
+        )
+
+        await _delete_prepared_platform_mcp_binding(slot_id)
     return True
 
 

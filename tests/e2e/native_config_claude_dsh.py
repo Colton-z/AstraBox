@@ -1,4 +1,4 @@
-"""Inspect native configuration at the running supplier boundary, without a model turn."""
+"""Inspect native configuration and exercise the selected DSH model route."""
 
 from __future__ import annotations
 
@@ -19,7 +19,10 @@ from tests.e2e._sandbox_helpers import (
     engine_kind,
     environment_with_tenancy,
     get_admin_session_detail,
+    get_session,
     poll_until_agent_ready,
+    stream_turn,
+    wait_until_settled,
 )
 from tests.e2e._service_containers import SERVER_CONTAINER_HANDLE, require_service_container
 from tests.e2e.test_terminal import _run_terminal
@@ -164,14 +167,51 @@ print(json.dumps(found))
 
 
 def verify_dsh_native_configuration(client: httpx.Client) -> None:
-    """Read the native Session header produced after the supplier mounts its preset."""
+    """Read the native preset and prove its selected model can answer a turn."""
 
     assert engine_kind() == "deepseek_harness"
     # Published 0.1.2-rc.1 agent-presets ships minimal and defaults to standard.
     # session/create resolves and mounts the preset before publishing the Session.
     sid = _create(client, {"session_create": {"agentPreset": "minimal"}})
-    expected_model = str(get_admin_session_detail(client, sid).get("model_name") or "")
+    detail = get_admin_session_detail(client, sid)
+    expected_model = str(detail.get("model_name") or "")
     assert expected_model, "the Environment resolved no model for this conversation"
+    home = str((detail.get("runtime_identity") or {}).get("home_dir") or "")
+    assert home.startswith("/"), detail
+    # Read the supplier catalog independently, without platform translation or
+    # printing the launch credential or browser cookie used by this process.
+    probe = """
+import http.cookiejar,json,sys,urllib.parse,urllib.request,uuid
+from pathlib import Path
+launch=Path(sys.argv[1]).read_text().strip()
+parts=urllib.parse.urlsplit(launch)
+assert parts.scheme=='http' and parts.hostname=='127.0.0.1' and parts.port
+cookies=http.cookiejar.CookieJar()
+opener=urllib.request.build_opener(urllib.request.ProxyHandler({}),urllib.request.HTTPCookieProcessor(cookies))
+try:
+    with opener.open(launch,timeout=10) as response:
+        assert response.status==200 and list(cookies)
+    method='permissionPresets/catalog'
+    request=urllib.request.Request(
+        f'http://127.0.0.1:{parts.port}/api/{method}',
+        headers={'Content-Type':'application/json'},
+        data=json.dumps({'type':'client-request','rpcId':uuid.uuid4().hex,
+                         'method':method,'payload':{'args':{}}}).encode())
+    with opener.open(request,timeout=10) as response:
+        result=json.load(response)['result']
+    assert result['ok'] is True
+    print(json.dumps(result['value']['options']))
+except Exception as exc:
+    raise SystemExit(type(exc).__name__) from None
+"""
+    command = "python3 -c " + shlex.quote(probe) + " " + shlex.quote(f"{home}/.deepseek-harness/web-url")
+    stdout, stderr, code, events = _run_terminal(client, sid, command)
+    assert code == 0, (stderr, events)
+    options = json.loads(stdout)
+    expected_modes = [option["value"] for option in options]
+    assert expected_modes, options
+    capabilities = get_session(client, sid).get("engine_capabilities") or {}
+    assert capabilities.get("permission_modes") == expected_modes, (capabilities, options)
     deadline = time.monotonic() + 30
     records: list[dict[str, Any]] = []
     while True:
@@ -194,3 +234,12 @@ def verify_dsh_native_configuration(client: httpx.Client) -> None:
     assert models, {"session_id": sid, "native_records": records}
     assert models[-1]["data"]["model"] == expected_model, models
     assert models[-1]["data"]["provider"] == "deepseek-official", models
+    # The selection record alone does not exercise the supplier's wire. Its
+    # DeepSeek route uses Messages, including x-api-key credential delivery.
+    result = stream_turn(
+        client, sid,
+        content="Explain in one sentence what year-over-year revenue growth measures. No tools are needed.",
+    )
+    assert result.error is None, result.error
+    assert result.n_text_delta > 0 and result.text.strip(), result
+    wait_until_settled(client, sid)

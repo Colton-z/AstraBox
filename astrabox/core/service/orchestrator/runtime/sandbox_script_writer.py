@@ -125,7 +125,8 @@ print(json.dumps({{"lock": lock_path, "released": True}}))
 
 
 def _publish_text_file_command(
-    *, temp_path: str, target_path: str, content: str, mode: int
+    *, temp_path: str, target_path: str, content: str, mode: int,
+    owner_user: str | None,
 ) -> str:
     data = content.encode("utf-8")
     expected_json = json.dumps(
@@ -140,12 +141,15 @@ def _publish_text_file_command(
 import hashlib
 import json
 import os
+import pwd
 import sys
 from pathlib import Path
 
 expected = json.loads({json.dumps(expected_json)})
 temp_path = {json.dumps(temp_path)}
 target_path = {json.dumps(target_path)}
+owner_user = {owner_user!r}
+owner = pwd.getpwnam(owner_user) if owner_user is not None else None
 
 def verify(path):
     expected["path"] = path
@@ -156,10 +160,16 @@ def verify(path):
     data = target.read_bytes()
     actual = {{"path": path, "size": len(data), "sha256": hashlib.sha256(data).hexdigest()}}
     ok = actual["size"] == expected["size"] and actual["sha256"] == expected["sha256"]
+    if owner is not None:
+        metadata = target.stat()
+        actual.update(uid=metadata.st_uid, gid=metadata.st_gid)
+        ok = ok and (metadata.st_uid, metadata.st_gid) == (owner.pw_uid, owner.pw_gid)
     print(json.dumps({{"ok": ok, "expected": expected, "actual": actual}}, ensure_ascii=False))
     if not ok:
         sys.exit(1)
 
+if owner is not None:
+    os.chown(temp_path, owner.pw_uid, owner.pw_gid)
 os.chmod(temp_path, {int(mode)})
 verify(temp_path)
 os.replace(temp_path, target_path)
@@ -175,6 +185,7 @@ async def install_verified_text_script(
     content: str,
     runtime_identity: dict[str, Any] | None,
     mode: int = 0o755,
+    owner_user: str | None = None,
     error_code: str,
     error_message: str,
 ) -> None:
@@ -182,6 +193,8 @@ async def install_verified_text_script(
 
     Identity owns the workspace mapping for both cold and prepared placements.
     A null identity explicitly addresses the box filesystem directly.
+    An explicit owner makes a private file readable by its runtime account;
+    ownership is verified on staging before the atomic replacement.
     """
 
     if runtime_identity is not None and normalize_runtime_identity(runtime_identity) is None:
@@ -224,6 +237,7 @@ async def install_verified_text_script(
                 target_path=path,
                 content=content,
                 mode=mode,
+                owner_user=owner_user,
             )
         )
         if getattr(publish_result, "error", None):

@@ -52,12 +52,12 @@ ALL_IN_ONE_IMAGE    ?= astrabox/all-in-one:latest
 # distinguishable.
 IMAGE_TAG           ?= $(shell git rev-parse --short=12 HEAD 2>/dev/null && { git diff --quiet 2>/dev/null || echo -dirty; } || date -u +nogit-%Y%m%d%H%M%S)
 REGISTRY            ?=
-CLAUDE_CODE_VERSION ?= 2.1.266
+CLAUDE_CODE_VERSION ?= 2.1.287
 SANDBOX_BASE_IMAGE  ?= ghcr.io/agent-infra/sandbox:1.11.0
 NPM_REGISTRY        ?= https://registry.npmjs.org/
 
-.PHONY: help install install-py install-web install-channel-gateway dev test test-py test-postgresql test-mongo test-mongo-transactions test-opensandbox lint typecheck fmt-check check-e2e-collection \
-        check-comments check-comments-report check-i18n check-upstream check-api-client check-all-in-one check-dockerfile-modes audit-interaction audit-ui audit-console \
+.PHONY: help install install-py install-web install-channel-gateway dev test test-py test-postgresql test-mongo test-mongo-transactions lint typecheck fmt-check check-e2e-collection \
+        check-comments check-comments-report check-i18n check-upstream check-api-client check-all-in-one check-dockerfile-modes \
         test-web test-channel-gateway test-layout utilisation build-web build-dist e2e e2e-smoke e2e-browser e2e-live \
         build-agent-image build-assistant-image build-dsh-image build-codex-image build-pi-image build-workspace-mounter-image build-all-in-one-image clean \
         k8s-testbed-up k8s-testbed-status k8s-testbed-down k8s-testbed-purge
@@ -111,9 +111,6 @@ test-mongo: ## Opt-in: the mongo conformance suite. Needs a reachable mongod (AS
 test-mongo-transactions: ## Native Mongo transactions: requires a replica-set or sharded ASTRABOX_DB_URL and the [mongo] extra.
 	$(NODE_TOOLCHAIN) $(PYTEST) -m mongo_transaction
 
-test-opensandbox: ## Opt-in: the open_sandbox LIVE conformance lane. Needs a reachable opensandbox-server (ASTRABOX_OPENSANDBOX_LIVE_BASE_URL=http://…) that can pull the agent image; skips when unset.
-	$(NODE_TOOLCHAIN) $(PYTEST) -m opensandbox
-
 lint: ## ruff check (E402/F401/F811/F821/F841 grandfathered tree-wide — see pyproject).
 	$(RUFF) check $(PKG) scripts tests
 
@@ -125,15 +122,6 @@ fmt-check: ## Advisory ruff format check; not part of the repository gate.
 
 screenshots: ## Recapture assets/screenshots/ from a live deployment. Needs ASTRABOX_E2E_BASE_URL, and ASTRABOX_E2E_SCREENSHOT_MODEL naming a model the deployment holds a credential for.
 	$(NODE_TOOLCHAIN) npm --prefix tests/e2e-ui run e2e -- console-screenshots
-
-audit-ui: ## Check the visual grammar on every app + console route, both themes, two widths. Needs ASTRABOX_E2E_BASE_URL, and ASTRABOX_E2E_STORAGE_STATE where the deployment has a login.
-	$(NODE_TOOLCHAIN) npm --prefix tests/e2e-ui run e2e -- visual-grammar
-
-audit-interaction: ## What the console does when touched: every control must do something, every hover and ring must paint inside its own edges, and every ring must be findable on the ground it lands on. Same env as audit-ui.
-	$(NODE_TOOLCHAIN) npm --prefix tests/e2e-ui run e2e -- console-interaction
-
-audit-console: ## Every console audit at once: grammar, interaction, focus order, axe, rail counts, list scale, mobile shell, clipping. Same env as audit-ui.
-	$(NODE_TOOLCHAIN) npm --prefix tests/e2e-ui run e2e -- audit.spec.ts
 
 check-comments: ## Enforce the CONTRIBUTING.md comment rules against the reviewed zero baseline.
 	$(PY) scripts/check_comment_style.py

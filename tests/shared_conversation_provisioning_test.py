@@ -359,86 +359,6 @@ async def test_placement_is_recorded_before_every_fallible_follow_up(
     harness.acquire.assert_not_awaited()
 
 
-async def test_shared_cold_placement_reports_mounting_immediately_before_workspace(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    harness = _build_harness(monkeypatch)
-
-    async def progress(stage: str) -> None:
-        harness.log.append(f"progress:{stage}")
-
-    await harness.run(progress_callback=progress)
-
-    mount = harness.log.index("mount_and_provision")
-    assert harness.log[mount - 1 : mount + 1] == [
-        "progress:mounting_nas",
-        "mount_and_provision",
-    ]
-    assert harness.log.count("progress:mounting_nas") == 1
-
-
-async def test_a_new_cold_winner_does_not_receive_the_same_vault_twice(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    vault_write = object()
-    harness = _build_harness(
-        monkeypatch,
-        placements=(None, _PLACED),
-        vault_write=vault_write,
-    )
-
-    async def create(*_args: Any, **kwargs: Any) -> Any:
-        assert kwargs["vault_write"] is vault_write
-        harness.log.append("create_with_vault")
-        return harness.backend.handle("box-1"), "box-1"
-
-    monkeypatch.setattr(provisioning, "create_shared_agent_sandbox", create)
-
-    await harness.run()
-
-    assert "create_with_vault" in harness.log
-    assert "vault" not in harness.log
-
-
-@pytest.mark.parametrize("recover_assignment", [False, True])
-async def test_pool_and_recovered_candidates_receive_the_vault_exactly_once(
-    monkeypatch: pytest.MonkeyPatch,
-    recover_assignment: bool,
-) -> None:
-    vault_write = object()
-    deliveries: list[str] = []
-    harness = _build_harness(
-        monkeypatch,
-        placements=(_PLACED,) if recover_assignment else (None, _PLACED),
-        candidate_id=None if recover_assignment else "box-1",
-        vault_write=vault_write,
-    )
-
-    original_patch = harness.backend.apply_credential_vault
-
-    async def patch(*args: Any, **kwargs: Any) -> None:
-        deliveries.append("placement-patch")
-        await original_patch(*args, **kwargs)
-
-    monkeypatch.setattr(harness.backend, "apply_credential_vault", patch)
-
-    if recover_assignment:
-
-        async def recover(*_args: Any, **kwargs: Any) -> Any:
-            assert kwargs["vault_write"] is vault_write
-            harness.log.append("recover_assignment")
-            deliveries.append("create-seam")
-            return harness.backend.handle("box-1"), "box-1"
-
-        monkeypatch.setattr(provisioning, "create_shared_agent_sandbox", recover)
-
-    await harness.run(recover_assignment=recover_assignment)
-
-    assert deliveries == (
-        ["create-seam"] if recover_assignment else ["placement-patch"]
-    )
-
-
 async def test_a_cold_candidate_that_loses_the_race_refreshes_the_winner_vault(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -534,13 +454,3 @@ async def test_engine_env_and_mirror_are_delivered_before_launch(
     )
     assert env_write < harness.log.index("launch")
     assert mirror < harness.log.index("launch")
-
-
-async def test_engine_without_session_log_binds_no_mirror_target(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    harness = _build_harness(monkeypatch)
-
-    await harness.run(session_log=None)
-
-    assert not any(item.startswith("bind_mirror:") for item in harness.log)

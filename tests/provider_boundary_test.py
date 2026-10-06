@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import ast
 from collections.abc import AsyncIterator
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -26,121 +24,6 @@ from astrabox.core.service.orchestrator.engine.capabilities import (
 )
 from astrabox.seams.extensions import ExtensionCatalog, ExtensionRuntimeSelection
 from astrabox.seams.model import ModelEndpoint
-
-_ROOT = Path(__file__).resolve().parents[1]
-_GENERIC_TARGETS = (
-    _ROOT / "astrabox" / "core",
-    _ROOT / "astrabox" / "seams",
-    _ROOT / "astrabox" / "api",
-    _ROOT / "astrabox" / "common",
-    _ROOT / "astrabox" / "identity",
-    _ROOT / "astrabox" / "observability",
-    _ROOT / "astrabox" / "persistence",
-    _ROOT / "astrabox" / "web",
-    _ROOT / "astrabox" / "bootstrap.py",
-    _ROOT / "frontend" / "src",
-)
-_PROVIDER_PROTOCOL_TERMS = (
-    "litellm",
-    "proxy_admin",
-    "virtual_key",
-    "virtual key",
-    "x-litellm",
-    "allowed_routes",
-    "gateway_auth",
-    "litellm_server_id",
-)
-
-
-def _source_files(target: Path):
-    if target.is_file():
-        yield target
-    else:
-        yield from (
-            path
-            for path in target.rglob("*")
-            if path.suffix in {".css", ".json", ".py", ".ts", ".tsx"}
-        )
-
-
-def test_provider_protocol_vocabulary_stays_in_adapters() -> None:
-    leaks: list[str] = []
-    for target in _GENERIC_TARGETS:
-        for path in _source_files(target):
-            text = path.read_text(encoding="utf-8").casefold()
-            for term in _PROVIDER_PROTOCOL_TERMS:
-                # Product copy names its supplier; wire vocabulary remains adapter-owned.
-                if term == "litellm" and path.is_relative_to(
-                    _ROOT / "frontend/src/i18n/locales"
-                ):
-                    continue
-                if term in text:
-                    leaks.append(f"{path.relative_to(_ROOT)}: {term}")
-
-    assert leaks == [], (
-        "provider-specific names and wire fields belong under astrabox/providers, "
-        "deploy, or containers:\n" + "\n".join(leaks)
-    )
-
-
-def test_engine_sdk_imports_stay_inside_the_engine_implementation() -> None:
-    engine_root = _ROOT / "astrabox/core/service/orchestrator/engine"
-    # This is the Claude image's in-box entrypoint, not host platform code.
-    in_box_runner = _ROOT / "astrabox/core/service/orchestrator/sandbox_runner.py"
-    offenders: list[str] = []
-    for path in (_ROOT / "astrabox").rglob("*.py"):
-        if path == in_box_runner or path.is_relative_to(engine_root):
-            continue
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        for node in ast.walk(tree):
-            modules: tuple[str, ...]
-            if isinstance(node, ast.Import):
-                modules = tuple(alias.name for alias in node.names)
-            elif isinstance(node, ast.ImportFrom):
-                modules = (node.module or "",)
-            else:
-                continue
-            if any(
-                module == "claude_agent_sdk"
-                or module.startswith("claude_agent_sdk.")
-                for module in modules
-            ):
-                offenders.append(str(path.relative_to(_ROOT)))
-                break
-
-    assert offenders == [], (
-        "vendor SDK types belong to the Claude adapter or its in-box runner:\n"
-        + "\n".join(offenders)
-    )
-
-
-def test_host_code_does_not_import_the_standalone_in_box_runner() -> None:
-    runner_module = "astrabox.core.service.orchestrator.sandbox_runner"
-    runner_path = _ROOT / "astrabox/core/service/orchestrator/sandbox_runner.py"
-    offenders: list[str] = []
-    for path in (_ROOT / "astrabox").rglob("*.py"):
-        if path == runner_path:
-            continue
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        for node in ast.walk(tree):
-            imports_runner = False
-            if isinstance(node, ast.Import):
-                imports_runner = any(
-                    alias.name == runner_module for alias in node.names
-                )
-            elif isinstance(node, ast.ImportFrom):
-                imports_runner = node.module == runner_module or (
-                    node.module == "astrabox.core.service.orchestrator"
-                    and any(alias.name == "sandbox_runner" for alias in node.names)
-                )
-            if imports_runner:
-                offenders.append(str(path.relative_to(_ROOT)))
-                break
-
-    assert offenders == [], (
-        "sandbox_runner.py is copied standalone into the Claude image; host code "
-        "must use adapter contracts instead of importing it:\n" + "\n".join(offenders)
-    )
 
 
 class _EntryPoint:

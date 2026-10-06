@@ -11,7 +11,6 @@ makes. So the credential that binding names must not be an administrator's.
 from __future__ import annotations
 
 import json
-import os
 import urllib.error
 from typing import Any
 
@@ -23,12 +22,15 @@ from astrabox.providers.litellm_shared_auth import (
     SANDBOX_INFERENCE_KEY_ALIAS,
     SANDBOX_INFERENCE_KEY_TYPE,
     CAPABILITY_PREFIX,
+    inference_key_metadata,
     looks_like_access_token,
     sandbox_inference_key,
 )
 from astrabox.providers.model import LiteLLMModelEndpointProvider
 
 _SECRET = "b" * 64
+# What LiteLLM's /key/info answers for a key that already carries its grants.
+_EXISTING_KEY = json.dumps({"info": {"metadata": inference_key_metadata()}})
 
 
 @pytest.fixture(autouse=True)
@@ -92,23 +94,6 @@ def test_an_operator_supplied_key_still_wins(
         LiteLLMModelEndpointProvider._sandbox_inference_credential()
         == "sk-operator-scoped"
     )
-
-
-def test_the_embedded_deployment_no_longer_aliases_the_master_key() -> None:
-    """onebox must not copy LITELLM_MASTER_KEY into the inference variable.
-
-    Aliasing the two makes the embedded and external topologies disagree about
-    one variable, and puts an administrator credential on every sandbox's model
-    traffic.
-    """
-
-    source = os.path.join(
-        os.path.dirname(os.path.dirname(__file__)), "astrabox", "deploy", "onebox.py"
-    )
-    with open(source, encoding="utf-8") as handle:
-        body = handle.read()
-
-    assert "os.environ[LITELLM_API_KEY_ENV_NAME] = key" not in body
 
 
 def test_a_litellm_key_is_not_mistaken_for_an_access_token(signing_secret: str) -> None:
@@ -250,7 +235,7 @@ def test_an_existing_key_is_not_created_again(
 ) -> None:
     """Every restart runs this. Re-creating would fail on the second boot."""
 
-    seen = _gateway(monkeypatch, [(200, "{}"), (200, "{}")])
+    seen = _gateway(monkeypatch, [(200, _EXISTING_KEY), (200, "{}")])
 
     assert onebox.ensure_sandbox_inference_key() == provisioning
     assert not any(entry["url"].endswith("/key/generate") for entry in seen)
@@ -266,7 +251,7 @@ def test_an_existing_key_the_gateway_rejects_stops_the_deployment(
     created never looks at such a deployment again.
     """
 
-    _gateway(monkeypatch, [(200, "{}"), (401, "Invalid proxy server token")])
+    _gateway(monkeypatch, [(200, _EXISTING_KEY), (401, "Invalid proxy server token")])
 
     with pytest.raises(RuntimeError, match="does not accept the key"):
         onebox.ensure_sandbox_inference_key()
@@ -293,7 +278,7 @@ def test_a_key_another_replica_created_concurrently_is_accepted(
     """Two replicas booting together both try; the loser must not crash."""
 
     _gateway(
-        monkeypatch, [(404, "no"), (400, "already exists"), (200, "{}"), (200, "{}")]
+        monkeypatch, [(404, "no"), (400, "already exists"), (200, _EXISTING_KEY), (200, "{}")]
     )
 
     assert onebox.ensure_sandbox_inference_key() == provisioning

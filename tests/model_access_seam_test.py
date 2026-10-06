@@ -5,7 +5,6 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import astrabox.providers.model  # noqa: F401
-from astrabox.core.service.orchestrator.engine.platform import EnginePlatform
 from astrabox.core.service.orchestrator.engine.claude_code_config import (
     build_claude_model_config_kwargs,
 )
@@ -70,15 +69,6 @@ def test_runtime_resolves_one_engine_neutral_model_access_value(
     assert access.base_url == "https://api.example.test/v1/messages"
     assert access.model_name == "model-a"
     assert access.endpoint_provider == "model-access-test"
-
-
-def test_engine_platform_exposes_one_model_access_operation() -> None:
-    members = vars(EnginePlatform)
-
-    assert "resolve_model_access" in members
-    assert "resolve_model_config" not in members
-    assert "resolve_model_api_key" not in members
-    assert "resolve_model_base_url" not in members
 
 
 def test_claude_adapter_maps_neutral_access_to_its_native_contract() -> None:

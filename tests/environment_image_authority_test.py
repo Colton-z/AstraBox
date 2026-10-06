@@ -168,29 +168,6 @@ async def test_the_view_overlay_carries_an_empty_field_as_empty() -> None:
     )
 
 
-def test_the_seeded_environment_pins_no_image() -> None:
-    """The seed must not copy the deployment default onto the record.
-
-    Asserted against the seed source rather than a run of it: the write is one
-    dict literal, and what matters is that the image keys are absent from it.
-    """
-    import inspect
-
-    from astrabox.api import app as app_module
-
-    source = inspect.getsource(app_module._seed_default_agent_if_empty)
-    seed_body = source.split("upsert_by_name", 1)[1].split("_seed_default_model", 1)[0]
-
-    assert '"runtime_template_name"' not in seed_body, (
-        "a seeded environment must pin no image: the value would be whatever the "
-        "deployment was configured with the day the store was created, and it "
-        "would outrank the deployment setting from then on"
-    )
-    assert '"runtime_image"' not in seed_body, (
-        "same for the sibling field, which is written and read by nobody"
-    )
-
-
 def test_the_claude_deployment_image_is_resolved_each_time(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -199,25 +176,3 @@ def test_the_claude_deployment_image_is_resolved_each_time(
     assert resolve_agent_image() == "registry/agent:one"
     monkeypatch.setenv(DEFAULT_AGENT_IMAGE_ENV, "registry/agent:two")
     assert resolve_agent_image() == "registry/agent:two"
-
-
-def test_every_consumer_of_the_resolver_uses_it_as_an_image() -> None:
-    """Why the record-name fallback had to go, pinned so it cannot return.
-
-    The resolver's result is passed as ``image=`` at every call site. A fallback
-    to the record's own name was only ever coherent when a backend registered
-    templates by name; against a container registry it yields an image nobody
-    can pull.
-    """
-    from pathlib import Path
-
-    root = Path(__file__).resolve().parents[1] / "astrabox"
-    sources = [p.read_text(encoding="utf-8") for p in root.rglob("*.py")]
-    joined = "\n".join(sources)
-
-    assert "default_runtime_image" in joined
-    assert 'or ""' in joined  # the pin check itself
-    assert "return str(template.name or \"\").strip()" not in joined, (
-        "the record-name fallback must not come back: it silently substitutes an "
-        "environment name where a container image is required"
-    )

@@ -27,6 +27,7 @@ from astrabox.core.service.orchestrator.engine.emissions import (
     SessionMessageFact,
     TurnTerminal,
 )
+
 if TYPE_CHECKING:
     from astrabox.core.service.orchestrator.engine.capabilities import (
         EngineRuntimeCapabilities,
@@ -323,6 +324,8 @@ class EngineStartupMaterialRequest:
     runtime_state_store: bool = False
     sandbox_death_notice: bool = False
     secret_names: tuple[str, ...] = ()
+    #: The native profile can belong to a workspace or to one Session's account.
+    runtime_state_scope: Literal["workspace", "session"] = "workspace"
 
 
 @dataclass(frozen=True)
@@ -697,6 +700,24 @@ class EngineTranscriptRecovery(Protocol):
         *,
         done: bool = False,
     ) -> EngineSettledProjection: ...
+
+
+@runtime_checkable
+class EngineStoredChildResources(Protocol):
+    """Complete child resources from a workspace's opaque native SessionStore.
+
+    Core validates the workspace owner and loads the archive. The adapter owns
+    the archive format, durable child identities and native state; live frames
+    supply current vendor control handles without replacing saved history.
+    """
+
+    def stored_child_resource_facts(
+        self,
+        *,
+        native_session_key: str | None,
+        runtime_state: bytes | None,
+        live_frames: list[dict[str, Any]],
+    ) -> list[ChildResourceFact]: ...
 
 
 @runtime_checkable

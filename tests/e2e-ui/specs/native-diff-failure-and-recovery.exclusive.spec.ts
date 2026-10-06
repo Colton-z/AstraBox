@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { expect, test, type Page } from '@playwright/test';
 
 import { AstraApi, type MessagePage } from '../fixtures/astraApi';
-import { documentsByField } from '../fixtures/dbOracle';
+import { documentsByField, framesForTurn } from '../fixtures/dbOracle';
 import { engineCases, engineProfileFor, type EngineProfile } from '../fixtures/engineProfile';
 import { browserStreamFrames, object } from '../fixtures/nativeMcpServer';
 import { killSandbox, requireSandboxHandle, sandboxRunning, waitForSandboxStopped } from '../fixtures/sandboxOps';
@@ -63,11 +63,31 @@ function edit(engine: string, path: string, before: string, after: string): stri
   return `Use ${engine === 'claude_code' ? 'Edit' : 'edit'} with ${JSON.stringify({ file_path: path, old_string: before, new_string: after })}.`;
 }
 
-async function settledTurn(api: AstraApi, page: Page, prompt: string): Promise<void> {
+interface TurnMetrics { turnId: string; usage: unknown }
+
+function retainedMetrics(history: MessagePage, turns: TurnMetrics[]): void {
+  for (const turn of turns) {
+    const results = history.messages.filter((message) => message.turn_id === turn.turnId)
+      .flatMap((message) => message.blocks ?? []).filter((block) => block.type === 'result');
+    expect(results, 'each settled reply retains its result').toHaveLength(1);
+    expect(results[0]!.usage, 'history retains every metric published in the reply stream').toEqual(turn.usage);
+  }
+}
+
+async function settledTurn(api: AstraApi, page: Page, prompt: string): Promise<TurnMetrics> {
   const previous = (await api.getSession(sessionId)).last_turn_id;
   await sendPrompt(page, sessionId, prompt);
-  await api.waitForSession(sessionId, (session) => session.last_turn_id !== previous
+  const session = await api.waitForSession(sessionId, (session) => session.last_turn_id !== previous
     && session.last_turn_status === 'COMPLETED' && session.state === 'READY', 90_000);
+  const turnId = String(session.last_turn_id);
+  const results = framesForTurn(turnId).map((row) => object(row.payload))
+    .filter((frame) => frame.type === 'data-result');
+  expect(results).toHaveLength(1);
+  // Read the published result, independently of the history projection under
+  // test. Engines that do not publish usage must not gain invented counters.
+  const metrics = { turnId, usage: object(results[0]!.data).usage };
+  retainedMetrics(await api.getMessages(sessionId, 50), [metrics]);
+  return metrics;
 }
 
 async function start(api: AstraApi, page: Page, profile: EngineProfile, cold = false): Promise<string> {
@@ -131,7 +151,7 @@ for (const declared of engineCases()) {
         engine === 'pi' ? { path: `${root}/${name}`, content: overwritten }
           : { file_path: `${root}/${name}`, content: overwritten },
       )}.`);
-    await settledTurn(api, page, [
+    const first = await settledTurn(api, page, [
       'Replace the complete contents of these two files using the following native tools.',
       'Use the supplied arguments exactly. For Write/write, do not add a newline to the content string.',
       ...writes, 'Read the files first if required. Change no other files; then finish.',
@@ -154,7 +174,7 @@ for (const declared of engineCases()) {
     }
     const applied = changes(await api.getMessages(sessionId, 50));
     const callsBefore = new Set((await browserStreamFrames(page)).map((frame) => frame.toolCallId));
-    await settledTurn(api, page, [
+    const second = await settledTurn(api, page, [
       'Exercise one expected edit failure. The old text below is deliberately absent.',
       edit(engine, `${root}/${guard}`, `ABSENT-${stamp}`, `MUST-NOT-APPEAR-${stamp}`),
       'Call that tool exactly once with those exact arguments. Do not repair the failure, retry, or use another write tool.',
@@ -181,6 +201,7 @@ for (const declared of engineCases()) {
     await expect(diffTab).toHaveText('Diff (2)');
     await diffTab.click();
     await expect(diffPanel.getByRole('button', { name: new RegExp(guard) })).toHaveCount(0);
+    retainedMetrics(await api.getMessages(sessionId, 50), [first, second]);
   });
 
   test(`${engine} retains native Diff after volume-free sandbox replacement`, async ({ page, request }) => {
@@ -192,7 +213,7 @@ for (const declared of engineCases()) {
     const before = `ORIGINAL-${stamp}`;
     const after = `CHANGED-${stamp}`;
     await api.uploadFileText(sessionId, root, name, `${before}\n`);
-    await settledTurn(api, page, [
+    const first = await settledTurn(api, page, [
       edit(engine, `${root}/${name}`, before, after),
       'You may read that file first if required. Change only this file, then finish.',
     ].join('\n'));
@@ -217,7 +238,8 @@ for (const declared of engineCases()) {
     await expect(diffTab).toHaveText('Diff (1)');
     await diffTab.click();
     await expect(content).toHaveText(visible, { useInnerText: true });
-    await settledTurn(api, page, 'Explain briefly what a file diff shows. Do not use tools or modify any files.');
+    retainedMetrics(await api.getMessages(sessionId, 50), [first]);
+    const second = await settledTurn(api, page, 'Explain briefly what a file diff shows. Do not use tools or modify any files.');
     const replacement = String((await api.getSession(sessionId)).sandbox_id);
     expect(replacement).not.toBe(oldBox);
     expect(replacement).not.toBe('');
@@ -227,6 +249,7 @@ for (const declared of engineCases()) {
     await expect(diffTab).toHaveText('Diff (1)');
     await diffTab.click();
     await expect(content).toHaveText(visible, { useInnerText: true });
+    retainedMetrics(await api.getMessages(sessionId, 50), [first, second]);
     await test.info().attach('native-diff-recovery', {
       body: JSON.stringify({ sessionId, oldBox, replacement, applied, visible }), contentType: 'application/json',
     });

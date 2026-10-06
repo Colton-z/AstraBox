@@ -1,8 +1,8 @@
 """Interrupt e2e — interrupting a turn settles it, and the session stays usable.
 
 This is the end-to-end proof that the ``POST /api/v1/sessions/{id}/interrupt``
-control path settles an in-flight turn without wedging the session, across the two
-ways a turn can be in-flight:
+control path settles an in-flight turn without wedging the session, including
+a lost live terminal:
 
 * **streaming turn** — a real command writes its started marker and waits on a
   fixture-controlled release file. The test interrupts before releasing it, so a
@@ -13,7 +13,11 @@ ways a turn can be in-flight:
   never written — a denied tool has no side effect), clears the pending interaction,
   and settles the turn back to ``READY``.
 
-In both cases the load-bearing proof that the session survived is that a second,
+* **lost terminal signal** — the executing turn is interrupted, then the bridge
+  loses its live terminal after receiving the cancelled result. The saved
+  outcome must remain cancelled and the next turn must still be usable.
+
+In each case the load-bearing proof that the session survived is that a second,
 short turn immediately streams a text-delta and settles ``READY`` again — the
 session is fully sendable after the interrupt.
 
@@ -25,9 +29,11 @@ Run it explicitly (deselected in the default unit run):
 from __future__ import annotations
 
 import json
+import os
 import shlex
 import time
 import uuid
+from pathlib import Path
 
 import httpx
 import pytest
@@ -36,15 +42,19 @@ from tests.e2e._sandbox_helpers import (
     SETTLE_TIMEOUT_S,
     TERMINAL_STATES,
     approval_presentation,
+    assert_kubernetes_runtime_image,
     assert_permission_mode_unavailable,
     contract_supported,
     create_session,
     data,
     file_names,
     get_session,
+    list_files,
     pending_interaction,
     permission_mode,
     poll_until_agent_ready,
+    poll_until_ready,
+    release_assistant,
     release_session,
     stream_turn,
     tool_name,
@@ -53,6 +63,7 @@ from tests.e2e._sandbox_helpers import (
     wait_until_settled,
     workspace_path,
 )
+from tests.e2e.test_conversation_end import _assistant_runtime, _wake_assistant
 
 pytestmark = pytest.mark.e2e
 
@@ -66,6 +77,27 @@ _IN_FLIGHT_STATES = {
     "WAITING_INPUT",
     "BACKGROUND_RUNNING",
 }
+
+
+def _arm_terminal_drop(sid: str) -> Path:
+    """Drop this Session's next live terminal after its real result arrives."""
+    base = os.getenv(
+        "ASTRABOX_E2E_TURN_TERMINAL_DROP_FAULT_FILE",
+        "",
+    ).strip()
+    assert base and Path(base).is_absolute(), (
+        "terminal-drop faults require the backend's shared absolute fault path"
+    )
+    directory = Path(base + ".d")
+    directory.mkdir(parents=True, exist_ok=True)
+    # The backend consumes the declaration with an atomic file replacement
+    # under a different uid, just as the existing browser fault does.
+    directory.chmod(0o777)
+    path = directory / f"interrupt-{sid}-{uuid.uuid4().hex}.json"
+    with path.open("x", encoding="utf-8") as declaration:
+        json.dump({"faults": {"drop": 1}, "match": {"session_id": sid}}, declaration)
+    path.chmod(0o644)
+    return path
 
 
 def _assert_sendable(e2e_client: httpx.Client, sid: str) -> None:
@@ -172,16 +204,112 @@ def _post_turn_until_streaming(
 
 def test_interrupt_streaming_turn_settles_and_session_stays_usable(e2e_client: httpx.Client) -> None:
     """Interrupt an executing command, without a failure record, then run another turn."""
+    _interrupt_agent_turn(e2e_client, drop_terminal=False)
+
+
+def test_interrupt_with_lost_terminal_keeps_the_cancelled_result_and_next_turn(
+    e2e_client: httpx.Client,
+) -> None:
+    """A real interrupted turn retains cancellation when its live terminal is lost."""
+    _interrupt_agent_turn(e2e_client, drop_terminal=True)
+
+
+@pytest.mark.assistant_live
+def test_assistant_interrupt_with_lost_terminal_keeps_the_cancelled_result_and_next_turn(
+    e2e_client: httpx.Client,
+    live_test_deadline: float,
+) -> None:
+    """Hermes retains the same stopped outcome in its resident workspace."""
+    assistant_id = ""
+    sid = ""
+    try:
+        environment, image, digest, model, kubeconfig, namespace = _assistant_runtime(e2e_client)
+        assistant = data(
+            e2e_client.post(
+                "/api/v1/assistants",
+                json={
+                    "display_name": f"__e2e_interrupt_{uuid.uuid4().hex[:8]}",
+                    "environment_name": environment,
+                    "model_config_override": {"model_name": model},
+                },
+            )
+        )
+        assistant_id = str(assistant.get("assistant_id") or "")
+        assert assistant_id, assistant
+        workspace = _wake_assistant(
+            e2e_client,
+            assistant_id,
+            timeout=max(0.1, live_test_deadline - time.monotonic()),
+        )
+        assert_kubernetes_runtime_image(
+            sandbox_id=str(workspace.get("current_sandbox_id") or ""),
+            expected_image=image,
+            expected_digest=digest,
+            kubeconfig=kubeconfig,
+            namespace=namespace,
+        )
+        created = data(
+            e2e_client.post(
+                f"/api/v1/assistants/{assistant_id}/conversations",
+                json={},
+            )
+        )
+        sid = str(created.get("session_id") or "")
+        assert sid, created
+        poll_until_ready(e2e_client, sid, expected_image=image)
+        # Shared workspace identity belongs to the Assistant, not to each
+        # new conversation. The Files API resolves that same owner identity.
+        workspace_root = str(list_files(e2e_client, sid).get("root_path") or "")
+        assert workspace_root == "/workspace", workspace_root
+        _interrupt_streaming_turn(
+            e2e_client,
+            sid,
+            command_tool="terminal",
+            drop_terminal=True,
+            workspace_root=workspace_root,
+        )
+    finally:
+        release_session(sid)
+        release_assistant(assistant_id)
+
+
+def _interrupt_agent_turn(e2e_client: httpx.Client, *, drop_terminal: bool) -> None:
     created = create_session(e2e_client, permission_mode=permission_mode("unattended"))
     sid = str(created.get("session_id") or "")
     assert sid, f"no session_id in create response: {created}"
     try:
         poll_until_agent_ready(e2e_client, sid)
+        _interrupt_streaming_turn(
+            e2e_client,
+            sid,
+            command_tool=tool_name("command"),
+            drop_terminal=drop_terminal,
+        )
+    finally:
+        release_session(sid)
 
+
+def _interrupt_streaming_turn(
+    e2e_client: httpx.Client,
+    sid: str,
+    *,
+    command_tool: str,
+    drop_terminal: bool,
+    workspace_root: str | None = None,
+) -> None:
+    fault_path: Path | None = None
+    scene_passed = False
+    try:
         marker = f"interrupt_{uuid.uuid4().hex}"
-        started_path = workspace_path(e2e_client, sid, f"{marker}.started")
-        release_path = workspace_path(e2e_client, sid, f"{marker}.release")
-        exited_path = workspace_path(e2e_client, sid, f"{marker}.exited")
+        def path_for(suffix: str) -> str:
+            if workspace_root is not None:
+                assert workspace_root == "/workspace", workspace_root
+                return f"{workspace_root}/{marker}.{suffix}"
+            return workspace_path(e2e_client, sid, f"{marker}.{suffix}")
+
+        started_path = path_for("started")
+        release_path = path_for("release")
+        exited_path = path_for("exited")
         on_exit = f"printf exited > {shlex.quote(exited_path)}"
         command = "sh -c " + shlex.quote(
             f"trap {shlex.quote(on_exit)} EXIT; "
@@ -189,7 +317,7 @@ def test_interrupt_streaming_turn_settles_and_session_stays_usable(e2e_client: h
             f"while [ ! -e {shlex.quote(release_path)} ]; do sleep 0.1; done"
         )
         long_prompt = (
-            f"Use the {tool_name('command')} tool to run exactly this one command in the "
+            f"Use the {command_tool} tool to run exactly this one command in the "
             "foreground and wait for it to finish. Do not create the release file or "
             f"run any other command. I will stop the running command: {command}"
         )
@@ -219,6 +347,9 @@ def test_interrupt_streaming_turn_settles_and_session_stays_usable(e2e_client: h
         assert not in_flight.get("pending_interaction"), (
             "the command must be executing, not waiting for permission"
         )
+        if drop_terminal:
+            assert in_flight.get("current_turn_id"), in_flight
+            fault_path = _arm_terminal_drop(sid)
 
         ack = data(e2e_client.post(f"/api/v1/sessions/{sid}/interrupt", timeout=30.0))
         assert str(ack.get("session_id") or "") == sid, (
@@ -257,6 +388,14 @@ def test_interrupt_streaming_turn_settles_and_session_stays_usable(e2e_client: h
         )
         interrupted_turn_id = settled["last_turn_id"]
         _assert_turn_records_the_stop(e2e_client, sid, interrupted_turn_id)
+        if fault_path is not None:
+            assert interrupted_turn_id == in_flight["current_turn_id"], settled
+            declaration = json.loads(fault_path.read_text())
+            assert declaration.get("consumed") == [sid], (
+                "The real stopped result must consume the terminal-drop fault; "
+                f"an ordinary stop is not this scene: {declaration}"
+            )
+            assert declaration["faults"]["drop"] == 0, declaration
 
         # The gate remains closed: a normal tool finish cannot unblock this turn.
         _assert_sendable(e2e_client, sid)
@@ -269,8 +408,19 @@ def test_interrupt_streaming_turn_settles_and_session_stays_usable(e2e_client: h
         )
         assert follow_up.get("last_turn_status") == "COMPLETED", follow_up
         assert not follow_up.get("last_turn_error"), follow_up
+        scene_passed = True
     finally:
-        release_session(sid)
+        if fault_path is not None:
+            try:
+                print(f"TERMINAL_DROP_FAULT_PATH={fault_path}", flush=True)
+                if fault_path.exists():
+                    print("TERMINAL_DROP_FAULT=" + fault_path.read_text(), flush=True)
+                if scene_passed:
+                    fault_path.unlink(missing_ok=True)
+            except OSError as exc:
+                # Keep the original failed scene's exception when its evidence
+                # file cannot be read or removed during teardown.
+                print(f"TERMINAL_DROP_FAULT_CLEANUP_ERROR={exc}", flush=True)
 
 
 def test_interrupt_clears_pending_interaction_and_settles(e2e_client: httpx.Client) -> None:

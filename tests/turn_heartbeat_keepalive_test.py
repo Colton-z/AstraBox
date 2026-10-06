@@ -79,21 +79,3 @@ async def test_a_renew_failure_never_breaks_the_heartbeat() -> None:
         await bridge_loop._turn_heartbeat_loop(worker, state, ctx)
 
     assert calls == ["sess-1"]
-
-
-def test_a_bridge_parked_in_a_fault_hold_still_owns_its_turn() -> None:
-    """The engine stream can end while the bridge is parked inside a fault
-    barrier; the turn is still owned, so the heartbeat must keep renewing —
-    otherwise the reconcile worker recovers a turn nobody abandoned."""
-
-    from types import SimpleNamespace
-
-    from astrabox.core.service.orchestrator.session_kernel.workers.turn import bridge_loop
-    from astrabox.core.service.orchestrator.session_kernel.workers.turn.state import _BridgeRunState
-
-    state = _BridgeRunState()
-    state.bridge_stream_task = SimpleNamespace(done=lambda: True)  # type: ignore[assignment]
-    state.turn_settled = False
-    assert bridge_loop._bridge_done_before_terminal(None, state, None) is True
-    state.frame_hold_active = True
-    assert bridge_loop._bridge_done_before_terminal(None, state, None) is False

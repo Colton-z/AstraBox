@@ -16,6 +16,9 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from astrabox.common.utils.user_context import UserContext
+from astrabox.persistence.repository.runtime_state_snapshot_repository import (
+    RuntimeStateSnapshotRepository,
+)
 from astrabox.core.service.orchestrator.runtime_binding import (
     reconcile_session_runtime_binding,
 )
@@ -79,7 +82,7 @@ class SessionKernelService(
         session_snapshots_repo: Any,
         interaction_snapshots_repo: Any,
         message_view: Any,
-        artifacts_repo: Any,
+        session_artifacts_repo: Any,
         transcript_entries_repo: Any,
         agent_repo: Any,
         must_get_owned_session: Callable[[UserContext, str], Awaitable[dict[str, Any]]],
@@ -99,9 +102,12 @@ class SessionKernelService(
         self._interaction_snapshots_repo = interaction_snapshots_repo
         self._message_view = message_view
         self._child_run_view = SessionChildRunView(
-            session_events_repo, transcript_entries_repo=transcript_entries_repo
+            session_events_repo,
+            transcript_entries_repo=transcript_entries_repo,
+            sessions_repo=sessions_repo,
+            runtime_state_snapshots_repo=RuntimeStateSnapshotRepository(),
         )
-        self._artifacts_repo = artifacts_repo
+        self._session_artifacts_repo = session_artifacts_repo
         self._transcript_entries_repo = transcript_entries_repo
         self._agent_repo = agent_repo
         self._assistant_workspace_service = assistant_workspace_service

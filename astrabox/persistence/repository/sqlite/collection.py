@@ -596,32 +596,9 @@ class AsyncCollection:
         fast_id = self._extract_id_equality(query)
         if fast_id is not None:
             stmt = stmt.where(DocumentRow.doc_id == fast_id)
-        for key, value in self._string_equality_pushdowns(query):
-            stmt = stmt.where(
-                or_(
-                    self._json_string_value(key) == value,
-                    self._json_array_contains(key, value),
-                )
-            )
-        for key, members in self._string_in_pushdowns(query):
-            stmt = stmt.where(
-                or_(
-                    *(
-                        condition
-                        for member in members
-                        for condition in (
-                            self._json_string_value(key) == member,
-                            self._json_array_contains(key, member),
-                        )
-                    )
-                )
-            )
         sort_keys = frozenset(key for key, _direction in sort)
-        for condition in self._sort_key_ranges(query, sort_keys):
+        for condition in self._query_pushdowns(query, sort_keys=sort_keys):
             stmt = stmt.where(condition)
-        or_clause = self._or_pushdown(query, sort_keys=sort_keys)
-        if or_clause is not None:
-            stmt = stmt.where(or_clause)
         order: list[Any] = []
         for key, direction in sort:
             value = self._json_ordered_string(key)
@@ -720,6 +697,59 @@ class AsyncCollection:
             found.append((key, list(members)))
         return found
 
+    def _query_pushdowns(
+        self,
+        query: dict[str, Any] | None,
+        *,
+        sort_keys: frozenset[str] = frozenset(),
+    ) -> list[Any]:
+        """Safe candidate predicates; Python still checks the complete query."""
+        conditions = [
+            or_(
+                self._json_string_value(key) == value,
+                self._json_array_contains(key, value),
+            )
+            for key, value in self._string_equality_pushdowns(query)
+        ]
+        conditions.extend(
+            or_(
+                *(
+                    condition
+                    for member in members
+                    for condition in (
+                        self._json_string_value(key) == member,
+                        self._json_array_contains(key, member),
+                    )
+                )
+            )
+            for key, members in self._string_in_pushdowns(query)
+        )
+        conditions.extend(self._sort_key_ranges(query, sort_keys))
+        for clause in (
+            self._or_pushdown(query, sort_keys=sort_keys),
+            self._and_pushdown(query, sort_keys=sort_keys),
+        ):
+            if clause is not None:
+                conditions.append(clause)
+        return conditions
+
+    def _and_pushdown(
+        self,
+        query: dict[str, Any] | None,
+        *,
+        sort_keys: frozenset[str] = frozenset(),
+    ) -> Any | None:
+        """Every pushable conjunct narrows, even when another stays in Python."""
+        arms = query.get("$and") if query else None
+        if not isinstance(arms, list) or not arms or not all(isinstance(arm, dict) for arm in arms):
+            return None
+        conditions = [
+            condition
+            for arm in arms
+            for condition in self._query_pushdowns(arm, sort_keys=sort_keys)
+        ]
+        return and_(*conditions) if conditions else None
+
     def _or_pushdown(
         self,
         query: dict[str, Any] | None,
@@ -758,27 +788,7 @@ class AsyncCollection:
         for arm in arms:
             if not isinstance(arm, dict):
                 return None
-            conditions = [
-                or_(
-                    self._json_string_value(key) == value,
-                    self._json_array_contains(key, value),
-                )
-                for key, value in self._string_equality_pushdowns(arm)
-            ]
-            conditions.extend(
-                or_(
-                    *(
-                        condition
-                        for member in members
-                        for condition in (
-                            self._json_string_value(key) == member,
-                            self._json_array_contains(key, member),
-                        )
-                    )
-                )
-                for key, members in self._string_in_pushdowns(arm)
-            )
-            conditions.extend(self._sort_key_ranges(arm, sort_keys))
+            conditions = self._query_pushdowns(arm, sort_keys=sort_keys)
             if not conditions:
                 return None
             clauses.append(and_(*conditions))

@@ -603,7 +603,7 @@ class _World:
                 get_active_interaction=AsyncMock(return_value=None),
             ),
             message_view=AsyncMock(),
-            artifacts_repo=AsyncMock(),
+            session_artifacts_repo=AsyncMock(),
             transcript_entries_repo=AsyncMock(),
             agent_repo=AsyncMock(),
             assistant_workspace_service=workspace_service,

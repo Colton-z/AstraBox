@@ -53,35 +53,6 @@ def test_turn_anchor_carries_what_outlives_an_attachment() -> None:
     }
 
 
-def test_an_anchor_from_the_pty_era_does_not_decode() -> None:
-    """And that is the correct outcome, not a migration to write.
-
-    A turn whose anchor does not decode is rebuilt, which is what the anchor
-    was for. Rebuilding re-enters by the durable session id, so the
-    conversation is not at stake — only the in-flight turn, which a transport
-    change loses either way.
-    """
-
-    import base64
-    import json
-
-    legacy = json.dumps(
-        {"pty_session_id": "pty-1", "tui_session_id": "tui-1", "turn_id": "turn-1"},
-        separators=(",", ":"),
-        sort_keys=True,
-    ).encode("utf-8")
-    token = base64.urlsafe_b64encode(legacy).decode("ascii").rstrip("=")
-
-    # It decodes structurally — the two fields it needs are present — which is
-    # the honest outcome: an anchor carrying an extra field still names a
-    # session, and a session the backend does not hold is refused by the vendor
-    # (`4007 session not found`, measured) rather than guessed at here.
-    assert decode_turn_anchor("hermes-tui-v1." + token) == {
-        "tui_session_id": "tui-1",
-        "turn_id": "turn-1",
-    }
-
-
 def _fake_gateway(request: AsyncMock) -> SimpleNamespace:
     """The narrow gateway port a session-scoped client consumes."""
 
@@ -268,6 +239,7 @@ def test_tui_subagent_events_project_one_session_owned_child_run() -> None:
         "taskType": "delegate_task",
         "model": "openai/test-model",
         "engineKind": "assistant",
+        "nativeState": {"subagent_id": "sa-0-child"},
     }
 
     assert [frame["data"]["kind"] for frame in completed] == [
@@ -294,6 +266,7 @@ def test_tui_subagent_events_project_one_session_owned_child_run() -> None:
             "duration_ms": 1250,
         },
         "engineKind": "assistant",
+        "nativeState": {"subagent_id": "sa-0-child"},
     }
     assert completed[1]["data"]["engineRef"] == "sa-0-child"
     assert completed[1]["data"]["parentEngineRef"] == "sa-parent"

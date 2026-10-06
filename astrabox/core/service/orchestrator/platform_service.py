@@ -22,10 +22,15 @@ if TYPE_CHECKING:
         DeploymentServiceReplacement,
     )
 
+from astrabox.persistence.repository.artifact_record_repository import ArtifactRecordRepository
+from astrabox.persistence.repository.artifact_version_repository import ArtifactVersionRepository
+from astrabox.persistence.repository.artifact_data_repository import ArtifactDataRepository
+from astrabox.persistence.repository.artifact_event_repository import ArtifactEventRepository
+from astrabox.persistence.repository.artifact_viewer_repository import ArtifactViewerRepository
 from astrabox.persistence.repository import (
     AgentRepository,
     DeploymentRepository,
-    ArtifactRepository,
+    SessionArtifactRepository,
     EnvironmentRepository,
     InteractionSnapshotRepository,
     MessageRepository,
@@ -56,6 +61,10 @@ from astrabox.core.service.orchestrator.sandbox_lifecycle import (
     terminal_session_updates,
 )
 from astrabox.core.service.orchestrator.platform_mcp_service import PlatformMCPService
+from astrabox.core.service.artifacts.service import ArtifactService
+from astrabox.core.service.artifacts.origin import OriginAccess
+from astrabox.core.service.artifacts.sample import ArtifactSampleService
+from astrabox.core.service.artifacts.agent_runs import ArtifactAgentRuns
 from astrabox.core.service.orchestrator.runtime_manager import RemoteAgentRuntimeManager
 from astrabox.core.service.orchestrator.runtime_subject import (
     RuntimeSubjectCoordinator,
@@ -132,7 +141,12 @@ class AgentPlatformService:
         self._session_message_view = SessionMessageView(self._session_events_repo)
         self._session_snapshots_repo = SessionSnapshotRepository()
         self._interaction_snapshots_repo = InteractionSnapshotRepository()
-        self._artifacts_repo = ArtifactRepository()
+        self._artifact_records_repo = ArtifactRecordRepository()
+        self._artifact_versions_repo = ArtifactVersionRepository()
+        self._artifact_datas_repo = ArtifactDataRepository()
+        self._artifact_events_repo = ArtifactEventRepository()
+        self._artifact_viewers_repo = ArtifactViewerRepository()
+        self._session_artifacts_repo = SessionArtifactRepository()
         self._transcript_entries_repo = TranscriptEntryRepository()
         self._agent_repo = AgentRepository()
         self._platform_mcp_binding_repo = PlatformMCPBindingRepository()
@@ -238,6 +252,31 @@ class AgentPlatformService:
                 assistant_workspace_service=self._assistant_workspace_service,
             ),
         )
+        self.artifacts = self._construct(
+            "artifact_service",
+            lambda: ArtifactService(
+                records=self._artifact_records_repo,
+                versions=self._artifact_versions_repo,
+                data=self._artifact_datas_repo,
+                events=self._artifact_events_repo,
+                viewers=self._artifact_viewers_repo,
+                file_service=self._session_file_service,
+                sessions_repo=self._sessions_repo,
+                binding_repo=self._platform_mcp_binding_repo,
+                runtime_manager=self._runtime_manager,
+            ),
+        )
+        origin_access = OriginAccess(agent_config=self._agent_config, agent_repo=self._agent_repo)
+        self.artifact_samples = ArtifactSampleService(
+            artifacts=self.artifacts, origin_access=origin_access
+        )
+        self.artifact_agent_runs = ArtifactAgentRuns(
+            artifacts=self.artifacts,
+            origin_access=origin_access,
+            platform=self,
+            agent_service_getter=agent_service_getter,
+            assistant_service_getter=assistant_lifecycle_getter,
+        )
         self._platform_mcp_service = self._construct(
             "platform_mcp_service",
             lambda: PlatformMCPService(
@@ -245,6 +284,7 @@ class AgentPlatformService:
                 agent_config=self._agent_config,
                 binding_repo=self._platform_mcp_binding_repo,
                 expose_port_service=self._expose_port_service,
+                artifact_service=self.artifacts,
             ),
         )
         self._session_title_service = self._construct(
@@ -273,7 +313,7 @@ class AgentPlatformService:
                 session_snapshots_repo=self._session_snapshots_repo,
                 interaction_snapshots_repo=self._interaction_snapshots_repo,
                 message_view=self._session_message_view,
-                artifacts_repo=self._artifacts_repo,
+                session_artifacts_repo=self._session_artifacts_repo,
                 transcript_entries_repo=self._transcript_entries_repo,
                 agent_repo=self._agent_repo,
                 assistant_workspace_service=self._assistant_workspace_service,

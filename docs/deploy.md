@@ -158,7 +158,8 @@ until an Agent selects its own, and an Agent that selects a model enters the
 name in the last column. With `ANTHROPIC_BASE_URL` set, the deployment serves
 the default model through the gateway's `anthropic/` routes. For DeepSeek it
 also recognises the endpoint and gives the same credential to the gateway's
-OpenAI-wire DeepSeek routes, which the other Agent programs use.
+native DeepSeek routes, which serve the other Agent programs' Messages and
+OpenAI protocols.
 
 The `openai-compatible/*` route sends `<model ID>` to
 `OPENAI_COMPATIBLE_BASE_URL` over Chat Completions. Claude Code, the Agent

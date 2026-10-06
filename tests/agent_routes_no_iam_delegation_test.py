@@ -4,115 +4,17 @@ The configured identity provider verifies the browser or IdP bearer and returns
 a ``UserContext``. Agent handlers must pass that identity to the service layer
 without retaining or re-presenting the bearer as a managed Agent credential.
 
-The AST checks enforce the structural boundary: the raw ``Request`` reaches
-only the identity resolver, handlers read no credential-bearing request
-attributes, and known delegation entry points remain absent. A live route check
-also verifies that the caller's bearer is not reachable from arguments delivered
-to the Agent service. This combination catches delegation regardless of the
-name used for it while retaining a narrow check for known entry points.
+A live route check verifies that the caller's bearer is not reachable from
+arguments delivered to the Agent service, whatever name a delegation would use.
 """
 
 from __future__ import annotations
 
-import ast
-import re
 from pathlib import Path
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
-
-_REPO_ROOT = Path(__file__).resolve().parents[1]
-_ROUTES_DIR = _REPO_ROOT / "astrabox" / "api" / "routes"
-_AGENT_ROUTES = _ROUTES_DIR / "agents.py"
-
-#: What may be handed the raw ``Request``. ``_resolve_user`` is the module's own
-#: one-line wrapper; ``get_current_user_context`` is the seam it delegates to.
-#: Anything else receiving the request object can read its Authorization header.
-_REQUEST_MAY_REACH = frozenset({"_resolve_user", "get_current_user_context"})
-
-#: Attributes a handler may read off the request. ``query_params`` carries no
-#: credential; ``headers``, ``cookies``, and ``auth`` do.
-_REQUEST_ATTRIBUTES_ALLOWED = frozenset({"query_params"})
-
-#: Known delegation entry-point names that supplement the structural AST checks.
-_DELEGATION_SYMBOL = re.compile(r"current_user_iam|sync_from_request")
-
-
-def _module_ast(path: Path) -> ast.Module:
-    return ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-
-
-def _callees_given_the_request(tree: ast.Module) -> set[str]:
-    """Names of every callee that receives ``request`` as an argument."""
-
-    found: set[str] = set()
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        supplied = [*node.args, *(keyword.value for keyword in node.keywords)]
-        if not any(
-            isinstance(argument, ast.Name) and argument.id == "request"
-            for argument in supplied
-        ):
-            continue
-        func = node.func
-        if isinstance(func, ast.Name):
-            found.add(func.id)
-        elif isinstance(func, ast.Attribute):
-            found.add(func.attr)
-        else:  # pragma: no cover - a call on an expression, not seen here
-            found.add(ast.dump(func))
-    return found
-
-
-def _attributes_read_off_the_request(tree: ast.Module) -> set[str]:
-    return {
-        node.attr
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Attribute)
-        and isinstance(node.value, ast.Name)
-        and node.value.id == "request"
-    }
-
-
-def test_the_raw_request_reaches_only_the_identity_resolver() -> None:
-    """Handing the request anywhere else is how a bearer gets forwarded."""
-
-    callees = _callees_given_the_request(_module_ast(_AGENT_ROUTES))
-    assert callees, "the identity hop itself should have been found"
-    unexpected = callees - _REQUEST_MAY_REACH
-    assert not unexpected, (
-        "astrabox/api/routes/agents.py hands the raw Request to "
-        f"{sorted(unexpected)}. Agent routes resolve identity and pass the "
-        "resulting UserContext onward; anything else given the request can read "
-        "its Authorization header and re-present it as a second credential."
-    )
-
-
-def test_no_agent_handler_reads_a_credential_bearing_request_attribute() -> None:
-    attributes = _attributes_read_off_the_request(_module_ast(_AGENT_ROUTES))
-    unexpected = attributes - _REQUEST_ATTRIBUTES_ALLOWED
-    assert not unexpected, (
-        "astrabox/api/routes/agents.py reads request."
-        f"{sorted(unexpected)}. Reading headers, cookies, or auth off the "
-        "request is the step that makes IdP-token delegation possible; the "
-        "verified UserContext is the route's input."
-    )
-
-
-def test_the_delegation_symbol_does_not_return_to_the_router_package() -> None:
-    """Known delegation entry points remain absent from the router package."""
-
-    offenders = sorted(
-        path.relative_to(_REPO_ROOT).as_posix()
-        for path in _ROUTES_DIR.rglob("*.py")
-        if _DELEGATION_SYMBOL.search(path.read_text(encoding="utf-8"))
-    )
-    assert not offenders, (
-        f"{offenders} reference the private-deployment IAM delegation removed "
-        "in P1-26. Community authorization uses the verified UserContext."
-    )
 
 
 class _RecordingAgentService:

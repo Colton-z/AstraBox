@@ -146,6 +146,7 @@ class RuntimeEnsure:
             session_id,
             template,
             sandbox_id=sandbox_id,
+            user_id=str(session.get("user_id") or "").strip() or None,
             engine_session_key=engine_session_key,
             permission_mode=str(session.get("permission_mode") or "").strip() or None,
             session_kind=effective_kind,
@@ -1081,6 +1082,7 @@ class RuntimeEnsure:
                 session_id,
                 template,
                 sandbox_id=sandbox_id,
+                user_id=str(session.get("user_id") or "").strip() or None,
                 engine_session_key=engine_session_key,
                 permission_mode=str(session.get("permission_mode") or "").strip()
                 or None,

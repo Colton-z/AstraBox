@@ -308,17 +308,24 @@ class SandboxLifecycleService:
     async def realign_live_sandbox_owners(
         self,
         sandbox_id: str,
-        *,
-        expires_at: str | None,
     ) -> SandboxOwnerRealignment:
-        """Refresh every owner still naming one confirmed-live sandbox."""
+        """Refresh unchanged owners from one confirmed-live sandbox's lease."""
         target = str(sandbox_id or "").strip()
         if not target:
             raise ValueError("sandbox_id is required")
-        resolved_expires_at = str(expires_at or "").strip() or None
+        # Capture every owner before the provider read. A renewal published
+        # while that read is in flight must not receive its stale result.
+        sessions = await self._sessions_repo.list_sessions_by_sandbox_id(target)
+        agents = await self._agent_repo.list_agents_by_sandbox_id(target)
+        workspaces = (
+            await self._assistant_workspace_service.list_workspaces_by_sandbox_id(
+                target
+            )
+        )
+        real_expiry = await self._platform._runtime_manager.get_sandbox_expires_at(target)
+        resolved_expires_at = real_expiry.isoformat() if real_expiry is not None else None
 
         realigned_sessions: list[str] = []
-        sessions = await self._sessions_repo.list_sessions_by_sandbox_id(target)
         for session in sessions:
             session_id = str((session or {}).get("session_id") or "").strip()
             if not session_id:
@@ -329,31 +336,31 @@ class SandboxLifecycleService:
             }
             if await self._sessions_repo.compare_and_update_session(
                 session_id,
-                expected={"sandbox_id": target},
+                expected={
+                    "sandbox_id": target,
+                    "expires_at": session.get("expires_at", {"$exists": False}),
+                },
                 updates=updates,
                 touch_updated_at=False,
             ):
                 realigned_sessions.append(session_id)
 
         realigned_agents: list[str] = []
-        agents = await self._agent_repo.list_agents_by_sandbox_id(target)
         for agent in agents:
             agent_id = str((agent or {}).get("agent_id") or "").strip()
             if not agent_id:
                 continue
             if await self._agent_repo.compare_and_update_agent(
                 agent_id,
-                expected={"sandbox_id": target},
+                expected={
+                    "sandbox_id": target,
+                    "expires_at": agent.get("expires_at", {"$exists": False}),
+                },
                 updates={"expires_at": resolved_expires_at},
             ):
                 realigned_agents.append(agent_id)
 
         realigned_workspaces: list[str] = []
-        workspaces = (
-            await self._assistant_workspace_service.list_workspaces_by_sandbox_id(
-                target
-            )
-        )
         for workspace in workspaces:
             assistant_id = str(
                 (workspace or {}).get("assistant_id") or ""

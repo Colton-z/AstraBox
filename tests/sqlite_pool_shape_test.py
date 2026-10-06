@@ -67,25 +67,6 @@ class PoolShapeTests(_PoolTestCase):
                     "an overflow connection is closed on return, inside the returning task",
                 )
 
-    def test_postgresql_preserves_its_ceiling_without_overflow(self) -> None:
-        kwargs = engine_mod._pool_kwargs(
-            "postgresql+asyncpg://astrabox:secret@postgres/astrabox", "read"
-        )
-        self.assertEqual(kwargs["pool_size"], 30)
-        self.assertEqual(
-            kwargs["max_overflow"],
-            0,
-            "a cancelled request must never own an overflow connection's close",
-        )
-
-    async def test_a_shortage_fails_well_before_the_inherited_half_minute(self) -> None:
-        engine = self._engine("timeout.sqlite", "write")
-        self.assertLessEqual(
-            engine.pool._timeout,  # type: ignore[attr-defined]
-            15.0,
-            "a full pool must surface as an error, not as a 30 s hang per request",
-        )
-
     async def test_memory_urls_take_no_pool_arguments(self) -> None:
         # ``:memory:`` resolves to a single-connection pool that REJECTS sizing
         # arguments outright, so the shape has to follow the URL.

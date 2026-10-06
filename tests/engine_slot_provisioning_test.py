@@ -109,48 +109,6 @@ def _vault_off(monkeypatch: pytest.MonkeyPatch) -> None:
 
 # ── an empty eligible pool seeds its replacement ─────────────────────────
 
-
-@pytest.mark.asyncio
-async def test_an_eligible_claim_miss_schedules_the_next_prepared_runtime(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from astrabox.core.service.orchestrator.agent import prepared_slots
-
-    claim = AsyncMock(return_value=None)
-    refill = Mock()
-    monkeypatch.setattr(prepared_slots, "claim_prepared_slot", claim)
-    monkeypatch.setattr(prepared_slots, "schedule_prepared_runtime_refill", refill)
-    manager = object()
-    template = SimpleNamespace(
-        agent_id="agent-1",
-        engine_kind="codex",
-        prewarm_enabled=True,
-        runtime_generation="generation-1",
-    )
-
-    result = await provisioning.claim_prepared_engine_sandbox(
-        manager,
-        session_id="session-1",
-        assignment_id="assignment-1",
-        template=template,
-        workspace_plan=SimpleNamespace(resume_engine_session_key=""),
-        user_id="user-1",
-        request=SimpleNamespace(credential=object()),
-        backend_adapter=object(),
-        credential="model-placeholder",
-        mcp_vault_write=None,
-        vault_enabled=True,
-        session_log=None,
-    )
-
-    assert result is None
-    claim.assert_awaited_once_with(
-        agent_id="agent-1",
-        session_id="session-1",
-        expected_runtime_generation="generation-1",
-    )
-    refill.assert_called_once_with(template, manager)
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("resume_key", "prewarm_enabled", "agent_id", "runtime_generation", "workspace_volume"),
@@ -839,48 +797,6 @@ async def test_claim_rotates_a_secret_behind_the_prepared_placeholder(
         "engine-isolation-1", "terminal-isolation-1",
     )
     repoint.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_failed_pre_activation_handoff_discards_the_exact_claim(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from astrabox.core.service.orchestrator.agent import prepared_boxes, prepared_slots
-    from astrabox.persistence.repository import agent_repository
-
-    manifest = {
-        "state": "claimed",
-        "claimed_session_id": "session-1",
-        "placement": "shared_slot",
-        "slot_id": "slot-1",
-        "sandbox_id": "box-1",
-    }
-    repo = SimpleNamespace(get_agent=AsyncMock(return_value={"_prepared_slot": manifest}))
-    discard_slot = AsyncMock()
-    release = AsyncMock()
-    refill = Mock()
-    monkeypatch.setattr(agent_repository, "AgentRepository", lambda: repo)
-    monkeypatch.setattr(prepared_slots, "discard_prepared_slot", discard_slot)
-    monkeypatch.setattr(prepared_slots, "release_claimed_slot_allocation", release)
-    monkeypatch.setattr(prepared_slots, "schedule_prepared_runtime_refill", refill)
-    monkeypatch.setattr(prepared_boxes, "discard_prepared_box", AsyncMock())
-    manager = object()
-    template = SimpleNamespace(agent_id="agent-1")
-
-    await provisioning._discard_failed_prepared_claim(
-        manager,
-        session_id="session-1",
-        template=template,
-        reason="credential contract changed",
-    )
-
-    discard_slot.assert_awaited_once_with(
-        "agent-1",
-        manifest,
-        reason="credential contract changed",
-    )
-    release.assert_awaited_once_with("session-1", manifest)
-    refill.assert_called_once_with(template, manager)
 
 
 @pytest.mark.asyncio

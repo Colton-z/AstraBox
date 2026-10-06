@@ -38,6 +38,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any
 
+from astrabox.core.service.artifacts.tools import has_artifact_marker
 from astrabox.core.service.orchestrator.tool_result_semantics import (
     TOOL_RESULT_STATE_AVAILABLE,
 )
@@ -96,6 +97,7 @@ class _Atom:
     is_text: bool
     is_process: bool
     is_carried: bool = False
+    is_artifact: bool = False
 
 
 @dataclass(frozen=True)
@@ -188,13 +190,17 @@ def process_atoms(blocks: list[dict[str, Any]]) -> list[_Atom]:
                 else ""
             )
             failed = state != TOOL_RESULT_STATE_AVAILABLE
+            artifact = result_index is not None and has_artifact_marker(
+                blocks[result_index].get("content")
+            )
             indexes = (index,) if result_index is None else (index, result_index)
             atoms.append(
                 _Atom(
                     block_indexes=tuple(sorted(indexes)),
                     is_tool=True,
                     is_text=False,
-                    is_process=not failed,
+                    is_process=not failed and not artifact,
+                    is_artifact=artifact,
                 )
             )
             continue
@@ -240,8 +246,9 @@ def _deferred_groups(blocks: list[dict[str, Any]]) -> list[_Group]:
     closing answer there would be nothing left on the page once the work was
     folded away.
 
-    On a normal end every tool up to the end of the process folds in, errored
-    and denied ones included: a tool that reported an error and was then worked
+    Artifact outputs remain visible on every end state. On a normal end other
+    tools up to the end of the process fold in, errored and denied ones
+    included: a tool that reported an error and was then worked
     around did not fail the turn, and the answer below already accounts for it.
     On an interruption those same tools stay outside and visible, because
     nothing came after them to explain what happened.
@@ -265,6 +272,7 @@ def _deferred_groups(blocks: list[dict[str, Any]]) -> list[_Group]:
             atom
             for index, atom in enumerate(atoms)
             if index <= process_end
+            and not atom.is_artifact
             and (
                 atom.is_process
                 or (normal_end and not interrupted and atom.is_tool)

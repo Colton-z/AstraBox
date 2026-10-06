@@ -289,9 +289,7 @@ def _translate_hermes_child_run_event(
     if event_type == "subagent.complete":
         engine_status = str(payload.get("status") or "").strip()
         if not engine_status:
-            raise ChildRunProjectionError(
-                "Hermes subagent.complete lacks status"
-            )
+            raise ChildRunProjectionError("Hermes subagent.complete lacks status")
         event = "closed"
     elif event_type in _HERMES_CHILD_RUN_OPEN_EVENTS:
         engine_status = str(payload.get("status") or "").strip()
@@ -306,13 +304,16 @@ def _translate_hermes_child_run_event(
 
     lifecycle: dict[str, Any] = {
         "kind": "lifecycle",
-        "engineRef": engine_ref,
+        "engineRef": str(payload.get("child_session_id") or engine_ref),
         "controlRef": engine_ref,
         "event": event,
         "engineEvent": event_type,
         "operations": [] if event == "closed" else ["stop"],
         "taskType": "delegate_task",
+        "nativeState": {"subagent_id": engine_ref},
     }
+    if payload.get("child_session_id"):
+        lifecycle["nativeState"]["child_session_id"] = str(payload["child_session_id"])
     if engine_status:
         lifecycle["engineStatus"] = engine_status
     engine_reason = str(payload.get("reason") or payload.get("stop_reason") or "").strip()
@@ -361,7 +362,7 @@ def _translate_hermes_child_run_event(
     )
     message: dict[str, Any] = {
         "kind": "message",
-        "engineRef": engine_ref,
+        "engineRef": lifecycle["engineRef"],
         "role": "assistant",
         "content": content,
         "messageId": message_id,
@@ -789,7 +790,6 @@ class HermesGatewayPort(Protocol):
     ) -> HermesGatewayEventStream: ...
 
     def unsubscribe(self, subscription: Any) -> None: ...
-
 
 
 class HermesTuiEngineClient:
