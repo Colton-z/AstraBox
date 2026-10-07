@@ -530,9 +530,19 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "Redis URL passed to OpenSandbox's official client-side pool for "
         "distributed idle-capacity coordination. Redis is not AstraBox's product "
         "database and stores no workspace, credential, Agent, or Session data. "
-        "Required when Agent prewarming is enabled; bundled Compose sets it. "
-        "When set, a new Agent created without a prewarm choice is stored with "
-        "prewarming on; when unset, it is stored with prewarming off.",
+        "Required when an Agent has prepared capacity; bundled Compose sets it. "
+        "When set, a new Agent created without a prepared_capacity is stored "
+        "with 1; when unset, it is stored with 0.",
+        "astrabox.common.utils.settings",
+    ),
+    (
+        "ASTRABOX_PREPARED_CAPACITY_LIMIT",
+        "public",
+        "0",
+        "Ceiling on the sum of every Agent's prepared_capacity. Creating or "
+        "updating an Agent that would raise the sum above it is refused. Set it "
+        "where idle sandboxes reserve nothing, such as a Docker host, so one "
+        "Agent's capacity cannot exhaust the host. 0 means no ceiling.",
         "astrabox.common.utils.settings",
     ),
     (

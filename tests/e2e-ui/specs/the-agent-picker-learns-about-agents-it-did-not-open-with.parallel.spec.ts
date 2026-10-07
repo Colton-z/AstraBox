@@ -234,7 +234,7 @@ test('the open agent picker shows an agent created elsewhere and drops one delet
   await leaveTheTab(page);
 
   // ── direction one: something appears ─────────────────────────────────────
-  // Creation is setup, not the behaviour under test. `prewarm_enabled: false`
+  // Creation is setup, not the behaviour under test. `prepared_capacity: 0`
   // is deliberate: create schedules runtime reconciliation
   // (agent_service.py:101-110), and a picker test must never claim a prepared
   // box — the same flag, for the same reason, as
@@ -244,7 +244,7 @@ test('the open agent picker shows an agent created elsewhere and drops one delet
     name,
     model,
     environment_name: environmentName,
-    prewarm_enabled: false,
+    prepared_capacity: 0,
   });
   agentId = String(created.agent_id || '');
   expect(agentId, 'the created Agent must have an id').not.toEqual('');

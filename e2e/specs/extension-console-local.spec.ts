@@ -148,7 +148,7 @@ test("the no-auth installation can register, assign, and run real extensions", a
       name: `extension-local-agent-${suffix}`,
       model: "extension-e2e-model",
       environment_name: "claude-code",
-      prewarm_enabled: false,
+      prepared_capacity: 0,
     });
     agentId = created.agent_id;
 

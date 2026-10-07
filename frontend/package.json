@@ -18,7 +18,7 @@
     "postinstall": "patch-package --error-on-fail"
   },
   "dependencies": {
-    "@ai-sdk/react": "^4.0.119",
+    "@ai-sdk/react": "^4.0.130",
     "@base-ui/react": "^1.7.0",
     "@fontsource-variable/geist": "^5.3.0",
     "@fontsource-variable/geist-mono": "^5.3.0",
@@ -95,8 +95,8 @@
     "patch-package": "8.0.1",
     "tailwindcss": "^4.3.3",
     "typescript": "^7.0.2",
-    "vite": "^8.3.1",
-    "vitest": "^5.0.2"
+    "vite": "^8.3.2",
+    "vitest": "^5.0.3"
   },
   "overrides": {
     "ansi-to-react": {

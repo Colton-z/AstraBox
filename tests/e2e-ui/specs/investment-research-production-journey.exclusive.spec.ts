@@ -495,7 +495,7 @@ test('authenticated Investment Research uses pinned Plugins and both real MCP da
   expect(agentId).not.toEqual('');
   expect(agent.created_by, 'this journey must use the seeded default Agent').toBe('system');
   expect(agent.visibility, 'the seeded example Agent must remain public').toBe('public');
-  expect(agent.prewarm_enabled, 'the production journey requires Agent prewarming').toBe(true);
+  expect(agent.prepared_capacity, 'the production journey requires Agent prewarming').toBeGreaterThan(0);
   expect(String(agent.environment_name || ''), 'the Agent must name its prewarm Environment')
     .not.toEqual('');
 

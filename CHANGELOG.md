@@ -5,6 +5,53 @@ All notable changes to AstraBox are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.4] - 2026-10-07
+
+This release lets each Agent keep as many prepared runtimes as the conversations
+it expects to start at once, including Agents whose conversations share a
+sandbox, and starts prepared conversations faster. Re-run the installer to
+upgrade; existing secrets and conversation data are retained.
+
+**Upgrading:** the per-Agent prewarm switch is replaced by a prepared capacity,
+and Agents created before this release have a capacity of 0, so their
+prewarming is off after the upgrade. To keep a fast first conversation, set
+**Prepared capacity** to 1 or more in each Agent's **Runtime and availability**
+settings, or send `"prepared_capacity": 1` when updating the Agent.
+
+### Added
+
+- Per-Agent prepared capacity (`prepared_capacity`, 0 to 1000): how many new
+  conversations can start at the same moment on a prepared runtime. New Agents
+  get 1 where the deployment can prewarm. The Agent page shows how many units
+  are ready against the target and when a conversation last found none, and
+  `astrabox_prepared_capacity_misses_total` counts those misses.
+- `ASTRABOX_PREPARED_CAPACITY_LIMIT` refuses an Agent write that would take the
+  deployment's total prepared capacity above it.
+- Agents whose conversations share a sandbox honour their capacity: each
+  prepared sandbox carries as many conversation seats as its memory admits, and
+  a burst of concurrent conversations each starts on a prepared seat.
+
+### Changed
+
+- **Breaking:** `prewarm_enabled` is removed from the Agent API, `astrabox.yaml`
+  documents and the console; use `prepared_capacity`, where 0 turns prewarming off.
+- Changing an Agent's managed MCP selection replaces its waiting prepared
+  runtimes, because engines load their MCP servers when they start.
+- Prepared conversations start faster: on a Docker host, a claim no longer asks
+  Docker for image tags, and gateway-key cleanup and recovery lookups moved off
+  the claim path.
+- Update the console's AI SDK and Vite families, the end-to-end suite's MCP SDK
+  and Hono, and ruff, mypy and anyio.
+
+### Fixed
+
+- Prewarm replenishment stalled for up to 13 minutes after a server restart;
+  a restarted server resumes it at once, and another replica takes over within
+  about two and a half minutes when one stops for good.
+- Collect the platform MCP bindings of prepared runtimes that expired unclaimed.
+- A fresh developer install passes `make typecheck` again with version 37 of
+  the Kubernetes Python client, which types model fields as optional.
+
 ## [0.1.3] - 2026-10-05
 
 This release adds platform-hosted artifacts, updates all five bundled engines,

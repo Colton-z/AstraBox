@@ -6,11 +6,13 @@ This module owns the product recipe handed to that mechanism.  It is the only
 side that knows what an Agent box must contain, which workspace root it mounts,
 and which runtime capabilities it must prove before becoming inventory.
 
-The pool owns physical boxes, not Sessions. With Agent tenancy a claimed box
-becomes the Agent's shared placement; with conversation tenancy the preparer
-initializes the engine before publication and the claiming Session owns the
-whole box. Both placements use the same engine preparation and activation seam.
-A shared box's prepared engine slot is not another physical-box pool.
+The pool owns physical boxes, not Sessions, and its preparer completes every
+prepared unit before a box is published: with conversation tenancy the box's
+one engine, which the claiming Session takes with the whole box; with Agent
+tenancy as many engine seats as the box's memory holds, which the Agent takes
+with the box and hands out one per conversation. Both use the same engine
+preparation and activation seam, and replenishment, the replica that does it
+and idle expiry are the pool's for both.
 """
 
 from __future__ import annotations
@@ -64,7 +66,6 @@ from astrabox.seams.sandbox import (
 
 logger = get_logger(__name__)
 
-_POOL_MAX_IDLE = 1
 _PREPARE_TIMEOUT_SECONDS = 600
 _POOL_NAME_PART_RE = re.compile(r"[^a-z0-9-]+")
 
@@ -93,6 +94,28 @@ def _value(subject: Any, key: str, default: Any = None) -> Any:
     if isinstance(subject, dict):
         return subject.get(key, default)
     return getattr(subject, key, default)
+
+
+def prepared_capacity(template: Any) -> int:
+    """How many new conversations of the Agent can start at once on prepared units."""
+
+    return int(_value(template, "prepared_capacity", 0) or 0)
+
+
+def _pool_size(template: Any, *, conversation_owned: bool) -> int:
+    """Pool boxes that hold the Agent's prepared capacity.
+
+    A conversation box is one unit. An Agent box carries as many seats as its
+    memory held when the latest one was prepared; until a box has reported
+    that, the pool keeps one, so a large capacity is not first met with one box
+    per unit.
+    """
+
+    capacity = prepared_capacity(template)
+    if conversation_owned:
+        return capacity
+    seats = int(_value(template, "seats_per_box", 0) or 0)
+    return -(-capacity // seats) if seats > 0 else 1
 
 
 def _pool_name(agent_id: str, epoch: str) -> str:
@@ -151,7 +174,7 @@ async def build_agent_client_pool_plan(
 ) -> AgentClientPoolPlan | None:
     """Build the one base-box pool for an enabled Agent generation."""
 
-    if not bool(_value(template, "prewarm_enabled", False)):
+    if prepared_capacity(template) <= 0:
         return None
     tenancy = resolve_sandbox_tenancy(template)
     conversation_owned = tenancy == SANDBOX_TENANCY_CONVERSATION
@@ -201,7 +224,7 @@ async def build_agent_client_pool_plan(
     spec = SandboxClientPoolSpec(
         pool_name=_pool_name(agent_id, epoch),
         creation_image=creation_image,
-        max_idle=_POOL_MAX_IDLE,
+        max_idle=_pool_size(template, conversation_owned=conversation_owned),
         idle_timeout_seconds=int(settings.sandbox_lease_seconds),
         preparation_timeout_seconds=_PREPARE_TIMEOUT_SECONDS,
     )
@@ -426,6 +449,10 @@ async def build_agent_client_pool_plan(
             from astrabox.core.service.orchestrator.agent.runtime_preparation import prepare_pool_runtime
 
             await prepare_pool_runtime(handle, template=template, manager=runtime_manager)
+        else:
+            from astrabox.core.service.orchestrator.agent.prepared_slots import prepare_pool_seats
+
+            await prepare_pool_seats(handle, template=template, runtime_manager=runtime_manager)
 
     return AgentClientPoolPlan(
         backend_name=str(provider.name),
@@ -483,6 +510,16 @@ async def acquire_agent_client_pool(
     provider = sandbox_for_name(plan.backend_name)
     handle = await provider.acquire_client_pool(plan.spec)
     if handle is None:
+        if session_id is not None and resolve_sandbox_tenancy(template) == SANDBOX_TENANCY_CONVERSATION:
+            from astrabox.core.service.orchestrator.agent.prepared_capacity import (
+                record_prepared_capacity_miss,
+            )
+
+            await record_prepared_capacity_miss(
+                str(_value(template, "agent_id", "") or "").strip(),
+                tenancy=SANDBOX_TENANCY_CONVERSATION,
+                session_id=session_id,
+            )
         return None
     sandbox_id = extract_sandbox_id(handle)
     try:

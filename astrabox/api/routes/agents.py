@@ -70,7 +70,7 @@ class AgentRecord(BaseModel):
     environment_name: str | None = None
     exposure_mode: str | None = None
     idle_hibernate_seconds: int | None = None
-    prewarm_enabled: bool | None = None
+    prepared_capacity: int | None = None
     enabled: bool | None = None
     created_by: str | None = None
     visibility: str | None = None
@@ -124,8 +124,8 @@ class AgentFormField(BaseModel):
     ``path``, ``complex``, ``advanced``) appear per field. ``item_schema``
     describes the sub-fields of a nested object with this same grammar.
     ``default`` is the value an Agent created without the field has. Two
-    fields carry one: ``prewarm_enabled``, whose value follows the deployment,
-    and ``artifacts_enabled``, which is on.
+    fields carry one: ``prepared_capacity``, whose value follows the
+    deployment, and ``artifacts_enabled``, which is on.
     """
 
     model_config = ConfigDict(extra="allow")
@@ -199,8 +199,13 @@ class AgentPreparedRuntimeStatus(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool
+    #: The Agent's ``prepared_capacity`` while its runtime is enabled, else 0.
+    target: int
     ready: bool
+    #: Prepared units a new conversation can take right now.
     prepared_count: int
+    #: When a new conversation last found no prepared unit and started cold.
+    last_miss_at: str | None = None
     state: str | None = None
     placement: str | None = None
     runtime_generation: str | None = None

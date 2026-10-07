@@ -88,7 +88,7 @@ test('session sandbox replacement preserves the conversation identity and thread
       name: agentName,
       model,
       environment_name: environmentName,
-      prewarm_enabled: false,
+      prepared_capacity: 0,
     });
     agentId = String(agent.agent_id || '');
     expect(agentId, 'created agent must have an id').not.toEqual('');

@@ -134,7 +134,7 @@ export class PiNativeFormScene {
     const reloadExtension = '/opt/pi/node_modules/@earendil-works/pi-coding-agent/examples/extensions/reload-runtime.ts';
     this.agentId = (await this.api.createAgent({
       name: `__e2e_${this.marker}`, model: base.model,
-      environment_name: environment!.name, prewarm_enabled: false,
+      environment_name: environment!.name, prepared_capacity: 0,
       engine_options: { ...options, settings: {
         ...settings, extensions: [...extensions as unknown[], reloadExtension],
       } },

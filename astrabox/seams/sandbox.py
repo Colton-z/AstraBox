@@ -214,19 +214,13 @@ class SandboxEndpointFilesystem(Protocol):
 class SandboxClientPoolMember:
     """Provider-issued identity for one not-yet-claimed pool member.
 
-    The pool implementation owns this technical identity because it is what
-    lets that implementation recover a create that finished before the member
-    reached its distributed idle inventory.  The platform receives it only so
-    the complete :class:`SandboxCreateSpec` carries the same durable identity;
-    it remains unrelated to any eventual user Session.
-
-    The current contract deliberately exposes one member ordinal.  Providers
-    must refuse capacities they cannot give distinct durable identities rather
-    than reusing one assignment across concurrent creates.
+    Every create gets its own identity, so any number of members can be
+    created concurrently. The platform receives it only so the complete
+    :class:`SandboxCreateSpec` carries it; it remains unrelated to any eventual
+    user Session.
     """
 
     pool_name: str
-    member_index: int
     session_id: str
     assignment_id: str
 

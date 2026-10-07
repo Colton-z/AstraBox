@@ -21,8 +21,8 @@ Design notes:
   normalization (plugin_repos, default_repo, mcp) stays in its existing owners.
   The payload is never rewritten here and defaults are never filled in. Two
   fields serve a ``default`` so the form shows what an Agent saved without
-  touching them gets: ``prewarm_enabled``, which the create path writes from
-  :func:`agents_prewarm_by_default`, and ``artifacts_enabled``, whose absence
+  touching them gets: ``prepared_capacity``, which the create path writes from
+  :func:`default_prepared_capacity`, and ``artifacts_enabled``, whose absence
   :func:`agent_artifacts_enabled` reads as on. The top-level wire shape and
   fixed nested objects are closed:
   undeclared input fails loud instead of entering the Agent document's open
@@ -204,13 +204,17 @@ AGENT_FIELD_SCHEMA: list[dict[str, Any]] = [
         "group": GROUP_RUNTIME,
     },
     {"key": "idle_hibernate_seconds", "type": "integer", "advanced": True, "group": GROUP_RUNTIME},
-    {"key": "prewarm_enabled", "type": "boolean", "advanced": True, "group": GROUP_RUNTIME},
+    {"key": "prepared_capacity", "type": "integer", "advanced": True, "group": GROUP_RUNTIME},
     {"key": "enabled", "type": "boolean", "group": GROUP_RUNTIME},
 ]
 
 # The schema uses logical keys for labels while a path can place a field under
 # a wire-level object (the three display fields live under display_meta).
 # This is the closed set accepted by the general Agent authoring endpoints.
+#: Upper bound on an Agent's prepared capacity; each prepared unit holds its
+#: resources while it waits for a conversation.
+MAX_PREPARED_CAPACITY = 1000
+
 AGENT_EDITABLE_REQUEST_FIELDS = frozenset(
     str(field.get("path") or field["key"]).split(".", 1)[0] for field in AGENT_FIELD_SCHEMA
 )
@@ -273,29 +277,29 @@ def agent_artifacts_enabled(agent: Mapping[str, Any]) -> bool:
     return agent.get("artifacts_enabled") is not False
 
 
-def agents_prewarm_by_default(settings: Any) -> bool:
-    """Whether an Agent created without a prewarm choice keeps capacity ready.
+def default_prepared_capacity(settings: Any) -> int:
+    """The prepared capacity of an Agent created without choosing one.
 
-    Yes wherever the deployment can prewarm. Prepared capacity is held by the
-    OpenSandbox SDK's client-side pool, whose coordination store is
-    ``ASTRABOX_AGENT_PREWARM_REDIS_URL``; without it an Agent with prewarming
-    on can only record ``AGENT_PREWARM_CONFIG_INVALID``, so there the default
-    stays off rather than creating an Agent that is broken from the start.
+    One wherever the deployment can prewarm, and zero elsewhere. Prepared
+    capacity is coordinated through ``ASTRABOX_AGENT_PREWARM_REDIS_URL``;
+    without it an Agent with capacity can only record
+    ``AGENT_PREWARM_CONFIG_INVALID``, so there the default stays zero rather
+    than creating an Agent that is broken from the start.
     """
 
-    return bool(str(getattr(settings, "agent_prewarm_redis_url", "") or "").strip())
+    return 1 if str(getattr(settings, "agent_prewarm_redis_url", "") or "").strip() else 0
 
 
 def get_agent_schema(settings: Any) -> dict[str, Any]:
     """Return the JSON-serializable schema consumed by the admin form.
 
-    ``prewarm_enabled`` carries this deployment's create-time default, so the
+    ``prepared_capacity`` carries this deployment's create-time default, so the
     create form starts from the value an Agent saved without touching it gets.
     """
     fields = [dict(f) for f in AGENT_FIELD_SCHEMA]
     for field in fields:
-        if field["key"] == "prewarm_enabled":
-            field["default"] = agents_prewarm_by_default(settings)
+        if field["key"] == "prepared_capacity":
+            field["default"] = default_prepared_capacity(settings)
     return {
         "version": AGENT_SCHEMA_VERSION,
         "groups": [dict(g) for g in AGENT_GROUPS],
@@ -352,4 +356,9 @@ def validate_agent_payload(
 
     _reject_unknown_fields(payload, allow_version=allow_version)
     validate_payload(payload, AGENT_FIELD_SCHEMA, payload_label="agent payload")
+    capacity = payload.get("prepared_capacity")
+    if capacity is not None and not 0 <= capacity <= MAX_PREPARED_CAPACITY:
+        raise invalid_request(
+            f"prepared_capacity must be between 0 and {MAX_PREPARED_CAPACITY}"
+        )
     return {key: payload[key] for key in AGENT_EDITABLE_REQUEST_FIELDS if key in payload}

@@ -4,7 +4,7 @@ import { apiPath, appPath } from '../fixtures/env';
 
 type Box = { sandbox_id: string; state: string };
 type Agent = { agent_id: string; name: string; model: string };
-type Prepared = { ready: boolean; prepared_count: number; sandbox_id: string; client_pool_name: string };
+type Prepared = { ready: boolean; target: number; prepared_count: number; sandbox_id: string; client_pool_name: string };
 
 // All writes and reads are driven by visible controls. Responses only identify
 // records that those controls created or displayed; no API client is used.
@@ -60,7 +60,7 @@ async function preparedCapacity(page: Page, agent: Agent): Promise<Prepared> {
   await expect(page.getByTestId('prewarm-state')).toHaveText(
     'The next conversation starts warm while this capacity remains available.',
   );
-  await expect(page.getByTestId('prewarm-count')).toHaveText(`Available: ${status.prepared_count}`);
+  await expect(page.getByTestId('prewarm-count')).toHaveText(`Available: ${status.prepared_count} of ${status.target}`);
   expect(status.sandbox_id).toBeTruthy();
   return status;
 }
@@ -81,7 +81,7 @@ async function createAgent(page: Page, environment: string, name: string): Promi
   await page.locator('#agent-new-model').fill(reference!.model);
   await page.getByRole('option', { name: reference!.model, exact: true }).click();
   await page.getByRole('button', { name: /^Show advanced settings/ }).click();
-  await page.getByRole('switch', { name: 'Keep a sandbox ready', exact: true }).check();
+  await page.getByRole('spinbutton', { name: 'Prepared capacity', exact: true }).fill('1');
   await page.locator('[role="switch"][aria-labelledby="agent-new-terminal_panel-label"]').check();
   const created = responseFor(page, '/agents', 'POST');
   await page.getByRole('button', { name: 'Create', exact: true }).click();
@@ -93,12 +93,12 @@ async function createAgent(page: Page, environment: string, name: string): Promi
 
 async function setPrewarm(page: Page, agent: Agent, enabled: boolean): Promise<void> {
   await page.goto(appPath(`/manage/agents/${agent.agent_id}`));
-  const control = page.getByRole('switch', { name: 'Keep a sandbox ready', exact: true });
-  await control.setChecked(enabled);
+  const control = page.getByRole('spinbutton', { name: 'Prepared capacity', exact: true });
+  await control.fill(enabled ? '1' : '0');
   const saved = responseFor(page, `/agents/${agent.agent_id}`, 'PUT');
   await page.locator('[data-slot="card"]').filter({ has: control })
     .getByRole('button', { name: 'Save', exact: true }).click();
-  expect((await data<{ prewarm_enabled: boolean }>(await saved)).prewarm_enabled).toBe(enabled);
+  expect((await data<{ prepared_capacity: number }>(await saved)).prepared_capacity).toBe(enabled ? 1 : 0);
 }
 
 async function startAndIdentify(page: Page, agent: Agent): Promise<{ sessionId: string; sandboxId: string }> {

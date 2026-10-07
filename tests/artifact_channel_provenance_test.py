@@ -46,8 +46,8 @@ async def test_channel_cannot_claim_a_prepared_process_with_frozen_artifact_tool
         EngineSandboxRequest, claim_prepared_engine_sandbox, _claim_conversation_pool_box,
     )
     claim = AsyncMock(return_value=None)
-    monkeypatch.setattr(prepared_slots, "claim_prepared_slot", claim)
-    template = SimpleNamespace(session_source_type="channel", agent_id="agent", runtime_generation="generation", prewarm_enabled=True)
+    monkeypatch.setattr(prepared_slots, "claim_prepared_seat", claim)
+    template = SimpleNamespace(session_source_type="channel", agent_id="agent", runtime_generation="generation", prepared_capacity=1)
     assert await claim_prepared_engine_sandbox(None, session_id="channel", assignment_id="assignment", template=template, workspace_plan=None, user_id="viewer", request=EngineSandboxRequest(entrypoint=("/boot",), credential=None), backend_adapter=None, credential="", mcp_vault_write=None, vault_enabled=False, session_log=None) is None
     claim.assert_not_awaited()
     assert await _claim_conversation_pool_box(None, session_id="channel", assignment_id="assignment", template=template, workspace_plan=None, backend_adapter=None, recovered_assignment=None) is None

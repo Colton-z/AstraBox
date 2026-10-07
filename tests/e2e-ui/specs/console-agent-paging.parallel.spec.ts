@@ -69,7 +69,7 @@ test('250 real Agents retain complete cursor pages, access counts and loaded row
   const prefix = `zz_e2e_scale_${randomUUID().replaceAll('-', '').slice(0, 12)}_`;
   const config = (index: number) => ({
     name: `${prefix}${String(index).padStart(3, '0')}`, model,
-    environment_name: environment, prewarm_enabled: false,
+    environment_name: environment, prepared_capacity: 0,
     enabled: index % 5 !== 4,
     visibility: index === 0 || index % 7 === 3 ? 'private' : 'public',
   });

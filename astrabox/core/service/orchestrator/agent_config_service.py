@@ -38,7 +38,7 @@ from astrabox.core.service.orchestrator.schema_validation import (
 from astrabox.core.service.orchestrator.agent_schema import (
     AGENT_PRIVATE_STORED_FIELDS,
     agent_artifacts_enabled,
-    agents_prewarm_by_default,
+    default_prepared_capacity,
     validate_agent_payload,
 )
 from astrabox.core.service.orchestrator.author_boundary import (
@@ -90,7 +90,7 @@ _VERSIONED_HARNESS_FIELDS = (
     "idle_hibernate_seconds",
     "terminal_panel",
     "diff_panel",
-    "prewarm_enabled",
+    "prepared_capacity",
 )
 
 def _session_has_runtime_reference(session: dict[str, Any]) -> bool:
@@ -378,7 +378,8 @@ class AgentConfigService:
             idle_hibernate_seconds=self._coerce_positive_int(item.get("idle_hibernate_seconds")),
             terminal_panel=bool(item.get("terminal_panel", False)),
             diff_panel=bool(item.get("diff_panel", False)),
-            prewarm_enabled=bool(item.get("prewarm_enabled", False)),
+            prepared_capacity=int(item.get("prepared_capacity") or 0),
+            seats_per_box=int(item.get("_seats_per_box") or 0),
             version=self._coerce_positive_int(item.get("version")),
             status=item.get("status"),
             scope=item.get("scope"),
@@ -714,12 +715,6 @@ class AgentConfigService:
         if not name:
             raise APIError(code="INVALID_REQUEST", message="name is required", status_code=400)
         editable = validate_agent_payload({**payload, "name": name})
-        if editable.get("prewarm_enabled") is None:
-            # Written, not assumed on read: the capacity sweep selects Agents
-            # whose stored value is true, so an absent key would stay cold.
-            editable["prewarm_enabled"] = agents_prewarm_by_default(
-                load_astrabox_settings()
-            )
         plugin_repos = editable.get("plugin_repos")
         if plugin_repos is not None:
             editable["plugin_repos"] = normalize_plugin_repos(plugin_repos)
@@ -739,6 +734,15 @@ class AgentConfigService:
             plugin_repos=editable.get("plugin_repos"),
             mcp_servers=editable.get("mcp_servers"),
             default_repo=editable.get("default_repo"),
+        )
+        if editable.get("prepared_capacity") is None:
+            # Written, not assumed on read: the capacity sweep selects Agents
+            # whose stored value is positive, so an absent key would stay cold.
+            editable["prepared_capacity"] = default_prepared_capacity(
+                load_astrabox_settings()
+            )
+        await self._check_prepared_capacity_limit(
+            int(editable["prepared_capacity"]), agent_id=""
         )
 
         agent_id = str(uuid.uuid4())
@@ -822,6 +826,10 @@ class AgentConfigService:
                 for field in ("mcp_servers", "skills", "plugin_repos")
             },
         )
+        if "prepared_capacity" in updates:
+            await self._check_prepared_capacity_limit(
+                int(updates["prepared_capacity"]), agent_id=target
+            )
         # The whole effective definition, not only the changed fields: moving
         # an Agent to a stricter Environment must meet that Environment too.
         await validate_author_declarations(
@@ -872,6 +880,26 @@ class AgentConfigService:
             )
         refreshed = await self._agent_repo.get_agent(target)
         return self.sanitize_agent_doc(refreshed or {**existing, **updates})
+
+    async def _check_prepared_capacity_limit(self, capacity: int, *, agent_id: str) -> None:
+        """Refuse a capacity that would lift the deployment's sum over its ceiling."""
+
+        from astrabox.common.utils.settings import load_astrabox_settings
+
+        limit = int(load_astrabox_settings().prepared_capacity_limit)
+        if not limit or capacity == 0:
+            return
+        others = await self._agent_repo.total_prepared_capacity(excluding_agent_id=agent_id)
+        if others + capacity > limit:
+            raise APIError(
+                code="PREPARED_CAPACITY_LIMIT_EXCEEDED",
+                message=(
+                    f"prepared_capacity {capacity} would raise this deployment's total "
+                    f"to {others + capacity}, above ASTRABOX_PREPARED_CAPACITY_LIMIT={limit}; "
+                    f"other Agents hold {others}"
+                ),
+                status_code=409,
+            )
 
     @staticmethod
     def _harness_changed(existing: dict[str, Any], updates: dict[str, Any]) -> bool:
@@ -1104,7 +1132,7 @@ class AgentConfigService:
                 or read_undestroyed(agent)
                 # A claimed manifest may survive Agent deletion while its
                 # Session publishes ownership; pools may still be retiring.
-                or agent.get("_prepared_slot")
+                or agent.get("_prepared_slots")
                 or str(agent.get("_client_pool_name") or "").strip()
                 or agent.get("_retiring_client_pools")
                 or str(agent["agent_id"]) in agents_with_session_runtime

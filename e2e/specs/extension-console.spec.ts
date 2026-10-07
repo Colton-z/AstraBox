@@ -226,7 +226,7 @@ test("extension management follows the selected Agent's managers and stays route
         name: `extension-owner-agent-${suffix}`,
         model: "extension-e2e-model",
         environment_name: "claude-code",
-        prewarm_enabled: false,
+        prepared_capacity: 0,
       },
     );
     agentId = agent.agent_id;
@@ -252,7 +252,7 @@ test("extension management follows the selected Agent's managers and stays route
         name: `extension-unrelated-agent-${suffix}`,
         model: "extension-e2e-model",
         environment_name: "claude-code",
-        prewarm_enabled: false,
+        prepared_capacity: 0,
       },
     );
     unrelatedAgentId = unrelated.agent_id;

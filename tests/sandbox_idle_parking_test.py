@@ -153,7 +153,9 @@ class _FakeRuntimeManager:
         self._paused = paused
         self.agent_rows: list[dict[str, Any]] = []
 
-    async def agent_box_has_other_recorded_occupants(self, sandbox_id: str, *, excluding: str) -> bool:
+    async def agent_box_has_other_recorded_occupants(
+        self, sandbox_id: str, *, excluding: str, agent_id: str = "",
+    ) -> bool:
         async def get_agent(agent_id: str) -> dict[str, Any] | None:
             return next((row for row in self.agent_rows if row["agent_id"] == agent_id), None)
 
@@ -165,7 +167,7 @@ class _FakeRuntimeManager:
             return_value=SimpleNamespace(get_agent=get_agent, list_agents_by_sandbox_id=list_agents_by_sandbox_id),
         ):
             return await RemoteAgentRuntimeManager.agent_box_has_other_recorded_occupants(
-                self, sandbox_id, excluding=excluding,  # type: ignore[arg-type]
+                self, sandbox_id, excluding=excluding, agent_id=agent_id,  # type: ignore[arg-type]
             )
 
     async def renew_sandbox_by_id(self, sandbox_id: str, ttl_seconds: int) -> Any:
@@ -760,7 +762,7 @@ class SharedBoxParkingTests(unittest.IsolatedAsyncioTestCase):
         watcher, repo, manager = _watcher(candidates=[_CANDIDATE], snapshot=_IDLE_SNAPSHOT)
         manager.agent_rows = [{
             "agent_id": "a-1", "sandbox_id": "sbx-1",
-            "_prepared_slot": {"sandbox_id": "sbx-1", "state": "prepared"},
+            "_prepared_slots": [{"sandbox_id": "sbx-1", "state": "prepared"}],
         }]
         summary = await watcher.scan_once()
         self.assertEqual(summary.get("idle_parked", 0), 0)
@@ -771,7 +773,7 @@ class SharedBoxParkingTests(unittest.IsolatedAsyncioTestCase):
         watcher, repo, manager = _watcher(candidates=[_CANDIDATE], snapshot=_IDLE_SNAPSHOT)
         manager.agent_rows = [{
             "agent_id": "a-1", "sandbox_id": "new-resident",
-            "_prepared_slot": {"sandbox_id": "sbx-1", "state": "prepared"},
+            "_prepared_slots": [{"sandbox_id": "sbx-1", "state": "prepared"}],
         }]
         summary = await watcher.scan_once()
         self.assertEqual(summary.get("idle_parked", 0), 0)

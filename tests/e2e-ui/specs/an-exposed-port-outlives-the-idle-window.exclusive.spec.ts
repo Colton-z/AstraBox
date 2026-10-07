@@ -231,7 +231,7 @@ test('an exposed port outlives the idle window the user spent browsing it', asyn
     name: `__e2e_idle_port_${runId}`,
     model,
     environment_name: parkingEnvironment,
-    prewarm_enabled: false,
+    prepared_capacity: 0,
     idle_hibernate_seconds: IDLE_WINDOW_SECONDS,
   });
   agentId = String(agent.agent_id || '');

@@ -80,7 +80,7 @@ test(`DSH reads uploaded image pixels through ${route.title} and restores the im
   const api = new AstraApi(request);
   const profile = engineProfileFor('deepseek_harness');
   agentId = (await api.createAgent({ name: `__e2e_dsh_image_${randomUUID()}`,
-    environment_name: profile.environment_name, model: route.model ?? profile.model, prewarm_enabled: false })).agent_id;
+    environment_name: profile.environment_name, model: route.model ?? profile.model, prepared_capacity: 0 })).agent_id;
   const sessionId = (await api.startConversation(agentId)).session_id;
   sessions.push(sessionId);
   test.info().annotations.push({ type: 'e2e_session_id', description: sessionId });

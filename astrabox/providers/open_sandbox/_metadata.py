@@ -26,7 +26,7 @@ def is_client_pool_identity(session_id: str, assignment_id: str) -> bool:
         assignment = uuid.UUID(assignment_id)
     except ValueError:
         return False
-    return assignment.version == 5 and str(assignment) == assignment_id
+    return assignment.version == 4 and str(assignment) == assignment_id
 
 
 def _identity_metadata_value(

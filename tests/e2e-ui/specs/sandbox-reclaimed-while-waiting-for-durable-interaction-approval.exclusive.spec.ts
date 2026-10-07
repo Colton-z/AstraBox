@@ -100,7 +100,7 @@ test('sandbox reclaim settles an orphaned interaction and the next browser messa
       name: `__e2e_reclaim_waiting_${runId}`,
       model,
       environment_name: CONVERSATION_PREWARM_ENVIRONMENT,
-      prewarm_enabled: false,
+      prepared_capacity: 0,
     });
     agentId = String(agent.agent_id || '');
     expect(agentId, 'created agent must have an id').not.toEqual('');

@@ -370,7 +370,7 @@ def _template() -> SimpleNamespace:
         runtime_template_name="img-test",
         engine_kind="claude_code",
         agent_id="",
-        prewarm_enabled=False,
+        prepared_capacity=0,
         environment_name=None,
         prewarm=None,
     )

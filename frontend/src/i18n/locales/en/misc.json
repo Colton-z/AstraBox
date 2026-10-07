@@ -335,9 +335,9 @@
         "label": "Idle timeout (seconds)",
         "help": "After this many idle seconds, AstraBox applies the pause or removal behavior saved in the runtime environment"
       },
-      "prewarm_enabled": {
-        "label": "Keep a sandbox ready",
-        "help": "Prepare this Agent's image, Skills, and Plugins before a conversation starts. One idle sandbox stays reserved for this Agent until prewarming is turned off or the Agent or its Environment is disabled. Works with both shared and conversation-specific sandboxes."
+      "prepared_capacity": {
+        "label": "Prepared capacity",
+        "help": "How many new conversations can start at the same moment on a prepared runtime, from 0 to 1000. Each new conversation takes one prepared unit and AstraBox prepares a replacement within seconds; once all are taken, further conversations start cold until the capacity refills. When each conversation gets its own sandbox a unit is an idle sandbox; when conversations share the Agent's sandbox it is a prepared seat inside it. Every unit holds its resources while it waits. 0 turns prewarming off."
       },
       "enabled": {
         "label": "Enabled",

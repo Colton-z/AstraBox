@@ -142,7 +142,11 @@ class AgentView:
     #: is not an access control — the sandbox stays reachable through the API.
     terminal_panel: bool = False
     diff_panel: bool = False
-    prewarm_enabled: bool = False
+    #: How many new conversations can start at once on prepared units. Zero
+    #: keeps nothing prepared.
+    prepared_capacity: int = 0
+    #: Seats the Agent's latest shared pool box held; 0 until one reported.
+    seats_per_box: int = 0
     #: Auto-incrementing Agent version used for optimistic concurrency.
     version: int | None = None
     # ── environment-derived runtime fields ───────────────────────────────

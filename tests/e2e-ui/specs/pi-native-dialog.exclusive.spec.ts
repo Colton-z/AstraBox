@@ -127,7 +127,7 @@ test('Pi native command dialog survives reload without inventing a tool call', a
   const reloadExtension = '/opt/pi/node_modules/@earendil-works/pi-coding-agent/examples/extensions/reload-runtime.ts';
   const agent = await api.createAgent({
     name: `__e2e_pi_dialog_${Date.now()}`, model: base.model,
-    environment_name: environment!.name, prewarm_enabled: false,
+    environment_name: environment!.name, prepared_capacity: 0,
     engine_options: { ...options, settings: {
       ...settings, extensions: [...originalExtensions as unknown[], reloadExtension],
     } },

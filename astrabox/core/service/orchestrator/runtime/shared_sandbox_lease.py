@@ -133,6 +133,63 @@ def young_admissions(agent: Any, sandbox_id: str, *, now: float | None = None) -
     return live
 
 
+def room_for_one_more(sandbox_id: str, limit: int, current: int, *, pending: int) -> bool:
+    """Whether a box reading leaves one conversation's reserve beyond ``pending``.
+
+    Each conversation admitted within the grace is charged its floor even
+    though the box does not report it yet. Without this the question is "is
+    there room for one more", asked concurrently, and answered yes to every
+    asker from the same reading.
+    """
+
+    promised = CONVERSATION_MEMORY_RESERVE_BYTES * max(int(pending), 0)
+    headroom = limit - current - promised
+    if headroom < CONVERSATION_MEMORY_RESERVE_BYTES:
+        logger.info(
+            "shared sandbox: box %s has %d MB free of %d MB, below the %d MB "
+            "one more conversation needs; keeping this conversation separate",
+            sandbox_id,
+            headroom // (1024 * 1024),
+            limit // (1024 * 1024),
+            CONVERSATION_MEMORY_RESERVE_BYTES // (1024 * 1024),
+        )
+        return False
+    return True
+
+
+def pending_reservations(
+    agent: Any, sandbox_id: str, *, excluding: str | None = None, now: float | None = None
+) -> int:
+    """Conversations promised a box's memory that its reading does not cover.
+
+    Every young admission counts, and so does every prepared slot waiting in
+    the box: a slot's idle engine shows in the box's memory, but the growth it
+    was admitted for does not, and a box packed with idle slots would refuse
+    each claim on them. A slot holds that reservation until it is claimed or
+    retired, not only for the admission grace. ``excluding`` names the slot or
+    Session whose own reservation the caller is about to spend.
+    """
+
+    from astrabox.core.service.orchestrator.agent.prepared_slots import slot_manifests
+
+    target = str(sandbox_id or "").strip()
+    young = [
+        entry
+        for entry in young_admissions(agent, target, now=now)
+        if not excluding or entry.get("session_id") != excluding
+    ]
+    admitted = {str(entry.get("session_id") or "") for entry in young}
+    waiting = [
+        manifest
+        for manifest in slot_manifests(agent)
+        if manifest.get("state") == "prepared"
+        and str(manifest.get("sandbox_id") or "").strip() == target
+        and str(manifest.get("slot_id") or "") not in admitted
+        and str(manifest.get("slot_id") or "") != excluding
+    ]
+    return len(young) + len(waiting)
+
+
 def surviving_admissions(agent: Any, *, now: float | None = None) -> list[dict]:
     """Every admission still inside its grace, for any box. Expired ones drop."""
 
@@ -222,23 +279,6 @@ class SharedSandboxLease:
         self._backend = str(getattr(provider, "name", "") or "").strip().lower()
         if not self._backend:
             raise ValueError("shared sandbox provider must declare its backend name")
-
-    async def prepared_slot_has_room(
-        self, *, agent: dict[str, Any], sandbox_id: str, slot_id: str
-    ) -> bool:
-        """Recheck capacity before a prepared process receives a conversation.
-
-        The preparation's own reservation already covers this claimant. Other
-        recent admissions still count, including ones without an owner id.
-        The caller must fence this observed admission list when claiming, and
-        refresh the claimant's reservation for its upcoming workload growth.
-        """
-
-        pending = sum(
-            entry.get("session_id") != slot_id
-            for entry in young_admissions(agent, sandbox_id)
-        )
-        return await self._has_room(sandbox_id, pending=pending)
 
     async def place_in_agent_box(
         self,
@@ -861,7 +901,7 @@ class SharedSandboxLease:
             )
             if held and held_backend in ("", self._backend) and held_is_current:
                 pending_entries = young_admissions(agent, held)
-                pending = len(pending_entries)
+                pending = pending_reservations(agent, held)
                 # One probe, and both decisions are read from it: the probe is a
                 # round trip into the box, and asking twice on the ordinary path
                 # would pay for it on every conversation that joins.
@@ -926,7 +966,7 @@ class SharedSandboxLease:
                 # one, which is the cheap first question — does this agent
                 # already hold a box the conversation can join?
                 return ""
-            candidate_pending = len(young_admissions(agent, fresh))
+            candidate_pending = pending_reservations(agent, fresh)
             if not await self._can_host(fresh, pending=candidate_pending):
                 # This box cannot carry a second conversation, so there is
                 # nothing to claim and nothing to share. NOT an error, and NOT
@@ -944,7 +984,7 @@ class SharedSandboxLease:
             )
             if any(current.get(key) != agent.get(key) for key in placement_fields):
                 continue
-            if len(young_admissions(current, fresh)) > candidate_pending:
+            if pending_reservations(current, fresh) > candidate_pending:
                 continue
             agent = current
             expected: dict[str, Any] = {
@@ -1133,12 +1173,22 @@ class SharedSandboxLease:
         to the claim path, not this capacity check.
         """
 
+        reading = await self.read_memory(sandbox_id)
+        return reading is not None and room_for_one_more(
+            sandbox_id, *reading, pending=pending
+        )
+
+    async def read_memory(self, sandbox_id: str) -> tuple[int, int] | None:
+        """The box's memory limit and use, or None when it takes no conversation.
+
+        None stands for an unreachable box and for a box with no memory limit,
+        which is never packed. Other errors propagate so a broken memory probe
+        cannot silently disable sharing for every conversation.
+        """
+
         try:
             limit, current = await self._provider.read_memory_headroom(sandbox_id)
         except Exception as exc:
-            # Only an unreachable sandbox is a normal capacity refusal. Other
-            # errors must propagate so a broken memory probe cannot silently
-            # disable sharing for every conversation.
             from astrabox.providers.open_sandbox.sandbox import box_is_unreachable
 
             gone = (
@@ -1152,28 +1202,12 @@ class SharedSandboxLease:
                 sandbox_id,
                 exc,
             )
-            return False
+            return None
         if limit <= 0:
             logger.info(
                 "shared sandbox: box %s reported no memory limit; not packing "
                 "another conversation into it",
                 sandbox_id,
             )
-            return False
-        # Each conversation admitted within the grace is charged its floor even
-        # though the box does not report it yet. Without this the question is
-        # "is there room for one more", asked concurrently, and answered yes to
-        # every asker from the same reading.
-        promised = CONVERSATION_MEMORY_RESERVE_BYTES * max(int(pending), 0)
-        headroom = limit - current - promised
-        if headroom < CONVERSATION_MEMORY_RESERVE_BYTES:
-            logger.info(
-                "shared sandbox: box %s has %d MB free of %d MB, below the %d MB "
-                "one more conversation needs; keeping this conversation separate",
-                sandbox_id,
-                headroom // (1024 * 1024),
-                limit // (1024 * 1024),
-                CONVERSATION_MEMORY_RESERVE_BYTES // (1024 * 1024),
-            )
-            return False
-        return True
+            return None
+        return int(limit), int(current)

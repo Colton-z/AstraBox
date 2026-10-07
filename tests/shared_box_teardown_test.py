@@ -147,11 +147,11 @@ class _Agents:
         self._current_box = current_box
 
     def _row(self) -> dict[str, Any]:
-        manifest = {"sandbox_id": BOX} if self._slot_in_box else None
+        slots = [{"sandbox_id": BOX}] if self._slot_in_box else []
         return {
             "agent_id": "a1",
             "sandbox_id": self._current_box,
-            "_prepared_slot": manifest,
+            "_prepared_slots": slots,
             "box_admissions": self._admissions,
         }
 
@@ -699,11 +699,11 @@ async def test_the_reaper_gives_back_an_abandoned_box_and_keeps_a_lived_in_one(
         ):
             if after_agent_id is not None:
                 return []
-            return [{"agent_id": "a1", "sandbox_id": BOX, "_prepared_slot": None,
+            return [{"agent_id": "a1", "sandbox_id": BOX, "_prepared_slots": [],
                      "box_admissions": []}]
 
         async def list_agents_by_sandbox_id(self, sandbox_id: str):
-            return [{"agent_id": "a1", "_prepared_slot": None, "box_admissions": []}]
+            return [{"agent_id": "a1", "_prepared_slots": [], "box_admissions": []}]
 
         async def clear_resident_sandbox_binding(self, agent_id, *, sandbox_id, sandbox_backend):
             assert sandbox_id == BOX

@@ -585,6 +585,17 @@ register_error(
     ),
 )
 register_error(
+    "PREPARED_CAPACITY_LIMIT_EXCEEDED",
+    status_code=409,
+    category="configuration.agent",
+    owner="platform",
+    user_message=(
+        "This deployment's prepared capacity is already committed to other "
+        "Agents; lower this Agent's prepared_capacity or raise "
+        "ASTRABOX_PREPARED_CAPACITY_LIMIT."
+    ),
+)
+register_error(
     "AGENT_PREWARM_DISCARD_UNCONFIRMED",
     status_code=502,
     category="runtime.prewarm",
@@ -593,17 +604,6 @@ register_error(
     user_message=(
         "Prepared runtime cleanup could not be confirmed; retry after the "
         "sandbox control plane is reachable."
-    ),
-)
-register_error(
-    "AGENT_PREWARM_SLOT_CONFLICT",
-    status_code=409,
-    category="runtime.prewarm",
-    retryable=True,
-    owner="platform",
-    user_message=(
-        "Another refill published this Agent's prepared slot first; the loser "
-        "was discarded and a retry finds the published slot."
     ),
 )
 

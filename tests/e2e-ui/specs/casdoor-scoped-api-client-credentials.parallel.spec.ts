@@ -117,7 +117,7 @@ test('Casdoor client credentials mint independent read, write, and admin API sco
       name: `__e2e_api_client_${Date.now()}`,
       model,
       environment_name: environmentName,
-      prewarm_enabled: false,
+      prepared_capacity: 0,
     });
     expect(created.status).toBe(200);
     expect(created.payload.code).toBe('OK');

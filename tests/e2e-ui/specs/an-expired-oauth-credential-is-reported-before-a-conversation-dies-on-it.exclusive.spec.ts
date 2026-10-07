@@ -202,7 +202,7 @@ test(`${declared.engine_kind}: ${journey}`, async ({
     model: matrixAgent.model,
     engine_options: matrixAgent.engine_options,
     environment_name: coldEnvironmentName,
-    prewarm_enabled: false,
+    prepared_capacity: 0,
   });
   agentId = String(created.agent_id || '');
   expect(agentId, 'the created Agent must have an id').not.toEqual('');

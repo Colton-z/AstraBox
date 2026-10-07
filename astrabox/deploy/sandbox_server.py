@@ -1466,6 +1466,7 @@ EXPIRE_SANDBOX_ATTR = "_expire_sandbox"
 GET_CONTAINER_ATTR = "_get_container_by_sandbox_id"
 REMOVE_EXPIRATION_ATTR = "_remove_expiration_tracking"
 CLEANUP_SIDECAR_ATTR = "_cleanup_egress_sidecar"
+CONTAINER_TO_SANDBOX_ATTR = "_container_to_sandbox"
 VOLUMES_MIXIN_ATTR = "DockerVolumesMixin"
 BUILD_VOLUME_BINDS_ATTR = "_build_volume_binds"
 EGRESS_SIDECAR_LABEL_ATTR = "EGRESS_SIDECAR_LABEL"
@@ -2171,6 +2172,74 @@ def leave_other_installations_sandboxes_running(
             raise SandboxServerConfigError(  # pragma: no cover - defends the assignment itself
                 f"setting {SERVICE_CLS_ATTR}.{attribute} did not take"
             )
+
+
+class _ImageNamedByItsContainer:
+    """The ``image`` a container reports, answered from the container itself."""
+
+    __slots__ = ("short_id", "tags")
+
+    def __init__(self, reference: str) -> None:
+        self.tags = [reference]
+        self.short_id = reference
+
+
+class _ContainerWithoutImageInspect:
+    """A Docker container whose ``image`` is the reference it was created from.
+
+    Every other attribute is the wrapped container's own.
+    """
+
+    __slots__ = ("_container",)
+
+    def __init__(self, container: Any) -> None:
+        self._container = container
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._container, name)
+
+    @property
+    def image(self) -> _ImageNamedByItsContainer:
+        return _ImageNamedByItsContainer(str(self._container.attrs["Config"]["Image"]))
+
+
+def describe_sandbox_images_from_their_containers(service_module: ModuleType) -> None:
+    """Name a sandbox's image without asking Docker to inspect the image.
+
+    Upstream builds every sandbox description (get, list, renew, metadata
+    patch) through ``_container_to_sandbox``, which reads ``container.image``
+    only to report the image's first tag. docker-py answers that attribute
+    with an image inspect, and with Docker's containerd image store an image
+    inspect takes about 100 ms, so one description costs about 100 ms and a
+    list costs that much per sandbox on the host. The container inspect the
+    description already holds records the image reference the sandbox was
+    created from (``Config.Image``), which is the ``image.uri`` the create
+    request named. The description reports that reference, and Docker is not
+    asked about the image.
+    """
+
+    _require_attributes(
+        service_module,
+        (SERVICE_CLS_ATTR,),
+        "describe sandboxes without an image inspect",
+    )
+    service_cls = getattr(service_module, SERVICE_CLS_ATTR)
+    if not hasattr(service_cls, CONTAINER_TO_SANDBOX_ATTR):
+        raise SandboxServerConfigError(
+            "the installed opensandbox-server no longer exposes "
+            f"{service_module.__name__}.{SERVICE_CLS_ATTR}.{CONTAINER_TO_SANDBOX_ATTR}, "
+            "so AstraBox cannot describe sandboxes without an image inspect. "
+            "Pin opensandbox-server to a 0.2.x release, or update "
+            "astrabox/deploy/sandbox_server.py."
+        )
+    upstream_container_to_sandbox = getattr(service_cls, CONTAINER_TO_SANDBOX_ATTR)
+
+    def _astrabox_container_to_sandbox(self: Any, container: Any, *args: Any, **kwargs: Any) -> Any:
+        return upstream_container_to_sandbox(
+            self, _ContainerWithoutImageInspect(container), *args, **kwargs
+        )
+
+    setattr(service_cls, CONTAINER_TO_SANDBOX_ATTR, _astrabox_container_to_sandbox)
 
 
 class _SidecarHostConfigRecorded(Exception):
@@ -2951,6 +3020,7 @@ def prepare() -> dict[str, Any]:
         leave_other_installations_sandboxes_running(
             service_module, networking_module, installation_id()
         )
+        describe_sandbox_images_from_their_containers(service_module)
     return {"app_config": app_config, "log_config": log_config}
 
 

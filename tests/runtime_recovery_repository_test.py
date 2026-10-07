@@ -185,3 +185,33 @@ async def test_concurrent_receipt_append_and_remove_preserve_successor_binding(
     assert current is not None
     assert current["_retained_startup_allocations"] == [new]
     assert {key: current[key] for key in successor} == successor
+
+
+async def test_only_a_startup_commands_first_execution_skips_the_provider_lookup(
+    collections,
+) -> None:
+    collection = await collections("sessions")
+    await collection.insert_one(
+        {"session_id": "session", "state": "CREATING", "sandbox_generation": "generation-1"}
+    )
+    repo = SessionRepository()
+    first = RecoveryOwnership(
+        repo, "session", None, sandbox_generation="generation-1", assignment_id="command-1"
+    )
+    concurrent = RecoveryOwnership(
+        repo, "session", None, sandbox_generation="generation-1", assignment_id="command-1"
+    )
+    rerun = RecoveryOwnership(
+        repo, "session", None, sandbox_generation="generation-1", assignment_id="command-1"
+    )
+    next_command = RecoveryOwnership(
+        repo, "session", None, sandbox_generation="generation-1", assignment_id="command-2"
+    )
+
+    outcomes = await asyncio.gather(
+        first.claim_first_provider_attempt(), concurrent.claim_first_provider_attempt()
+    )
+
+    assert sorted(outcomes) == [False, True]
+    assert await rerun.claim_first_provider_attempt() is False
+    assert await next_command.claim_first_provider_attempt() is True

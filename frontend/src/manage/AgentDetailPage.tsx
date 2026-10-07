@@ -408,7 +408,7 @@ export default function AgentDetailPage() {
       {canManage && (
         <AgentPrewarmStatus key={agentId} agentId={agentId}
           savedAt={String(record.updated_at || '')}
-          enabled={record.prewarm_enabled === true && record.enabled !== false}
+          enabled={Number(record.prepared_capacity ?? 0) > 0 && record.enabled !== false}
           dirty={extensionsDirty || sections.some((section) => isDirty(section.fields))} />
       )}
       {canManage && (

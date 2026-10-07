@@ -175,8 +175,18 @@ def _cmd_serve(args: argparse.Namespace) -> int:
         reload=args.reload,
         log_level=args.log_level,
         factory=True,
+        timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_SECONDS,
     )
 
+
+#: Seconds uvicorn waits for open requests after a stop signal before it cancels
+#: them and runs the application's shutdown. Without a bound uvicorn 0.52.4 waits
+#: for every connection whose response has not completed (``Server.shutdown``),
+#: and a session event stream completes only when its client leaves, so one open
+#: console tab would hold back the drain, the scheduler teardown and the
+#: prepared-capacity lock release until the container was killed. A cancelled
+#: stream reconnects to another replica or to this one after restart.
+GRACEFUL_SHUTDOWN_SECONDS = 3
 
 #: The signals uvicorn turns into a graceful shutdown (``uvicorn.server.HANDLED_SIGNALS``
 #: on Linux).

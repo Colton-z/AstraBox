@@ -76,7 +76,7 @@ test('capture the console screenshots used by the README and docs', async ({ pag
       name: 'Docs Demo',
       model,
       environment_name: environmentName,
-      prewarm_enabled: false,
+      prepared_capacity: 0,
     });
     agentId = String(agent.agent_id || '');
     expect(agentId, 'created agent must have an id').not.toEqual('');

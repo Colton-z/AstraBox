@@ -1,16 +1,17 @@
 /**
  * Reclaim a real box whose Session lost its binding without reclaiming another
- * conversation, its prepared shared slot, or the supplier's unclaimed box.
+ * conversation, its prepared shared slot, or the supplier's unclaimed box, nor
+ * a pool box taken for its seats before the seats are recorded.
  * The worker uses the production reaper's zero-grace argument so this test
  * exercises ownership rather than spending ten minutes aging a new sandbox.
  */
 import { execFileSync } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
 
 import { expect, test } from '@playwright/test';
 
 import { AstraApi } from '../fixtures/astraApi';
 import { documentsByField, patchSessionDoc, restoreDoc } from '../fixtures/dbOracle';
+import { nextLedgerSeat } from '../fixtures/preparedSeats';
 import { PlatformApi } from '../fixtures/platformApi';
 import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
 import { requireServiceContainer, SERVER_CONTAINER_HANDLE } from '../fixtures/serviceContainer';
@@ -38,8 +39,8 @@ async function prepared(platform: PlatformApi, agentId: string): Promise<Record<
 }
 
 function preparedIdentity(agentId: string): Record<string, unknown> {
-  const agent = documentsByField('agents', '$.agent_id', agentId)[0];
-  const manifest = (agent?._prepared_slot || {}) as Record<string, unknown>;
+  // The spare seat left in the box the live conversation took.
+  const manifest: Record<string, unknown> = nextLedgerSeat(agentId) || {};
   // Preparation also contains credentials; only public runtime coordinates may
   // reach an assertion's retained expected/actual values.
   return Object.fromEntries([
@@ -113,9 +114,6 @@ asyncio.run(main())
 function reapDuringRealPoolAdoption(input: {
   backend: string;
   agentId: string;
-  sourceSessionId: string;
-  claimSessionId: string;
-  assignmentId: string;
   poolName: string;
 }): Record<string, unknown> {
   const server = requireServiceContainer(SERVER_CONTAINER_HANDLE);
@@ -126,7 +124,8 @@ import sys
 from unittest.mock import patch
 
 from astrabox.bootstrap import bootstrap
-from astrabox.core.service.orchestrator.agent.client_pool import acquire_agent_client_pool, ensure_agent_client_pool
+from astrabox.core.service.orchestrator.agent import prepared_slots
+from astrabox.core.service.orchestrator.agent.client_pool import ensure_agent_client_pool
 from astrabox.core.service.orchestrator.agent.runtime_generation import agent_runtime_owner_id
 from astrabox.core.service.orchestrator.agent_config_service import AgentConfigService
 from astrabox.core.service.orchestrator.runtime.sandbox_client import extract_sandbox_id
@@ -134,7 +133,6 @@ from astrabox.core.service.orchestrator.runtime_manager import RemoteAgentRuntim
 from astrabox.deploy.onebox import ensure_database_wiring, needs_sandbox_server, _export_backend_wiring
 from astrabox.persistence.repository.agent_repository import AgentRepository
 from astrabox.persistence.repository.environment_repository import EnvironmentRepository
-from astrabox.persistence.repository.session_repository import SessionRepository
 from astrabox.seams.sandbox import sandbox_for_name
 
 async def main():
@@ -144,84 +142,55 @@ async def main():
     bootstrap()
     given = json.loads(sys.argv[1])
     provider = sandbox_for_name(given['backend'])
-    session_repo = SessionRepository()
     agent_repo = AgentRepository()
-    source = await session_repo.get_session(given['sourceSessionId'])
-    assert source and source['agent_id'] == given['agentId'], 'claim fixture must belong to the live Agent'
-    # Only the Session is a fixture. Production acquisition must create its
-    # allocation; writing that record here would hide the handoff defect.
-    await session_repo.create_session({
-        'session_id': given['claimSessionId'], 'agent_id': given['agentId'],
-        'user_id': source['user_id'], 'session_kind': source['session_kind'],
-        'engine_kind': source['engine_kind'], 'state': 'CREATING',
-        'sandbox_id': None, 'runtime_unavailable': False,
-        'title': 'ownerless pool handoff probe',
-    })
-    assert not (await session_repo.get_session(given['claimSessionId'])).get('startup_allocation')
     template = await AgentConfigService(agent_repo, EnvironmentRepository()).resolve_agent_harness(given['agentId'])
-    assert template is not None, 'claim fixture Agent must resolve through production configuration'
+    assert template is not None, 'the probe Agent must resolve through production configuration'
     manager = RemoteAgentRuntimeManager()
     plan = await ensure_agent_client_pool(template, runtime_manager=manager)
-    assert plan is not None and plan.spec.pool_name == given['poolName'], 'claim must use the existing Agent pool'
+    assert plan is not None and plan.spec.pool_name == given['poolName'], 'adoption must use the existing Agent pool'
     async def wait_for_idle():
         while True:
             status = await provider.describe_client_pool(given['poolName'])
             if status.idle_sandbox_ids:
                 return
             await asyncio.sleep(0.25)
-    await asyncio.wait_for(wait_for_idle(), timeout=30)
-    adoption_evidence = []
+    await asyncio.wait_for(wait_for_idle(), timeout=60)
+    evidence = []
     original_adopt = type(provider).adopt_sandbox_identity
 
+    # The window under test: the box has left the pool and lost its pool
+    # identity, and its seats are live in it, but no Agent ledger names them yet.
     async def adopt_then_reap(adapter, handle, *, session_id, assignment_id):
         await original_adopt(adapter, handle, session_id=session_id, assignment_id=assignment_id)
-        assert assignment_id == given['assignmentId'], 'unexpected adoption intercepted'
-        row = await session_repo.get_session(given['claimSessionId'])
-        allocation = (row or {}).get('startup_allocation')
-        assert isinstance(allocation, dict), 'SDK claim lost pool ownership before recording its Session allocation'
-        sandbox_id = allocation['sandbox_id']
-        assert sandbox_id == extract_sandbox_id(handle), 'allocation must name the actual SDK-acquired box'
-        assert allocation['scope'] == 'sandbox' and allocation['sandbox_backend'] == given['backend']
+        sandbox_id = extract_sandbox_id(handle)
         descriptor = await adapter.describe_sandbox(sandbox_id)
         assert not adapter.owns_unclaimed_sandbox(descriptor), 'probe must run after pool identity is removed'
         owner = await adapter.claim_of(sandbox_id, expected_session_id=agent_runtime_owner_id(given['agentId']))
-        assert owner.may_destroy, 'acquisition must publish the real Agent runtime owner'
-        assert row.get('sandbox_id') is None, 'claiming Session already published its final sandbox binding'
-        allocation_owner = await session_repo.find_session_by_sandbox_id(sandbox_id)
-        assert allocation_owner and allocation_owner['session_id'] == given['claimSessionId'], 'startup allocation must resolve to the claiming Session'
-        assert allocation_owner['startup_allocation'] == allocation, 'backend lookup must preserve the exact in-flight allocation'
-        assert not await agent_repo.list_agents_by_sandbox_id(sandbox_id), 'candidate was already published to an Agent'
+        assert owner.may_destroy, 'adoption must publish the real Agent runtime owner'
         agent = await agent_repo.get_agent(given['agentId'])
-        assert agent is not None, 'claiming Agent disappeared'
-        assert not any(item.get('sandbox_id') == sandbox_id for item in (agent.get('box_admissions') or [])), 'candidate was already admitted'
-        assert (agent.get('_prepared_slot') or {}).get('sandbox_id') != sandbox_id, 'candidate already owns a prepared slot'
-        assert await adapter.count_live_isolated_sessions(sandbox_id) == 0, 'candidate already has a placement'
+        assert agent is not None, 'adopting Agent disappeared'
+        assert all(seat.get('sandbox_id') != sandbox_id for seat in agent.get('_prepared_slots') or []), 'the seats were recorded before the handoff window'
+        assert not await agent_repo.list_agents_by_sandbox_id(sandbox_id), 'the box is already an Agent resident box'
+        live = await adapter.count_live_isolated_sessions(sandbox_id)
+        assert live > 0, 'a pool box must arrive carrying its seats'
         inventory = await adapter.list_sandboxes(page=1, page_size=100)
         assert not inventory.has_next_page, 'test inventory exceeds the reaper page'
         assert sandbox_id in {item.sandbox_id for item in inventory.items}, 'sweep cannot see the candidate'
         summary = await manager.reap_ownerless_sandboxes(backend=given['backend'], grace_seconds=0, page_size=100)
         probe = (await adapter.probe(sandbox_id)).probe_status
-        assert probe == 'OK', 'the real reaper destroyed a Session-owned in-flight SDK claim'
-        assert (await session_repo.get_session(given['claimSessionId']))['startup_allocation'] == allocation
-        adoption_evidence.append({'sandboxId': sandbox_id, 'allocation': allocation, 'summary': summary, 'probe': probe})
+        assert probe == 'OK', 'the real reaper destroyed a pool box between its adoption and its seat record'
+        evidence.append({'sandboxId': sandbox_id, 'liveSessions': live, 'summary': summary, 'probe': probe})
 
     with patch.object(type(provider), 'adopt_sandbox_identity', adopt_then_reap):
-        claim = await acquire_agent_client_pool(
-            template, runtime_manager=manager, session_id=given['claimSessionId'], assignment_id=given['assignmentId'],
-        )
-    assert claim is not None and len(adoption_evidence) == 1, 'production acquisition did not cross the observed handoff'
-    assert claim.sandbox_id == adoption_evidence[0]['sandboxId'], 'returned claim differs from the protected candidate'
-    await claim.sandbox.close()
-    # Cancelling this acquisition retires only the startup reservation. The
-    # existing orphan reaper, not Session rollback, owns the shared base box.
-    cleanup = await manager.cleanup_startup_allocation(given['claimSessionId'])
-    assert cleanup.released and cleanup.record_cleared, 'real claim reservation did not release'
-    assert cleanup.destruction is not None and cleanup.destruction.outcome == 'RETAINED'
-    assert not (await session_repo.get_session(given['claimSessionId'])).get('startup_allocation')
-    assert (await provider.probe(claim.sandbox_id)).probe_status == 'OK', 'rollback destroyed Agent-owned compute'
-    released = await manager.reap_ownerless_sandboxes(backend=given['backend'], grace_seconds=0, page_size=100)
-    assert (await provider.probe(claim.sandbox_id)).probe_status == 'NOT_FOUND', 'released empty candidate remains orphaned'
-    print('E2E_POOL_HANDOFF_RESULT=' + json.dumps({'adoptions': adoption_evidence, 'released': released}))
+        adopted = await prepared_slots._adopt_pool_box(template, runtime_manager=manager, repo=agent_repo)
+    assert adopted and len(evidence) == 1, 'production adoption did not cross the observed handoff'
+    sandbox_id = evidence[0]['sandboxId']
+    agent = await agent_repo.get_agent(given['agentId'])
+    entered = [seat for seat in agent.get('_prepared_slots') or [] if seat.get('sandbox_id') == sandbox_id]
+    assert entered and all(seat.get('state') == 'prepared' for seat in entered), 'the adopted box seats must reach the ledger'
+    kept = await manager.reap_ownerless_sandboxes(backend=given['backend'], grace_seconds=0, page_size=100)
+    assert (await provider.probe(sandbox_id)).probe_status == 'OK', 'a box whose seats are recorded is not an orphan'
+    print('E2E_POOL_HANDOFF_RESULT=' + json.dumps({'adoptions': evidence, 'enteredSeats': len(entered), 'kept': kept}))
 
 asyncio.run(main())
 `;
@@ -254,7 +223,7 @@ test('ownerless sweep reclaims an empty box and preserves live and prepared capa
       name: `__e2e_ownerless_${runId}_${suffix}`,
       model,
       environment_name: environment,
-      prewarm_enabled: true,
+      prepared_capacity: 1,
     });
     const id = String(agent.agent_id || '');
     expect(id).not.toEqual('');
@@ -336,11 +305,8 @@ test('ownerless sweep reclaims an empty box and preserves live and prepared capa
   await api.waitForSessionReady(nextId);
   expect((await api.adminSessionDetail(nextId)).sandbox_id, 'the protected SDK box must remain claimable').toBe(idleBox);
 
-  const claimSessionId = randomUUID();
-  sessions.push(claimSessionId);
   const handoff = reapDuringRealPoolAdoption({
     backend: String(orphanDetail.sandbox_backend), agentId: sharedAgent,
-    sourceSessionId: liveId, claimSessionId, assignmentId: randomUUID(),
     poolName: String(slot.client_pool_name),
   });
   await test.info().attach('sdk-pool-ownerless-handoff', {

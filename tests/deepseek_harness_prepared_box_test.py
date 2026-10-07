@@ -27,6 +27,7 @@ from astrabox.core.service.orchestrator.engine.base import (
     EnginePreparationContext,
     EngineStartupContext,
 )
+from astrabox.core.service.orchestrator.engine.deepseek_harness_client import DSH_MODEL_PROVIDER
 
 
 def _template(**overrides: Any) -> Any:
@@ -35,7 +36,7 @@ def _template(**overrides: Any) -> Any:
         engine_kind="deepseek_harness",
         agent_prewarm_fingerprint="fp-1",
         runtime_generation="fp-1",
-        prewarm_enabled=True,
+        prepared_capacity=1,
         model_config={},
         system="Be terse.",
         engine_options={"session_create": {"agentPreset": "code"}},
@@ -250,6 +251,8 @@ class _FakeLink:
 
     async def call(self, method: str, payload: dict[str, Any]) -> Any:
         self.calls.append((method, dict(payload)))
+        if method == "session/modelCatalog":
+            return {"groups": [{"id": DSH_MODEL_PROVIDER, "models": [{"id": "deepseek-chat"}]}]}
         return {"sessionId": "dsh-native-1"}
 
     async def close(self) -> None:
@@ -294,12 +297,18 @@ def test_preparation_creates_the_conversation_a_claim_will_rejoin(
         "link-connect",
     ]
     assert link.calls == [
-        ("session/create", {"args": {"request": {"cwd": "/workspace", "agentPreset": "code"}}})
+        ("session/create", {"args": {"request": {"cwd": "/workspace", "agentPreset": "code"}}}),
+        ("session/modelCatalog", {"args": {}}),
     ]
     assert link.closed is True
     # The id is what the claim rejoins; without it a claim would have no
     # choice but to create a second conversation.
     assert receipt["prepared_native_session"] == "dsh-native-1"
+    # The claim selects the model on this route without reading the catalog.
+    assert receipt["prepared_model_route"] == {
+        "model": "deepseek-chat",
+        "route": DSH_MODEL_PROVIDER,
+    }
     assert receipt["engine_kind"] == dsh.ENGINE_KIND
     assert receipt["spawn_fingerprint"] == dsh._slot_spawn_fingerprint(
         _template(), base_url="https://gw.test", native_base_url="https://gw.test"
@@ -395,10 +404,9 @@ def test_a_stale_spawn_fingerprint_discards_the_claimed_box(
 
     discards: list[str] = []
 
-    async def _discard(template: Any, manifest: dict[str, Any], *, reason: str) -> None:
+    async def _discard(template: Any, manifest: dict[str, Any], *, reason: str, **_kwargs: Any) -> None:
         discards.append(reason)
 
-    refills: list[str] = []
     provisioned = provisioning.ProvisionedEngineSandbox(
         sandbox=SimpleNamespace(sandbox_id="box-77"),
         sandbox_id="box-77",
@@ -413,11 +421,6 @@ def test_a_stale_spawn_fingerprint_discards_the_claimed_box(
 
     monkeypatch.setattr(startup, "provision_engine_sandbox", _provision)
     monkeypatch.setattr(startup, "_discard_claimed_unit", _discard)
-    monkeypatch.setattr(
-        startup,
-        "schedule_prepared_runtime_refill",
-        lambda template, manager: refills.append(template.agent_id),
-    )
     with pytest.raises(APIError, match="prepared harness box") as mismatch:
         asyncio.run(
             startup.start_platform_runtime(
@@ -436,7 +439,6 @@ def test_a_stale_spawn_fingerprint_discards_the_claimed_box(
     assert mismatch.value.code == "AGENT_PREWARM_CONFIG_INVALID"
     assert len(discards) == 1
     assert "AGENT_PREWARM_CONFIG_INVALID" in discards[0]
-    assert refills == ["agent-1"]
 
 
 def test_a_manifest_naming_no_conversation_is_discarded_not_papered_over(
@@ -533,7 +535,7 @@ def test_a_failed_activation_discards_the_box_and_fails_loudly(
 
     monkeypatch.setattr(model_seam, "model_endpoint_for_name", lambda name: _Endpoint())
 
-    async def _win(**kwargs: Any) -> dict[str, Any]:
+    async def _win(*args: Any, **kwargs: Any) -> dict[str, Any]:
         return dict(claimed)
 
     async def _adopt(
@@ -543,7 +545,8 @@ def test_a_failed_activation_discards_the_box_and_fails_loudly(
         session_id: str,
         assignment_id: str,
     ) -> Any:
-        return SimpleNamespace(sandbox_id="box-77")
+        # The native-state write precedes the link; the failure under test is the link's.
+        return SimpleNamespace(sandbox_id="box-77", files=SimpleNamespace(write_file=_target))
 
     async def _connect(sandbox: Any, *, port: int = 44780, launch_url_path: str, observe_only: bool = False) -> Any:
         raise APIError(
@@ -554,21 +557,15 @@ def test_a_failed_activation_discards_the_box_and_fails_loudly(
 
     discards: list[str] = []
 
-    async def _discard(template_arg: Any, manifest: dict[str, Any], *, reason: str) -> None:
+    async def _discard(template_arg: Any, manifest: dict[str, Any], *, reason: str, **_kwargs: Any) -> None:
         discards.append(reason)
 
-    refills: list[str] = []
-    monkeypatch.setattr(ps, "claim_prepared_slot", _win)
+    monkeypatch.setattr(ps, "claim_prepared_seat", _win)
     monkeypatch.setattr(pb, "adopt_claimed_box", _adopt)
     monkeypatch.setattr(startup, "_discard_claimed_unit", _discard)
     monkeypatch.setattr(dsh.DshApiLink, "connect", staticmethod(_connect))
-    monkeypatch.setattr(
-        startup,
-        "schedule_prepared_runtime_refill",
-        lambda template_arg, manager_arg: refills.append(template_arg.agent_id),
-    )
 
-    async def _mark(**kwargs: Any) -> None:
+    async def _mark(*args: Any, **kwargs: Any) -> None:
         return None
 
     async def _vault(sandbox: Any, **kwargs: Any) -> None:
@@ -577,11 +574,8 @@ def test_a_failed_activation_discards_the_box_and_fails_loudly(
     async def _target(*args: Any, **kwargs: Any) -> None:
         return None
 
-    # The native-state write precedes the link; the failure under test is the link's.
-    monkeypatch.setattr(dsh, "install_verified_text_script", _target)
-
     async def _provision(*args: Any, **kwargs: Any) -> Any:
-        monkeypatch.setattr(ps, "mark_gateway_entry_claimed", _mark)
+        monkeypatch.setattr(ps, "record_gateway_entry", _mark)
         monkeypatch.setattr(tm, "bind_mirror_target", _target)
         return await _claim(manager, template=template, backend=_Backend(vault=_vault))
 
@@ -603,4 +597,3 @@ def test_a_failed_activation_discards_the_box_and_fails_loudly(
             )
         )
     assert len(discards) == 1 and "between prepare and activation" in discards[0]
-    assert refills == ["agent-1"]

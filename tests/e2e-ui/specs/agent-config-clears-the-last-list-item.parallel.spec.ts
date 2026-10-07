@@ -20,7 +20,7 @@ async function saveAndReload(page: Page, api: AstraApi, field: string, expected:
   expect((await saved).status(), `saving ${field} must succeed`).toBe(200);
   const record = await api.data<Record<string, unknown>>('GET', `/agents/${agentId}`);
   expect(record[field], `the server must persist the explicit ${field} list`).toEqual(expected);
-  expect(record.prewarm_enabled, 'this form test must not prepare a sandbox').toBe(false);
+  expect(record.prepared_capacity, 'this form test must not prepare a sandbox').toBe(0);
   await page.reload({ waitUntil: 'domcontentloaded' });
   await expect(page.locator('[data-slot="card"]').filter({ has: page.locator('#agent-extension-mcp') })).toBeVisible();
 }
@@ -235,7 +235,7 @@ test('removing the final skill and plugin repository persists empty lists after 
     expect(stored.mcp_servers).toEqual(directMcp);
     expect(stored.skills).toEqual([descriptor]);
     expect(stored.plugin_repos).toEqual(repositories);
-    expect(stored.prewarm_enabled).toBe(false);
+    expect(stored.prepared_capacity).toBe(0);
     const savedCatalog = await api.data<typeof catalog>('GET', `/agents/${agentId}/extensions`);
     expect(savedCatalog.selected_mcp_server_ids).toEqual([managed.id]);
     expect(savedCatalog.selected_skill_ids).toEqual(catalog.selected_skill_ids);

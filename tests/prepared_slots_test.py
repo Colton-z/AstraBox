@@ -1,4 +1,4 @@
-"""Prepared-slot allocator: claim atomicity, TTL/orphan reaping, publish CAS.
+"""Prepared-seat ledger: claim atomicity, TTL/orphan reaping, retirement.
 
 The fake agent repository reproduces the document store's exact-match update
 semantics, including the behaviour that bit the live path: a filter of
@@ -58,38 +58,6 @@ class FakeAgentRepo:
         return True
 
 
-class _InitialSlotLease:
-    def __init__(self, *, winner: str = "pool-box") -> None:
-        self.winner = winner
-        self.candidates: list[str | None] = []
-        self.session_ids: list[str | None] = []
-        self.released: list[str] = []
-
-    async def place_in_agent_box(self, **kwargs: Any) -> Any:
-        candidate = kwargs.get("candidate")
-        self.candidates.append(candidate)
-        self.session_ids.append(kwargs.get("session_id"))
-        if candidate is None:
-            return None
-        return SimpleNamespace(sandbox_id=self.winner)
-
-    async def release(self, binding: Any) -> None:
-        self.released.append(str(binding.sandbox_id))
-
-
-class _InitialSlotProvider:
-    def __init__(self, *, destruction_confirmed: bool = True) -> None:
-        self.destruction_confirmed = destruction_confirmed
-        self.destroyed: list[str] = []
-
-    async def confirm_destroyed(self, sandbox_id: str) -> Any:
-        self.destroyed.append(sandbox_id)
-        return SimpleNamespace(
-            confirmed=self.destruction_confirmed,
-            detail="gone" if self.destruction_confirmed else "still visible",
-        )
-
-
 def _iso(dt: datetime) -> str:
     return dt.isoformat()
 
@@ -121,190 +89,42 @@ def _manifest(**overrides: Any) -> dict[str, Any]:
 def _row(manifest: dict[str, Any] | None, **overrides: Any) -> dict[str, Any]:
     row: dict[str, Any] = {"agent_id": "agent-1"}
     if manifest is not None or "with_field" in overrides:
-        row[ps.PREPARED_SLOT_FIELD] = manifest
+        row[ps.PREPARED_SLOTS_FIELD] = [] if manifest is None else [manifest]
     overrides.pop("with_field", None)
     row.update(overrides)
     return row
 
 
-# ── foreground-start priority over shared-box refill ──────────────────────
+def _slots(repo: Any, agent_id: str = "agent-1") -> list[dict[str, Any]]:
+    return list(repo.rows[agent_id].get(ps.PREPARED_SLOTS_FIELD) or [])
 
 
-def test_initial_shared_slot_waits_for_sdk_member_then_places_it(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from astrabox.core.service.orchestrator.agent import client_pool
-
-    handle = SimpleNamespace(sandbox_id="pool-box")
-    claim = SimpleNamespace(sandbox=handle, sandbox_id="pool-box")
-    acquire = AsyncMock(side_effect=[None, claim])
-    lease = _InitialSlotLease()
-    provider = _InitialSlotProvider()
-    template = SimpleNamespace(agent_id="agent-1")
-    repo = FakeAgentRepo({"agent_id": "agent-1"})
-
-    monkeypatch.setattr(client_pool, "acquire_agent_client_pool", acquire)
-    monkeypatch.setattr(ps.asyncio, "sleep", AsyncMock())
-
-    binding, pooled_handle = asyncio.run(
-        ps._place_initial_shared_slot(
-            template,
-            runtime_manager="runtime-manager",
-            repo=repo,
-            provider=provider,
-            lease=lease,
-            identity={
-                "home_dir": "/home/conversations/slot-1",
-                "workspace_dir": "/workspace",
-                "workspace_source_dir": "/home/conversations/slot-1/workspace",
-            },
-            slot_id="slot-1",
-            generation="generation-1",
-        )
+async def _claim_one(
+    *, agent_id: str, session_id: str, expected_runtime_generation: str, agent_repo: Any,
+) -> dict[str, Any] | None:
+    claimed = await ps.claim_prepared_slots(
+        agent_id=agent_id,
+        session_ids=[session_id],
+        expected_runtime_generation=expected_runtime_generation,
+        agent_repo=agent_repo,
     )
-
-    assert binding.sandbox_id == "pool-box"
-    assert pooled_handle is handle
-    assert lease.candidates == [None, None, "pool-box"]
-    assert lease.session_ids == ["slot-1", "slot-1", "slot-1"]
-    assert acquire.await_count == 2
-    assert all(call.kwargs["session_id"] is None for call in acquire.await_args_list)
-    assert all(call.kwargs["assignment_id"] == "slot-1" for call in acquire.await_args_list)
-    assert provider.destroyed == []
-
-
-def test_initial_shared_slot_discards_pool_candidate_lost_to_resident(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from astrabox.core.service.orchestrator.agent import client_pool
-
-    handle = SimpleNamespace(sandbox_id="pool-box")
-    lease = _InitialSlotLease(winner="resident-box")
-    provider = _InitialSlotProvider()
-    monkeypatch.setattr(
-        client_pool,
-        "acquire_agent_client_pool",
-        AsyncMock(
-            return_value=SimpleNamespace(sandbox=handle, sandbox_id="pool-box")
-        ),
-    )
-
-    binding, pooled_handle = asyncio.run(
-        ps._place_initial_shared_slot(
-            SimpleNamespace(agent_id="agent-1"),
-            runtime_manager=object(),
-            repo=FakeAgentRepo({"agent_id": "agent-1"}),
-            provider=provider,
-            lease=lease,
-            identity={
-                "home_dir": "/home/conversations/slot-1",
-                "workspace_dir": "/workspace",
-                "workspace_source_dir": "/home/conversations/slot-1/workspace",
-            },
-            slot_id="slot-1",
-            generation="generation-1",
-        )
-    )
-
-    assert binding.sandbox_id == "resident-box"
-    assert pooled_handle is None
-    assert lease.candidates == [None, "pool-box"]
-    assert provider.destroyed == ["pool-box"]
-
-
-def test_initial_shared_slot_releases_resident_when_loser_cleanup_is_unconfirmed(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from astrabox.core.service.orchestrator.agent import client_pool
-
-    lease = _InitialSlotLease(winner="resident-box")
-    provider = _InitialSlotProvider(destruction_confirmed=False)
-    monkeypatch.setattr(
-        client_pool,
-        "acquire_agent_client_pool",
-        AsyncMock(
-            return_value=SimpleNamespace(
-                sandbox=SimpleNamespace(sandbox_id="pool-box"),
-                sandbox_id="pool-box",
-            )
-        ),
-    )
-
-    with pytest.raises(APIError) as caught:
-        asyncio.run(
-            ps._place_initial_shared_slot(
-                SimpleNamespace(agent_id="agent-1"),
-                runtime_manager=object(),
-                repo=FakeAgentRepo({"agent_id": "agent-1"}),
-                provider=provider,
-                lease=lease,
-                identity={
-                    "home_dir": "/home/conversations/slot-1",
-                    "workspace_dir": "/workspace",
-                    "workspace_source_dir": (
-                        "/home/conversations/slot-1/workspace"
-                    ),
-                },
-                slot_id="slot-1",
-                generation="generation-1",
-            )
-        )
-
-    assert caught.value.code == "SANDBOX_CLEANUP_UNCONFIRMED"
-    assert caught.value.data["leaked_sandbox_id"] == "pool-box"
-    assert provider.destroyed == ["pool-box"]
-    assert lease.released == ["resident-box"]
-
-
-def test_initial_shared_slot_fails_when_supplier_publishes_no_member(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from astrabox.core.service.orchestrator.agent import client_pool
-
-    monkeypatch.setattr(
-        client_pool,
-        "agent_client_pool_first_member_timeout_seconds",
-        lambda: 0.0,
-    )
-    monkeypatch.setattr(
-        client_pool,
-        "acquire_agent_client_pool",
-        AsyncMock(return_value=None),
-    )
-
-    with pytest.raises(APIError) as caught:
-        asyncio.run(
-            ps._place_initial_shared_slot(
-                SimpleNamespace(agent_id="agent-1"),
-                runtime_manager=object(),
-                repo=FakeAgentRepo({"agent_id": "agent-1"}),
-                provider=_InitialSlotProvider(),
-                lease=_InitialSlotLease(),
-                identity={
-                    "home_dir": "/home/conversations/slot-1",
-                    "workspace_dir": "/workspace",
-                    "workspace_source_dir": "/home/conversations/slot-1/workspace",
-                },
-                slot_id="slot-1",
-                generation="generation-1",
-            )
-        )
-
-    assert caught.value.code == "SANDBOX_CLIENT_POOL_UNAVAILABLE"
-    assert "published no box" in caught.value.message
+    return claimed.get(session_id)
 
 
 # ── claim ─────────────────────────────────────────────────────────────────
 
 
-def test_concurrent_claims_have_exactly_one_winner() -> None:
+def test_concurrent_claims_have_exactly_one_winner(monkeypatch: pytest.MonkeyPatch) -> None:
     repo = FakeAgentRepo(_row(_manifest()))
+    monkeypatch.setattr(ps, "sandbox_for_name", lambda _name: SimpleNamespace(
+        name="fake", read_memory_headroom=AsyncMock(return_value=(4 * 1024**3, 0)),
+    ))
 
     async def run() -> list[dict[str, Any] | None]:
         return list(
             await asyncio.gather(
                 *(
-                    ps.claim_prepared_slot(
+                    _claim_one(
                         agent_id="agent-1",
                         session_id=f"session-{i}",
                         expected_runtime_generation="generation-1",
@@ -318,7 +138,7 @@ def test_concurrent_claims_have_exactly_one_winner() -> None:
     results = asyncio.run(run())
     winners = [r for r in results if r is not None]
     assert len(winners) == 1, results
-    stored = repo.rows["agent-1"][ps.PREPARED_SLOT_FIELD]
+    stored = _slots(repo)[0]
     assert stored["state"] == "claimed"
     assert stored["claimed_session_id"] == winners[0]["claimed_session_id"]
 
@@ -330,20 +150,20 @@ def test_claim_refuses_stale_generation_and_expired_slot() -> None:
             _manifest(
                 prepared_at=_iso(
                     datetime.now(timezone.utc)
-                    - timedelta(seconds=ps.PREPARED_SLOT_TTL_SECONDS + 60)
+                    - timedelta(seconds=ps.prepared_seat_ttl_seconds() + 60)
                 )
             )
         )
     )
 
     async def run() -> tuple[Any, Any]:
-        a = await ps.claim_prepared_slot(
+        a = await _claim_one(
             agent_id="agent-1",
             session_id="s1",
             expected_runtime_generation="generation-1",
             agent_repo=stale,
         )
-        b = await ps.claim_prepared_slot(
+        b = await _claim_one(
             agent_id="agent-1",
             session_id="s1",
             expected_runtime_generation="generation-1",
@@ -354,8 +174,8 @@ def test_claim_refuses_stale_generation_and_expired_slot() -> None:
     a, b = asyncio.run(run())
     assert a is None and b is None
     # Neither refusal mutates the manifest — destruction belongs to the reaper.
-    assert stale.rows["agent-1"][ps.PREPARED_SLOT_FIELD]["state"] == "prepared"
-    assert expired.rows["agent-1"][ps.PREPARED_SLOT_FIELD]["state"] == "prepared"
+    assert _slots(stale)[0]["state"] == "prepared"
+    assert _slots(expired)[0]["state"] == "prepared"
 
 
 @pytest.mark.parametrize(
@@ -364,7 +184,7 @@ def test_claim_refuses_stale_generation_and_expired_slot() -> None:
         ("no_generation", "WARNING", "carries no runtime generation"),
         ("stale_manifest", "WARNING", "stale generation"),
         ("no_manifest", "INFO", "no prepared unit"),
-        ("expired", "INFO", "exceeded its TTL"),
+        ("expired", "INFO", "outlived their idle lease"),
     ],
 )
 def test_every_claim_miss_names_its_own_reason(
@@ -395,7 +215,7 @@ def test_every_claim_miss_names_its_own_reason(
                 _manifest(
                     prepared_at=_iso(
                         datetime.now(timezone.utc)
-                        - timedelta(seconds=ps.PREPARED_SLOT_TTL_SECONDS + 60)
+                        - timedelta(seconds=ps.prepared_seat_ttl_seconds() + 60)
                     )
                 )
             )
@@ -403,7 +223,7 @@ def test_every_claim_miss_names_its_own_reason(
 
     with caplog.at_level("INFO", logger=ps.logger.name):
         claimed = asyncio.run(
-            ps.claim_prepared_slot(
+            _claim_one(
                 agent_id="agent-1",
                 session_id="s1",
                 expected_runtime_generation=expected_generation,
@@ -425,11 +245,11 @@ def test_clear_claimed_slot_only_clears_its_own_slot() -> None:
         await ps.clear_claimed_slot(
             agent_id="agent-1", slot_id="slot-OTHER", agent_repo=repo
         )
-        assert repo.rows["agent-1"][ps.PREPARED_SLOT_FIELD] is not None
+        assert _slots(repo) != []
         await ps.clear_claimed_slot(
             agent_id="agent-1", slot_id="slot-abc", agent_repo=repo
         )
-        assert repo.rows["agent-1"][ps.PREPARED_SLOT_FIELD] is None
+        assert _slots(repo) == []
 
     asyncio.run(run())
 
@@ -454,7 +274,7 @@ def test_reapable_matrix() -> None:
     expired = _manifest(
         prepared_at=_iso(
             datetime.now(timezone.utc)
-            - timedelta(seconds=ps.PREPARED_SLOT_TTL_SECONDS + 1)
+            - timedelta(seconds=ps.prepared_seat_ttl_seconds() + 1)
         )
     )
     assert ps._manifest_is_reapable(
@@ -466,22 +286,12 @@ def test_reapable_matrix() -> None:
         unparsable, current_runtime_generation="generation-1"
     )
 
-    # With a renewal lead, a slot that would expire before the next sweep is
-    # already the reaper's; one that outlasts the lead is left alone.
+    # A seat inside its idle lease is left alone, however close to its end.
     due_soon = _manifest(
         prepared_at=_iso(
             datetime.now(timezone.utc)
-            - timedelta(seconds=ps.PREPARED_SLOT_TTL_SECONDS - 100)
+            - timedelta(seconds=ps.prepared_seat_ttl_seconds() - 100)
         )
-    )
-    assert ps._manifest_is_reapable(
-        due_soon, current_runtime_generation="generation-1", renewal_lead_seconds=300
-    ) == "prepared slot is due for renewal before its TTL"
-    assert (
-        ps._manifest_is_reapable(
-            due_soon, current_runtime_generation="generation-1", renewal_lead_seconds=50
-        )
-        is None
     )
     assert (
         ps._manifest_is_reapable(
@@ -557,7 +367,7 @@ def test_config_retirement_preserves_a_fresh_claim_handoff(
         )
     )
 
-    assert repo.rows["agent-1"][ps.PREPARED_SLOT_FIELD] == claimed
+    assert _slots(repo) == [claimed]
 
 
 def test_config_retirement_losing_to_claim_cas_does_not_destroy_the_unit(
@@ -580,8 +390,8 @@ def test_config_retirement_losing_to_claim_cas_does_not_destroy_the_unit(
             updates: dict[str, Any],
         ) -> bool:
             _ = updates
-            if expected == {ps.PREPARED_SLOT_FIELD: prepared}:
-                self.rows[agent_id][ps.PREPARED_SLOT_FIELD] = dict(claimed)
+            if expected == {ps.PREPARED_SLOTS_FIELD: [prepared]}:
+                self.rows[agent_id][ps.PREPARED_SLOTS_FIELD] = [dict(claimed)]
                 return False
             return await super().compare_and_update_agent(
                 agent_id,
@@ -609,7 +419,7 @@ def test_config_retirement_losing_to_claim_cas_does_not_destroy_the_unit(
         )
     )
 
-    assert repo.rows["agent-1"][ps.PREPARED_SLOT_FIELD] == claimed
+    assert _slots(repo) == [claimed]
     assert discards == []
 
 
@@ -641,7 +451,7 @@ def test_failed_config_retirement_keeps_its_cleanup_address(
             )
         )
 
-    retained = repo.rows["agent-1"][ps.PREPARED_SLOT_FIELD]
+    retained = _slots(repo)[0]
     assert retained["state"] == "retiring"
     assert retained["slot_id"] == prepared["slot_id"]
     assert retained["retire_reason"] == "Agent runtime generation changed"
@@ -665,11 +475,7 @@ def test_reap_orphaned_claim_keeps_adopted_placement(
     async def fake_discard(template: Any, manifest: dict[str, Any], **kw: Any) -> None:
         discards.append(str(manifest.get("slot_id")))
         repo = kw.get("agent_repo")
-        await repo.compare_and_update_agent(
-            "agent-1",
-            expected={ps.PREPARED_SLOT_FIELD: manifest},
-            updates={ps.PREPARED_SLOT_FIELD: None},
-        )
+        await ps._change_slot(repo, "agent-1", manifest, None)
 
     monkeypatch.setattr(ps, "discard_prepared_slot", fake_discard)
 
@@ -681,10 +487,10 @@ def test_reap_orphaned_claim_keeps_adopted_placement(
 
     monkeypatch.setattr(ps, "_claimed_session_adopted_placement", adopted)
     reason = asyncio.run(
-        ps.reap_slot_manifest_if_stale(_Template(), agent_repo=adopted_repo)
+        ps.reap_stale_slot_manifests(_Template(), agent_repo=adopted_repo)
     )
     assert reason
-    assert adopted_repo.rows["agent-1"][ps.PREPARED_SLOT_FIELD] is None
+    assert _slots(adopted_repo) == []
     assert discards == []
 
     # Not adopted: the placement itself is the leak and must be destroyed.
@@ -695,7 +501,7 @@ def test_reap_orphaned_claim_keeps_adopted_placement(
 
     monkeypatch.setattr(ps, "_claimed_session_adopted_placement", not_adopted)
     reason = asyncio.run(
-        ps.reap_slot_manifest_if_stale(_Template(), agent_repo=lost_repo)
+        ps.reap_stale_slot_manifests(_Template(), agent_repo=lost_repo)
     )
     assert reason
     assert discards == ["slot-abc"]
@@ -727,7 +533,7 @@ def test_failed_slot_release_keeps_the_manifest(
             )
         )
 
-    assert repo.rows["agent-1"][ps.PREPARED_SLOT_FIELD] == manifest
+    assert _slots(repo) == [manifest]
 
 
 # ── gateway-key bookkeeping ───────────────────────────────────────────────
@@ -767,7 +573,7 @@ def _gateway_template() -> Any:
 
 
 def test_gateway_append_retries_without_overwriting_a_concurrent_claim() -> None:
-    """A refill may append while a Session claims the published sibling."""
+    """A claim may append its entry while another Session claims a sibling."""
 
     sibling = {"slot_id": "slot-published", "session_id": None}
 
@@ -797,66 +603,19 @@ def test_gateway_append_retries_without_overwriting_a_concurrent_claim() -> None
     repo = ClaimWinsFirst(
         {
             "agent_id": "agent-1",
-            ps.PREPARED_SLOT_FIELD: {"slot_id": "slot-published"},
+            ps.PREPARED_SLOTS_FIELD: [{"slot_id": "slot-published"}],
             ps.GATEWAY_ENTRIES_FIELD: [sibling],
         }
     )
 
-    asyncio.run(ps.record_gateway_entry(repo, "agent-1", slot_id="slot-new"))
+    asyncio.run(
+        ps.record_gateway_entry(repo, "agent-1", slot_id="slot-new", session_id="session-new")
+    )
 
     assert repo.raced is True
     assert repo.rows["agent-1"][ps.GATEWAY_ENTRIES_FIELD] == [
         {"slot_id": "slot-published", "session_id": "session-claimed"},
-        {"slot_id": "slot-new", "session_id": None},
-    ]
-
-
-def test_gateway_claim_retries_without_dropping_a_concurrent_append() -> None:
-    """Claim updates the exact list it read, then re-reads after a lost CAS."""
-
-    class AppendWinsFirst(FakeAgentRepo):
-        raced = False
-
-        async def compare_and_update_agent(
-            self,
-            agent_id: str,
-            *,
-            expected: dict[str, Any],
-            updates: dict[str, Any],
-        ) -> bool:
-            if not self.raced:
-                self.raced = True
-                self.rows[agent_id][ps.GATEWAY_ENTRIES_FIELD].append(
-                    {"slot_id": "slot-sibling", "session_id": None}
-                )
-                return False
-            return await super().compare_and_update_agent(
-                agent_id,
-                expected=expected,
-                updates=updates,
-            )
-
-    repo = AppendWinsFirst(
-        {
-            "agent_id": "agent-1",
-            ps.GATEWAY_ENTRIES_FIELD: [
-                {"slot_id": "slot-claiming", "session_id": None}
-            ],
-        }
-    )
-
-    asyncio.run(
-        ps.mark_gateway_entry_claimed(
-            agent_id="agent-1",
-            slot_id="slot-claiming",
-            session_id="session-1",
-            agent_repo=repo,
-        )
-    )
-
-    assert repo.rows["agent-1"][ps.GATEWAY_ENTRIES_FIELD] == [
-        {"slot_id": "slot-claiming", "session_id": "session-1"},
-        {"slot_id": "slot-sibling", "session_id": None},
+        {"slot_id": "slot-new", "session_id": "session-new"},
     ]
 
 
@@ -866,7 +625,7 @@ def test_pruning_keeps_the_published_slot_the_caller_did_not_name() -> None:
     repo = FakeAgentRepo(
         {
             "agent_id": "agent-1",
-            ps.PREPARED_SLOT_FIELD: {"slot_id": "slot-published"},
+            ps.PREPARED_SLOTS_FIELD: [{"slot_id": "slot-published"}],
             ps.GATEWAY_ENTRIES_FIELD: [
                 {"slot_id": "slot-published", "session_id": None},
                 {"slot_id": "slot-preparing", "session_id": None},
@@ -950,168 +709,45 @@ def test_prune_releases_a_session_key_only_after_its_delete_cas_wins(
     assert events == ["lost-cas", "won-cas", "released"]
 
 
-def test_shared_prepare_sends_only_the_new_workload_and_keeps_the_mcp_plan(
+def test_a_claim_records_its_key_owner_before_ended_sessions_are_collected(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The provider, not a stale Agent ledger, carries live sibling secrets."""
+    released: list[str] = []
 
-    from astrabox.core.service.orchestrator.engine import provisioning
-    from astrabox.core.service.orchestrator.runtime import mcp_credentials
-    from astrabox.seams.egress_credentials import (
-        MCPHeaderEgressCredential,
-        SandboxEgressCredentialPlan,
-        workload_credential_name,
-    )
+    class Sessions:
+        async def get_session(self, session_id: str) -> dict[str, str]:
+            return {"state": "TERMINATED" if session_id == "session-ended" else "CREATING"}
 
-    applied: list[SandboxEgressCredentialPlan] = []
-    recorded: list[str] = []
-    mcp_plan = SandboxEgressCredentialPlan(
-        mcp=(
-            MCPHeaderEgressCredential(
-                name="astrabox-mcp-gateway-test",
-                server_url="https://mcp.test/server",
-                headers={"Authorization": "Bearer mcp-secret"},
-            ),
-        )
-    )
+    class Endpoint:
+        async def release_session_credential(self, *, context: Any) -> bool:
+            released.append(context.conversation_id)
+            return True
 
-    class _Handle:
-        pass
-
-    class _Provider:
-        name = "fake"
-        supports_create_network_policy = True
-        supports_egress_credential_injection = True
-
-        async def connect(self, sandbox_id: str) -> _Handle:
-            assert sandbox_id == "sandbox-1"
-            return _Handle()
-
-        async def apply_credential_vault(
-            self, handle: Any, *, vault_write: SandboxEgressCredentialPlan
-        ) -> None:
-            assert isinstance(handle, _Handle)
-            # The sibling claims after this prepare composed its write but
-            # before the provider applies it. A plan reconstructed from the
-            # earlier ledger snapshot would now put the shared key back.
-            await ps.mark_gateway_entry_claimed(
-                agent_id="agent-1",
-                slot_id="slot-claimed",
-                session_id="session-claimed",
-                agent_repo=repo,
-            )
-            applied.append(vault_write)
-
-    async def resolve_mcp(*_args: Any, **_kwargs: Any) -> SandboxEgressCredentialPlan:
-        assert _args == ()
-        assert _kwargs["vault_enabled"] is True
-        assert _kwargs["template"].agent_id == "agent-1"
-        return mcp_plan
-
-    async def record(
-        _repo: Any, _agent_id: str, *, slot_id: str
-    ) -> None:
-        recorded.append(slot_id)
-
-    settings = SimpleNamespace(sandbox_credential_vault_enabled=True)
-    monkeypatch.setattr(ps, "load_astrabox_settings", lambda: settings)
-    monkeypatch.setattr(provisioning, "load_astrabox_settings", lambda: settings)
-    monkeypatch.setattr(
-        mcp_credentials,
-        "resolve_agent_mcp_credential_plan",
-        resolve_mcp,
-    )
-    monkeypatch.setattr(ps, "record_gateway_entry", record)
-    provider = _Provider()
-    repo = FakeAgentRepo(
-        {
-            "agent_id": "agent-1",
-            ps.PREPARED_SLOT_FIELD: {"slot_id": "slot-claimed"},
-            ps.GATEWAY_ENTRIES_FIELD: [
-                {"slot_id": "slot-claimed", "session_id": None}
-            ],
-        }
-    )
-
-    composed = asyncio.run(
-        ps._compose_gateway_vault(
-            _gateway_template(),
-            backend_provider=provider,
-            credential_request=_gateway_credential_request(),
-            repo=repo,
-            agent_id="agent-1",
-            slot_id="slot-new",
-            sandbox_id="sandbox-1",
-        )
-    )
-
-    assert composed[2] is True
-    assert recorded == ["slot-new"]
-    assert repo.rows["agent-1"][ps.GATEWAY_ENTRIES_FIELD] == [
-        {"slot_id": "slot-claimed", "session_id": "session-claimed"}
-    ]
-    assert len(applied) == 1
-    assert applied[0].mcp == mcp_plan.mcp
-    substitutions = applied[0].model[0].substitutions
-    assert [item.name for item in substitutions] == [
-        workload_credential_name("slot-new")
-    ]
-    assert substitutions[0].secret_value == "sk-shared-key"
-    assert workload_credential_name("slot-claimed") not in {
-        item.name for item in substitutions
-    }
-
-
-def test_a_claim_is_in_the_ledger_before_its_credential_is_repointed(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The key must be durably owned before either external write can happen."""
-
-    repo = FakeAgentRepo(
-        {
-            "agent_id": "agent-1",
-            ps.GATEWAY_ENTRIES_FIELD: [{"slot_id": "slot-1", "session_id": None}],
-        }
-    )
-    seen_at_mint: list[Any] = []
-
-    class _Endpoint:
-        async def ensure_session_credential(self, *, context: Any) -> str:
-            _ = context
-            row = await repo.get_agent("agent-1")
-            seen_at_mint.extend(row[ps.GATEWAY_ENTRIES_FIELD])
-            return "sk-session-key"
-
-    class _Provider:
-        async def apply_credential_vault(
-            self,
-            sandbox: Any,
-            *,
-            vault_write: Any,
-            create_if_missing: bool,
-        ) -> None:
-            _ = (sandbox, vault_write)
-            assert create_if_missing is False
-
+    from astrabox.persistence.repository import session_repository
     from astrabox.seams import model as model_seam
 
-    monkeypatch.setattr(ps, "AgentRepository", lambda: repo)
-    monkeypatch.setattr(model_seam, "model_endpoint_for_name", lambda _n: _Endpoint())
-
-    asyncio.run(
-        ps.repoint_slot_gateway_credential(
-            object(),
-            backend_provider=_Provider(),
-            credential_request=_gateway_credential_request(),
-            template=_gateway_template(),
-            claimed={"slot_id": "slot-1", "gateway_substitution": True},
-            session_id="session-9",
-            user_id=None,
-        )
+    monkeypatch.setattr(session_repository, "SessionRepository", Sessions)
+    monkeypatch.setattr(model_seam, "model_endpoint_for_name", lambda _name: Endpoint())
+    repo = FakeAgentRepo(
+        {
+            "agent_id": "agent-1",
+            ps.GATEWAY_ENTRIES_FIELD: [{"slot_id": "slot-ended", "session_id": "session-ended"}],
+        }
     )
+    monkeypatch.setattr(ps, "AgentRepository", lambda: repo)
 
-    # Read at the first wire call, not at the end: the window is what matters.
-    assert seen_at_mint == [{"slot_id": "slot-1", "session_id": "session-9"}]
+    async def claim_then_collect() -> list[str]:
+        await ps.record_gateway_entry(repo, "agent-1", slot_id="slot-new", session_id="session-new")
+        released_during_claim = list(released)
+        ps.schedule_gateway_entry_prune("agent-1")
+        await asyncio.gather(*list(ps._GATEWAY_PRUNE_TASKS))
+        return released_during_claim
+
+    assert asyncio.run(claim_then_collect()) == []
+    assert released == ["session-ended"]
+    assert repo.rows["agent-1"][ps.GATEWAY_ENTRIES_FIELD] == [
+        {"slot_id": "slot-new", "session_id": "session-new"}
+    ]
 
 
 def test_the_published_slot_is_read_from_the_manifest_not_the_caller() -> None:
@@ -1121,54 +757,14 @@ def test_the_published_slot_is_read_from_the_manifest_not_the_caller() -> None:
     assert asyncio.run(ps._published_manifest_slot(empty, "agent-2")) == set()
 
     blank = FakeAgentRepo(
-        {"agent_id": "agent-3", ps.PREPARED_SLOT_FIELD: {"slot_id": "  "}}
+        {"agent_id": "agent-3", ps.PREPARED_SLOTS_FIELD: [{"slot_id": "  "}]}
     )
     assert asyncio.run(ps._published_manifest_slot(blank, "agent-3")) == set()
 
     named = FakeAgentRepo(
-        {"agent_id": "agent-4", ps.PREPARED_SLOT_FIELD: {"slot_id": "slot-x"}}
+        {"agent_id": "agent-4", ps.PREPARED_SLOTS_FIELD: [{"slot_id": "slot-x"}]}
     )
     assert asyncio.run(ps._published_manifest_slot(named, "agent-4")) == {"slot-x"}
-
-
-# ── publish CAS vs the absent-field defect ────────────────────────────────
-
-
-def test_publish_cas_is_decidable_when_field_was_never_written(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The live defect: {field: None} matches nothing on a row without the
-    field, so the first refill of every Agent lost its own publish CAS. The
-    explicit None initialisation makes the publish decidable."""
-
-    repo = FakeAgentRepo({"agent_id": "agent-1"})  # field genuinely absent
-
-    async def run() -> bool:
-        row = await repo.get_agent("agent-1")
-        assert ps.PREPARED_SLOT_FIELD not in row
-        # The allocator's init step:
-        if ps.PREPARED_SLOT_FIELD not in row:
-            await repo.update_agent("agent-1", {ps.PREPARED_SLOT_FIELD: None})
-        return await repo.compare_and_update_agent(
-            "agent-1",
-            expected={ps.PREPARED_SLOT_FIELD: None},
-            updates={ps.PREPARED_SLOT_FIELD: _manifest()},
-        )
-
-    assert asyncio.run(run()) is True
-
-    # And the defect itself stays encoded: without the init write the CAS
-    # must lose against an absent field.
-    bare = FakeAgentRepo({"agent_id": "agent-1"})
-
-    async def run_bare() -> bool:
-        return await bare.compare_and_update_agent(
-            "agent-1",
-            expected={ps.PREPARED_SLOT_FIELD: None},
-            updates={ps.PREPARED_SLOT_FIELD: _manifest()},
-        )
-
-    assert asyncio.run(run_bare()) is False
 
 
 class _FakeSessions:
@@ -1253,72 +849,8 @@ def test_no_allocation_at_all_is_not_an_error(monkeypatch: Any) -> None:
     assert sessions.cleared == []
 
 
-@pytest.mark.parametrize("binding", [
-    {"sandbox_id": None, "sandbox_backend": None},
-    {"sandbox_id": "replacement", "sandbox_backend": "fake"},
-    {"sandbox_id": "box-1", "sandbox_backend": "other-backend"},
-])
-def test_fresh_shared_slot_cannot_be_claimed_from_a_different_binding(
-    binding: dict[str, Any],
-) -> None:
-    manifest = _manifest(placement="shared_slot", sandbox_backend="fake")
-    repo = FakeAgentRepo(_row(manifest, **binding))
-    claimed = asyncio.run(ps.claim_prepared_slot(
-        agent_id="agent-1", session_id="session", expected_runtime_generation="generation-1",
-        agent_repo=repo,
-    ))
-    assert claimed is None
-    assert repo.rows["agent-1"][ps.PREPARED_SLOT_FIELD] == manifest
-
-
-@pytest.mark.parametrize("move_during_cas", [False, True])
-def test_shared_slot_publication_is_fenced_by_its_resident_binding(
-    move_during_cas: bool,
-) -> None:
-    manifest = _manifest(placement="shared_slot", sandbox_backend="fake")
-    repo = FakeAgentRepo(_row(None, with_field=True, sandbox_id="box-1", sandbox_backend="fake"))
-    original_cas = repo.compare_and_update_agent
-
-    async def cas(agent_id: str, *, expected: dict[str, Any], updates: dict[str, Any]) -> bool:
-        if move_during_cas:
-            repo.rows[agent_id]["sandbox_id"] = "replacement"
-        return await original_cas(agent_id, expected=expected, updates=updates)
-
-    repo.compare_and_update_agent = cas  # type: ignore[method-assign]
-    if move_during_cas:
-        with pytest.raises(APIError) as error:
-            asyncio.run(ps._publish_prepared_manifest(repo, "agent-1", manifest, replacing=None))
-        assert error.value.code == "AGENT_PREWARM_SLOT_CONFLICT"
-        assert repo.rows["agent-1"][ps.PREPARED_SLOT_FIELD] is None
-    else:
-        asyncio.run(ps._publish_prepared_manifest(repo, "agent-1", manifest, replacing=None))
-        assert repo.rows["agent-1"][ps.PREPARED_SLOT_FIELD] == manifest
-
-
-def test_shared_slot_claim_cannot_win_after_its_binding_moves(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(ps, "sandbox_for_name", lambda _name: SimpleNamespace(
-        name="fake", read_memory_headroom=AsyncMock(return_value=(4 * 1024**3, 0)),
-    ))
-    manifest = _manifest(placement="shared_slot", sandbox_backend="fake")
-    repo = FakeAgentRepo(_row(manifest, sandbox_id="box-1", sandbox_backend="fake"))
-    original_cas = repo.compare_and_update_agent
-
-    async def cas(agent_id: str, *, expected: dict[str, Any], updates: dict[str, Any]) -> bool:
-        repo.rows[agent_id]["sandbox_id"] = "replacement"
-        return await original_cas(agent_id, expected=expected, updates=updates)
-
-    repo.compare_and_update_agent = cas  # type: ignore[method-assign]
-    assert asyncio.run(ps.claim_prepared_slot(
-        agent_id="agent-1", session_id="session", expected_runtime_generation="generation-1",
-        agent_repo=repo,
-    )) is None
-    assert repo.rows["agent-1"][ps.PREPARED_SLOT_FIELD] == manifest
-
-
 def _capacity_claim(repo: FakeAgentRepo) -> dict[str, Any] | None:
-    return asyncio.run(ps.claim_prepared_slot(
+    return asyncio.run(_claim_one(
         agent_id="agent-1", session_id="session-1",
         expected_runtime_generation="generation-1", agent_repo=repo,
     ))
@@ -1355,7 +887,7 @@ def test_a_full_box_withdraws_its_prepared_slot_without_releasing_siblings(
     row = repo.rows["agent-1"]
     assert row["sandbox_id"] == "box-1"
     assert row[ps.BOX_ADMISSIONS] == [admission]
-    manifest = row[ps.PREPARED_SLOT_FIELD]
+    manifest = _slots(repo)[0]
     assert manifest["state"] == "retiring"
     assert manifest["isolated_session_id"] == "iso-1"
     assert "claimed_session_id" not in manifest
@@ -1388,7 +920,7 @@ def test_claim_keeps_other_young_admissions_reserved(
     repo, _memory = _capacity_fixture(monkeypatch, free_reservations=1, admissions=[pending])
     assert _capacity_claim(repo) is None
     assert repo.rows["agent-1"][ps.BOX_ADMISSIONS] == [pending]
-    assert repo.rows["agent-1"][ps.PREPARED_SLOT_FIELD]["state"] == "retiring"
+    assert _slots(repo)[0]["state"] == "retiring"
 
 
 def test_claim_rechecks_memory_after_another_admission_wins_the_cas(
@@ -1407,7 +939,7 @@ def test_claim_rechecks_memory_after_another_admission_wins_the_cas(
     repo.compare_and_update_agent = cas  # type: ignore[method-assign]
     assert _capacity_claim(repo) is None
     assert memory.await_count == 2
-    assert repo.rows["agent-1"][ps.PREPARED_SLOT_FIELD]["state"] == "retiring"
+    assert _slots(repo)[0]["state"] == "retiring"
     assert [e["session_id"] for e in repo.rows["agent-1"][ps.BOX_ADMISSIONS]] == ["sibling"]
 
 
@@ -1415,27 +947,27 @@ def test_capacity_refusal_cannot_retire_a_slot_claimed_by_another_worker(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repo, memory = _capacity_fixture(monkeypatch, free_reservations=0, admissions=[])
-    manifest = repo.rows["agent-1"][ps.PREPARED_SLOT_FIELD]
+    manifest = _slots(repo)[0]
     winner = {**manifest, "state": "claimed", "claimed_session_id": "winner"}
 
     async def read_memory(_box: str) -> tuple[int, int]:
-        repo.rows["agent-1"][ps.PREPARED_SLOT_FIELD] = winner
+        repo.rows["agent-1"][ps.PREPARED_SLOTS_FIELD] = [winner]
         return 512 * 1024**2, 512 * 1024**2
 
     memory.side_effect = read_memory
     assert _capacity_claim(repo) is None
-    assert repo.rows["agent-1"][ps.PREPARED_SLOT_FIELD] == winner
+    assert _slots(repo) == [winner]
 
 
 def test_unexpected_capacity_probe_failure_preserves_the_prepared_slot(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repo, memory = _capacity_fixture(monkeypatch, free_reservations=1, admissions=[])
-    manifest = copy.deepcopy(repo.rows["agent-1"][ps.PREPARED_SLOT_FIELD])
+    manifest = copy.deepcopy(_slots(repo)[0])
     memory.side_effect = RuntimeError("memory probe contract broken")
     with pytest.raises(RuntimeError, match="memory probe contract broken"):
         _capacity_claim(repo)
-    assert repo.rows["agent-1"][ps.PREPARED_SLOT_FIELD] == manifest
+    assert _slots(repo) == [manifest]
     assert repo.rows["agent-1"][ps.BOX_ADMISSIONS] == []
 
 
@@ -1451,39 +983,15 @@ def test_slot_expiring_during_the_capacity_probe_is_not_claimed(
 
     monkeypatch.setattr(ps, "datetime", Clock)
     repo, memory = _capacity_fixture(monkeypatch, free_reservations=1, admissions=[])
-    manifest = repo.rows["agent-1"][ps.PREPARED_SLOT_FIELD]
+    manifest = repo.rows["agent-1"][ps.PREPARED_SLOTS_FIELD][0]
     manifest["prepared_at"] = now.isoformat()
 
     async def delayed_probe(_box: str) -> tuple[int, int]:
         nonlocal now
-        now += timedelta(seconds=ps.PREPARED_SLOT_TTL_SECONDS + 1)
+        now += timedelta(seconds=ps.prepared_seat_ttl_seconds() + 1)
         return 4 * 1024**3, 0
 
     memory.side_effect = delayed_probe
     assert _capacity_claim(repo) is None
-    assert repo.rows["agent-1"][ps.PREPARED_SLOT_FIELD]["state"] == "prepared"
+    assert _slots(repo)[0]["state"] == "prepared"
     assert repo.rows["agent-1"][ps.BOX_ADMISSIONS] == []
-
-
-def test_dedicated_prepared_boxes_do_not_use_shared_memory_admission(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    provider = Mock(side_effect=AssertionError("dedicated claim must not probe shared memory"))
-    monkeypatch.setattr(ps, "sandbox_for_name", provider)
-    repo = FakeAgentRepo(_row(_manifest(placement="conversation_box")))
-    assert _capacity_claim(repo) is not None
-    provider.assert_not_called()
-
-
-def test_refill_retires_a_detached_fresh_slot_before_building(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    manifest = _manifest(placement="shared_slot", sandbox_backend="fake")
-    repo = FakeAgentRepo(_row(manifest, sandbox_id=None, sandbox_backend=None))
-    retire = AsyncMock()
-    monkeypatch.setattr(ps, "_retire_manifest", retire)
-    reason = asyncio.run(ps.reap_slot_manifest_if_stale(
-        SimpleNamespace(agent_id="agent-1", runtime_generation="generation-1"), agent_repo=repo,
-    ))
-    assert reason == "prepared slot no longer belongs to the resident sandbox"
-    retire.assert_awaited_once_with("agent-1", manifest, reason=reason, repo=repo)

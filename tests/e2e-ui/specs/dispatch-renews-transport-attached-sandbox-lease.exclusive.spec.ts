@@ -42,7 +42,7 @@ test('dispatch renews a transport-attached session sandbox lease before sending'
     name: `__e2e_transport_lease_${Date.now()}_${test.info().workerIndex}`,
     model: base.model,
     environment_name: base.environment_name,
-    prewarm_enabled: false,
+    prepared_capacity: 0,
   });
   agentId = agent.agent_id;
   const created = await api.startConversation(agent.agent_id);

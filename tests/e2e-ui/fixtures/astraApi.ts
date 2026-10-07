@@ -420,7 +420,7 @@ export class AstraApi {
       name: resolvedName,
       model,
       environment_name: environmentName,
-      prewarm_enabled: false,
+      prepared_capacity: 0,
     });
   }
 

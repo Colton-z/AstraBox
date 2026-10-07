@@ -86,14 +86,14 @@ class _AgentService:
         return True
 
 
-async def test_the_prewarm_sweep_reaches_every_prewarm_enabled_agent_on_every_tick() -> None:
-    ids = await _agents(_AGENTS, prewarm_enabled=True)
+async def test_the_prewarm_sweep_reaches_every_agent_with_prepared_capacity_on_every_tick() -> None:
+    ids = await _agents(_AGENTS, prepared_capacity=1)
     # Rows the sweep must not pick up, between and after the ones it must.
     repo = AgentRepository()
     await repo.create_agent({"agent_id": "agent-050x", "name": "off", "state": "ACTIVE",
-                             "prewarm_enabled": False, "updated_at": _stamp(0)})
+                             "prepared_capacity": 0, "updated_at": _stamp(0)})
     await repo.create_agent({"agent_id": "agent-999", "name": "going", "state": "DELETING",
-                             "prewarm_enabled": True, "updated_at": _stamp(0)})
+                             "prepared_capacity": 1, "updated_at": _stamp(0)})
     service = _AgentService()
     manager = RemoteAgentRuntimeManager(agent_service_getter=lambda: service)
 

@@ -98,7 +98,7 @@ async def _seed_default_agent_if_empty() -> None:
 
     from astrabox.common.utils.settings import load_astrabox_settings
     from astrabox.core.service.orchestrator.agent_schema import (
-        agents_prewarm_by_default,
+        default_prepared_capacity,
     )
     from astrabox.persistence.repository import AgentRepository, EnvironmentRepository
     from astrabox.seams.sandbox import default_sandbox_backend, sandbox_for_name
@@ -164,7 +164,7 @@ async def _seed_default_agent_if_empty() -> None:
     deployment_model = _seed_default_model()
     # The seed writes the repository directly, so it applies the same
     # create-time default as AgentConfigService.create_agent_config.
-    seeded_prewarm = agents_prewarm_by_default(load_astrabox_settings())
+    seeded_capacity = default_prepared_capacity(load_astrabox_settings())
     investment_engine_options = {"sdk_options": {"strict_mcp_config": True}}
     from astrabox.core.service.orchestrator.engine.claude_code_options import (
         CLAUDE_ENGINE_OPTIONS_SCHEMA,
@@ -207,7 +207,7 @@ async def _seed_default_agent_if_empty() -> None:
             "system": system,
             "environment_name": _DEFAULT_ENVIRONMENT_NAME,
             "display_meta": {"display_name": name},
-            "prewarm_enabled": seeded_prewarm,
+            "prepared_capacity": seeded_capacity,
             **(capabilities or {}),
         }
 

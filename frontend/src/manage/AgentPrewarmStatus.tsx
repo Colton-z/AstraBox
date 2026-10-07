@@ -54,7 +54,9 @@ export function AgentPrewarmStatus({ agentId, savedAt, enabled, dirty }: {
         <div className="flex flex-wrap items-center gap-3">
           <span data-testid="prewarm-state">{t(`manage:prewarm.${state}`)}</span>
           <span className="tabular-nums" data-testid="prewarm-count">
-            {t('manage:prewarm.available', { count: status?.prepared_count ?? '—' })}
+            {t('manage:prewarm.available', {
+              count: status?.prepared_count ?? '—', target: status?.target ?? '—',
+            })}
           </span>
           <Button type="button" variant="outline" size="sm"
             disabled={!enabled || dirty || refreshing || !status?.enabled}
@@ -74,6 +76,13 @@ export function AgentPrewarmStatus({ agentId, savedAt, enabled, dirty }: {
           <ConsoleFieldRow label={t('manage:prewarm.prepared_at')}>
             <time dateTime={status.prepared_at} className="tabular-nums">
               {formatDateTimeSeconds(status.prepared_at)}
+            </time>
+          </ConsoleFieldRow>
+        )}
+        {status?.last_miss_at && Number.isFinite(Date.parse(status.last_miss_at)) && (
+          <ConsoleFieldRow label={t('manage:prewarm.last_miss_at')}>
+            <time dateTime={status.last_miss_at} className="tabular-nums">
+              {formatDateTimeSeconds(status.last_miss_at)}
             </time>
           </ConsoleFieldRow>
         )}

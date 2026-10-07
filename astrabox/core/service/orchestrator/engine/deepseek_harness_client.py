@@ -178,6 +178,84 @@ async def create_harness_session(
     return native
 
 
+async def resolve_model_route(
+    link: Any,
+    model: str,
+    *,
+    gateway_base_url: str,
+    gateway_key_env: str,
+    model_endpoint_provider: ModelEndpointProvider | None,
+) -> str:
+    """Name the harness LLM route that serves ``model`` through the gateway.
+
+    A model the DeepSeek route advertises in the harness's own catalog
+    (``session/modelCatalog``) runs on that route. Any other model runs on
+    a generic route this call declares for the platform gateway: the same
+    base URL and credential variable the DeepSeek route reads, and the
+    model as its only entry. The section is replaced whole, so re-asserting
+    a changed model leaves no stale entry. The harness validates the
+    section when it is written and answers ``settings/rejected`` for one
+    it cannot serve.
+    """
+
+    catalog = await link.call("session/modelCatalog", {"args": {}})
+    groups = catalog.get("groups") if isinstance(catalog, dict) else None
+    if not isinstance(groups, list):
+        raise APIError(
+            code="AGENT_RUNTIME_ERROR",
+            message=(
+                "deepseek_harness returned no model catalog: "
+                f"{json.dumps(catalog)[:200]}"
+            ),
+            status_code=502,
+        )
+    deepseek_models = {
+        str(entry.get("id") or "")
+        for group in groups
+        if isinstance(group, dict) and group.get("id") == DSH_MODEL_PROVIDER
+        for entry in group.get("models") or []
+        if isinstance(entry, dict)
+    }
+    if model in deepseek_models:
+        return DSH_MODEL_PROVIDER
+    if not gateway_base_url or not gateway_key_env:
+        raise APIError(
+            code="AGENT_RUNTIME_ERROR",
+            message=(
+                f"deepseek_harness cannot route {model!r}: the platform "
+                "gateway base URL or credential variable is empty"
+            ),
+            status_code=500,
+        )
+    model_entry: dict[str, Any] = {"id": model}
+    if model_endpoint_provider is not None:
+        modalities = await model_endpoint_provider.model_input_modalities(
+            model_name=model
+        )
+        if modalities is not None:
+            model_entry["input"] = list(modalities)
+    await link.call(
+        "settings/replace",
+        {
+            "args": {
+                "ns": DSH_GATEWAY_SETTINGS_NS,
+                "section": {
+                    "providers": {
+                        DSH_GATEWAY_PROVIDER: {
+                            "displayName": "AstraBox model gateway",
+                            "api": DSH_GATEWAY_API,
+                            "baseURL": gateway_base_url,
+                            "apiKeyEnv": gateway_key_env,
+                            "models": [model_entry],
+                        }
+                    }
+                },
+            }
+        },
+    )
+    return DSH_GATEWAY_PROVIDER
+
+
 class DeepSeekHarnessEngineClient:
     """Per-conversation client over one injected :class:`DeepSeekHarnessLink`."""
 
@@ -575,7 +653,12 @@ class DeepSeekHarnessEngineClient:
         )
 
     async def select_model(
-        self, model: str, *, gateway_base_url: str, gateway_key_env: str
+        self,
+        model: str,
+        *,
+        gateway_base_url: str,
+        gateway_key_env: str,
+        prepared_route: str | None = None,
     ) -> None:
         """Install the platform's model choice on this conversation.
 
@@ -597,11 +680,14 @@ class DeepSeekHarnessEngineClient:
         landed on another model would otherwise look like success here and
         show up as the wrong model's answers.
 
-        The route comes first: :meth:`_route_for_model`.
+        The route comes first: :meth:`_route_for_model`. A prepared runtime
+        resolved it for this model when its conversation was created, and
+        passes it as ``prepared_route``; the box's gateway settings and catalog
+        are the ones it resolved against.
         """
 
         native = self._require_session()
-        route = await self._route_for_model(
+        route = prepared_route or await self._route_for_model(
             model,
             gateway_base_url=gateway_base_url,
             gateway_key_env=gateway_key_env,
@@ -650,74 +736,15 @@ class DeepSeekHarnessEngineClient:
     async def _route_for_model(
         self, model: str, *, gateway_base_url: str, gateway_key_env: str
     ) -> str:
-        """Name the harness LLM route that serves ``model`` through the gateway.
+        """Name the harness LLM route for ``model``; see :func:`resolve_model_route`."""
 
-        A model the DeepSeek route advertises in the harness's own catalog
-        (``session/modelCatalog``) runs on that route. Any other model runs on
-        a generic route this call declares for the platform gateway: the same
-        base URL and credential variable the DeepSeek route reads, and the
-        model as its only entry. The section is replaced whole, so re-asserting
-        a changed model leaves no stale entry. The harness validates the
-        section when it is written and answers ``settings/rejected`` for one
-        it cannot serve.
-        """
-
-        catalog = await self._link.call("session/modelCatalog", {"args": {}})
-        groups = catalog.get("groups") if isinstance(catalog, dict) else None
-        if not isinstance(groups, list):
-            raise APIError(
-                code="AGENT_RUNTIME_ERROR",
-                message=(
-                    "deepseek_harness returned no model catalog: "
-                    f"{json.dumps(catalog)[:200]}"
-                ),
-                status_code=502,
-            )
-        deepseek_models = {
-            str(entry.get("id") or "")
-            for group in groups
-            if isinstance(group, dict) and group.get("id") == DSH_MODEL_PROVIDER
-            for entry in group.get("models") or []
-            if isinstance(entry, dict)
-        }
-        if model in deepseek_models:
-            return DSH_MODEL_PROVIDER
-        if not gateway_base_url or not gateway_key_env:
-            raise APIError(
-                code="AGENT_RUNTIME_ERROR",
-                message=(
-                    f"deepseek_harness cannot route {model!r}: the platform "
-                    "gateway base URL or credential variable is empty"
-                ),
-                status_code=500,
-            )
-        model_entry: dict[str, Any] = {"id": model}
-        if self._model_endpoint_provider is not None:
-            modalities = await self._model_endpoint_provider.model_input_modalities(
-                model_name=model
-            )
-            if modalities is not None:
-                model_entry["input"] = list(modalities)
-        await self._link.call(
-            "settings/replace",
-            {
-                "args": {
-                    "ns": DSH_GATEWAY_SETTINGS_NS,
-                    "section": {
-                        "providers": {
-                            DSH_GATEWAY_PROVIDER: {
-                                "displayName": "AstraBox model gateway",
-                                "api": DSH_GATEWAY_API,
-                                "baseURL": gateway_base_url,
-                                "apiKeyEnv": gateway_key_env,
-                                "models": [model_entry],
-                            }
-                        }
-                    },
-                }
-            },
+        return await resolve_model_route(
+            self._link,
+            model,
+            gateway_base_url=gateway_base_url,
+            gateway_key_env=gateway_key_env,
+            model_endpoint_provider=self._model_endpoint_provider,
         )
-        return DSH_GATEWAY_PROVIDER
 
     async def get_capabilities(self) -> EngineCapabilityManifest:
         address = {"kind": "session", "sessionId": self._require_session()}

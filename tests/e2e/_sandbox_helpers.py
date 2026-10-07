@@ -177,7 +177,7 @@ def create_agent_variant_session(
         # Cold on purpose: these cases exercise a conversation's own start, and
         # the warm path has its own tests. Stated, not left to the deployment's
         # create-time default.
-        "prewarm_enabled": False,
+        "prepared_capacity": 0,
     }
     system = canonical.get("system")
     if isinstance(system, str) and system.strip():

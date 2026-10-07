@@ -150,7 +150,7 @@ async def test_saving_an_unchanged_selection_does_not_rotate_the_agent_pool_vers
 @pytest.mark.asyncio
 async def test_an_applied_assignment_schedules_reconciliation_and_a_noop_does_not() -> None:
     repo = _AgentRepo()
-    repo.agent["prewarm_enabled"] = True
+    repo.agent["prepared_capacity"] = 1
     scheduled: list[str] = []
     service = AgentExtensionService(
         agent_repo=repo,  # type: ignore[arg-type]

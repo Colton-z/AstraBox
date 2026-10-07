@@ -1,15 +1,16 @@
 {
   "prewarm": {
-    "label": "Warm capacity",
+    "label": "Prepared capacity",
     "help": "Reprepare fetches Plugins and Skills using the saved configuration and replaces waiting capacity without interrupting existing sessions. Pinned commits remain pinned.",
     "loading": "Loading…",
     "disabled": "Warm start is off for this Agent.",
-    "ready": "The next conversation starts warm while this capacity remains available.",
+    "ready": "New conversations start warm while prepared capacity remains.",
     "preparing": "No sandbox is standing by. Preparation is in progress.",
     "failed": "AstraBox could not prepare a sandbox.",
-    "expired": "The prepared sandbox has expired and is waiting for renewal.",
+    "expired": "The prepared runtimes have expired; replacements are being prepared.",
     "prepared_at": "Prepared",
-    "available": "Available: {{count}}",
+    "available": "Available: {{count}} of {{target}}",
+    "last_miss_at": "Last cold start from exhausted capacity",
     "reprepare": "Reprepare",
     "requesting": "Submitting…",
     "save_first": "Save or revert your changes before repreparing."

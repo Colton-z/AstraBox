@@ -105,6 +105,9 @@ from astrabox.seams.sandbox import (
     SandboxNetworkPolicy,
 )
 from astrabox.core.service.orchestrator.engine import transcript_mirror
+from astrabox.core.service.orchestrator.session_kernel.workers.lifecycle.recovery_ownership import (
+    current_recovery,
+)
 from astrabox.seams.model import ResolvedModelAccess
 
 
@@ -1273,52 +1276,32 @@ async def _provision_shared_conversation(
     candidate_id = ""
     create_seam_carried_vault = False
     if placed is None:
-        # There is no resident Agent box.  The platform creates one complete
-        # candidate, including the Agent-owned durable root, then atomically
-        # offers it to the Agent row. The candidate comes from the provider's
-        # maintained client pool when one is idle; only an actually empty pool
-        # reaches the same cold-create recipe. A correlated create recovery has
-        # priority over both, so a replay never takes a second box first.
-        if not recover_assignment:
-            from astrabox.core.service.orchestrator.agent.client_pool import (
-                acquire_agent_client_pool,
-            )
-
-            pool_claim = await acquire_agent_client_pool(
-                template,
-                runtime_manager=manager,
-                session_id=session_id,
-                assignment_id=assignment_id,
-            )
-            if pool_claim is not None:
-                candidate = pool_claim.sandbox
-                candidate_id = pool_claim.sandbox_id
-                candidate_allocation = SandboxAllocation(
-                    sandbox_id=candidate_id,
-                    sandbox_backend=str(backend_adapter.name),
-                    scope="sandbox",
-                )
-        if candidate is None:
-            candidate, candidate_id = await create_shared_agent_sandbox(
-                backend_adapter,
-                assignment_id=assignment_id,
-                template=template,
-                request=request,
-                runtime_identity=runtime_identity,
-                cwd=cwd,
-                credential=credential,
-                runtime_env=runtime_env,
-                network_policy=network_policy,
-                vault_write=vault_write,
-            )
-            # ``vault_write`` is part of SandboxCreateSpec's required result,
-            # including when a provider converges an exact-assignment replay
-            # onto its existing resource. The create seam has therefore
-            # established this candidate's Vault before returning it.
-            create_seam_carried_vault = True
-            recorded = (persisted or {}).get("startup_allocation")
-            if isinstance(recorded, dict) and recorded.get("sandbox_id") == candidate_id:
-                candidate_allocation = SandboxAllocation.from_record(recorded)
+        # No Agent box has room. The platform creates one complete candidate,
+        # including the Agent-owned durable root, then atomically offers it to
+        # the Agent row. Boxes in the Agent's client pool are full of prepared
+        # seats and reach a conversation only through a seat claim, so a cold
+        # conversation never takes one. A correlated create recovery converges
+        # on its existing box through the same create contract.
+        candidate, candidate_id = await create_shared_agent_sandbox(
+            backend_adapter,
+            assignment_id=assignment_id,
+            template=template,
+            request=request,
+            runtime_identity=runtime_identity,
+            cwd=cwd,
+            credential=credential,
+            runtime_env=runtime_env,
+            network_policy=network_policy,
+            vault_write=vault_write,
+        )
+        # ``vault_write`` is part of SandboxCreateSpec's required result,
+        # including when a provider converges an exact-assignment replay
+        # onto its existing resource. The create seam has therefore
+        # established this candidate's Vault before returning it.
+        create_seam_carried_vault = True
+        recorded = (persisted or {}).get("startup_allocation")
+        if isinstance(recorded, dict) and recorded.get("sandbox_id") == candidate_id:
+            candidate_allocation = SandboxAllocation.from_record(recorded)
         try:
             placed = await lease.place_in_agent_box(
                 agent_id=agent_id,
@@ -1708,7 +1691,7 @@ async def claim_prepared_engine_sandbox(
         return None
     agent_id = str(getattr(template, "agent_id", "") or "").strip()
     generation = str(getattr(template, "runtime_generation", "") or "").strip()
-    if not agent_id or not generation or not bool(getattr(template, "prewarm_enabled", False)):
+    if not agent_id or not generation or int(getattr(template, "prepared_capacity", 0) or 0) <= 0:
         return None
 
     from astrabox.core.service.orchestrator.agent.prepared_boxes import (
@@ -1716,23 +1699,29 @@ async def claim_prepared_engine_sandbox(
         adopt_claimed_box,
     )
     from astrabox.core.service.orchestrator.agent.prepared_slots import (
-        claim_prepared_slot,
+        claim_prepared_seat,
         repoint_slot_gateway_credential,
-        schedule_prepared_runtime_refill,
     )
 
     claimed = prepared_claim
     if claimed is None:
-        claimed = await claim_prepared_slot(
-            agent_id=agent_id,
+        claimed = await claim_prepared_seat(
+            template,
             session_id=session_id,
-            expected_runtime_generation=generation,
+            runtime_manager=manager,
         )
     if claimed is None:
         # This Session paid the cold-start cost because eligible prepared
-        # capacity was empty. Refill immediately so the next Session can
-        # claim; the level-triggered scheduler coalesces concurrent misses.
-        schedule_prepared_runtime_refill(template, manager)
+        # capacity was empty; the client pool replenishes on its own.
+        from astrabox.core.service.orchestrator.agent.prepared_capacity import (
+            record_prepared_capacity_miss,
+        )
+
+        # Only an Agent-shared box's seat is claimed here; a conversation box
+        # arrives as ``prepared_claim`` from its own pool.
+        await record_prepared_capacity_miss(
+            agent_id, tenancy=SANDBOX_TENANCY_AGENT, session_id=session_id
+        )
         return None
     expected_engine = str(getattr(template, "engine_kind", "") or "").strip()
     actual_engine = str(claimed.get("engine_kind") or "").strip()
@@ -1871,13 +1860,22 @@ async def claim_prepared_engine_sandbox(
     )
     await manager.record_startup_allocation(session_id, allocation)
 
-    if prepared_claim is not None and bool(claimed.get("gateway_substitution")):
-        from astrabox.core.service.orchestrator.agent.prepared_slots import record_gateway_entry
+    if bool(claimed.get("gateway_substitution")):
+        # Record the Session's ledger entry BEFORE minting or repointing its
+        # gateway key below. Losing either network call without it would leave
+        # that key with no durable GC owner; with it, a claim that then fails
+        # is collected through the same terminal or missing-Session path as any
+        # other abandoned key.
+        from astrabox.core.service.orchestrator.agent.prepared_slots import (
+            record_gateway_entry,
+            schedule_gateway_entry_prune,
+        )
         from astrabox.persistence.repository.agent_repository import AgentRepository
 
         await record_gateway_entry(
             AgentRepository(), agent_id, slot_id=slot_id, session_id=session_id,
         )
+        schedule_gateway_entry_prune(agent_id)
 
     supplemental = merge_credential_plans(mcp_vault_write, environment_plan)
     if supplemental is not None and not supplemental.is_empty:
@@ -1982,47 +1980,31 @@ async def _discard_failed_prepared_claim(
     template: Any,
     reason: str,
 ) -> None:
-    """Dispose the exact durable claim left by a failed pre-activation handoff."""
+    """Dispose the exact seat claim left by a failed pre-activation handoff."""
 
-    from astrabox.core.service.orchestrator.agent.prepared_boxes import (
-        PLACEMENT_CONVERSATION_BOX,
-        discard_prepared_box,
-    )
     from astrabox.core.service.orchestrator.agent.prepared_slots import (
-        PREPARED_SLOT_FIELD,
         discard_prepared_slot,
         release_claimed_slot_allocation,
-        schedule_prepared_runtime_refill,
+        slot_manifests,
     )
     from astrabox.persistence.repository.agent_repository import AgentRepository
 
     agent_id = str(getattr(template, "agent_id", "") or "").strip()
     if not agent_id:
         return
-    row = await AgentRepository().get_agent(agent_id)
-    manifest = (row or {}).get(PREPARED_SLOT_FIELD)
-    if (
-        not isinstance(manifest, dict)
-        or str(manifest.get("state") or "") != "claimed"
-        or str(manifest.get("claimed_session_id") or "").strip() != session_id
-    ):
+    manifest = next(
+        (
+            item
+            for item in slot_manifests(await AgentRepository().get_agent(agent_id))
+            if str(item.get("state") or "") == "claimed"
+            and str(item.get("claimed_session_id") or "").strip() == session_id
+        ),
+        None,
+    )
+    if manifest is None:
         return
-    placement = str(manifest.get("placement") or "").strip()
-    if placement == PLACEMENT_CONVERSATION_BOX:
-        await discard_prepared_box(agent_id, manifest, reason=reason)
-    elif placement == "shared_slot":
-        await discard_prepared_slot(agent_id, manifest, reason=reason)
-    else:
-        raise APIError(
-            code="AGENT_PREWARM_CONFIG_INVALID",
-            message=(
-                "failed prepared-runtime claim has no platform-owned placement "
-                "kind and cannot be cleaned up safely"
-            ),
-            status_code=500,
-        )
+    await discard_prepared_slot(agent_id, manifest, reason=reason, runtime_manager=manager)
     await release_claimed_slot_allocation(session_id, manifest)
-    schedule_prepared_runtime_refill(template, manager)
 
 
 @dataclass(frozen=True)
@@ -2173,7 +2155,19 @@ async def provision_engine_sandbox(
     # the correlated box through the provider's normal create contract. Its
     # runtime-owner metadata is provider wire data, so ownership comparison also
     # stays in that create contract rather than being reimplemented here.
-    recovered_assignment = await backend_adapter.find_sandbox_by_assignment(assignment_id)
+    # Only an execution that is not the command's first can find such a box,
+    # and the provider lookup lists every sandbox on the backend, so a first
+    # execution records itself and skips the lookup. Outside a startup command
+    # there is no durable record of earlier executions, and the lookup runs.
+    ownership = current_recovery(session_id)
+    first_execution = (
+        ownership is not None
+        and ownership.assignment_id == assignment_id
+        and await ownership.claim_first_provider_attempt()
+    )
+    recovered_assignment = (
+        None if first_execution else await backend_adapter.find_sandbox_by_assignment(assignment_id)
+    )
 
     runtime_identity = (
         plan_conversation_identity(

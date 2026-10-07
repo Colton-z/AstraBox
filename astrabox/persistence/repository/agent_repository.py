@@ -162,10 +162,10 @@ class AgentRepository:
             operation="agents.list_agents_with_resident_boxes",
         )
 
-    async def list_prewarm_enabled_agents(
+    async def list_agents_with_prepared_capacity(
         self, *, after_agent_id: str | None = None, limit: int = 200
     ) -> list[dict[str, Any]]:
-        """One page of the live Agents that asked for a ready sandbox.
+        """One page of the live Agents that asked for prepared capacity.
 
         The warm-capacity sweep reads this rather than the resident-box list:
         an Agent whose box expired or whose slot build failed has no box to be
@@ -176,13 +176,29 @@ class AgentRepository:
 
         return await self._agent_id_page(
             {
-                "prewarm_enabled": True,
+                "prepared_capacity": {"$gt": 0},
                 "state": {"$nin": ["DELETING", "DELETED"]},
             },
             after_agent_id=after_agent_id,
             limit=limit,
-            operation="agents.list_prewarm_enabled_agents",
+            operation="agents.list_agents_with_prepared_capacity",
         )
+
+    async def total_prepared_capacity(self, *, excluding_agent_id: str = "") -> int:
+        """Sum of ``prepared_capacity`` over live Agents, optionally leaving one out."""
+
+        total = 0
+        after: str | None = None
+        while True:
+            page = await self.list_agents_with_prepared_capacity(after_agent_id=after)
+            total += sum(
+                int(row.get("prepared_capacity") or 0)
+                for row in page
+                if str(row.get("agent_id") or "") != excluding_agent_id
+            )
+            if len(page) < 200:
+                return total
+            after = str(page[-1].get("agent_id") or "")
 
     async def list_live_agents_page(
         self, *, after_agent_id: str | None = None, limit: int = 200
@@ -296,7 +312,7 @@ class AgentRepository:
                 projection={
                     "agent_id": 1, "name": 1, "display_meta": 1,
                     "deleted": 1, "sandbox_id": 1, "undestroyed_sandbox_ids": 1,
-                    "_prepared_slot": 1, "_client_pool_name": 1, "_retiring_client_pools": 1,
+                    "_prepared_slots": 1, "_client_pool_name": 1, "_retiring_client_pools": 1,
                 },
             )
             return [doc async for doc in cursor]
@@ -486,33 +502,37 @@ class AgentRepository:
             )
             if row is None:
                 return False
-            manifest = row.get("_prepared_slot")
+            slots = row.get("_prepared_slots")
             updates: dict[str, Any] = {
                 "sandbox_id": None,
                 "sandbox_backend": None,
                 "_resident_sandbox_generation": None,
                 "expires_at": None,
             }
-            if (
-                isinstance(manifest, dict)
-                and manifest.get("placement") == "shared_slot"
-                and manifest.get("sandbox_id") == sandbox_id
-                and manifest.get("sandbox_backend") == row.get("sandbox_backend")
-                and manifest.get("state") == "prepared"
-            ):
-                # Withdraw the advertisement in the same write as its parent
-                # binding. Keep the cleanup address for ordinary retirement;
-                # a claim that already won still owns its hand-off cleanup.
-                updates["_prepared_slot"] = {
-                    **manifest,
-                    "state": "retiring",
-                    "retire_reason": "resident sandbox is confirmed gone",
-                    "retiring_at": utcnow_iso(),
-                }
+            if isinstance(slots, list):
+                # Withdraw every slot advertised in the dead box in the same
+                # write as its parent binding. Keep each cleanup address for
+                # ordinary retirement; a claim that already won still owns its
+                # hand-off cleanup.
+                updates["_prepared_slots"] = [
+                    {
+                        **manifest,
+                        "state": "retiring",
+                        "retire_reason": "resident sandbox is confirmed gone",
+                        "retiring_at": utcnow_iso(),
+                    }
+                    if isinstance(manifest, dict)
+                    and manifest.get("placement") == "shared_slot"
+                    and manifest.get("sandbox_id") == sandbox_id
+                    and manifest.get("sandbox_backend") == row.get("sandbox_backend")
+                    and manifest.get("state") == "prepared"
+                    else manifest
+                    for manifest in slots
+                ]
             expected = {
                 **query,
-                "_prepared_slot": (
-                    manifest if "_prepared_slot" in row else {"$exists": False}
+                "_prepared_slots": (
+                    slots if "_prepared_slots" in row else {"$exists": False}
                 ),
             }
             result = await run_mongo_with_retry(

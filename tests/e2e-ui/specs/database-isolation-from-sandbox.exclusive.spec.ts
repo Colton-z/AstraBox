@@ -242,7 +242,7 @@ test('a real Agent sandbox cannot read or connect to the platform database', asy
       name: agentName,
       model,
       environment_name: environmentName,
-      prewarm_enabled: false,
+      prepared_capacity: 0,
     });
     agentId = String(agent.agent_id || '').trim();
     expect(agentId).not.toEqual('');

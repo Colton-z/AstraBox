@@ -171,6 +171,12 @@ class StartupAllocationCleanup:
 
 
 _PARKED_SANDBOX_STATES = frozenset({"paused", "pausing"})
+
+#: How often the prewarm sweep reconciles an Agent's prepared capacity when no
+#: seat of it is stale: often enough that a restarted replica starts its pool
+#: schedulers within minutes, rarely enough that a failing pool is not retried
+#: on every tick.
+_PREPARED_CAPACITY_RECONCILE_SECONDS = 300
 """A box that is present, not running, and recoverable under the same id.
 
 Only a deliberate pause produces these: the platform commits the filesystem and
@@ -3120,20 +3126,17 @@ class RemoteAgentRuntimeManager:
     async def keep_prewarmed_agents_ready(self) -> dict[str, int]:
         """Maintain prewarmed capacity without waiting for Session activity.
 
-        Renew shared sandbox leases, schedule replacement of expiring prepared
-        slots, and schedule rebuilds for Agents without a slot. Missing-slot
-        rebuilds use a retry window so a persistent failure does not trigger a
-        build on every sweep. Return counts of attempted work and failures.
+        Renew resident shared-box leases, schedule the reaping of stale seats,
+        and periodically reconcile each Agent's prepared capacity, which keeps
+        its client-pool scheduler running in this process; the pool itself
+        replenishes. Return counts of attempted work and failures.
 
-        Every prewarm-enabled Agent is visited on every tick, read in pages.
-        Slot and lease renewal are due at a time, so an Agent visited on a
-        later tick can already have lost its slot. The per-Agent work is
-        in-memory unless something is due.
+        Every Agent with prepared capacity is visited on every tick, read in
+        pages. The per-Agent work is in-memory unless something is due.
         """
         from astrabox.core.service.orchestrator.agent.prepared_slots import (
-            PREPARED_SLOT_FIELD,
-            PREPARED_SLOT_REBUILD_RETRY_SECONDS,
-            prepared_slot_is_due_for_renewal,
+            prepared_seat_is_stale,
+            slot_manifests,
         )
         from astrabox.persistence.repository.agent_repository import (
             AgentRepository,
@@ -3142,15 +3145,15 @@ class RemoteAgentRuntimeManager:
         summary = {
             "prewarm_agents_scanned": 0,
             "agent_box_leases_renewed": 0,
-            "prepared_slots_renewed": 0,
-            "prepared_slots_rebuild_scheduled": 0,
+            "prepared_seats_reaped": 0,
+            "prepared_capacity_reconciled": 0,
             "prewarm_sweep_failures": 0,
         }
         repo = AgentRepository()
         rows: list[dict[str, Any]] = []
         try:
             async for row in iter_keyset_pages(
-                lambda after: repo.list_prewarm_enabled_agents(
+                lambda after: repo.list_agents_with_prepared_capacity(
                     after_agent_id=after, limit=SWEEP_PAGE_SIZE
                 ),
                 key="agent_id",
@@ -3190,21 +3193,32 @@ class RemoteAgentRuntimeManager:
                     else:
                         self._prewarm_lease_renewed_at[sandbox_id] = now
                         summary["agent_box_leases_renewed"] += 1
-            manifest = (row or {}).get(PREPARED_SLOT_FIELD)
-            if isinstance(manifest, dict):
-                reason = prepared_slot_is_due_for_renewal(manifest, agent=row)
-                if reason is None:
-                    continue
-                counter = "prepared_slots_renewed"
+            stale = next(
+                (
+                    (manifest, reason)
+                    for manifest in slot_manifests(row)
+                    for reason in (prepared_seat_is_stale(manifest),)
+                    if reason is not None
+                ),
+                None,
+            )
+            if stale is not None:
+                manifest, reason = stale
+                counter = "prepared_seats_reaped"
             else:
+                # The reconciliation also starts this process's pool scheduler,
+                # so a restarted replica rejoins replenishment without waiting
+                # for a conversation; a pool that keeps failing is retried on
+                # this cadence rather than on every tick.
                 last_rebuild = self._prewarm_rebuild_scheduled_at.get(agent_id)
                 if (
                     last_rebuild is not None
-                    and now - last_rebuild < PREPARED_SLOT_REBUILD_RETRY_SECONDS
+                    and now - last_rebuild < _PREPARED_CAPACITY_RECONCILE_SECONDS
                 ):
                     continue
-                reason = "no prepared slot"
-                counter = "prepared_slots_rebuild_scheduled"
+                manifest = None
+                reason = "keep prepared capacity reconciled"
+                counter = "prepared_capacity_reconciled"
             try:
                 started = self.schedule_agent_runtime_reconciliation(agent_id)
             except Exception:
@@ -3216,13 +3230,13 @@ class RemoteAgentRuntimeManager:
             if not started:
                 # The build from an earlier tick is still running.
                 continue
-            if counter == "prepared_slots_rebuild_scheduled":
+            if counter == "prepared_capacity_reconciled":
                 self._prewarm_rebuild_scheduled_at[agent_id] = now
             summary[counter] += 1
             logger.info(
                 "prewarm sweep scheduled a build: agent=%s slot=%s reason=%s",
                 agent_id,
-                (manifest or {}).get("slot_id") if isinstance(manifest, dict) else None,
+                (manifest or {}).get("slot_id"),
                 reason,
             )
         return summary
@@ -3523,7 +3537,7 @@ class RemoteAgentRuntimeManager:
         return summary
 
     async def agent_box_has_other_recorded_occupants(
-        self, sandbox_id: str, *, excluding: str,
+        self, sandbox_id: str, *, excluding: str, agent_id: str = "",
     ) -> bool:
         """Check durable ownership before pausing or destroying a shared box.
 
@@ -3560,7 +3574,7 @@ class RemoteAgentRuntimeManager:
         # conversation was going to claim, and the loss shows up as a claim
         # miss with nothing pointing back here.
         from astrabox.core.service.orchestrator.agent.prepared_slots import (
-            PREPARED_SLOT_FIELD,
+            slot_manifests,
         )
         from astrabox.persistence.repository.agent_repository import (
             AgentRepository,
@@ -3576,6 +3590,12 @@ class RemoteAgentRuntimeManager:
 
         agent_repo = AgentRepository()
         agent_rows: dict[str, dict[str, Any]] = {}
+        # A box that is not the Agent's resident one can still hold its
+        # slots; a caller disposing of it names the Agent it belongs to.
+        if agent_id:
+            named = await agent_repo.get_agent(agent_id)
+            if isinstance(named, dict):
+                agent_rows[agent_id] = named
         # A full box can stop being the Agent's preferred destination while
         # a prepared slot still lives in it. The Session being released is
         # the durable link back to that Agent; reading it directly avoids
@@ -3597,11 +3617,12 @@ class RemoteAgentRuntimeManager:
             if agent_id:
                 agent_rows[agent_id] = agent
         for agent in agent_rows.values():
-            manifest = (agent or {}).get(PREPARED_SLOT_FIELD)
-            if isinstance(manifest, dict) and (
-                str(manifest.get("sandbox_id") or "").strip() == target
-            ):
-                return True
+            for manifest in slot_manifests(agent):
+                if (
+                    str(manifest.get("sandbox_id") or "").strip() == target
+                    and str(manifest.get("slot_id") or "") != excluding
+                ):
+                    return True
             for admission in young_admissions(agent, target):
                 admitted = str(admission.get("session_id") or "").strip()
                 if admitted != excluding:
@@ -3614,6 +3635,7 @@ class RemoteAgentRuntimeManager:
         *,
         excluding: str,
         provider: SandboxProvider | None = None,
+        agent_id: str = "",
     ) -> bool:
         """Check for occupants other than ``excluding`` before destroying a box.
 
@@ -3632,7 +3654,7 @@ class RemoteAgentRuntimeManager:
             return True
         try:
             if await self.agent_box_has_other_recorded_occupants(
-                target, excluding=excluding,
+                target, excluding=excluding, agent_id=agent_id,
             ):
                 return True
             # The provider census checks live isolated sessions directly,
@@ -3853,24 +3875,20 @@ class RemoteAgentRuntimeManager:
         from astrabox.core.service.orchestrator.engine.startup import (
             start_platform_runtime,
         )
-        from astrabox.core.service.orchestrator.agent.prepared_slots import (
-            _counted_agent_start,
-        )
 
         try:
-            with _counted_agent_start(str(getattr(template, "agent_id", "") or "")):
-                return await start_platform_runtime(
-                    self,
-                    adapter,
-                    session_id=session_id,
-                    assignment_id=assignment_id,
-                    template=template,
-                    workspace_plan=workspace_plan,
-                    user_id=user_id,
-                    permission_mode=permission_mode,
-                    progress_callback=progress_callback,
-                    callback_url=callback_url,
-                )
+            return await start_platform_runtime(
+                self,
+                adapter,
+                session_id=session_id,
+                assignment_id=assignment_id,
+                template=template,
+                workspace_plan=workspace_plan,
+                user_id=user_id,
+                permission_mode=permission_mode,
+                progress_callback=progress_callback,
+                callback_url=callback_url,
+            )
         except asyncio.CancelledError:
             if not self._quiesced_reason:
                 await self._rollback_runtime_start(session_id)

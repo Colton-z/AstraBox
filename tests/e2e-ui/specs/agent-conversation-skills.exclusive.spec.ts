@@ -238,7 +238,7 @@ test('agent conversation creation works with and without agent skills', async ({
         name: agentName,
         model,
         environment_name: environmentName,
-        prewarm_enabled: false,
+        prepared_capacity: 0,
         skills: [],
       });
       agentIds.push(agent.agent_id);
@@ -290,7 +290,7 @@ test('agent conversation creation works with and without agent skills', async ({
           name: agentName,
           model,
           environment_name: environmentName,
-          prewarm_enabled: false,
+          prepared_capacity: 0,
           skills: WITH_SKILLS_DESCRIPTORS,
         });
         agentIds.push(agent.agent_id);

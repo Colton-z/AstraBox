@@ -71,35 +71,43 @@ class AwsEfsStorage(MountedVolumeStorage):
             claim = api.read_namespaced_persistent_volume_claim(
                 volume, namespace, _request_timeout=30
             )
-            if claim.metadata.deletion_timestamp is not None or claim.status.phase != "Bound":
+            claim_meta, claim_spec, claim_status = claim.metadata, claim.spec, claim.status
+            if claim_meta is None or claim_spec is None or claim_status is None:
+                raise RuntimeError(f"aws_efs {target} has no metadata, spec or status")
+            if claim_meta.deletion_timestamp is not None or claim_status.phase != "Bound":
                 raise RuntimeError(f"aws_efs {target} must be Bound and not terminating")
-            if "ReadWriteMany" not in (claim.spec.access_modes or []):
+            if "ReadWriteMany" not in (claim_spec.access_modes or []):
                 raise RuntimeError(f"aws_efs {target} must request ReadWriteMany")
-            if claim.spec.volume_mode not in {None, "Filesystem"}:
+            if claim_spec.volume_mode not in {None, "Filesystem"}:
                 raise RuntimeError(f"aws_efs {target} must use Filesystem volume mode")
-            if not claim.spec.volume_name:
+            if not claim_spec.volume_name:
                 raise RuntimeError(f"aws_efs {target} does not identify a bound PV")
-            target = f"PV/{claim.spec.volume_name}"
-            backing = api.read_persistent_volume(claim.spec.volume_name, _request_timeout=30)
-            if backing.metadata.deletion_timestamp is not None or backing.status.phase != "Bound":
+            target = f"PV/{claim_spec.volume_name}"
+            backing = api.read_persistent_volume(claim_spec.volume_name, _request_timeout=30)
+            backing_meta, backing_spec, backing_status = (
+                backing.metadata, backing.spec, backing.status
+            )
+            if backing_meta is None or backing_spec is None or backing_status is None:
+                raise RuntimeError(f"aws_efs {target} has no metadata, spec or status")
+            if backing_meta.deletion_timestamp is not None or backing_status.phase != "Bound":
                 raise RuntimeError(f"aws_efs {target} must be Bound and not terminating")
-            reference = backing.spec.claim_ref
+            reference = backing_spec.claim_ref
             if reference is None or (
                 reference.name != volume
                 or reference.namespace != namespace
-                or reference.uid != claim.metadata.uid
+                or reference.uid != claim_meta.uid
             ):
                 raise RuntimeError(f"aws_efs {target} does not belong to the configured PVC")
-            if "ReadWriteMany" not in (backing.spec.access_modes or []):
+            if "ReadWriteMany" not in (backing_spec.access_modes or []):
                 raise RuntimeError(f"aws_efs {target} must provide ReadWriteMany")
-            if backing.spec.volume_mode not in {None, "Filesystem"}:
+            if backing_spec.volume_mode not in {None, "Filesystem"}:
                 raise RuntimeError(f"aws_efs {target} must use Filesystem volume mode")
-            csi = backing.spec.csi
+            csi = backing_spec.csi
             if (
                 csi is None
                 or csi.driver != "efs.csi.aws.com"
-                or backing.spec.host_path is not None
-                or backing.spec.nfs is not None
+                or backing_spec.host_path is not None
+                or backing_spec.nfs is not None
             ):
                 raise RuntimeError(f"aws_efs {target} must use the official efs.csi.aws.com driver")
             if csi.volume_handle != filesystem:
@@ -115,7 +123,7 @@ class AwsEfsStorage(MountedVolumeStorage):
                 raise RuntimeError(f"aws_efs {target} must not disable encryption in transit")
             options = {
                 option.strip().lower()
-                for item in (backing.spec.mount_options or [])
+                for item in (backing_spec.mount_options or [])
                 for option in item.split(",")
             }
             if any(

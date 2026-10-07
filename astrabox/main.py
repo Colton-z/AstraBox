@@ -54,6 +54,8 @@ def run() -> None:
     """
     import uvicorn
 
+    from astrabox.cli.serve import GRACEFUL_SHUTDOWN_SECONDS
+
     host = os.environ.get("ASTRABOX_HOST", _DEFAULT_HOST)
     port = int(os.environ.get("ASTRABOX_PORT", _DEFAULT_PORT))
     log_level = os.environ.get("ASTRABOX_LOG_LEVEL", "info")
@@ -63,6 +65,7 @@ def run() -> None:
         port=port,
         log_level=log_level,
         factory=True,
+        timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_SECONDS,
     )
 
 

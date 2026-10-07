@@ -105,7 +105,7 @@ _EDITABLE_REQUEST_FIELDS = frozenset(
         "environment_name",
         "exposure_mode",
         "idle_hibernate_seconds",
-        "prewarm_enabled",
+        "prepared_capacity",
         "enabled",
     }
 )
@@ -140,7 +140,7 @@ _ALL_EDITABLE_FIELDS = {
     "environment_name": "claude-code",
     "exposure_mode": "chat_only",
     "idle_hibernate_seconds": 120,
-    "prewarm_enabled": False,
+    "prepared_capacity": 0,
     "enabled": True,
 }
 

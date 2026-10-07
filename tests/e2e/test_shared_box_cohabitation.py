@@ -83,7 +83,7 @@ def _create_shared_agent(e2e_client: httpx.Client, *, prewarm: bool = False) -> 
                 "name": f"Cohabitation {uuid.uuid4().hex[:8]}",
                 "model": profile["model"],
                 "environment_name": environment_name,
-                "prewarm_enabled": prewarm,
+                "prepared_capacity": 1 if prewarm else 0,
                 "engine_options": canonical.get("engine_options") or {},
                 **(
                     {"system": canonical["system"]}
@@ -114,21 +114,35 @@ def _wait_prepared(client: httpx.Client, agent_id: str, *, enabled: bool) -> dic
     pytest.fail(f"Agent preparation did not settle: {last}")
 
 
-def _prepared_isolation(agent_id: str) -> str:
+def _prepared_isolation(agent_id: str, pool_box: str) -> str:
+    """The isolated session of the seat the Agent's next claim takes.
+
+    A claim takes the oldest prepared seat: one waiting in a box the Agent
+    holds, else one of the seats the pool box it takes next was prepared with.
+    """
+
     program = """
 import asyncio, json, sys
 from astrabox.deploy.onebox import ensure_database_wiring
 from astrabox.persistence.repository.agent_repository import AgentRepository
+from astrabox.providers import register_builtin_providers
+from astrabox.seams.sandbox import sandbox_for_name
+from astrabox.core.service.orchestrator.agent.prepared_slots import POOL_SEATS_RECEIPT
 async def main():
     ensure_database_wiring()
-    row = await AgentRepository().get_agent(sys.argv[1])
-    manifest = (row or {}).get('_prepared_slot') or {}
-    print(json.dumps({'isolated_session_id': manifest.get('isolated_session_id')}))
+    register_builtin_providers()
+    row = await AgentRepository().get_agent(sys.argv[1]) or {}
+    seats = [s for s in row.get('_prepared_slots') or [] if s.get('state') == 'prepared']
+    if not seats:
+        handle = await sandbox_for_name(row['_client_pool_backend']).connect(sys.argv[2])
+        seats = json.loads(await handle.files.read_file(POOL_SEATS_RECEIPT))
+    seat = min(seats, key=lambda s: str(s.get('prepared_at') or ''))
+    print(json.dumps({'isolated_session_id': seat.get('isolated_session_id')}))
 asyncio.run(main())
 """
     result = subprocess.run(
         ["docker", "exec", require_service_container(SERVER_CONTAINER_HANDLE),
-         "python", "-c", program, agent_id],
+         "python", "-c", program, agent_id, pool_box],
         capture_output=True, text=True, check=True, timeout=30,
     )
     identity = json.loads(result.stdout)
@@ -264,7 +278,7 @@ def test_evicted_last_shared_conversation_reclaims_box(
     started = time.monotonic()
     agent_id = _create_shared_agent(e2e_client, prewarm=True)
     prepared = _wait_prepared(e2e_client, agent_id, enabled=True)
-    isolated_id = _prepared_isolation(agent_id)
+    isolated_id = _prepared_isolation(agent_id, prepared["sandbox_id"])
     sid = _start_conversation(e2e_client, agent_id)
     poll_until_agent_ready(e2e_client, sid)
     session = get_admin_session_detail(e2e_client, sid)
@@ -286,7 +300,7 @@ def test_evicted_last_shared_conversation_reclaims_box(
             "model": agent["model"],
             "environment_name": agent["environment_name"],
             "version": agent["version"],
-            "prewarm_enabled": False,
+            "prepared_capacity": 0,
         },
     ))
     _wait_prepared(e2e_client, agent_id, enabled=False)

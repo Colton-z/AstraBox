@@ -54,8 +54,8 @@ export function isEmptyValue(value: unknown): boolean {
 // (the server rejects a payload missing either), and seeding empty containers
 // would only persist `{}` debris the schema-driven form prunes anyway. The one
 // exception is a value the schema serves as this deployment's create-time
-// default (`prewarm_enabled`): the server stores it when the field is left
-// alone, so the form starts from it rather than showing a switch the saved
+// default (`prepared_capacity`): the server stores it when the field is left
+// alone, so the form starts from it rather than showing a value the saved
 // record will contradict.
 export function buildAgentDraft(schema: FormSchema): AgentDraft {
   const draft: AgentDraft = { name: '', enabled: true };

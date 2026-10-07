@@ -88,7 +88,7 @@ function extensionAgentConfig(name: string, model: string, environmentName: stri
     name,
     model,
     environment_name: environmentName,
-    prewarm_enabled: true,
+    prepared_capacity: 1,
     skills: [SKILL_DESCRIPTOR],
     plugin_repos: [
       {

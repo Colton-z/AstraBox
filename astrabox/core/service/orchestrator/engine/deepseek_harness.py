@@ -57,6 +57,7 @@ from astrabox.core.service.orchestrator.engine.deepseek_harness_client import (
     DeepSeekHarnessEngineClient,
     DeepSeekHarnessLink,
     create_harness_session,
+    resolve_model_route,
 )
 from astrabox.core.service.orchestrator.engine.deepseek_harness_link import (
     DSH_API_PORT,
@@ -348,6 +349,7 @@ async def _publish_runtime(
     model: str | None = None,
     gateway_base_url: str = "",
     model_endpoint_provider: str = "",
+    prepared_model_route: dict[str, Any] | None = None,
     session_create: dict[str, Any] | None = None,
     prepare_engine_input: Any = None,
     resident_output_sink: Any = None,
@@ -402,6 +404,11 @@ async def _publish_runtime(
             model,
             gateway_base_url=gateway_base_url,
             gateway_key_env=DSH_CREDENTIAL_ENV_VAR,
+            prepared_route=(
+                str(prepared_model_route.get("route") or "") or None
+                if prepared_model_route and prepared_model_route.get("model") == model
+                else None
+            ),
         )
     runtime = SessionRuntime(
         session_id=session_id,
@@ -589,11 +596,31 @@ class DeepSeekHarnessEngineAdapter(EngineAdapter):
             port=_conversation_gateway_port(identity),
             launch_url_path=f"{(identity or {}).get('home_dir') or SANDBOX_IMAGE_WORKLOAD_HOME}/.deepseek-harness/web-url",
         )
+        model = str(getattr(context.model_access, "model_name", "") or "").strip()
         try:
             prepared_native_session = await create_harness_session(
                 link,
                 cwd=context.cwd,
                 session_create=_session_create_options(template),
+            )
+            # Resolving the route reads the harness's model catalog and writes
+            # its gateway settings, about 190 ms; done here, a claim only
+            # selects the model on the conversation it rejoins.
+            prepared_model_route = (
+                {
+                    "model": model,
+                    "route": await resolve_model_route(
+                        link,
+                        model,
+                        gateway_base_url=base_url,
+                        gateway_key_env=DSH_CREDENTIAL_ENV_VAR,
+                        model_endpoint_provider=model_endpoint_for_name(
+                            str(getattr(context.model_access, "endpoint_provider", "") or "")
+                        ),
+                    ),
+                }
+                if model
+                else None
             )
         finally:
             await link.close()
@@ -612,6 +639,8 @@ class DeepSeekHarnessEngineAdapter(EngineAdapter):
             # The claim rejoins this conversation. Measured `session/create`
             # takes 9.4s of the 26s cold path.
             "prepared_native_session": prepared_native_session,
+            # The harness route resolved for the Agent's model in this box.
+            "prepared_model_route": prepared_model_route,
             # Platform MCP clients discovered tools at boot using the slot
             # binding. Claim binds that address before rejoining this session.
             # Agent-declared MCP servers remain unsupported.
@@ -702,14 +731,34 @@ class DeepSeekHarnessEngineAdapter(EngineAdapter):
                         message="DSH native state requires the placed runtime home",
                         status_code=500,
                     )
-                await install_verified_text_script(
-                    sandbox, path=f"{home.rstrip('/')}/.dsh/astrabox-runtime-state.json",
-                    content=json.dumps(context.runtime_state_store, ensure_ascii=False, sort_keys=True),
-                    runtime_identity=context.runtime_identity, mode=0o600,
-                    owner_user=str(context.runtime_identity["linux_user"]),
-                    error_code="AGENT_RUNTIME_ERROR",
-                    error_message="failed to install the DSH native-state target",
+                state_target_path = f"{home.rstrip('/')}/.dsh/astrabox-runtime-state.json"
+                state_target = json.dumps(
+                    context.runtime_state_store, ensure_ascii=False, sort_keys=True
                 )
+                linux_user = str(context.runtime_identity["linux_user"])
+                if is_prepared:
+                    # A claimed runtime has never held a Session's state target,
+                    # and the image reads it only when the attachment restore
+                    # below asks, so one owner-only write publishes it whole
+                    # without the installer's atomic replacement.
+                    await sandbox.files.write_file(
+                        state_target_path,
+                        state_target.encode("utf-8"),
+                        mode=600,
+                        owner=linux_user,
+                        group=linux_user,
+                    )
+                else:
+                    await install_verified_text_script(
+                        sandbox,
+                        path=state_target_path,
+                        content=state_target,
+                        runtime_identity=context.runtime_identity,
+                        mode=0o600,
+                        owner_user=linux_user,
+                        error_code="AGENT_RUNTIME_ERROR",
+                        error_message="failed to install the DSH native-state target",
+                    )
             instructions = str(getattr(template, "system", None) or "").strip()
             if instructions and not is_prepared and not observe_only:
                 await _install_agent_instructions(
@@ -762,6 +811,7 @@ class DeepSeekHarnessEngineAdapter(EngineAdapter):
                 or None,
                 gateway_base_url=base_url,
                 model_endpoint_provider=str(context.model_access.endpoint_provider),
+                prepared_model_route=prepared.get("prepared_model_route"),
                 session_create=_session_create_options(template),
                 prepare_engine_input=context.prepare_engine_input,
                 output_checkpoint=output_checkpoint if resume_output else None,

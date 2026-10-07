@@ -142,7 +142,7 @@ async def test_environment_update_schedules_bound_agent_runtime() -> None:
     row = {
         "agent_id": "agent-1",
         "environment_name": "research",
-        "prewarm_enabled": True,
+        "prepared_capacity": 1,
     }
     service = _service(_Repo(row), SimpleNamespace(agent_id="agent-1"))
     scheduled: list[str] = []
@@ -162,18 +162,20 @@ async def test_agent_manager_reads_platform_prepared_runtime_status(
         "agent_id": "agent-1",
         "created_by": "owner-1",
         "visibility": "public",
-        "prewarm_enabled": True,
+        "prepared_capacity": 1,
         "sandbox_id": "box-ready", "sandbox_backend": "fake",
         "_runtime_generation": "generation-new",
         "_prepared_runtime_generation": "generation-new",
         "_client_pool_name": "supplier-pool-new",
-        "_prepared_slot": {
+        "_client_pool_backend": "fake",
+        "_seats_per_box": 3,
+        "_prepared_slots": [{
             "state": "prepared",
             "placement": "shared_slot",
             "sandbox_id": "box-ready", "sandbox_backend": "fake",
             "runtime_generation": "generation-new",
             "prepared_at": prepared_at,
-        },
+        }],
     }
     service = _service(
         _Repo(row),
@@ -184,13 +186,27 @@ async def test_agent_manager_reads_platform_prepared_runtime_status(
         "runtime_generations",
         AsyncMock(return_value=("generation-new", "box-generation")),
     )
+    from astrabox.seams import sandbox as sandbox_seam
+
+    pool = SimpleNamespace(
+        ready=True, idle_count=2, idle_sandbox_ids=("pool-box",),
+        lifecycle_state="RUNNING", last_error=None,
+    )
+    monkeypatch.setattr(
+        sandbox_seam,
+        "sandbox_for_name",
+        lambda _name: SimpleNamespace(describe_client_pool=AsyncMock(return_value=pool)),
+    )
 
     status = await service.get_prepared_runtime_status(UserContext("owner-1"), "agent-1")
 
+    # One seat waiting in a box the Agent holds, three in each of two pool boxes.
     assert status == {
         "enabled": True,
+        "target": 1,
         "ready": True,
-        "prepared_count": 1,
+        "prepared_count": 7,
+        "last_miss_at": None,
         "state": "prepared",
         "placement": "shared_slot",
         "runtime_generation": "generation-new",
@@ -201,11 +217,11 @@ async def test_agent_manager_reads_platform_prepared_runtime_status(
     }
 
 
-@pytest.mark.parametrize("stamp", ["expired", "missing", "malformed", "naive", "renewal_due"])
+@pytest.mark.parametrize("stamp", ["expired", "missing", "malformed", "naive", "near_expiry"])
 async def test_prepared_capacity_read_obeys_the_claim_expiry_boundary(
     monkeypatch: pytest.MonkeyPatch, stamp: str,
 ) -> None:
-    age = prepared_slots.PREPARED_SLOT_TTL_SECONDS + (60 if stamp == "expired" else -60)
+    age = prepared_slots.prepared_seat_ttl_seconds() + (60 if stamp == "expired" else -60)
     prepared_at = (datetime.now(timezone.utc) - timedelta(seconds=age)).isoformat()
     if stamp == "missing":
         prepared_at = ""
@@ -214,14 +230,14 @@ async def test_prepared_capacity_read_obeys_the_claim_expiry_boundary(
     elif stamp == "naive":
         prepared_at = "2026-09-28T09:00:00"
     row = {
-        "agent_id": "agent-1", "created_by": "owner-1", "prewarm_enabled": True,
+        "agent_id": "agent-1", "created_by": "owner-1", "prepared_capacity": 1,
         "sandbox_id": "box-ready", "sandbox_backend": "fake",
         "_prepared_runtime_generation": "generation-new",
-        "_prepared_slot": {
+        "_prepared_slots": [{
             "state": "prepared", "placement": "shared_slot", "sandbox_id": "box-ready",
             "sandbox_backend": "fake",
             "runtime_generation": "generation-new", "prepared_at": prepared_at,
-        },
+        }],
     }
     repo = _Repo(row)
     service = _service(repo, SimpleNamespace(agent_id="agent-1", sandbox_tenancy="agent"))
@@ -230,12 +246,12 @@ async def test_prepared_capacity_read_obeys_the_claim_expiry_boundary(
 
     status = await service.get_prepared_runtime_status(UserContext("owner-1"), "agent-1")
 
-    ready = stamp == "renewal_due"
+    ready = stamp == "near_expiry"
     assert status["ready"] is ready
     assert status["prepared_count"] == int(ready)
     assert status["state"] == ("prepared" if ready else "expired")
-    assert status["prepared_at"] == (prepared_at or None)
-    assert status["sandbox_id"] == "box-ready"
+    assert status["prepared_at"] == (prepared_at if ready else None)
+    assert status["sandbox_id"] == ("box-ready" if ready else None)
     assert repo.updates == []
     assert repo.compares == []
 
@@ -247,15 +263,15 @@ async def test_config_refresh_keeps_pool_identity_without_advertising_stale_capa
     row = {
         "agent_id": "agent-1",
         "created_by": "owner-1",
-        "prewarm_enabled": True,
+        "prepared_capacity": 1,
         "_client_pool_name": pool_name,
         "_prepared_runtime_generation": "generation-old",
-        "_prepared_slot": {
+        "_prepared_slots": [{
             "state": "prepared",
             "placement": "shared_slot",
             "sandbox_id": "box-existing",
             "runtime_generation": "generation-old",
-        },
+        }],
     }
     repo = _Repo(row)
     service = _service(repo, SimpleNamespace(agent_id="agent-1", sandbox_tenancy="agent"))
@@ -279,7 +295,7 @@ async def test_regular_viewer_cannot_read_prepared_runtime_status() -> None:
         "agent_id": "agent-1",
         "created_by": "owner-1",
         "visibility": "public",
-        "prewarm_enabled": True,
+        "prepared_capacity": 1,
     }
     service = _service(_Repo(row), SimpleNamespace(agent_id="agent-1"))
 
@@ -287,28 +303,3 @@ async def test_regular_viewer_cannot_read_prepared_runtime_status() -> None:
         await service.get_prepared_runtime_status(UserContext("viewer-1"), "agent-1")
 
     assert caught.value.code == "FORBIDDEN"
-
-
-@pytest.mark.parametrize("binding", [
-    {}, {"sandbox_id": "replacement", "sandbox_backend": "fake"},
-    {"sandbox_id": "old-box", "sandbox_backend": "other-backend"},
-])
-async def test_detached_fresh_shared_capacity_is_not_advertised(
-    monkeypatch: pytest.MonkeyPatch, binding: dict[str, Any],
-) -> None:
-    row = {
-        "agent_id": "agent-1", "created_by": "owner-1", "prewarm_enabled": True,
-        "_prepared_runtime_generation": "generation", **binding,
-        "_prepared_slot": {
-            "state": "prepared", "placement": "shared_slot", "sandbox_id": "old-box",
-            "sandbox_backend": "fake", "runtime_generation": "generation",
-            "prepared_at": datetime.now(timezone.utc).isoformat(),
-        },
-    }
-    service = _service(_Repo(row), SimpleNamespace(agent_id="agent-1", sandbox_tenancy="agent"))
-    monkeypatch.setattr(runtime_generation_module, "runtime_generations",
-                        AsyncMock(return_value=("generation", "box-generation")))
-    result = await service.get_prepared_runtime_status(UserContext("owner-1"), "agent-1")
-    assert result["ready"] is False
-    assert result["prepared_count"] == 0
-    assert result["state"] == "preparing"

@@ -214,7 +214,7 @@ test('a background Agent still working keeps its box off the idle sweep while no
     name: `__e2e_idle_bg_${runId}`,
     model,
     environment_name: parkingEnvironment,
-    prewarm_enabled: false,
+    prepared_capacity: 0,
     idle_hibernate_seconds: IDLE_WINDOW_SECONDS,
   });
   agentId = String(agent.agent_id || '');

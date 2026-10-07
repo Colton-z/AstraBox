@@ -55,7 +55,7 @@ for (const scenario of cases) test(scenario.title, async ({ request, page }, inf
     }
     agentId = (await api.createAgent({
       name: `__e2e_pi_channel_background_${id}`,
-      environment_name: profile.environment_name, model: profile.model, prewarm_enabled: false,
+      environment_name: profile.environment_name, model: profile.model, prepared_capacity: 0,
     })).agent_id;
     const deployment = await platform.createDeployment(agentId, {
       scene: scenario.installed ? 'channel:installed_probe' : 'channel:generic_json', prompt_prefix: '',

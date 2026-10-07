@@ -20,7 +20,6 @@ from astrabox.core.service.orchestrator.agent.prepared_slots import (
     bind_claimed_platform_mcp_binding,
     clear_claimed_slot,
     discard_prepared_slot,
-    schedule_prepared_runtime_refill,
 )
 from astrabox.core.service.orchestrator.engine.base import (
     EngineAdapter,
@@ -316,13 +315,16 @@ async def _discard_claimed_unit(
     manifest: dict[str, Any],
     *,
     reason: str,
+    runtime_manager: Any,
 ) -> None:
     agent_id = str(getattr(template, "agent_id", "") or "").strip()
     if str(manifest.get("placement") or "") == PLACEMENT_CONVERSATION_BOX:
         await discard_prepared_box(agent_id, manifest, reason=reason)
         return
     if str(manifest.get("placement") or "") == "shared_slot":
-        await discard_prepared_slot(agent_id, manifest, reason=reason)
+        await discard_prepared_slot(
+            agent_id, manifest, reason=reason, runtime_manager=runtime_manager
+        )
         return
     raise APIError(
         code="AGENT_PREWARM_CONFIG_INVALID",
@@ -457,16 +459,15 @@ async def start_platform_runtime(
         if prepared is not None:
             # A bad prepared unit is never retried as a cold start in this
             # request. Destroy exactly what was claimed and let the caller
-            # report the failed startup; replenishment is a later platform job.
+            # report the failed startup; the client pool replenishes on its own.
             await _discard_claimed_unit(
                 template,
                 prepared,
+                runtime_manager=platform,
                 reason=f"activation failed: {type(exc).__name__}: {exc}",
             )
-            schedule_prepared_runtime_refill(template, platform)
         raise
 
-    schedule_prepared_runtime_refill(template, platform)
     return runtime
 
 

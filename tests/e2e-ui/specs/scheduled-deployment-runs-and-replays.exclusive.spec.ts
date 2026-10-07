@@ -64,7 +64,7 @@ test('a scheduled Deployment runs, edits, and replays through Sessions', async (
     name: agentName,
     model,
     environment_name: environmentName,
-    prewarm_enabled: false,
+    prepared_capacity: 0,
   });
   agentId = String(agent.agent_id || '').trim();
   expect(agentId).not.toEqual('');

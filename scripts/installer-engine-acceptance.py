@@ -229,7 +229,7 @@ def _owner(api: Api, engine: str, model: str, label: str) -> tuple[str, str]:
         "name": f"{label} {engine}",
         "environment_name": environment,
         "model": model,
-        "prewarm_enabled": False,
+        "prepared_capacity": 0,
     }
     if engine == "codex":
         body["engine_options"] = _codex_engine_options(model)

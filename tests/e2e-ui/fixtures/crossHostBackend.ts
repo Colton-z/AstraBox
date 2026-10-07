@@ -7,7 +7,7 @@ import { absoluteBaseUrl, apiPath, appPath } from './env';
 import { resolveServiceContainer, SERVER_CONTAINER_HANDLE } from './serviceContainer';
 import { WorkspaceResumeNodes } from './workspaceResumeNodes';
 
-type Prepared = { ready: boolean; prepared_count: number; sandbox_id: string;
+type Prepared = { ready: boolean; target: number; prepared_count: number; sandbox_id: string;
   client_pool_name: string; runtime_generation: string };
 type Detail = { session_id: string; sandbox_id: string; workspace_id: string;
   agent_id: string; state: string };
@@ -58,7 +58,7 @@ export function backendBrowserFlow(sessions: string[], evidence: Record<string, 
     for (const [key, value] of Object.entries(source.engine_options || {})) {
       await page.locator(`[id="agent-new-engine_options.${key}"]`).fill(JSON.stringify(value));
     }
-    await page.getByRole('switch', { name: 'Keep a sandbox ready', exact: true }).check();
+    await page.getByRole('spinbutton', { name: 'Prepared capacity', exact: true }).fill('1');
     await page.locator('[role="switch"][aria-labelledby="agent-new-terminal_panel-label"]').check();
     const created = responseFor(page, '/agents', 'POST');
     await page.getByRole('button', { name: 'Create', exact: true }).click();
@@ -84,7 +84,7 @@ export function backendBrowserFlow(sessions: string[], evidence: Record<string, 
       return status.ready && status.prepared_count > 0;
     }, { timeout: 60_000, intervals: [1_000, 2_000] }).toBe(true);
     await expect(page.getByTestId('prewarm-state')).toHaveText('Ready');
-    await expect(page.getByTestId('prewarm-count')).toHaveText(`Available: ${status.prepared_count}`);
+    await expect(page.getByTestId('prewarm-count')).toHaveText(`Available: ${status.prepared_count} of ${status.target}`);
     expect(status.sandbox_id).toBeTruthy();
     expect(status.client_pool_name).toBeTruthy();
     expect(status.runtime_generation).toBeTruthy();

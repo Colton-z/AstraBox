@@ -263,7 +263,7 @@ async function exerciseParkedConversation(
     environment_name: parkEnvironment,
     // No prepared slot: this Agent must not spend its setup warming a box it
     // never claims, and a pooled box is not this conversation's alone.
-    prewarm_enabled: false,
+    prepared_capacity: 0,
     idle_hibernate_seconds: idleWindowSeconds,
   });
   agentId = String(agent.agent_id || '');

@@ -13,6 +13,7 @@ import { WorkspaceResumeNodes } from '../fixtures/workspaceResumeNodes';
 
 interface Prepared {
   ready: boolean;
+  target: number;
   prepared_count: number;
   sandbox_id: string;
   client_pool_name: string;
@@ -66,7 +67,7 @@ async function preparedCapacity(page: Page, id: string): Promise<Prepared> {
   await expect(page.getByTestId('prewarm-state')).toHaveText(
     'The next conversation starts warm while this capacity remains available.',
   );
-  await expect(page.getByTestId('prewarm-count')).toHaveText(`Available: ${status.prepared_count}`);
+  await expect(page.getByTestId('prewarm-count')).toHaveText(`Available: ${status.prepared_count} of ${status.target}`);
   expect(status.sandbox_id).toBeTruthy();
   expect(status.client_pool_name).toBeTruthy();
   expect(status.runtime_generation).toBeTruthy();
@@ -83,7 +84,7 @@ async function createFixture(api: AstraApi, profile: EngineProfile): Promise<str
   const agent = await api.createAgent({
     name: `workspace-resume-${profile.engine_kind}-${randomUUID()}`,
     model: base.model, engine_options: base.engine_options,
-    environment_name: environment!.name, prewarm_enabled: true,
+    environment_name: environment!.name, prepared_capacity: 1,
   });
   agentId = agent.agent_id;
   evidence.agentId = agentId;

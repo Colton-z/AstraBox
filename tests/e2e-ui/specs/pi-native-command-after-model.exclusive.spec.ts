@@ -114,7 +114,7 @@ test('Pi native command retains post-model entries until its prompt acknowledgem
   const reloadExtension = '/opt/pi/node_modules/@earendil-works/pi-coding-agent/examples/extensions/reload-runtime.ts';
   const agent = await api.createAgent({
     name: `__e2e_pi_post_model_${Date.now()}`, model: base.model,
-    environment_name: environment!.name, prewarm_enabled: false,
+    environment_name: environment!.name, prepared_capacity: 0,
     engine_options: { ...options, settings: {
       ...settings, extensions: [...extensions as unknown[], reloadExtension],
     } },

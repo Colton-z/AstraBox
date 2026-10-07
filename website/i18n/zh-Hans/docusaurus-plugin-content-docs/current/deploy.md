@@ -394,14 +394,20 @@ scripts/compose.sh -f containers/compose.sso.yaml up -d
 
 ## 为已准备沙箱规划容量 {#plan-capacity-for-prepared-sandboxes}
 
-每个开启[预热](authoring-agents.md#prewarming)的 Agent 都会保留一个空闲的已准备沙箱，
-这样它的下一个对话大约两秒就能开始，而不必先启动沙箱。只要设置了
-`ASTRABOX_AGENT_PREWARM_REDIS_URL`，新建 Agent 就默认开启预热；所有随附的 Compose
+每个 Agent 会按它的[预备容量](authoring-agents.md#prewarming)保留空闲的已准备运行时，
+这样这么多个新对话可以同时在一秒内开始，而不必先启动沙箱。只要设置了
+`ASTRABOX_AGENT_PREWARM_REDIS_URL`，新建 Agent 的预备容量就默认为 1；所有随附的 Compose
 部署和[单容器部署](all-in-one.md)都会设置它，在这些部署上，全新安装时创建的两个 Agent
-也会开启预热。只要预热保持
-开启、Agent 及其运行环境处于启用状态，这个沙箱就一直保留；对话领取之后，AstraBox 会
-再准备一个补上。AstraBox 不限制已准备沙箱的数量，请按要保留的 Agent 数量规划部署容量，
-或为不需要快速开始首个对话的 Agent 关闭预热。
+同样如此。只要预备容量大于 0、Agent 及其运行环境处于启用状态，这些运行时就一直保留；
+对话取走一个空闲沙箱之后，AstraBox 会再准备一个补上，每个 Agent 同时最多准备八个。请按
+各 Agent 的 `prepared_capacity` 之和规划部署容量：例如一个服务 1,000 名用户、预计会有 100
+个对话同时开始的 Agent，预备容量需要 100，每个对话独立使用沙箱时就是 100 个空闲沙箱。Agent
+的对话共用沙箱时，每个已准备的沙箱按内存上限放入尽可能多的席位，每个席位预留 640 MiB，
+Agent 保留的空闲沙箱数是预备容量除以每个沙箱的席位数并向上取整。在沙箱租期
+（`ASTRABOX_SANDBOX_LEASE_SECONDS`）内没有对话取走的席位会被丢弃，与空闲沙箱相同。把
+`ASTRABOX_PREPARED_CAPACITY_LIMIT` 设为部署能承受的总和，AstraBox 会拒绝会超出它的 Agent
+写入；Docker 主机不为空闲沙箱预留资源，除此之外没有任何东西能阻止一个 Agent 的预备容量
+耗尽主机。不需要快速开始首个对话的 Agent 可以把预备容量设为 0。
 
 空闲的已准备沙箱占用多少资源，取决于 Agent 的运行环境使用的 Agent 程序：
 
@@ -422,8 +428,12 @@ scripts/compose.sh -f containers/compose.sso.yaml up -d
 | 已有的 OpenSandbox 服务 | 每个沙箱同样请求 200m CPU 和 768 MiB 内存；是否真正预留取决于该服务的运行时，与上面两行相同。无论哪种情况，都请按实际使用量规划内存。 |
 
 每个沙箱工作时最多可用 4 个 CPU（Docker 上不超过主机的 CPU 数）和 4 GiB 内存；上表
-是空闲的已准备沙箱占用的资源。要为某个 Agent 关闭预热，在它的「运行设置」中关闭
-「提前准备沙箱」，或通过 API 或 `astrabox.yaml` 文档设置 `"prewarm_enabled": false`。
+是空闲的已准备沙箱占用的资源。要为某个 Agent 关闭预热，在它的「运行设置」中把
+「预备容量」设为 0，或通过 API 或 `astrabox.yaml` 文档设置 `"prepared_capacity": 0`。
+
+部署多个平台副本时，每个 Agent 的已准备沙箱同一时刻只由一个副本负责补充，任何副本都能
+把它交给对话。在同一台主机上重启的副本会立即恢复补充；副本永久停止时，另一个副本会在
+约两分半钟内接手补充，期间对话照常取用已经准备好的沙箱。
 
 ## 检查健康状态和沙箱恢复
 

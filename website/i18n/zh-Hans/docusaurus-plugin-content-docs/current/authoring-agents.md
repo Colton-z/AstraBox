@@ -35,7 +35,7 @@ Agent 在 Session 中执行任务。AstraBox 让 Agent 随时可用，创建或�
 | `environment_name` | string | 是 | 提供 Agent 程序、沙箱、网络策略和模型连接的运行环境 |
 | `exposure_mode` | string | 否 | Agent 的使用入口：`chat_only`、`mcp_only` 或 `both` |
 | `idle_hibernate_seconds` | integer | 否 | Session 运行实例空闲多久后执行运行环境设置的暂停或回收方式 |
-| `prewarm_enabled` | boolean | 否 | AstraBox 是否为这个 Agent 保持准备完成的运行时。创建时省略则由部署决定：能够预热的部署为 `true`，否则为 `false`；参见[预热](#prewarming) |
+| `prepared_capacity` | integer | 否 | 同一时刻能在已准备好的运行时上开始的新对话数量，范围 0 到 1000，0 表示关闭预热。创建时省略则由部署决定：能够预热的部署为 1，否则为 0；参见[预热](#prewarming) |
 | `enabled` | boolean | 否 | Agent 是否可以启动新 Session |
 | `visibility` | string | — | Agent 鉴权模式：`public`、`private` 或 `allowlist`，通过 Agent access 接口管理 |
 | `admins` | array | — | 可以管理 Agent 的账户，通过 Agent access 接口管理 |
@@ -99,16 +99,24 @@ Session 身份、通信设置和已分配的模型凭证由平台管理。
 Agent 程序启动会在可领取前完成，新对话领取的是已经运行的沙箱，而不是从头启动一个。
 Agent 页面中的**预热状态**会显示是否已有就绪资源，或准备是否失败。
 
-在能够预热的部署上，新建 Agent 默认开启预热。能够预热指设置了
+「预备容量」（`prepared_capacity`）是同一时刻无需等待就能开始的新对话数量，范围 0 到
+1000。在能够预热的部署上，新建 Agent 默认为 1。能够预热指设置了
 `ASTRABOX_AGENT_PREWARM_REDIS_URL`，所有随附的 Compose 部署都会设置它；未设置时新建
-Agent 默认关闭预热，因为这种部署无法协调准备资源。这个值在创建 Agent 时写入 Agent，
-创建表单也从这个值开始显示；之后修改部署不会改变已有 Agent 的设置。
+Agent 默认为 0，因为这种部署无法协调准备资源。这个值在创建 Agent 时写入 Agent，
+创建表单也从这个值开始显示；之后修改部署不会改变已有 Agent 的值。
 
-预热会占用资源：每个开启预热的 Agent 都会保留一个空闲的已准备沙箱，只要预热保持开启、
-Agent 及其运行环境处于启用状态就一直保留；对话领取之后会再准备一个补上。各种部署下
-每个沙箱的占用见[为已准备沙箱规划容量](deploy.md#plan-capacity-for-prepared-sandboxes)。
-要为某个 Agent 关闭预热，关闭「提前准备沙箱」开关（创建时在高级设置中，创建后在 Agent
-页面的「运行设置」中），或在创建、更新时传入 `"prewarm_enabled": false`。
+每一份容量是一个等待对话的已准备运行时：每个对话独立使用沙箱时是一个空闲沙箱，Agent 的
+对话共用沙箱时是沙箱里的一个席位（一个已经启动、相互隔离的 Agent 程序）。共用的沙箱在准备
+时放入内存所能容纳的全部席位，AstraBox 保留足够多的空闲沙箱，使席位总数达到预备容量；
+第一个取走这种沙箱的对话会把其余席位留给后面的对话。对话取走一个空闲沙箱后，AstraBox 在
+几秒内补上一个。全部取完后，后续对话要先启动运行时，需要数秒，直到补齐；Agent 页面的
+「预备容量」卡片会显示最近一次发生这种情况的时间。请按预计同时开始的对话数设置。修改数值
+立即生效，不会丢弃已经准备好的单位。
+
+预备容量大于 0 且 Agent 及其运行环境处于启用状态时，会一直占用资源。各种部署下每份容量
+的占用见[为已准备沙箱规划容量](deploy.md#plan-capacity-for-prepared-sandboxes)。
+要为某个 Agent 关闭预热，把「预备容量」设为 0（创建时在高级设置中，创建后在 Agent
+页面的「运行设置」中），或在创建、更新时传入 `"prepared_capacity": 0`。
 
 ### 查看
 

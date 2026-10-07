@@ -14,7 +14,6 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from astrabox.core.service.orchestrator.agent import client_pool
 from astrabox.core.service.orchestrator.engine import provisioning
 from astrabox.core.service.orchestrator.engine.provisioning import (
     EngineSandboxRequest,
@@ -246,22 +245,13 @@ def _build_harness(
     manager = _Manager(log, record_failure=record_failure)
     backend = _Backend(log, connect_failure=connect_failure)
     lease = _Lease(log, placements)
-    candidate = backend.handle(candidate_id) if candidate_id is not None else None
+    if candidate_id is not None:
 
-    async def acquire_candidate(*_args: Any, **_kwargs: Any) -> Any:
-        if candidate is None:
-            return None
-        await manager.record_startup_allocation(
-            "session-1",
-            SandboxAllocation(
-                sandbox_id=str(candidate_id),
-                sandbox_backend=backend.name,
-                scope="sandbox",
-            ),
-        )
-        return SimpleNamespace(sandbox=candidate, sandbox_id=candidate_id)
+        async def create_candidate(*_args: Any, **_kwargs: Any) -> Any:
+            log.append("create_candidate")
+            return backend.handle(candidate_id), candidate_id
 
-    acquire = AsyncMock(side_effect=acquire_candidate)
+        monkeypatch.setattr(provisioning, "create_shared_agent_sandbox", create_candidate)
 
     monkeypatch.setattr(provisioning, "SessionRepository", _SessionRepo)
     monkeypatch.setattr(
@@ -273,7 +263,6 @@ def _build_harness(
         "SharedSandboxLease",
         lambda **_kwargs: lease,
     )
-    monkeypatch.setattr(client_pool, "acquire_agent_client_pool", acquire)
     monkeypatch.setattr(
         "astrabox.core.service.orchestrator.runtime_manager.sandbox_for_name",
         lambda _name: backend,
@@ -332,7 +321,6 @@ def _build_harness(
         log=log,
         manager=manager,
         backend=backend,
-        acquire=acquire,
         run=run,
     )
 
@@ -356,7 +344,6 @@ async def test_placement_is_recorded_before_every_fallible_follow_up(
     allocation = harness.manager.allocations[0]
     assert allocation.scope == "isolated_sessions"
     assert allocation.isolated_session_ids == ("iso-1", "iso-term-1")
-    harness.acquire.assert_not_awaited()
 
 
 async def test_a_cold_candidate_that_loses_the_race_refreshes_the_winner_vault(
@@ -398,7 +385,7 @@ async def test_unused_candidate_cleanup_does_not_depend_on_connect(
 
     assert harness.log == [
         "place:resident",
-        "record_candidate",
+        "create_candidate",
         "place:box-loser",
         "record_allocation",
         "destroy:box-loser",
@@ -421,7 +408,7 @@ async def test_record_failure_still_cleans_the_unused_candidate(
 
     assert harness.log == [
         "place:resident",
-        "record_candidate",
+        "create_candidate",
         "place:box-loser",
         "record_allocation",
         "destroy:box-loser",

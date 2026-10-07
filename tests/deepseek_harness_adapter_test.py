@@ -251,8 +251,14 @@ async def test_a_published_runtime_is_moved_to_the_chosen_model(
             _ = mode
 
         async def select_model(
-            self, model: str, *, gateway_base_url: str, gateway_key_env: str
+            self,
+            model: str,
+            *,
+            gateway_base_url: str,
+            gateway_key_env: str,
+            prepared_route: str | None = None,
         ) -> None:
+            assert prepared_route is None
             selected.append((model, gateway_base_url, gateway_key_env))
 
     async def fake_initialize(client: Any, **kwargs: Any) -> Any:

@@ -9,7 +9,7 @@ import { execFileSync } from 'node:child_process';
 import { expect, test, type Locator, type Page } from '@playwright/test';
 
 import { AstraApi } from '../fixtures/astraApi';
-import { documentsByField } from '../fixtures/dbOracle';
+import { nextLedgerSeat, nextPreparedSeat, type PreparedSeat } from '../fixtures/preparedSeats';
 import { appPath, parseTimeoutEnv } from '../fixtures/env';
 import { PlatformApi } from '../fixtures/platformApi';
 import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
@@ -120,17 +120,9 @@ interface SeatFacts {
   isolatedSessionId: string;
 }
 
-/**
- * Read one Agent's prepared seat without letting its secrets into an assertion.
- *
- * `_prepared_slot` also carries the activation token and the model credential,
- * and a failed `expect()` retains and prints both sides of its comparison. Only
- * the named coordinates are lifted out of it.
- */
-function preparedSeat(agentId: string): SeatFacts {
-  const rows = documentsByField('agents', '$.agent_id', agentId);
-  expect(rows, 'the preparation under test must belong to exactly one Agent row').toHaveLength(1);
-  const manifest = (rows[0]._prepared_slot || {}) as Record<string, unknown>;
+/** The coordinates of one seat, or empty ones when there is none. */
+function seatFacts(seat: PreparedSeat | undefined): SeatFacts {
+  const manifest: Record<string, unknown> = seat || {};
   return {
     slotId: String(manifest.slot_id || '').trim(),
     state: String(manifest.state || '').trim(),
@@ -233,7 +225,7 @@ test('a conversation is not handed a prepared seat in a shared box that filled u
     name: agentName,
     model: await api.configuredAgentModel(RESEARCH_AGENT, SHARED_ENVIRONMENT),
     environment_name: SHARED_ENVIRONMENT,
-    prewarm_enabled: true,
+    prepared_capacity: 1,
     terminal_panel: true,
   });
   agentId = String(created.agent_id || '').trim();
@@ -255,7 +247,7 @@ test('a conversation is not handed a prepared seat in a shared box that filled u
       `Agent ${agentId} must prepare real claimable capacity on ${SHARED_ENVIRONMENT} before a `
       + 'user can be handed a seat in it',
   }).toBe(true);
-  const firstSeat = preparedSeat(agentId);
+  const firstSeat = seatFacts(nextPreparedSeat(agentId, String(readout.sandbox_id)));
   expect(
     firstSeat.placement,
     'this journey needs Agent tenancy — a conversation-tenancy Agent has no shared box to fill',
@@ -273,20 +265,21 @@ test('a conversation is not handed a prepared seat in a shared box that filled u
   expect(backend, 'the first conversation must name its sandbox backend').not.toEqual('');
 
   // ── The promise is made while there is still room ────────────────────────
-  // The refill publishes the NEXT seat. Asserting it is a DIFFERENT slot in the
-  // SAME box is the premise of everything below: this seat was approved after
-  // boxX already held user one, by the one predicate that asks about room.
-  // A seat published somewhere else means the fixture is not the scene this spec
-  // is about, and that must stop the run here rather than be discovered later.
+  // The box arrived carrying more than one seat, so the NEXT seat waits in it.
+  // Asserting it is a DIFFERENT slot in the SAME box is the premise of
+  // everything below: this seat was approved, by the one predicate that asks
+  // about room, in the box that now holds user one. A box that carried a single
+  // seat means the fixture is not the scene this spec is about, and that must
+  // stop the run here rather than be discovered later.
   let seat: SeatFacts = firstSeat;
   await expect.poll(() => {
-    seat = preparedSeat(agentId);
+    seat = seatFacts(nextLedgerSeat(agentId));
     return seat.state === 'prepared' && seat.sandboxId === boxX && seat.slotId !== firstSeat.slotId;
   }, {
     timeout: PREPARED_SLOT_TIMEOUT_MS,
     intervals: [2_000],
     message:
-      `the refill must publish a NEW prepared seat into box ${boxX} — the box that already holds `
+      `box ${boxX} must still hold a NEW prepared seat — the box that already holds `
       + `conversation ${sessionA}. Without that this run proves nothing about a seat approved while `
       + 'there was room',
   }).toBe(true);
@@ -373,7 +366,7 @@ test('a conversation is not handed a prepared seat in a shared box that filled u
   const advertisedNow = await platform.preparedRuntime(agentId);
   expect(advertisedNow.ready, 'the seat is still advertised the moment the box went over').toBe(true);
   expect(String(advertisedNow.sandbox_id || '').trim()).toBe(boxX);
-  expect(preparedSeat(agentId)).toEqual(seat);
+  expect(seatFacts(nextLedgerSeat(agentId))).toEqual(seat);
   await new Promise((resolve) => setTimeout(resolve, PRESSURE_WINDOW_MS));
   const advertisedStill = await platform.preparedRuntime(agentId);
   expect(
@@ -383,8 +376,8 @@ test('a conversation is not handed a prepared seat in a shared box that filled u
   ).toBe(true);
   expect(String(advertisedStill.sandbox_id || '').trim()).toBe(boxX);
   expect(
-    preparedSeat(agentId),
-    'the same seat, unchanged — a refill replacing it would make the claim below a different test',
+    seatFacts(nextLedgerSeat(agentId)),
+    'the same seat, unchanged — a reap replacing it would make the claim below a different test',
   ).toEqual(seat);
 
   // ── User two arrives ────────────────────────────────────────────────────

@@ -147,6 +147,17 @@ class AstraBoxRuntimeSettings(BaseSettings):
             AliasPath("astrabox", "agent_prewarm", "redis_url"),
         ),
     )
+    #: Ceiling on the sum of every Agent's ``prepared_capacity``. A sandbox
+    #: substrate that reserves nothing for an idle sandbox (a Docker host) has no
+    #: other bound on it. Zero means no ceiling.
+    prepared_capacity_limit: int = Field(
+        default=0,
+        ge=0,
+        validation_alias=AliasChoices(
+            "ASTRABOX_PREPARED_CAPACITY_LIMIT",
+            AliasPath("astrabox", "agent_prewarm", "prepared_capacity_limit"),
+        ),
+    )
     #: Ask the lifecycle server to hand back endpoints that point at the server
     #: itself and relay to the sandbox, instead of endpoints that point at a
     #: published host port. See ``providers/open_sandbox/_config.use_server_proxy``

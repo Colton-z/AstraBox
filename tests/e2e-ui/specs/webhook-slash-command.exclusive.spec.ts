@@ -96,7 +96,7 @@ for (const scene of ['scheduler', 'hmac'] as const) {
         name: `__e2e_webhook_slash_${Date.now()}`,
         model,
         environment_name: environmentName,
-        prewarm_enabled: false,
+        prepared_capacity: 0,
       });
       agentId = agent.agent_id;
 

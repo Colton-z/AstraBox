@@ -359,6 +359,7 @@ class SessionService:
         clean.pop("sandbox_generation", None)
         clean.pop("_runtime_recovery_owner", None)
         clean.pop("_retained_startup_allocations", None)
+        clean.pop("_startup_provider_assignment", None)
         clean.pop("sandbox_callback_token", None)
         clean.pop("turn_preparation_guard", None)
         clean.pop("turn_preparation_fence_epoch", None)

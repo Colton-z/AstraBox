@@ -46,7 +46,7 @@ test('an Environment can be deleted only after its last Agent moves away', async
     networking: { type: 'limited', allowed_hosts: [], allow_mcp_servers: false },
   });
   const agent = await api.createAgent({
-    name: ownerName, model, environment_name: name, enabled: false, prewarm_enabled: false,
+    name: ownerName, model, environment_name: name, enabled: false, prepared_capacity: 0,
   });
   agentId = agent.agent_id;
   expect(agent.environment_name).toBe(name);
@@ -83,7 +83,7 @@ test('an Environment can be deleted only after its last Agent moves away', async
   const current = await api.getAgent(agentId);
   await api.updateAgent(agentId, {
     name: current.name, model, version: current.version, environment_name: originalName,
-    enabled: false, prewarm_enabled: false,
+    enabled: false, prepared_capacity: 0,
   });
   expect((await api.getAgent(agentId)).environment_name).toBe(originalName);
   await page.reload();

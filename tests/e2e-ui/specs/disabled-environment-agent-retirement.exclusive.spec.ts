@@ -6,6 +6,7 @@ import { expect, test } from '@playwright/test';
 
 import { AstraApi } from '../fixtures/astraApi';
 import { documentsByField } from '../fixtures/dbOracle';
+import { nextPreparedSeat } from '../fixtures/preparedSeats';
 import { apiPath, appPath } from '../fixtures/env';
 import { PlatformApi } from '../fixtures/platformApi';
 import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
@@ -132,7 +133,7 @@ for (const tenancy of ['agent', 'conversation'] as const) {
     for (const prewarm of [true, false]) {
       const agent = await api.createAgent({
         name: `${environmentName}_${prewarm ? 'warm' : 'cold'}`,
-        model, environment_name: environmentName, prewarm_enabled: prewarm,
+        model, environment_name: environmentName, prepared_capacity: prewarm ? 1 : 0,
       });
       agents.push(agent.agent_id);
     }
@@ -150,8 +151,8 @@ for (const tenancy of ['agent', 'conversation'] as const) {
     const backend = String(live.sandbox_backend);
     const poolName = String(spare.client_pool_name || '');
     expect(poolName).not.toBe('');
-    const manifest = (documentsByField('agents', '$.agent_id', warmAgent)[0]._prepared_slot || {}) as Record<string, unknown>;
-    const spareSlots = tenancy === 'agent'
+    const manifest = tenancy === 'agent' ? nextPreparedSeat(warmAgent, spareBox) : undefined;
+    const spareSlots = manifest
       ? [String(manifest.isolated_session_id), String(manifest.terminal_isolated_session_id)] : [];
     const liveSlot = String(live.runtime_identity?.isolated_session_id || '');
     if (tenancy === 'agent') {
@@ -186,7 +187,10 @@ for (const tenancy of ['agent', 'conversation'] as const) {
       expect(retired.probes[liveBox], 'retirement must preserve the claimed Session box').toBe('OK');
       if (tenancy === 'agent') {
         expect(retired.isolationIds).toContain(liveSlot);
-        return spareSlots.every((slot) => !retired.isolationIds.includes(slot));
+        // Waiting seats are the ones left in the live box and the ones the
+        // pool's idle boxes carry, so both are retired.
+        return spareSlots.every((slot) => !retired.isolationIds.includes(slot))
+          && retired.ownedBoxes.every((box) => box === liveBox);
       }
       return retired.probes[spareBox] === 'NOT_FOUND';
     }, { timeout: 30_000, intervals: [500, 1000], message: 'supplier must retire only unclaimed capacity' }).toBe(true);
@@ -199,7 +203,7 @@ for (const tenancy of ['agent', 'conversation'] as const) {
     });
     await page.goto(appPath(`/manage/agents/${warmAgent}`));
     await expect(page.getByTestId('prewarm-state')).toHaveText('Warm start is off for this Agent.');
-    await expect(page.getByTestId('prewarm-count')).toHaveText('Available: 0');
+    await expect(page.getByTestId('prewarm-count')).toHaveText('Available: 0 of 0');
     expect(serverErrors, 'the management page must load without server errors').toEqual([]);
 
     for (const [route, code] of [

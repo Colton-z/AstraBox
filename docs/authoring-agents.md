@@ -37,7 +37,7 @@ The Agent executes tasks inside a Session. AstraBox keeps the Agent available, s
 | `environment_name` | string | Yes | The Environment that supplies the Agent program, sandbox, network policy, and model connection. |
 | `exposure_mode` | string | No | Where the Agent is available: `chat_only`, `mcp_only`, or `both`. |
 | `idle_hibernate_seconds` | integer | No | How long the Session runtime may remain idle before the Environment's pause or removal behavior applies. |
-| `prewarm_enabled` | boolean | No | Whether AstraBox keeps a prepared runtime ready for this Agent. Omitted on create, it is `true` where the deployment can prewarm and `false` where it cannot; see [Prewarming](#prewarming). |
+| `prepared_capacity` | integer | No | How many new conversations can start at the same moment on a prepared runtime, from 0 to 1000; 0 turns prewarming off. Omitted on create, it is 1 where the deployment can prewarm and 0 where it cannot; see [Prewarming](#prewarming). |
 | `enabled` | boolean | No | Whether the Agent can start new Sessions. |
 | `visibility` | string | — | Agent authorization mode: `public`, `private`, or `allowlist`. Managed through the Agent access endpoint. |
 | `admins` | array | — | Accounts allowed to manage the Agent. Managed through the Agent access endpoint. |
@@ -109,21 +109,35 @@ before the runtime is offered for use, so a new conversation claims a running
 sandbox instead of starting one. The Agent's **Prewarm status** reports whether
 prepared capacity is ready or preparation failed.
 
-A new Agent has prewarming on wherever the deployment can prewarm, which means
+**Prepared capacity** (`prepared_capacity`) is how many new conversations can
+start at the same moment without waiting, from 0 to 1000. A new Agent gets 1
+wherever the deployment can prewarm, which means
 `ASTRABOX_AGENT_PREWARM_REDIS_URL` is set; every bundled Compose deployment
-sets it. Where it is unset, a new Agent is created with prewarming off, because
-prepared capacity cannot be coordinated there. The value is stored on the
-Agent when it is created and the create form starts from it; changing the
-deployment later does not change an existing Agent's setting.
+sets it. Where it is unset, a new Agent gets 0, because prepared capacity
+cannot be coordinated there. The value is stored on the Agent when it is
+created and the create form starts from it; changing the deployment later does
+not change an existing Agent's value.
 
-Prewarming holds capacity: each Agent with it on keeps one idle prepared
-sandbox for as long as prewarming stays on and the Agent and its Environment
-are enabled, and prepares a replacement after a conversation claims it. What
-one costs on each deployment is in
+Each unit of capacity is one prepared runtime waiting for a conversation:
+a whole idle sandbox when each conversation gets its own, or a seat (a started,
+isolated engine) inside a sandbox when the Agent's conversations share one. A
+shared sandbox is prepared with as many seats as its memory admits, and
+AstraBox keeps enough idle sandboxes to hold the capacity in seats; the first
+conversation that takes such a sandbox leaves its other seats to the next
+conversations. When a conversation takes an idle sandbox, AstraBox prepares a
+replacement within seconds. Once every unit is taken, further conversations
+start their runtime first, which takes several seconds, until capacity
+refills; the Agent's **Prepared capacity** card shows the last time that
+happened. Set the value to the number of conversations you expect to start at
+the same time. Changing it takes effect without discarding the units already
+prepared.
+
+Prepared capacity holds resources for as long as it is above 0 and the Agent
+and its Environment are enabled. What one unit costs on each deployment is in
 [Plan capacity for prepared sandboxes](deploy.md#plan-capacity-for-prepared-sandboxes).
-To turn it off for one Agent, clear **Keep a sandbox ready** (under the
+To turn prewarming off for one Agent, set **Prepared capacity** to 0 (under the
 advanced settings when creating the Agent, or in **Runtime and availability**
-on its page), or send `"prewarm_enabled": false` when creating or updating it.
+on its page), or send `"prepared_capacity": 0` when creating or updating it.
 
 ### Read
 

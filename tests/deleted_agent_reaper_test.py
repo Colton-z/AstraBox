@@ -118,7 +118,7 @@ async def test_missing_resident_withdraws_fresh_capacity_atomically(
     await repo.create_agent({
         "agent_id": "owner", "sandbox_id": "gone-box",
         "sandbox_backend": "open_sandbox", "deleted": deleted,
-        "_prepared_slot": manifest,
+        "_prepared_slots": [manifest],
     })
     provider = AsyncMock()
     provider.probe.return_value = SandboxLifecycleProbeResult(
@@ -128,7 +128,7 @@ async def test_missing_resident_withdraws_fresh_capacity_atomically(
     summary = await RemoteAgentRuntimeManager().reap_abandoned_agent_boxes()
     row = await repo.get_agent("owner", include_deleted=True)
     assert row is not None and row["sandbox_id"] is None
-    retired = row["_prepared_slot"]
+    retired = row["_prepared_slots"][0]
     assert retired["state"] == "retiring"
     assert all(retired[key] == value for key, value in manifest.items() if key != "state")
     assert retired["retire_reason"] == "resident sandbox is confirmed gone"
@@ -149,7 +149,7 @@ async def test_binding_cleanup_rechecks_a_concurrent_manifest_write(
     }
     await repo.create_agent({
         "agent_id": "owner", "sandbox_id": "old-box",
-        "sandbox_backend": "open_sandbox", "_prepared_slot": None,
+        "sandbox_backend": "open_sandbox", "_prepared_slots": [],
     })
     original_retry = repository_module.run_mongo_with_retry
     raced = False
@@ -163,7 +163,7 @@ async def test_binding_cleanup_rechecks_a_concurrent_manifest_write(
         nonlocal raced
         if name == "agents.clear_resident_sandbox_binding" and not raced:
             raced = True
-            updates: dict[str, Any] = {"_prepared_slot": changed}
+            updates: dict[str, Any] = {"_prepared_slots": [changed]}
             if change == "replacement":
                 updates["sandbox_id"] = "new-box"
             await repo.update_agent("owner", updates)
@@ -177,14 +177,14 @@ async def test_binding_cleanup_rechecks_a_concurrent_manifest_write(
     assert row is not None and raced
     if change == "replacement":
         assert not cleared and row["sandbox_id"] == "new-box"
-        assert row["_prepared_slot"] == changed
+        assert row["_prepared_slots"] == [changed]
     elif change == "claim":
         assert cleared and row["sandbox_id"] is None
-        assert row["_prepared_slot"] == changed
+        assert row["_prepared_slots"] == [changed]
     else:
         assert cleared and row["sandbox_id"] is None
-        assert row["_prepared_slot"]["state"] == "retiring"
-        assert row["_prepared_slot"]["slot_id"] == "slot"
+        assert row["_prepared_slots"][0]["state"] == "retiring"
+        assert row["_prepared_slots"][0]["slot_id"] == "slot"
 
 
 @pytest.mark.parametrize("slot_patch", [
@@ -203,10 +203,10 @@ async def test_binding_cleanup_preserves_capacity_it_does_not_own(
     }
     await repo.create_agent({
         "agent_id": "owner", "sandbox_id": "box",
-        "sandbox_backend": "open_sandbox", "_prepared_slot": manifest,
+        "sandbox_backend": "open_sandbox", "_prepared_slots": [manifest],
     })
     assert await repo.clear_resident_sandbox_binding(
         "owner", sandbox_id="box", sandbox_backend="open_sandbox",
     )
     row = await repo.get_agent("owner")
-    assert row is not None and row["_prepared_slot"] == manifest
+    assert row is not None and row["_prepared_slots"] == [manifest]

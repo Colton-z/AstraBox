@@ -96,7 +96,7 @@ function agentConfig(
     name,
     model,
     environment_name: environmentName,
-    prewarm_enabled: prewarmEnabled,
+    prepared_capacity: prewarmEnabled ? 1 : 0,
     system: 'Run the exact shell command requested by the test and report its output.',
   };
 }

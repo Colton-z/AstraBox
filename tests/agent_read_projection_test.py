@@ -51,7 +51,7 @@ def _stored_agent() -> dict[str, Any]:
         "plugin_mcp_bridge_allowlist": ["everything"],
         "main_session_id": "session-1",
         "_agent_prewarm_fingerprint": "fp-1",
-        "_prepared_slot": {"state": "prepared"},
+        "_prepared_slots": [{"state": "prepared"}],
     }
 
 

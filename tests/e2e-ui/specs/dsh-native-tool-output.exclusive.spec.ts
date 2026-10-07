@@ -92,7 +92,7 @@ test('DSH retains native tool results and step boundaries across reload', async 
   const api = new AstraApi(request);
   const profile = engineProfileFor('deepseek_harness');
   agentId = (await api.createAgent({ name: `__e2e_dsh_tools_${randomUUID()}`,
-    environment_name: profile.environment_name, model: profile.model, prewarm_enabled: false })).agent_id;
+    environment_name: profile.environment_name, model: profile.model, prepared_capacity: 0 })).agent_id;
   const sessionId = (await api.startConversation(agentId)).session_id;
   sessions.push(sessionId);
   await api.waitForSessionReady(sessionId);

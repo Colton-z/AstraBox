@@ -218,9 +218,9 @@ test('temporary-workspace recovery claims its own replenished pool and preserves
   expect(volume, 'this is the no-volume recovery contract, not a volume replacement').toBe('');
   const model = await api.configuredAgentModel(researchAgent, environment);
   const name = `__e2e_runtime_recovery_same_display_prefix_${Date.now()}`;
-  const agent = await api.createAgent({ name: `${name}_A`, model, environment_name: environment, prewarm_enabled: true });
+  const agent = await api.createAgent({ name: `${name}_A`, model, environment_name: environment, prepared_capacity: 1 });
   agents.push(agent.agent_id);
-  const sibling = await api.createAgent({ name: `${name}_B`, model, environment_name: environment, prewarm_enabled: true });
+  const sibling = await api.createAgent({ name: `${name}_B`, model, environment_name: environment, prepared_capacity: 1 });
   agents.push(sibling.agent_id);
   async function prepared(id: string, previous = '') {
     let status: Record<string, unknown> = {};

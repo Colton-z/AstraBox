@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "astrabox"
-version = "0.1.3"
+version = "0.1.4"
 description = "AstraBox Community — an open, self-hosted agent runtime that streams a sandboxed coding agent to your frontend over the AI-SDK Data-Stream-Protocol."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -27,7 +27,7 @@ dependencies = [
   "fastapi==0.141.1",
   "uvicorn[standard]==0.54.0",
   "httpx==0.28.1",
-  "anyio==4.15.0",
+  "anyio==4.15.1",
   "websockets>=17.1",
   # config + validation
   "pydantic==2.13.5",
@@ -120,8 +120,8 @@ dev = [
   # both CI (installs `.[dev]`, runs `python -m ruff`/`python -m mypy`) and local
   # `make test`. The lint/type gate is calibrated to these versions, so a float
   # could silently change lint/type output between a laptop and CI. Bump both here.
-  "ruff==0.16.9",
-  "mypy==2.3.1",
+  "ruff==0.16.10",
+  "mypy==2.4.0",
 ]
 # Live end-to-end smoke (tests/e2e/): drives a real turn against a real Docker
 # daemon + the operator LLM key. httpx is already a core dep; pytest is pulled in

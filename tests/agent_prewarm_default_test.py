@@ -1,7 +1,7 @@
 """A new Agent keeps capacity ready unless its author or the deployment says no.
 
 The default is written into the record at create time because the capacity
-sweep selects Agents whose stored ``prewarm_enabled`` is true: a create that
+sweep selects Agents whose stored ``prepared_capacity`` is positive: a create that
 leaves the key out would read as off everywhere. It follows the deployment,
 since prewarming needs ``ASTRABOX_AGENT_PREWARM_REDIS_URL`` and an Agent
 created with it on where that store is missing could only record
@@ -43,8 +43,13 @@ class _User:
 
 
 class _AgentRepo:
-    def __init__(self, agent: dict[str, Any] | None = None) -> None:
+    def __init__(self, agent: dict[str, Any] | None = None, *, others: int = 0) -> None:
         self.agent = dict(agent) if agent else None
+        self.others = others
+
+    async def total_prepared_capacity(self, *, excluding_agent_id: str = "") -> int:
+        _ = excluding_agent_id
+        return self.others
 
     async def get_agent(self, agent_id: str) -> dict[str, Any] | None:
         if self.agent and agent_id == self.agent.get("agent_id"):
@@ -71,9 +76,11 @@ class _EnvironmentRepo:
         return {"name": name, "engine_kind": "claude_code"}
 
 
-def _service(agent: dict[str, Any] | None = None) -> tuple[AgentConfigService, _AgentRepo]:
+def _service(
+    agent: dict[str, Any] | None = None, *, others: int = 0
+) -> tuple[AgentConfigService, _AgentRepo]:
     register_builtin_providers()
-    repo = _AgentRepo(agent)
+    repo = _AgentRepo(agent, others=others)
     service = AgentConfigService(repo, environment_repo=_EnvironmentRepo())  # type: ignore[arg-type]
     return service, repo
 
@@ -89,10 +96,10 @@ def _payload(**overrides: Any) -> dict[str, Any]:
 
 def _stored_prewarm(repo: _AgentRepo) -> object:
     assert repo.agent is not None
-    assert "prewarm_enabled" in repo.agent, (
-        "the create must store its prewarm choice; readers treat an absent key as off"
+    assert "prepared_capacity" in repo.agent, (
+        "the create must store its prepared capacity; readers treat an absent key as zero"
     )
-    return repo.agent["prewarm_enabled"]
+    return repo.agent["prepared_capacity"]
 
 
 @pytest.mark.usefixtures("deployment_can_prewarm")
@@ -101,8 +108,8 @@ async def test_create_without_a_choice_stores_prewarming_on() -> None:
 
     created = await service.create_agent_config(_User(), _payload())
 
-    assert _stored_prewarm(repo) is True
-    assert created["prewarm_enabled"] is True
+    assert _stored_prewarm(repo) == 1
+    assert created["prepared_capacity"] == 1
 
 
 @pytest.mark.usefixtures("deployment_cannot_prewarm")
@@ -111,16 +118,16 @@ async def test_create_without_a_choice_stays_off_where_the_deployment_cannot_pre
 
     await service.create_agent_config(_User(), _payload())
 
-    assert _stored_prewarm(repo) is False
+    assert _stored_prewarm(repo) == 0
 
 
 @pytest.mark.usefixtures("deployment_can_prewarm")
 async def test_create_keeps_an_explicit_off() -> None:
     service, repo = _service()
 
-    await service.create_agent_config(_User(), _payload(prewarm_enabled=False))
+    await service.create_agent_config(_User(), _payload(prepared_capacity=0))
 
-    assert _stored_prewarm(repo) is False
+    assert _stored_prewarm(repo) == 0
 
 
 @pytest.mark.usefixtures("deployment_can_prewarm")
@@ -144,30 +151,30 @@ async def test_an_update_leaves_an_existing_agents_prewarm_alone() -> None:
 
     assert repo.agent is not None
     assert repo.agent["description"] == "edited after the default shipped"
-    assert "prewarm_enabled" not in repo.agent
+    assert "prepared_capacity" not in repo.agent
 
 
 @pytest.mark.parametrize(
     ("redis_url", "expected"),
-    [(_REDIS_URL, True), ("", False)],
+    [(_REDIS_URL, 1), ("", 0)],
     ids=["deployment-can-prewarm", "deployment-cannot-prewarm"],
 )
 def test_the_form_schema_serves_the_deployments_default(
-    redis_url: str, expected: bool
+    redis_url: str, expected: int
 ) -> None:
     schema = get_agent_schema(SimpleNamespace(agent_prewarm_redis_url=redis_url))
 
     defaults = {f["key"]: f["default"] for f in schema["fields"] if "default" in f}
-    assert defaults["prewarm_enabled"] is expected
+    assert defaults["prepared_capacity"] == expected
 
 
 @pytest.mark.parametrize(
     ("redis_url", "expected"),
-    [(_REDIS_URL, True), (None, False)],
+    [(_REDIS_URL, 1), (None, 0)],
     ids=["deployment-can-prewarm", "deployment-cannot-prewarm"],
 )
 def test_the_schema_route_carries_the_default_to_the_console(
-    monkeypatch: pytest.MonkeyPatch, redis_url: str | None, expected: bool
+    monkeypatch: pytest.MonkeyPatch, redis_url: str | None, expected: int
 ) -> None:
     """The response model must not drop ``default`` on the way out."""
     if redis_url is None:
@@ -188,5 +195,22 @@ def test_the_schema_route_carries_the_default_to_the_console(
 
     assert response.status_code == 200, response.text
     fields = {f["key"]: f for f in response.json()["data"]["fields"]}
-    assert fields["prewarm_enabled"]["default"] is expected
+    assert fields["prepared_capacity"]["default"] == expected
     assert "default" not in fields["model"]
+
+
+@pytest.mark.usefixtures("deployment_can_prewarm")
+async def test_capacity_above_the_deployment_limit_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from astrabox.common.utils.errors import APIError
+
+    monkeypatch.setenv("ASTRABOX_PREPARED_CAPACITY_LIMIT", "10")
+    within, _ = _service(others=6)
+    await within.create_agent_config(_User(), _payload(prepared_capacity=4))
+
+    beyond, repo = _service(others=7)
+    with pytest.raises(APIError) as refused:
+        await beyond.create_agent_config(_User(), _payload(prepared_capacity=4))
+    assert refused.value.code == "PREPARED_CAPACITY_LIMIT_EXCEEDED"
+    assert repo.agent is None

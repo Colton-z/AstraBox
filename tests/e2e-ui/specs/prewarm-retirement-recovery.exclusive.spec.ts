@@ -87,7 +87,7 @@ async def main():
             assert agent is not None and agent['name'] == given['agentName']
             assert agent['_client_pool_name'] == given['poolName']
             assert agent['_client_pool_backend'] == given['backend']
-            assert agent['prewarm_enabled'] is True
+            assert agent['prepared_capacity'] > 0
             idle = await store.snapshot_idle_entries(given['poolName'])
             assert [entry.sandbox_id for entry in idle] == [given['spareBox']]
             assert await redis.eval(ARM, 1, key, given['marker']) == 1
@@ -179,7 +179,7 @@ test('failed pool retirement retains its address and error, then recovers withou
   expect(environment?.sandbox_tenancy).toBe('conversation');
   const model = await api.configuredAgentModel(researchAgent, environmentName);
   const agentName = `__e2e_retirement_recovery_${randomUUID()}`;
-  const agent = await api.createAgent({ name: agentName, model, environment_name: environmentName, prewarm_enabled: true });
+  const agent = await api.createAgent({ name: agentName, model, environment_name: environmentName, prepared_capacity: 1 });
   test.info().annotations.push({ type: 'retirement_agent', description: agent.agent_id });
   const first = await readyCapacity(platform, agent.agent_id);
   const created = await api.startConversation(agent.agent_id);
@@ -234,7 +234,7 @@ test('failed pool retirement retains its address and error, then recovers withou
     const current = await api.getAgent(agent.agent_id);
     await api.updateAgent(agent.agent_id, {
       name: current.name, model: current.model, environment_name: current.environment_name,
-      version: current.version, prewarm_enabled: false,
+      version: current.version, prepared_capacity: 0,
     });
     let failed: Record<string, unknown> = {};
     await expect.poll(async () => {
@@ -279,7 +279,7 @@ test('failed pool retirement retains its address and error, then recovers withou
   const retry = await api.getAgent(agent.agent_id);
   await api.updateAgent(agent.agent_id, {
     name: retry.name, model: retry.model, environment_name: retry.environment_name,
-    version: retry.version, prewarm_enabled: false,
+    version: retry.version, prepared_capacity: 0,
   });
   await expect.poll(() => agentRetirement(agent.agent_id), {
     timeout: 20_000, message: 'successful retirement must clear its address and previous error',

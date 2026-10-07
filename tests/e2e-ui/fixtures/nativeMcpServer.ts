@@ -302,7 +302,7 @@ export async function configureNativeMcpClientAgent(
     name: `__e2e_mcp_${options.label}_${options.runId}`,
     model: await api.configuredAgentModel(base.name, environmentName),
     environment_name: clientEnvironmentName,
-    prewarm_enabled: false,
+    prepared_capacity: 0,
   });
   scene.agents.push(clientAgent.agent_id);
   const configured = await api.updateAgent(clientAgent.agent_id, {

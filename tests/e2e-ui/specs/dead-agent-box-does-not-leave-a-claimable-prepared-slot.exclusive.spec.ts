@@ -1,7 +1,7 @@
 /**
- * Confirmed loss of a fresh shared prepared box withdraws its advertisement
- * before user activity. The next Agent-card click reaches live replacement
- * compute and answers a message without backdating the prepared manifest.
+ * Confirmed loss of an Agent box still carrying prepared seats withdraws their
+ * advertisement before user activity. The next Agent-card click reaches live
+ * replacement compute and answers a message without backdating any seat.
  */
 import { execFileSync } from 'node:child_process';
 
@@ -9,6 +9,7 @@ import { expect, test } from '@playwright/test';
 
 import { AstraApi } from '../fixtures/astraApi';
 import { documentsByField } from '../fixtures/dbOracle';
+import { oldestPrepared, seatsInRow } from '../fixtures/preparedSeats';
 import { appPath, parseTimeoutEnv } from '../fixtures/env';
 import { PlatformApi } from '../fixtures/platformApi';
 import {
@@ -21,12 +22,11 @@ import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
 import { expectComposerEnabled, sendPrompt } from '../fixtures/sessionPage';
 import { requireServiceContainer, SERVER_CONTAINER_HANDLE } from '../fixtures/serviceContainer';
 
-// Agent tenancy only. The defect lives in the `shared_slot` branch of
-// `claim_prepared_engine_sandbox` (provisioning.py:1702). Under the
-// conversation-tenancy Environment the capacity is a supplier client pool that
-// replenishes itself and the manifest is retired on purpose, so the scene would
-// be vacuous rather than merely different — which is why the placement is a
-// loud precondition below and not a silent branch.
+// Agent tenancy only. Seats outlive a claim in a box the Agent holds only
+// there; under the conversation-tenancy Environment every prepared unit is a
+// whole pool box the supplier keeps, so the scene would be vacuous rather than
+// merely different — which is why the placement is a loud precondition below
+// and not a silent branch.
 const SHARED_ENVIRONMENT = String(
   process.env.ASTRABOX_E2E_PREWARM_SHARED_ENVIRONMENT || '',
 ).trim();
@@ -48,11 +48,11 @@ const PREPARED_INVALIDATION_MS = parseTimeoutEnv(
 );
 
 /**
- * The manifest's PUBLIC coordinates, plus the row pointer the sweeps key on.
+ * A seat's PUBLIC coordinates, plus the row pointer the sweeps key on.
  *
- * `_prepared_slot` also carries the activation token and the model credential.
- * A failed `expect()` retains and prints both sides of its comparison, so only
- * the named coordinates are ever lifted out of the document.
+ * A seat also carries the activation token and the model credential. A failed
+ * `expect()` retains and prints both sides of its comparison, so only the
+ * named coordinates are ever lifted out of the document.
  */
 interface SlotFacts {
   slotId: string;
@@ -65,11 +65,15 @@ interface SlotFacts {
   residentSandboxId: string | null;
 }
 
-function preparedSlotFacts(agentId: string): SlotFacts {
+/** The seat named by `slotId`, else the one the next conversation claims. */
+function preparedSlotFacts(agentId: string, slotId?: string): SlotFacts {
   const rows = documentsByField('agents', '$.agent_id', agentId);
   expect(rows, 'the preparation under test must belong to exactly one Agent row').toHaveLength(1);
   const row = rows[0];
-  const manifest = (row._prepared_slot || {}) as Record<string, unknown>;
+  const seats = seatsInRow(row);
+  const manifest: Record<string, unknown> = (
+    slotId ? seats.find((seat) => seat.slot_id === slotId) : oldestPrepared(seats)
+  ) || {};
   return {
     slotId: String(manifest.slot_id || '').trim(),
     state: String(manifest.state || '').trim(),
@@ -140,7 +144,7 @@ test('an out-of-band Agent box death withdraws its prepared slot and the next co
   const platform = new PlatformApi(request);
   agentId = '';
   const agentName = `__e2e_dead_box_slot_${Date.now()}`;
-  // No conversation, no visibility override: the box about to be killed belongs
+  // A fresh Agent and no visibility override: the box about to be killed belongs
   // to nobody but this test. A shared-box kill that could land on a stranger is
   // how one spec takes down another (tests/e2e/test_durable_workspace.py's
   // `_assert_the_box_is_this_conversation_alone` is the same precaution).
@@ -148,7 +152,7 @@ test('an out-of-band Agent box death withdraws its prepared slot and the next co
     name: agentName,
     model: await api.configuredAgentModel(RESEARCH_AGENT, SHARED_ENVIRONMENT),
     environment_name: SHARED_ENVIRONMENT,
-    prewarm_enabled: true,
+    prepared_capacity: 1,
   });
   agentId = String(created.agent_id || '').trim();
   expect(agentId, 'the probe Agent must have an id').not.toEqual('');
@@ -170,7 +174,24 @@ test('an out-of-band Agent box death withdraws its prepared slot and the next co
     // fault, rather than read back later as a missing withdrawal.
     message: `Agent ${agentId} must prepare a claimable slot on ${SHARED_ENVIRONMENT} before any fault is injected`,
   }).toBe(true);
-  const deadBox = String(status.sandbox_id || '').trim();
+
+  // Until a conversation arrives the seats ride in a pool box the supplier
+  // keeps. The first conversation takes that box, and the seats it did not use
+  // become the Agent's own, advertised from its resident box — the state a box
+  // death can strand. That conversation is this test's, so the kill below
+  // reaches nobody else.
+  const first = await api.startConversation(agentId);
+  const firstSessionId = String(first.session_id || '').trim();
+  sessions.push(firstSessionId);
+  const firstReady = await api.waitForSessionReady(firstSessionId, READY_TIMEOUT_MS);
+  const deadBox = String(firstReady.sandbox_id || '').trim();
+  expect(deadBox, 'the first conversation must name the box it took').not.toEqual('');
+  status = await platform.preparedRuntime(agentId);
+  expect(
+    status.ready === true && String(status.sandbox_id || '').trim() === deadBox,
+    'the box the first conversation took must still advertise a seat; a box carrying a single '
+    + 'seat leaves nothing for its death to strand',
+  ).toBe(true);
 
   // ── The preconditions that make this the defect's scene ─────────────────
   const before = preparedSlotFacts(agentId);
@@ -187,9 +208,9 @@ test('an out-of-band Agent box death withdraws its prepared slot and the next co
     "a shared slot lives in the Agent's own resident box",
   ).toBe(deadBox);
   expect(
-    documentsByField('sessions', '$.agent_id', agentId),
-    'no conversation may be in this box: the kill must not be able to land on somebody else',
-  ).toHaveLength(0);
+    documentsByField('sessions', '$.agent_id', agentId).map((row) => row.session_id),
+    'only this test\'s own conversation may be in this box: the kill must not land on somebody else',
+  ).toEqual([firstSessionId]);
 
   const deadHandle = await requireSandboxHandle(api, deadBox);
   expect(sandboxRunning(deadHandle), 'the prepared box must really exist before it is killed').toBe(true);
@@ -219,16 +240,16 @@ test('an out-of-band Agent box death withdraws its prepared slot and the next co
         + 'with nobody in the product; without that this run cannot tell staleness from a race',
     },
   ).not.toBe(deadBox);
-  const stranded = preparedSlotFacts(agentId);
+  const stranded = preparedSlotFacts(agentId, before.slotId);
   expect(
     stranded.slotId === before.slotId && stranded.state === 'prepared',
     'recording the dead binding must also withdraw its claimable slot',
   ).toBe(false);
 
   // ── QUESTION 1: freshness, captured before any user action ──────────────
-  // Captured, not yet asserted. A failed start schedules its own refill, so the
-  // same read taken after the click would measure the product reacting to the
-  // user rather than keeping its own advertisement honest.
+  // Captured, not yet asserted. A start takes or replaces capacity, so the same
+  // read taken after the click would measure the product reacting to the user
+  // rather than keeping its own advertisement honest.
   const freshnessDeadline = Date.now() + PREPARED_INVALIDATION_MS;
   let freshness: CapacityReading;
   for (;;) {
@@ -332,8 +353,8 @@ test('an out-of-band Agent box death withdraws its prepared slot and the next co
   await expect(reply).not.toContainText(/API Error|AGENT_RUNTIME_ERROR|SANDBOX_GONE|Traceback/i);
 
   // ── The freshness verdict, on the reading taken before the click ─────────
-  // Both readings are attached so a reviewer can see that the failed start's
-  // own refill is not what made this green.
+  // Both readings are attached so a reviewer can see that the start's own
+  // reaction is not what made this green.
   const afterJourney = await platform.preparedRuntime(agentId);
   await test.info().attach('prepared-capacity-after-confirmed-death', {
     body: JSON.stringify({
@@ -350,7 +371,7 @@ test('an out-of-band Agent box death withdraws its prepared slot and the next co
         state: afterJourney.state,
         sandbox_id: afterJourney.sandbox_id,
       },
-      manifestAfterTheJourney: preparedSlotFacts(agentId),
+      manifestAfterTheJourney: preparedSlotFacts(agentId, before.slotId),
     }),
     contentType: 'application/json',
   });

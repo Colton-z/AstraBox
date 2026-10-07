@@ -219,8 +219,9 @@ async def runtime_generations(
             ).strip(),
         },
     }
-    # Shared base boxes cache Skills and Plugins before a separate engine slot
-    # is prepared. Their recipe excludes injectable engine configuration.
+    # An Agent's resident box is qualified by the files it caches, Skills and
+    # Plugins; each conversation starts its own engine in it, so its recipe
+    # excludes engine configuration.
     box_payload = {
         **{key: value for key, value in payload.items() if key != "environment_updated_at"},
         "model": {
@@ -251,7 +252,7 @@ async def reconcile_runtime_generation(
     """Publish the generation and fence any older prepared/shared capacity."""
 
     from astrabox.core.service.orchestrator.agent.prepared_slots import (
-        PREPARED_SLOT_FIELD,
+        PREPARED_SLOTS_FIELD,
         retire_prepared_runtime,
     )
     from astrabox.persistence.repository.agent_repository import AgentRepository
@@ -349,6 +350,7 @@ async def reconcile_runtime_generation(
             agent_id,
             reason="Agent runtime generation changed",
             agent_repo=repo,
+            runtime_manager=runtime_manager,
         )
         current = await repo.get_agent(agent_id)
         if not isinstance(current, dict):
@@ -360,10 +362,14 @@ async def reconcile_runtime_generation(
         # A retired namespace cannot be restarted, even when its recipe is
         # selected again. Persist one lifetime before any supplier is started;
         # injectable engine edits and process restarts retain that lifetime.
+        # Pool members of both tenancies carry engines started from the whole
+        # runtime recipe, so a namespace lives for one runtime generation.
         current_epoch = str(current.get("_client_pool_epoch") or "").strip()
         epoch = (
             current_epoch
-            if current_epoch and current.get("_sandbox_generation") == sandbox_generation
+            if current_epoch
+            and current.get("_runtime_generation") == generation
+            and current.get("_sandbox_generation") == sandbox_generation
             else uuid.uuid4().hex
         )
         updated = await repo.compare_and_update_agent(
@@ -377,7 +383,7 @@ async def reconcile_runtime_generation(
                 "_resident_sandbox_generation": _expected(
                     "_resident_sandbox_generation"
                 ),
-                PREPARED_SLOT_FIELD: _expected(PREPARED_SLOT_FIELD),
+                PREPARED_SLOTS_FIELD: _expected(PREPARED_SLOTS_FIELD),
             },
             updates={
                 "_runtime_generation": generation,

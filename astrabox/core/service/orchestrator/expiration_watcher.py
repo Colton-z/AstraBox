@@ -209,6 +209,18 @@ class ExpirationWatcher:
         if self._closed:
             return summary
         try:
+            from astrabox.core.service.orchestrator.agent.prepared_capacity import (
+                release_abandoned_unit_bindings,
+            )
+
+            summary.update(await release_abandoned_unit_bindings())
+        except Exception:
+            if self._closed:
+                raise
+            logger.exception("expiration_watcher: prepared-unit binding sweep failed")
+        if self._closed:
+            return summary
+        try:
             summary.update(await self._sweep_dead_bindings())
         except Exception:
             if self._closed:

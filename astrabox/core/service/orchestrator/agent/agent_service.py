@@ -338,8 +338,9 @@ class AgentService:
         return environment is not None and environment.get("enabled") is not False
 
     async def _prepared_runtime_status(self, agent: dict[str, Any]) -> dict[str, Any]:
+        from astrabox.core.service.orchestrator.agent.prepared_capacity import LAST_MISS_FIELD
         from astrabox.core.service.orchestrator.agent.prepared_slots import (
-            _manifest_is_reapable, prepared_slot_matches_resident,
+            _manifest_is_reapable, slot_manifests,
         )
         from astrabox.core.service.orchestrator.runtime.runtime_profile import (
             resolve_sandbox_tenancy,
@@ -349,9 +350,9 @@ class AgentService:
             sandbox_for_name,
         )
 
-        manifest = agent.get("_prepared_slot")
-        manifest = dict(manifest) if isinstance(manifest, dict) else {}
-        enabled = bool(agent.get("prewarm_enabled")) and await self._runtime_enabled(agent)
+        target = int(agent.get("prepared_capacity") or 0)
+        enabled = target > 0 and await self._runtime_enabled(agent)
+        last_miss_at = str(agent.get(LAST_MISS_FIELD) or "").strip() or None
         pool_name = str(agent.get("_client_pool_name") or "").strip()
         pool_backend = str(agent.get("_client_pool_backend") or "").strip()
         template = (
@@ -367,18 +368,20 @@ class AgentService:
             if requested_generation != agent.get("_prepared_runtime_generation"):
                 return {
                     "enabled": True,
+                    "target": target,
                     "ready": False,
                     "prepared_count": 0,
+                    "last_miss_at": last_miss_at,
                     "state": "preparing",
                     "client_pool_name": pool_name or None,
                     "last_error": agent.get("_prepared_runtime_error"),
                 }
-        if (
+        conversation_owned = (
             template is not None
             and resolve_sandbox_tenancy(template) == SANDBOX_TENANCY_CONVERSATION
-            and enabled
-            and pool_name
-        ):
+        )
+        pool = None
+        if enabled and pool_name:
             if not pool_backend:
                 raise APIError(
                     code="AGENT_PREWARM_CONFIG_INVALID",
@@ -386,53 +389,56 @@ class AgentService:
                     status_code=500,
                 )
             pool = await sandbox_for_name(pool_backend).describe_client_pool(pool_name)
-            sandbox_id = pool.idle_sandbox_ids[0] if pool.idle_sandbox_ids else None
-            ready = bool(pool.ready and sandbox_id)
-            return {
-                "enabled": True,
-                "ready": ready,
-                "prepared_count": pool.idle_count if ready else 0,
-                "state": pool.lifecycle_state,
-                "placement": "conversation_box",
-                "runtime_generation": (
-                    str(agent.get("_runtime_generation") or "").strip() or None
-                ),
-                "client_pool_name": pool_name,
-                "sandbox_id": sandbox_id,
-                "last_error": (
-                    str(agent.get("_prepared_runtime_error") or "").strip()
-                    or ("Sandbox provider reported a prewarm preparation failure." if pool.last_error else None)
-                ),
-            }
-        state = str(manifest.get("state") or "").strip() or None
+        # A pool box holds one conversation box's unit, or the seats an Agent
+        # box was prepared with; seats already taken out with their box wait in
+        # the Agent's ledger.
+        units_per_box = 1 if conversation_owned else int(agent.get("_seats_per_box") or 0)
+        pooled = pool.idle_count * units_per_box if pool is not None and pool.ready else 0
         generation = str(agent.get("_prepared_runtime_generation") or "")
-        unavailable = _manifest_is_reapable(
-            manifest, current_runtime_generation=generation,
-        )
-        binding_current = prepared_slot_matches_resident(manifest, agent)
-        ready = enabled and state == "prepared" and unavailable is None and binding_current
-        # With matching state and generation, only the preparation age can
-        # invalidate a published slot. Renewal lead does not shorten its TTL.
-        expired = (
-            state == "prepared"
+        slots = slot_manifests(agent)
+        usable = [
+            manifest
+            for manifest in slots
+            if manifest.get("state") == "prepared"
+            and _manifest_is_reapable(manifest, current_runtime_generation=generation) is None
+        ]
+        # A seat of the current generation that is not usable has outlived its
+        # idle lease and waits for the reaper; say so rather than "prepared".
+        expired = any(
+            manifest.get("state") == "prepared"
             and manifest.get("runtime_generation") == generation
-            and unavailable is not None
+            and manifest not in usable
+            for manifest in slots
         )
+        # The seat the next claim takes: the oldest usable one.
+        upcoming = min(usable, key=lambda m: str(m.get("prepared_at") or ""), default={})
+        newest = max(slots, key=lambda m: str(m.get("prepared_at") or ""), default={})
+        prepared_count = pooled + len(usable) if enabled else 0
+        idle_box = pool.idle_sandbox_ids[0] if pool is not None and pool.idle_sandbox_ids else None
         return {
             "enabled": enabled,
-            "ready": ready,
-            "prepared_count": 1 if ready else 0,
+            "target": target if enabled else 0,
+            "ready": prepared_count > 0,
+            "prepared_count": prepared_count,
+            "last_miss_at": last_miss_at,
             "state": (
-                "preparing" if state == "prepared" and not binding_current
-                else "expired" if expired else state
+                "prepared" if prepared_count
+                else "expired" if expired
+                else pool.lifecycle_state if pool is not None
+                else str(newest.get("state") or "").strip() or None
             ),
-            "placement": str(manifest.get("placement") or "").strip() or None,
+            "placement": "conversation_box" if conversation_owned else "shared_slot",
             "runtime_generation": (str(agent.get("_runtime_generation") or "").strip() or None),
             "client_pool_name": pool_name or None,
-            "sandbox_id": str(manifest.get("sandbox_id") or "").strip() or None,
-            "prepared_at": str(manifest.get("prepared_at") or "").strip() or None,
+            "sandbox_id": str(upcoming.get("sandbox_id") or "").strip() or idle_box,
+            "prepared_at": str(upcoming.get("prepared_at") or "").strip() or None,
             "last_error": (
-                str(agent.get("_prepared_runtime_error") or "").strip() or None
+                str(agent.get("_prepared_runtime_error") or "").strip()
+                or (
+                    "Sandbox provider reported a prewarm preparation failure."
+                    if pool is not None and pool.last_error
+                    else None
+                )
             ),
         }
 
@@ -447,10 +453,10 @@ class AgentService:
                 message="only an Agent manager or platform admin may refresh prewarming",
                 status_code=403,
             )
-        if not agent.get("prewarm_enabled") or not await self._runtime_enabled(agent):
+        if int(agent.get("prepared_capacity") or 0) <= 0 or not await self._runtime_enabled(agent):
             raise APIError(
                 code="AGENT_PREWARM_CONFIG_INVALID",
-                message="enable the Agent, its Environment and prewarming before requesting a refresh",
+                message="enable the Agent and its Environment and give it prepared capacity before requesting a refresh",
                 status_code=409,
             )
         updates = {"_prewarm_revision": uuid.uuid4().hex, "_prepared_runtime_error": None}
@@ -458,7 +464,7 @@ class AgentService:
             agent_id,
             expected={
                 key: agent.get(key) if key in agent else {"$exists": False}
-                for key in ("version", "prewarm_enabled", "enabled", "_prewarm_revision")
+                for key in ("version", "prepared_capacity", "enabled", "_prewarm_revision")
             },
             updates=updates,
         )
@@ -631,9 +637,8 @@ class AgentService:
             retire_agent_client_pool,
         )
         from astrabox.core.service.orchestrator.agent.prepared_slots import (
-            prepare_slot_for_agent,
+            reap_stale_slot_manifests,
             retire_prepared_runtime,
-            wait_for_agent_starts,
         )
         from astrabox.core.service.orchestrator.agent.runtime_generation import (
             reconcile_runtime_generation,
@@ -642,7 +647,6 @@ class AgentService:
         target = str(agent_id or "").strip()
         lock = self._runtime_reconciliation_locks.setdefault(target, asyncio.Lock())
         async with lock:
-            await wait_for_agent_starts(target)
             row = await self._agent_repo.get_agent(target)
             if not isinstance(row, dict):
                 return
@@ -668,11 +672,12 @@ class AgentService:
                         runtime_manager=self._runtime_manager,
                         agent_repo=self._agent_repo,
                     )
-                if not enabled or not row.get("prewarm_enabled"):
+                if not enabled or int(row.get("prepared_capacity") or 0) <= 0:
                     await retire_prepared_runtime(
                         target,
                         reason="Agent runtime preparation is disabled",
                         agent_repo=self._agent_repo,
+                        runtime_manager=self._runtime_manager,
                     )
                     if previous_pool_name:
                         await retire_agent_client_pool(
@@ -742,16 +747,18 @@ class AgentService:
                     from astrabox.seams.sandbox import SANDBOX_TENANCY_CONVERSATION
 
                     if resolve_sandbox_tenancy(refreshed) == SANDBOX_TENANCY_CONVERSATION:
-                        # Older releases kept a second AstraBox-owned whole-box
-                        # queue in this manifest. Once the supplier pool is
-                        # running, retire that obsolete physical inventory.
+                        # Seats belong to shared boxes; an Agent that moved to
+                        # conversation boxes has none left to hand out.
                         await retire_prepared_runtime(
                             target,
                             reason="conversation capacity moved to the client pool",
                             agent_repo=self._agent_repo,
+                            runtime_manager=self._runtime_manager,
                         )
                     else:
-                        await prepare_slot_for_agent(
+                        # The client pool prepares and replenishes seats; the
+                        # ledger only drops the ones that went stale.
+                        await reap_stale_slot_manifests(
                             refreshed,
                             runtime_manager=self._runtime_manager,
                             agent_repo=self._agent_repo,

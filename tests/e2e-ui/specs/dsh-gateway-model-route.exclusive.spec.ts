@@ -28,7 +28,7 @@ test('DSH answers through a configured gateway alias outside its native catalog'
     name: `__e2e_dsh_gateway_${randomUUID()}`,
     environment_name: profile.environment_name,
     model,
-    prewarm_enabled: false,
+    prepared_capacity: 0,
   })).agent_id;
   const sessionId = (await api.startConversation(agentId)).session_id;
   sessions.push(sessionId);

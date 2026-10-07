@@ -207,7 +207,7 @@ def test_apply_creates_then_destroy_removes(
         f"    model: {model}\n"
         f"    environment_name: {environment_name}\n"
         "    enabled: true\n"
-        "    prewarm_enabled: false\n",
+        "    prepared_capacity: 0\n",
         encoding="utf-8",
     )
 
@@ -363,7 +363,7 @@ def test_run_answers_a_task_end_to_end(
         f"    environment_name: {environment_name}\n"
         "    system: Answer in one short sentence. Do not use tools.\n"
         "    enabled: true\n"
-        "    prewarm_enabled: false\n",
+        "    prepared_capacity: 0\n",
         encoding="utf-8",
     )
     cli("apply", "-f", str(document), "-o", "json")

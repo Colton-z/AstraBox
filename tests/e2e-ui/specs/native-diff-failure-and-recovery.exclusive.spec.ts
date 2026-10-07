@@ -102,7 +102,7 @@ async function start(api: AstraApi, page: Page, profile: EngineProfile, cold = f
     const agent = await api.createAgent({
       name: `__e2e_native_diff_${profile.engine_kind}_${Date.now()}`,
       model: base.model, engine_options: base.engine_options,
-      environment_name: environment!.name, prewarm_enabled: false, diff_panel: true,
+      environment_name: environment!.name, prepared_capacity: 0, diff_panel: true,
     });
     ownedAgent = agent.agent_id;
     agentId = ownedAgent;

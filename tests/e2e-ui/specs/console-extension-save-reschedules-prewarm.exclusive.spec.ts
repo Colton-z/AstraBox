@@ -1,19 +1,19 @@
 /**
  * Product E2E for what a console save does to the Agent's warm pool.
  *
- * Pool identity is the preparation fingerprint: exactly what the preparer
- * installs into a box (Skills, Plugins) plus the baked infrastructure
- * (image, network policy, tenancy). Pure configuration — a managed MCP
- * selection on the admitted gateway — replaces the prepared engine slot but
- * must NOT rotate a warm pool. A Skills edit is a preparation change and MUST rotate it
- * and start the replacement by itself. Both failure modes are silent in the
- * UI: the save reads back correctly either way, and only the pool identity
- * tells wasted churn from a pool nobody restarts.
+ * The waiting engines are started from the Agent's whole runtime recipe inside
+ * the supplier's pool boxes, so any save that changes that recipe — a managed
+ * MCP selection the engines load, or a Skills edit the preparer installs — must
+ * replace the pool and start the replacement by itself. Both failure modes are
+ * silent in the UI: the save reads back correctly either way, and only the
+ * waiting engine's own generation tells a current seat from one that would
+ * hand the next conversation the old configuration.
  */
 import { test, expect, type Page } from '@playwright/test';
 
 import { AstraApi } from '../fixtures/astraApi';
 import { documentsByField } from '../fixtures/dbOracle';
+import { nextPreparedSeat } from '../fixtures/preparedSeats';
 import { onPassOnly } from '../fixtures/sessionCleanup';
 import { appPath, parseTimeoutEnv } from '../fixtures/env';
 import { PlatformApi } from '../fixtures/platformApi';
@@ -30,10 +30,6 @@ const SKILL_DESCRIPTOR = String(
     || 'https://github.com/anthropics/skills.git@main#skills/skill-creator',
 ).trim();
 const POOL_TIMEOUT_MS = parseTimeoutEnv('ASTRABOX_E2E_AGENT_POOL_TIMEOUT_MS', 60_000);
-// The rotation trigger spawns as a background task inside the same write, so
-// a wrongful rotation surfaces within a poll or two; this window is patience,
-// not precision.
-const STABILITY_WINDOW_MS = 12_000;
 
 interface ExtensionCatalog {
   mcp_servers?: Array<{ id?: string; name?: string }>;
@@ -50,11 +46,11 @@ function preparedSlot(agentId: string, pool: PoolStatus): Record<string, unknown
   const rows = documentsByField('agents', '$.agent_id', agentId);
   expect(rows, 'preparation must belong to the test Agent').toHaveLength(1);
   expect(rows[0]._client_pool_name).toBe(pool.poolName);
-  const slot = rows[0]._prepared_slot as Record<string, unknown>;
-  expect(slot, 'the READY shared preparation must have a durable slot').toBeTruthy();
+  const slot = nextPreparedSeat(agentId, pool.sandboxId);
+  expect(slot, 'the READY shared preparation must have a prepared seat').toBeTruthy();
+  if (!slot) throw new Error('unreachable: asserted above');
   expect(slot.state).toBe('prepared');
-  expect(slot.placement).toBe('shared_slot');
-  expect(slot.claimed_session_id, 'only an unclaimed prepared slot is a retirement target').toBeFalsy();
+  expect(slot.claimed_session_id, 'only an unclaimed prepared seat is a retirement target').toBeFalsy();
   expect(String(slot.slot_id || '')).not.toBe('');
   expect(String(slot.isolated_session_id || '')).not.toBe('');
   expect(slot.sandbox_id).toBe(pool.sandboxId);
@@ -80,7 +76,7 @@ async function concreteModel(api: AstraApi, environmentName: string): Promise<st
 async function waitForReadyPool(
   platform: PlatformApi,
   agentId: string,
-  options: { differentFrom?: string; unchangedPool?: PoolStatus } = {},
+  options: { differentFrom?: string } = {},
 ): Promise<PoolStatus> {
   const deadline = Date.now() + POOL_TIMEOUT_MS;
   let last: Record<string, unknown> = {};
@@ -89,16 +85,6 @@ async function waitForReadyPool(
     const poolName = String(last.client_pool_name || '').trim();
     const sandboxId = String(last.sandbox_id || '').trim();
     const runtimeGeneration = String(last.runtime_generation || '').trim();
-    if (options.unchangedPool) {
-      expect(poolName, 'engine preparation must retain the supplier pool').toBe(
-        options.unchangedPool.poolName,
-      );
-      if (sandboxId) {
-        expect(sandboxId, 'engine preparation must reuse the resident box').toBe(
-          options.unchangedPool.sandboxId,
-        );
-      }
-    }
     if (
       last.ready === true
       && Number(last.prepared_count || 0) > 0
@@ -106,7 +92,6 @@ async function waitForReadyPool(
       && sandboxId
       && runtimeGeneration
       && (!options.differentFrom || poolName !== options.differentFrom)
-      && (!options.unchangedPool || runtimeGeneration !== options.unchangedPool.runtimeGeneration)
     ) {
       return { poolName, sandboxId, runtimeGeneration };
     }
@@ -136,7 +121,7 @@ async function createPrewarmAgent(api: AstraApi, name: string): Promise<string> 
     name,
     model: await concreteModel(api, SHARED_ENVIRONMENT),
     environment_name: SHARED_ENVIRONMENT,
-    prewarm_enabled: true,
+    prepared_capacity: 1,
   });
   const agentId = String(agent.agent_id || '').trim();
   expect(agentId, 'the probe Agent must have an id').not.toEqual('');
@@ -187,7 +172,7 @@ test.describe.serial('console saves and the Agent prewarm pool', () => {
     sessions = new Set<string>();
   });
 
-  test('a managed MCP selection is pure configuration and keeps the warm pool', async ({
+  test('a managed MCP selection replaces the waiting engines with ones that load it', async ({
     page,
     request,
   }) => {
@@ -196,7 +181,7 @@ test.describe.serial('console saves and the Agent prewarm pool', () => {
     const platform = new PlatformApi(request);
     sessions = new Set<string>();
     agentId = '';
-    agentId = await createPrewarmAgent(api, `__e2e_console_mcp_keeps_pool_${Date.now()}`);
+    agentId = await createPrewarmAgent(api, `__e2e_console_mcp_rotates_pool_${Date.now()}`);
     const serverName = await catalogServerName(api, agentId);
     const before = await waitForReadyPool(platform, agentId);
 
@@ -210,29 +195,14 @@ test.describe.serial('console saves and the Agent prewarm pool', () => {
       .map((item) => String(item.name));
     expect(selectedNames, 'the console save must persist the selection').toContain(serverName);
 
-    // The waiting engine must learn the new MCP configuration, but its
-    // resident box and the supplier's base-box pool remain reusable.
-    const deadline = Date.now() + STABILITY_WINDOW_MS;
-    let last: Record<string, unknown> = {};
-    while (Date.now() < deadline) {
-      last = await platform.preparedRuntime(agentId);
-      expect(
-        String(last.client_pool_name || ''),
-        'a managed MCP selection must not rotate the warm pool',
-      ).toBe(before.poolName);
-      if (last.sandbox_id) {
-        expect(String(last.sandbox_id), 'the resident box must survive the save').toBe(
-          before.sandboxId,
-        );
-      }
-      await new Promise((resolve) => setTimeout(resolve, 2_000));
-    }
-    const after = await waitForReadyPool(platform, agentId, { unchangedPool: before });
-    expect(after.sandboxId, 'the updated engine must be ready in the original box').toBe(
-      before.sandboxId,
-    );
-    expect(after.runtimeGeneration, 'the prepared engine must reflect the saved configuration')
+    // The engines that wait for the next conversation were started inside the
+    // pool's boxes without this server; only a replacement pool carries engines
+    // that load it, and the console save is the only trigger it has.
+    const after = await waitForReadyPool(platform, agentId, { differentFrom: before.poolName });
+    expect(after.runtimeGeneration, 'the saved selection must change the runtime recipe')
       .not.toBe(before.runtimeGeneration);
+    // The seat the next conversation claims must carry the saved generation.
+    preparedSlot(agentId, after);
 
     await page.reload();
     await expect(
@@ -290,12 +260,12 @@ test.describe.serial('console saves and the Agent prewarm pool', () => {
     });
     expect(
       rotated.sandboxId,
-      'a Skills edit must prepare a replacement resident box',
+      'a Skills edit must prepare a replacement pool box',
     ).not.toEqual(before.sandboxId);
     const newSlot = preparedSlot(agentId, rotated);
     expect(newSlot.slot_id, 'the old prepared slot must no longer be the claimable manifest').not.toBe(oldSlot.slot_id);
-    // No Session owns this old carrier. The existing generation reconciler
-    // retires such an empty resident; occupied shared boxes are not this target.
+    // No Session owns this old carrier: it is an idle member of the retired
+    // pool, which takes it down with the namespace.
     await waitForSandboxStopped(oldSandbox);
 
     const created = await api.startConversation(agentId);

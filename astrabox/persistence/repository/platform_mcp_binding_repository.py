@@ -81,6 +81,23 @@ class PlatformMCPBindingRepository:
             lambda: collection.find_one({"deployment_id": normalized}),
         )
 
+    async def delete_unclaimed_prepared_bindings(self, *, created_before: str) -> int:
+        """Remove prepared-unit rows no Session claimed, created before a time."""
+
+        await self.ensure_indexes()
+        collection = await get_async_collection(COLLECTION_NAME)
+        result = await run_mongo_with_retry(
+            "platform_mcp_bindings.delete_unclaimed_prepared",
+            lambda: collection.delete_many(
+                {
+                    "source": "prepared_slot",
+                    "session_id": {"$exists": False},
+                    "created_at": {"$lt": created_before},
+                }
+            ),
+        )
+        return int(getattr(result, "deleted_count", 0) or 0)
+
     async def delete_binding(self, deployment_id: str) -> bool:
         """Remove one binding row; True when a row existed.
 

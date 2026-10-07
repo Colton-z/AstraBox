@@ -153,8 +153,8 @@ async def test_deleted_owners_do_not_keep_an_unused_preset(service: Any) -> None
     {"sandbox_id": "pending-box"},
     {"sandbox_id": None, "undestroyed_sandbox_ids": ["pending-box"]},
     {"sandbox_id": "current-box", "undestroyed_sandbox_ids": ["older-box"]},
-    {"_prepared_slot": {"state": "claimed", "sandbox_id": "claimed-box", "claimed_session_id": "handoff"}},
-    {"_prepared_slot": {"state": "prepared", "sandbox_id": "prepared-box"}},
+    {"_prepared_slots": [{"state": "claimed", "sandbox_id": "claimed-box", "claimed_session_id": "handoff"}]},
+    {"_prepared_slots": [{"state": "prepared", "sandbox_id": "prepared-box"}]},
     {"_client_pool_name": "pending-supplier"},
     {"_retiring_client_pools": [{"name": "previous-supplier", "backend": "open_sandbox"}]},
 ])
@@ -181,7 +181,7 @@ async def test_deleted_agent_retains_environment_until_compute_cleanup_finishes(
     # The cleanup owner has now confirmed every retained box is gone.
     await service._agent_repo.update_agent("deleted-owner", {
         "sandbox_id": None, "undestroyed_sandbox_ids": [],
-        "_prepared_slot": None, "_client_pool_name": None, "_retiring_client_pools": [],
+        "_prepared_slots": [], "_client_pool_name": None, "_retiring_client_pools": [],
     })
     assert await service.delete_environment_config(ADMIN, "retired") == {
         "name": "retired", "deleted": True,

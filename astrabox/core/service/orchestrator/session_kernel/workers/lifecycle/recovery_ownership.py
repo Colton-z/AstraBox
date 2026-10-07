@@ -13,6 +13,10 @@ from typing import Any, NoReturn
 
 from astrabox.common.utils.errors import APIError
 
+#: The startup command (by its assignment id) that last reached the sandbox
+#: provider for this Session; see :meth:`RecoveryOwnership.claim_first_provider_attempt`.
+STARTUP_PROVIDER_ASSIGNMENT_FIELD = "_startup_provider_assignment"
+
 
 @dataclass(frozen=True)
 class RecoveryOwnership:
@@ -74,6 +78,32 @@ class RecoveryOwnership:
             }
             if self.allocations
             else None,
+        )
+
+    async def claim_first_provider_attempt(self) -> bool:
+        """Record that this startup command is about to act on the sandbox provider.
+
+        True means no earlier execution of this command reached that point, so
+        no sandbox carries the command's assignment yet. False means one may:
+        the field survives a worker that died after this write, so the next
+        execution of the same command finds it set and must look for the
+        sandbox the earlier execution may have created or claimed. A concurrent
+        execution of the same command loses the compare-and-set and also gets
+        False. A lost ownership gets False too; the caller's later ownership
+        checks report it.
+        """
+
+        if not self.assignment_id:
+            return False
+        return bool(
+            await self.repository.compare_and_update_session(
+                self.session_id,
+                expected={
+                    **self.expected,
+                    STARTUP_PROVIDER_ASSIGNMENT_FIELD: {"$ne": self.assignment_id},
+                },
+                updates={STARTUP_PROVIDER_ASSIGNMENT_FIELD: self.assignment_id},
+            )
         )
 
     async def update(self, updates: dict[str, Any]) -> bool:

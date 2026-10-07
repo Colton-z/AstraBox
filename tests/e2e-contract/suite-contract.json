@@ -31,7 +31,7 @@
       }
     },
     "tests": {
-      "no_volume_core": 522,
+      "no_volume_core": 494,
       "persistent_files": 23
     }
   },
@@ -43,9 +43,9 @@
   ],
   "playwright": {
     "exclusive": {
-      "files": 157,
-      "parallel_files": 99,
-      "parallel_tests": 158,
+      "files": 152,
+      "parallel_files": 98,
+      "parallel_tests": 157,
       "serial_files": [
         "specs/a-prepared-seat-is-not-a-promise-the-box-can-still-keep.exclusive.spec.ts",
         "specs/admin-native-transcript-batch-export.exclusive.spec.ts",
@@ -91,11 +91,7 @@
         "specs/ownerless-sandbox-reaping-preserves-prepared-capacity.exclusive.spec.ts",
         "specs/pi-channel-background-completion.exclusive.spec.ts",
         "specs/pre-result-history-survives-sandbox-death.exclusive.spec.ts",
-        "specs/prepared-capacity-returns-after-a-restart-mid-claim.exclusive.spec.ts",
-        "specs/prepared-slot-survives-a-claim-during-its-renewal.exclusive.spec.ts",
-        "specs/prewarm-rebuilds-a-lost-slot-before-the-next-conversation.exclusive.spec.ts",
         "specs/prewarm-vault-lifecycle-browser.exclusive.spec.ts",
-        "specs/prewarm-yields-to-foreground-start.exclusive.spec.ts",
         "specs/reconcile-is-present-for-a-parked-session-without-recovering-it.exclusive.spec.ts",
         "specs/runtime-recovery-ownership.exclusive.spec.ts",
         "specs/sandbox-lease-realignment.exclusive.spec.ts",
@@ -106,9 +102,9 @@
         "specs/subagent-replay-recovery.exclusive.spec.ts",
         "specs/untouched-tab-catches-up-after-backend-restart.exclusive.spec.ts"
       ],
-      "serial_tests": 100,
+      "serial_tests": 95,
       "serial_workers": 1,
-      "tests": 258,
+      "tests": 252,
       "workers": 5
     },
     "parallel": {
@@ -136,13 +132,25 @@
       "workers": 1
     },
     "main": {
+      "engine_independent_node_ids": [
+        "tests/e2e/test_cli_journey.py::test_status_reports_a_live_deployment",
+        "tests/e2e/test_cli_journey.py::test_schema_serves_the_write_contract",
+        "tests/e2e/test_cli_journey.py::test_get_lists_what_the_deployment_holds",
+        "tests/e2e/test_cli_journey.py::test_a_missing_resource_exits_failed_not_zero",
+        "tests/e2e/test_cli_journey.py::test_export_round_trips_through_diff",
+        "tests/e2e/test_cli_journey.py::test_apply_creates_then_destroy_removes",
+        "tests/e2e/test_cli_journey.py::test_apply_refuses_an_assistant_only_environment",
+        "tests/e2e/test_cli_journey.py::test_dry_run_apply_writes_nothing",
+        "tests/e2e/test_cli_journey.py::test_the_mcp_facade_answers_the_same_deployment",
+        "tests/e2e/test_cli_journey.py::test_run_answers_a_task_end_to_end"
+      ],
       "engine_kinds": [
         "claude_code",
         "deepseek_harness",
         "codex",
         "pi"
       ],
-      "matrix_tests": 236,
+      "matrix_tests": 214,
       "parallel_node_ids": [
         "tests/e2e/agent_instruction_install_test.py::test_authored_instructions_reach_the_first_reply[cold-conversation]",
         "tests/e2e/agent_instruction_install_test.py::test_authored_instructions_reach_the_first_reply[cold-agent]",
@@ -200,17 +208,19 @@
         "tests/e2e/test_terminal.py::test_terminal_nonzero_exit_propagates",
         "tests/e2e/test_tool_permission.py::test_tool_permission_approve_runs_the_write",
         "tests/e2e/test_tool_permission.py::test_tool_permission_deny_blocks_the_write",
-        "tests/e2e/test_transcript_mirror.py::test_a_replacement_box_answers_from_the_restored_transcript"
+        "tests/e2e/test_transcript_mirror.py::test_a_replacement_box_answers_from_the_restored_transcript",
+        "tests/e2e/test_prepared_runtime_activation.py::test_a_shared_agent_burst_claims_a_prepared_seat_each",
+        "tests/e2e/test_prepared_runtime_activation.py::test_concurrent_conversations_each_claim_a_prepared_sandbox"
       ],
       "restart_node_ids": [
         "tests/e2e/test_reattach.py::test_sandbox_and_session_survive_backend_restart",
         "tests/e2e/test_reattach.py::test_reattach_turn_reuses_sandbox_without_rebuild"
       ],
-      "tests": 59,
+      "tests": 61,
       "workers": 5
     },
-    "matrix_tests": 246,
-    "tests": 69
+    "matrix_tests": 224,
+    "tests": 71
   },
   "suites": {
     "exclusive": {

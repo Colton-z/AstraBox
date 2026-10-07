@@ -12,9 +12,12 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
+import os
+import socket
+import threading
 from datetime import timedelta
 from typing import Any
-from uuid import NAMESPACE_URL, uuid4, uuid5
+from uuid import uuid4
 
 from opensandbox import Sandbox, SandboxPoolAsync
 from opensandbox.async_redis_pool_store import AsyncRedisPoolStateStore
@@ -43,17 +46,31 @@ from astrabox.seams.sandbox import (
 
 logger = get_logger(__name__)
 
-# One deterministic assignment identifies one unpublished create. Supporting
-# more than one idle member first requires distinct durable ordinals through
-# the entire recovery path; refuse rather than reuse an assignment.
-_POOL_MAX_IDLE = 1
-
 # A retired name is briefly fenced so a replica with stale local state cannot
 # recreate the namespace while its peer is destroying it. Pool names are
 # deterministic and may be selected again, so the vendor's seven-day default
 # would be too long here.
 _POOL_TOMBSTONE_TTL = timedelta(minutes=5)
-_RECONCILE_SECONDS = 30
+
+# The SDK replenishes on its reconcile tick and offers no public way to start
+# one, so a claimed member is replaced within one interval.
+_RECONCILE_SECONDS = 2
+
+# Members prepared concurrently per pool. A refill of a large pool starts this
+# many creates at once instead of all of them, so one Agent's refill cannot
+# exhaust a single Docker host or node. The SDK creates at most the deficit, and
+# a resize changes only the pool's size, so the limit is fixed rather than
+# derived from the size the pool started with.
+_WARMUP_CONCURRENCY_LIMIT = 8
+
+# The replica that replenishes a pool holds the SDK's primary lock, which the
+# SDK renews only between commits. A lock long enough to outlast one create and
+# its preparation left a pool unreplenished that long after its holder died, so
+# a heartbeat renews the lock while this process holds it and the lock outlasts
+# only the heartbeat. It stays above the SDK's warmup ready timeout, which the
+# SDK requires of it.
+_PRIMARY_LOCK_HEARTBEAT_SECONDS = 10
+_PRIMARY_LOCK_TTL_MARGIN_SECONDS = 30
 
 _POOL_ACQUIRE_FAILURES = (
     PoolAcquireFailedException,
@@ -85,35 +102,11 @@ def _pool_unavailable(
     )
 
 
-def _require_supported_spec(spec: SandboxClientPoolSpec) -> None:
-    if int(spec.max_idle) == _POOL_MAX_IDLE:
-        return
-    raise APIError(
-        code="SANDBOX_CLIENT_POOL_UNSUPPORTED",
-        message=(
-            "OpenSandbox client pools currently support exactly one idle "
-            f"member; pool {spec.pool_name!r} requested {spec.max_idle}"
-        ),
-        status_code=501,
-    )
-
-
 def _client_pool_session_id(pool_name: str) -> str:
     """Return a unique synthetic session id valid as a Kubernetes label value."""
 
     pool_hash = hashlib.sha256(pool_name.encode("utf-8")).hexdigest()[:12]
     return f"client-pool-{pool_hash}-{uuid4().hex[:24]}"
-
-
-def _client_pool_assignment_id(pool_name: str) -> str:
-    """Return the durable identity of the official pool's one warm slot."""
-
-    return str(
-        uuid5(
-            NAMESPACE_URL,
-            f"astrabox:open-sandbox-client-pool:{pool_name}:idle-0",
-        )
-    )
 
 
 def _client_pool_owns_session(pool_name: str, session_id: str | None) -> bool:
@@ -124,20 +117,9 @@ def _client_pool_owns_session(pool_name: str, session_id: str | None) -> bool:
 def _pool_member(spec: SandboxClientPoolSpec) -> SandboxClientPoolMember:
     return SandboxClientPoolMember(
         pool_name=spec.pool_name,
-        member_index=0,
         session_id=_client_pool_session_id(spec.pool_name),
-        assignment_id=_client_pool_assignment_id(spec.pool_name),
+        assignment_id=str(uuid4()),
     )
-
-
-def _assignment_release_settle_seconds() -> int:
-    settings = load_astrabox_settings()
-    ready_timeout = int(getattr(settings, "sandbox_ready_timeout_seconds", 30))
-    request_timeout = int(getattr(settings, "sandbox_request_timeout_seconds", 15))
-    # The claim handoff spans one ready wait plus renew, assignment patch, and
-    # failure cleanup requests; the pool assignment remains authoritative
-    # throughout that bounded window.
-    return max(1, ready_timeout + request_timeout * 3 + 1)
 
 
 class OpenSandboxClientPoolRegistry:
@@ -156,7 +138,17 @@ class OpenSandboxClientPoolRegistry:
         self._redis = redis_client
         self._pool_factory = pool_factory
         self._pools: dict[str, Any] = {}
+        self._sizes: dict[str, int] = {}
+        self._heartbeats: dict[str, asyncio.Task[None]] = {}
         self._lock = asyncio.Lock()
+        # Stable across restarts of this process on the same host, so a restart
+        # takes back the lock it held instead of waiting for it to expire; the
+        # SDK grants the primary lock again to the owner that already holds it.
+        # The thread names the event loop, since each loop runs its own pools.
+        self._owner_id = (
+            f"{os.environ.get('HOSTNAME') or socket.gethostname()}"
+            f":{threading.current_thread().name}"
+        )
 
     def _connection_config(self) -> Any:
         return _config.sdk_connection_config(load_astrabox_settings(), transport=self._transport)
@@ -188,30 +180,37 @@ class OpenSandboxClientPoolRegistry:
         creator: SandboxClientPoolCreator,
         preparer: SandboxClientPoolPreparer,
     ) -> None:
-        """Start or join the official pool without waiting for its first member."""
+        """Start or join the official pool without waiting for its first member.
 
-        _require_supported_spec(spec)
+        A pool already running in this event loop is resized to ``max_idle``;
+        the SDK keeps the size in shared state, so every replica's scheduler
+        refills toward it.
+        """
+
         async with self._lock:
-            if spec.pool_name in self._pools:
+            running = self._pools.get(spec.pool_name)
+            if running is not None:
+                if self._sizes.get(spec.pool_name) != int(spec.max_idle):
+                    await running.resize(int(spec.max_idle))
+                    self._sizes[spec.pool_name] = int(spec.max_idle)
                 return
             state_store = await self._ensure_state_store()
             settings = load_astrabox_settings()
+            lock_ttl = timedelta(
+                seconds=int(settings.sandbox_ready_timeout_seconds)
+                + _PRIMARY_LOCK_TTL_MARGIN_SECONDS
+            )
             pool = self._pool_factory(
                 pool_name=spec.pool_name,
                 max_idle=spec.max_idle,
+                owner_id=self._owner_id,
                 state_store=state_store,
                 connection_config=self._connection_config(),
                 # The SDK requires this even when the custom creator below
                 # owns the actual create operation.
                 creation_spec=PoolCreationSpec(image=spec.creation_image),
-                warmup_concurrency=1,
-                primary_lock_ttl=timedelta(
-                    seconds=(
-                        int(settings.sandbox_ready_timeout_seconds)
-                        + int(spec.preparation_timeout_seconds)
-                        + 60
-                    )
-                ),
+                warmup_concurrency=_WARMUP_CONCURRENCY_LIMIT,
+                primary_lock_ttl=lock_ttl,
                 reconcile_interval=timedelta(seconds=_RECONCILE_SECONDS),
                 warmup_ready_timeout=timedelta(seconds=int(settings.sandbox_ready_timeout_seconds)),
                 warmup_skip_health_check=True,
@@ -255,111 +254,46 @@ class OpenSandboxClientPoolRegistry:
                     exc,
                 ) from exc
             self._pools[spec.pool_name] = pool
+            self._sizes[spec.pool_name] = int(spec.max_idle)
+            self._heartbeats[spec.pool_name] = asyncio.create_task(
+                self._renew_primary_lock(spec.pool_name, state_store, lock_ttl),
+                name=f"client-pool-lock-heartbeat-{spec.pool_name}",
+            )
 
         logger.info(
             "OpenSandbox client-pool scheduler started: pool=%s",
             spec.pool_name,
         )
 
-    async def _reclaim_unpublished_member(
-        self,
-        spec: SandboxClientPoolSpec,
-        provider: Any,
+    async def _renew_primary_lock(
+        self, pool_name: str, state_store: Any, ttl: timedelta
     ) -> None:
-        """Remove a create that never reached the SDK's idle inventory."""
+        """Keep the primary lock alive while this process holds it.
 
-        from astrabox.providers.open_sandbox.executor import (
-            destroy_open_sandbox_box,
-        )
+        Renewal succeeds only for the current holder, so a replica that is not
+        primary renews nothing and takes nothing over.
+        """
 
-        assignment = _client_pool_assignment_id(spec.pool_name)
-        candidate = await provider.find_sandbox_by_assignment(assignment)
-        if candidate is None:
-            return
-        if not _client_pool_owns_session(spec.pool_name, candidate.session_id):
-            raise APIError(
-                code="SANDBOX_ASSIGNMENT_CONFLICT",
-                message=(
-                    f"client-pool assignment {assignment!r} belongs to session "
-                    f"{candidate.session_id!r}, not pool {spec.pool_name!r}"
-                ),
-                status_code=409,
-            )
-
-        state_store = await self._ensure_state_store()
-
-        async def is_official_idle(sandbox_id: str) -> bool:
-            entries = await state_store.snapshot_idle_entries(spec.pool_name)
-            return any(
-                str(getattr(entry, "sandbox_id", "") or "") == sandbox_id for entry in entries
-            )
-
-        if await is_official_idle(candidate.sandbox_id):
-            raise APIError(
-                code="SANDBOX_CLIENT_POOL_UNAVAILABLE",
-                message=(
-                    f"OpenSandbox client pool {spec.pool_name!r} requested "
-                    "replenishment while its durable member remains idle"
-                ),
-                status_code=503,
-            )
-
-        # The member may have just been popped by acquire(). Wait through the
-        # bounded renew/adopt/cleanup window. A completed claim replaces this
-        # assignment; a create whose publication was lost leaves it unchanged.
-        deadline = asyncio.get_running_loop().time() + _assignment_release_settle_seconds()
         while True:
-            settled = await provider.find_sandbox_by_assignment(assignment)
-            if settled is None:
-                return
-            if settled.sandbox_id != candidate.sandbox_id:
-                raise APIError(
-                    code="SANDBOX_ASSIGNMENT_CONFLICT",
-                    message=(
-                        f"client-pool assignment {assignment!r} changed from "
-                        f"sandbox {candidate.sandbox_id!r} to "
-                        f"{settled.sandbox_id!r} while ownership was settling"
-                    ),
-                    status_code=409,
+            await asyncio.sleep(_PRIMARY_LOCK_HEARTBEAT_SECONDS)
+            try:
+                await state_store.renew_primary_lock(pool_name, self._owner_id, ttl)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "OpenSandbox client-pool lock renewal failed: pool=%s error=%s",
+                    pool_name,
+                    _error_detail(exc),
                 )
-            if await is_official_idle(settled.sandbox_id):
-                raise APIError(
-                    code="SANDBOX_CLIENT_POOL_UNAVAILABLE",
-                    message=(
-                        f"OpenSandbox client pool {spec.pool_name!r} published "
-                        "its durable member during reconciliation"
-                    ),
-                    status_code=503,
-                )
-            remaining = deadline - asyncio.get_running_loop().time()
-            if remaining <= 0:
-                break
-            await asyncio.sleep(min(1.0, remaining))
 
-        destruction = await destroy_open_sandbox_box(
-            provider,
-            settled.sandbox_id,
-        )
-        if not destruction.confirmed:
-            raise APIError(
-                code="SANDBOX_CLIENT_POOL_UNAVAILABLE",
-                message=(
-                    "OpenSandbox could not reclaim unpublished client-pool "
-                    f"member {settled.sandbox_id!r}: {destruction.detail}"
-                ),
-                status_code=502,
-                data={
-                    "sandbox_id": settled.sandbox_id,
-                    "leaked_sandbox_id": settled.sandbox_id,
-                },
-            )
-        logger.warning(
-            "OpenSandbox client pool reclaimed unpublished member: "
-            "pool=%s assignment=%s sandbox=%s",
-            spec.pool_name,
-            assignment,
-            settled.sandbox_id,
-        )
+    async def _stop_heartbeat(self, pool_name: str) -> None:
+        task = self._heartbeats.pop(pool_name, None)
+        if task is None:
+            return
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
 
     def _creator(
         self,
@@ -373,7 +307,6 @@ class OpenSandboxClientPoolRegistry:
             )
 
             provider = OpenSandboxSandboxProvider(transport=self._transport)
-            await self._reclaim_unpublished_member(spec, provider)
             member = _pool_member(spec)
             try:
                 handle = await creator(member)
@@ -381,9 +314,7 @@ class OpenSandboxClientPoolRegistry:
                 # The lifecycle server can allocate the box before its create
                 # response reaches the SDK. The SDK then has no id to clean up.
                 # This invocation has not returned to the pool, so its exact
-                # member cannot have been published or claimed. An older
-                # member with the same slot assignment may have been claimed;
-                # leave that member to retirement's handoff protection.
+                # member cannot have been published or claimed.
                 from astrabox.providers.open_sandbox.executor import (
                     destroy_open_sandbox_box,
                 )
@@ -467,7 +398,6 @@ class OpenSandboxClientPoolRegistry:
     ) -> Any | None:
         """Take one prepared member; only an honestly empty pool is a miss."""
 
-        _require_supported_spec(spec)
         async with self._lock:
             pool = self._pools.get(spec.pool_name)
         if pool is None:
@@ -568,7 +498,7 @@ class OpenSandboxClientPoolRegistry:
                 lifecycle_state="NOT_STARTED",
                 ready=False,
                 idle_count=0,
-                max_idle=_POOL_MAX_IDLE,
+                max_idle=0,
                 failure_count=0,
                 backoff_active=False,
                 in_flight_operations=0,
@@ -601,13 +531,19 @@ class OpenSandboxClientPoolRegistry:
         )
 
     async def retire(self, pool_name: str) -> None:
-        """Fence a namespace and destroy idle plus unpublished members."""
+        """Fence a namespace and destroy its idle members.
+
+        A member whose create finished but never reached the idle inventory is
+        not in the namespace; it expires with the pool's idle lease.
+        """
 
         name = str(pool_name or "").strip()
         if not name:
             return
         async with self._lock:
             pool = self._pools.pop(name, None)
+            self._sizes.pop(name, None)
+        await self._stop_heartbeat(name)
         if pool is not None:
             try:
                 await pool.shutdown(graceful=True)
@@ -635,121 +571,44 @@ class OpenSandboxClientPoolRegistry:
         except Exception as exc:
             raise _pool_unavailable(name, "destroy its namespace", exc) from exc
 
-        # manager.destroy() drains published idle entries. A create can finish
-        # before publication, so use the durable assignment to remove that
-        # additional orphan as the historical implementation did.
-        from astrabox.providers.open_sandbox.executor import (
-            destroy_open_sandbox_box,
-        )
-        from astrabox.providers.open_sandbox.sandbox import (
-            OpenSandboxSandboxProvider,
-        )
-
-        provider = OpenSandboxSandboxProvider(transport=self._transport)
-        assignment = _client_pool_assignment_id(name)
-        try:
-            unpublished = await provider.find_sandbox_by_assignment(assignment)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            raise _pool_unavailable(
-                name,
-                "find an unpublished member after retirement",
-                exc,
-            ) from exc
-
-        unpublished_id = ""
-        if unpublished is not None:
-            if not _client_pool_owns_session(name, unpublished.session_id):
-                raise APIError(
-                    code="SANDBOX_ASSIGNMENT_CONFLICT",
-                    message=(
-                        f"client-pool assignment {assignment!r} belongs to session "
-                        f"{unpublished.session_id!r}, not pool {name!r}"
-                    ),
-                    status_code=409,
-                )
-
-            # acquire() removes the member from Redis before the platform can
-            # replace its technical assignment with the claiming Agent
-            # runtime's.
-            # Namespace retirement must therefore wait through that bounded
-            # hand-off before treating a remaining technical assignment as an
-            # unpublished create. Otherwise an Agent edit can destroy a box
-            # already promised to a user request.
-            candidate_id = unpublished.sandbox_id
-            deadline = (
-                asyncio.get_running_loop().time()
-                + _assignment_release_settle_seconds()
-            )
-            while True:
-                settled = await provider.find_sandbox_by_assignment(assignment)
-                if settled is None:
-                    break
-                if settled.sandbox_id != candidate_id:
-                    raise APIError(
-                        code="SANDBOX_ASSIGNMENT_CONFLICT",
-                        message=(
-                            f"client-pool assignment {assignment!r} changed from "
-                            f"sandbox {candidate_id!r} to {settled.sandbox_id!r} "
-                            "while retirement ownership was settling"
-                        ),
-                        status_code=409,
-                    )
-                if not _client_pool_owns_session(name, settled.session_id):
-                    raise APIError(
-                        code="SANDBOX_ASSIGNMENT_CONFLICT",
-                        message=(
-                            f"client-pool assignment {assignment!r} changed owner "
-                            f"to session {settled.session_id!r} while retirement "
-                            "ownership was settling"
-                        ),
-                        status_code=409,
-                    )
-                remaining = deadline - asyncio.get_running_loop().time()
-                if remaining <= 0:
-                    unpublished = settled
-                    break
-                await asyncio.sleep(min(1.0, remaining))
-            if settled is None:
-                unpublished = None
-
-        if unpublished is not None:
-            unpublished_id = unpublished.sandbox_id
-            destruction = await destroy_open_sandbox_box(provider, unpublished_id)
-            if not destruction.confirmed:
-                raise APIError(
-                    code="SANDBOX_CLIENT_POOL_UNAVAILABLE",
-                    message=(
-                        f"OpenSandbox retired client pool {name!r}, but its "
-                        f"unpublished member {unpublished_id!r} survives: "
-                        f"{destruction.detail}"
-                    ),
-                    status_code=502,
-                    data={
-                        "sandbox_id": unpublished_id,
-                        "leaked_sandbox_id": unpublished_id,
-                    },
-                )
         logger.info(
-            "OpenSandbox client pool retired: pool=%s idle_killed=%s "
-            "unpublished_killed=%s tombstone_s=%d",
+            "OpenSandbox client pool retired: pool=%s idle_killed=%s tombstone_s=%d",
             name,
             result.killed_idle_count,
-            bool(unpublished_id),
             int(_POOL_TOMBSTONE_TTL.total_seconds()),
         )
 
     async def shutdown(self) -> None:
-        """Stop local schedulers without deleting their shared namespaces."""
+        """Stop local schedulers without deleting their shared namespaces.
+
+        The SDK releases the primary lock before it waits for an in-flight
+        reconcile tick, and a tick that had not yet taken the lock takes it
+        again: observed when a restart left the lock held for its whole TTL.
+        Its graceful shutdown returns only after that tick drained and no new
+        tick can start, so the lock is released once more here, for this
+        owner only, and the next process does not wait for it to expire.
+        """
 
         async with self._lock:
-            pools = list(self._pools.values())
+            pools = dict(self._pools)
             self._pools.clear()
+            self._sizes.clear()
+        for name in pools:
+            await self._stop_heartbeat(name)
         await asyncio.gather(
-            *(pool.shutdown(graceful=True) for pool in pools),
+            *(pool.shutdown(graceful=True) for pool in pools.values()),
             return_exceptions=True,
         )
+        if pools and self._state_store is not None:
+            for name in pools:
+                try:
+                    await self._state_store.release_primary_lock(name, self._owner_id)
+                except Exception as exc:
+                    logger.warning(
+                        "OpenSandbox client-pool lock release failed: pool=%s error=%s",
+                        name,
+                        _error_detail(exc),
+                    )
         if self._redis is not None:
             close = getattr(self._redis, "aclose", None) or getattr(
                 self._redis,

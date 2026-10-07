@@ -109,14 +109,24 @@ def render_prometheus() -> str:
 METRIC_TURNS_ACCEPTED = "astrabox_turns_accepted_total"
 METRIC_TURNS_DENIED = "astrabox_turns_admission_denied_total"
 METRIC_SANDBOXES_CREATED = "astrabox_sandboxes_created_total"
+METRIC_PREPARED_CAPACITY_MISSES = "astrabox_prepared_capacity_misses_total"
 
 for _name, _help in (
     (METRIC_TURNS_ACCEPTED, "StartTurn commands accepted (post-admission)."),
     (METRIC_TURNS_DENIED, "Turn/sandbox requests denied by the admission controller."),
     (METRIC_SANDBOXES_CREATED, "User-facing sessions (and their sandboxes) created."),
+    (
+        METRIC_PREPARED_CAPACITY_MISSES,
+        "New conversations of an Agent with prepared capacity that found none and started cold.",
+    ),
 ):
     register_help(_name, _help)
 
 
 def base_metric_names() -> Iterable[str]:
-    return (METRIC_TURNS_ACCEPTED, METRIC_TURNS_DENIED, METRIC_SANDBOXES_CREATED)
+    return (
+        METRIC_TURNS_ACCEPTED,
+        METRIC_TURNS_DENIED,
+        METRIC_SANDBOXES_CREATED,
+        METRIC_PREPARED_CAPACITY_MISSES,
+    )

@@ -46,7 +46,7 @@ def _template(**overrides: Any) -> Any:
         engine_kind="pi",
         agent_prewarm_fingerprint="fp-1",
         runtime_generation="fp-1",
-        prewarm_enabled=True,
+        prepared_capacity=1,
         model_config={},
         system="Be terse.",
         engine_options={"settings": {"defaultThinkingLevel": "medium"}},
@@ -461,10 +461,9 @@ def test_a_stale_spawn_fingerprint_discards_the_claimed_box(
 
     discards: list[str] = []
 
-    async def _discard(template: Any, manifest: dict[str, Any], *, reason: str) -> None:
+    async def _discard(template: Any, manifest: dict[str, Any], *, reason: str, **_kwargs: Any) -> None:
         discards.append(reason)
 
-    refills: list[str] = []
     provisioned = provisioning.ProvisionedEngineSandbox(
         sandbox=_box(_models_config("deepseek-chat")),
         sandbox_id="box-77",
@@ -479,11 +478,6 @@ def test_a_stale_spawn_fingerprint_discards_the_claimed_box(
 
     monkeypatch.setattr(startup, "provision_engine_sandbox", _provision)
     monkeypatch.setattr(startup, "_discard_claimed_unit", _discard)
-    monkeypatch.setattr(
-        startup,
-        "schedule_prepared_runtime_refill",
-        lambda template, manager: refills.append(template.agent_id),
-    )
     with pytest.raises(APIError, match="prepared pi box") as caught:
         asyncio.run(
             startup.start_platform_runtime(
@@ -501,7 +495,6 @@ def test_a_stale_spawn_fingerprint_discards_the_claimed_box(
         )
     assert caught.value.code == "AGENT_PREWARM_CONFIG_INVALID"
     assert len(discards) == 1 and caught.value.code in discards[0]
-    assert refills == ["agent-1"]
 
 
 # ── activation ────────────────────────────────────────────────────────────
@@ -509,13 +502,12 @@ def test_a_stale_spawn_fingerprint_discards_the_claimed_box(
 
 def _activation_harness(
     monkeypatch: pytest.MonkeyPatch, template: Any, manager: _Manager
-) -> tuple[list[str], list[dict[str, Any]], list[str], list[str]]:
+) -> tuple[list[str], list[dict[str, Any]], list[str]]:
     """Wire every seam the claim touches to an event recorder."""
 
     events: list[str] = []
     published: list[dict[str, Any]] = []
     cleared: list[str] = []
-    refills: list[str] = []
 
     claimed = {
         "slot_id": "slot-abc",
@@ -538,7 +530,7 @@ def _activation_harness(
     }
     box_handle = SimpleNamespace(sandbox_id="box-77")
 
-    async def _win(**kwargs: Any) -> dict[str, Any]:
+    async def _win(*args: Any, **kwargs: Any) -> dict[str, Any]:
         events.append("claim")
         return dict(claimed)
 
@@ -579,7 +571,7 @@ def _activation_harness(
         assert substitution.secret_value == "sk-session-key"
         events.append(f"vault:{substitution.name}")
 
-    async def _mark(*, agent_id: str, slot_id: str, session_id: str) -> None:
+    async def _mark(_repo: Any, agent_id: str, *, slot_id: str, session_id: str) -> None:
         events.append(f"mark:{slot_id}:{session_id}")
 
     async def _target(sandbox: Any, manager_arg: Any, session_id: str) -> None:
@@ -604,21 +596,16 @@ def _activation_harness(
     import astrabox.core.service.orchestrator.engine.pi_client as pi_client
     import astrabox.core.service.orchestrator.engine.transcript_mirror as tm
     import astrabox.seams.model as model_seam
-    monkeypatch.setattr(ps, "claim_prepared_slot", _win)
+    monkeypatch.setattr(ps, "claim_prepared_seat", _win)
     monkeypatch.setattr(startup, "clear_claimed_slot", _clear)
     monkeypatch.setattr(pb, "adopt_claimed_box", _adopt)
     monkeypatch.setattr(manager, "record_startup_allocation", _record)
     monkeypatch.setattr(model_seam, "model_endpoint_for_name", lambda name: _Endpoint())
-    monkeypatch.setattr(ps, "mark_gateway_entry_claimed", _mark)
+    monkeypatch.setattr(ps, "record_gateway_entry", _mark)
     monkeypatch.setattr(tm, "bind_mirror_target", _target)
     monkeypatch.setattr(pi, "_install_agent_instructions", _unexpected_instructions)
     monkeypatch.setattr(pi_client, "connect_pi_client", _connect)
     monkeypatch.setattr(pi, "_publish_runtime", _publish)
-    monkeypatch.setattr(
-        startup,
-        "schedule_prepared_runtime_refill",
-        lambda template_arg, manager_arg: refills.append(template_arg.agent_id),
-    )
 
     async def _provision(*_args: Any, **_kwargs: Any) -> Any:
         return await _claim(
@@ -629,7 +616,7 @@ def _activation_harness(
         )
 
     monkeypatch.setattr(startup, "provision_engine_sandbox", _provision)
-    return events, published, cleared, refills
+    return events, published, cleared
 
 
 def test_activation_binds_the_mirror_target_before_parked_pi_is_adopted(
@@ -647,7 +634,7 @@ def test_activation_binds_the_mirror_target_before_parked_pi_is_adopted(
 
     template = _template()
     manager = _Manager()
-    events, published, cleared, refills = _activation_harness(
+    events, published, cleared = _activation_harness(
         monkeypatch, template, manager
     )
 
@@ -688,7 +675,6 @@ def test_activation_binds_the_mirror_target_before_parked_pi_is_adopted(
     assert f"vault:{workload_credential_name('slot-abc')}" in events
     assert "mirror-target:session-1" in events
     assert cleared == ["slot-abc"]
-    assert refills == ["agent-1"]
 
 
 def test_the_claimed_spawn_takes_its_options_from_the_claiming_agent(
@@ -704,7 +690,7 @@ def test_the_claimed_spawn_takes_its_options_from_the_claiming_agent(
 
     template = _template(engine_options={"settings": {"defaultThinkingLevel": "xhigh"}})
     manager = _Manager()
-    events, published, _cleared, _refills = _activation_harness(
+    events, published, _cleared = _activation_harness(
         monkeypatch, template, manager
     )
 

@@ -10,7 +10,8 @@ import { execFileSync } from 'node:child_process';
 import { expect, test } from '@playwright/test';
 
 import { AstraApi } from '../fixtures/astraApi';
-import { documentsByField, sessionDoc, snapshotDoc } from '../fixtures/dbOracle';
+import { sessionDoc, snapshotDoc } from '../fixtures/dbOracle';
+import { nextLedgerSeat } from '../fixtures/preparedSeats';
 import { appPath, parseTimeoutEnv } from '../fixtures/env';
 import { PlatformApi } from '../fixtures/platformApi';
 import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
@@ -37,7 +38,7 @@ const RUNNING_BOX_STATES = new Set(['RUNNING', 'READY']);
 const IDLE_WINDOW_MS = parseTimeoutEnv('ASTRABOX_E2E_IDLE_PARK_WINDOW_MS', 15_000);
 const IDLE_WINDOW_SECONDS = Math.max(1, Math.round(IDLE_WINDOW_MS / 1_000));
 
-// The pool acquiring a resident box and assembling a slot in it.
+// The pool preparing a box and the seats it carries.
 const PREPARED_READY_TIMEOUT_MS = parseTimeoutEnv('ASTRABOX_E2E_PREPARED_READY_TIMEOUT_MS', 60_000);
 // The one turn that gives the keeper a snapshot clock to read.
 const FIRST_TURN_TIMEOUT_MS = parseTimeoutEnv('ASTRABOX_E2E_IDLE_PARK_TURN_TIMEOUT_MS', 90_000);
@@ -86,15 +87,13 @@ interface PreparedCapacity {
 }
 
 /**
- * Read the advertised slot straight out of the Agent document.
+ * Read the seat the next conversation claims straight out of the Agent document.
  *
  * Preparation also carries credentials, and an assertion retains its expected
- * and actual values in the report, so only public coordinates are projected —
- * the same projection ownerless-sandbox-reaping's `preparedIdentity()` makes.
+ * and actual values in the report, so only public coordinates are projected.
  */
 function preparedCapacity(id: string): PreparedCapacity {
-  const row: Record<string, unknown> = documentsByField('agents', '$.agent_id', id)[0] ?? {};
-  const manifest = (row._prepared_slot ?? {}) as Record<string, unknown>;
+  const manifest: Record<string, unknown> = nextLedgerSeat(id) ?? {};
   return {
     slotId: String(manifest.slot_id ?? ''),
     state: String(manifest.state ?? ''),
@@ -330,7 +329,7 @@ test('an idle conversation does not park a box holding the Agent\'s prepared slo
     environment_name: parkEnvironment,
     // The whole point of the scene: warm capacity parked in the box alongside
     // the one conversation that is about to go quiet.
-    prewarm_enabled: true,
+    prepared_capacity: 1,
     idle_hibernate_seconds: IDLE_WINDOW_SECONDS,
   });
   agentId = String(created.agent_id || '');
@@ -347,9 +346,9 @@ test('an idle conversation does not park a box holding the Agent\'s prepared slo
     'the Agent must carry the idle window this run waits out',
   ).toBe(IDLE_WINDOW_SECONDS);
   expect(
-    readBack.prewarm_enabled,
+    readBack.prepared_capacity,
     'the Agent must carry the prewarm setting whose slot this journey protects',
-  ).toBe(true);
+  ).toBe(1);
   mark('agent_created', { agentId, agentName });
 
   /** Poll the Agent's advertised capacity until the platform says it is claimable. */
@@ -372,6 +371,9 @@ test('an idle conversation does not park a box holding the Agent\'s prepared slo
   };
 
   // ── The conversation the person leaves quiet ─────────────────────────────
+  // It must take a pool box with its seats: a box this conversation had to
+  // create cold carries none, and the scene needs a spare seat beside it.
+  await advertisedCapacity('before the first conversation');
   const first = await api.startConversation(agentId);
   const idleSession = String(first.session_id || '').trim();
   expect(idleSession, 'starting a conversation must open a session').not.toEqual('');
@@ -384,8 +386,7 @@ test('an idle conversation does not park a box holding the Agent\'s prepared slo
   // One real turn, and it is load-bearing twice. `_is_idle_past` reads the
   // session SNAPSHOT, which exists only once turn activity wrote one, so without
   // it the sweep would refuse for a reason that has nothing to do with this
-  // journey and the run would be a false green. It is also what makes the
-  // platform refill the slot this conversation just claimed.
+  // journey and the run would be a false green.
   const turn = await api.sendTurn(
     idleSession,
     `E2E idle park ${runId}. Reply with the single word READY and nothing else.`,
@@ -399,10 +400,12 @@ test('an idle conversation does not park a box holding the Agent\'s prepared slo
   mark('first_turn_done', { totalMs: turn.totalMs });
 
   // ── The spare slot the next person is going to claim ─────────────────────
+  // The box the conversation took arrived carrying more than one seat; the
+  // ones it did not use stay in it for the next person.
   const advertised = await advertisedCapacity('after the first conversation claimed its slot');
   expect(
     String(advertised.sandbox_id || ''),
-    'the refilled slot must sit inside the SAME box the idle conversation holds — that is the '
+    'the spare slot must sit inside the SAME box the idle conversation holds — that is the '
       + 'whole scene: one bound conversation plus one unclaimed prepared slot, one box. A slot '
       + 'in a different box would make the keeper right to park this one',
   ).toEqual(box);
@@ -417,7 +420,7 @@ test('an idle conversation does not park a box holding the Agent\'s prepared slo
   // A box already parked during the setup would make every later reading a
   // reading of the aftermath, and "it was already parked" would be
   // indistinguishable from "the keeper refused". Named here so a park that
-  // landed during the slot refill reports itself rather than surfacing as a
+  // landed during the first turn reports itself rather than surfacing as a
   // prewarm timeout.
   expect(
     parkedMark(idleSession),
@@ -434,7 +437,7 @@ test('an idle conversation does not park a box holding the Agent\'s prepared slo
       slot: manifestBefore,
     }),
   });
-  mark('slot_refilled', { slot: manifestBefore.slotId });
+  mark('spare_slot_seen', { slot: manifestBefore.slotId });
 
   // ── The person goes quiet ────────────────────────────────────────────────
   // Really waited, never backdated. From here nothing touches the conversation
@@ -458,7 +461,7 @@ test('an idle conversation does not park a box holding the Agent\'s prepared slo
         + '`_box_is_this_session_s_alone` (expiration_watcher.py:427) asks only '
         + '`list_sessions_by_sandbox_id`, and a prepared slot is not a session row — while the '
         + 'destroy path\'s `agent_box_has_other_occupants` (runtime_manager.py:3182) reads the '
-        + 'Agent row\'s `_prepared_slot` for exactly this reason. The next person now claims a '
+        + 'Agent row\'s `_prepared_slots` for exactly this reason. The next person now claims a '
         + 'slot whose engine child the pause killed.',
     ).toEqual('');
     if (quiet.state === 'IDLE' && (quiet.quietMs ?? -1) >= IDLE_WINDOW_MS) break;
@@ -538,7 +541,7 @@ test('an idle conversation does not park a box holding the Agent\'s prepared slo
       + `tick=${JSON.stringify(tick)}. \`_box_is_this_session_s_alone\` `
       + '(expiration_watcher.py:427) asks only `list_sessions_by_sandbox_id`, and a prepared slot '
       + 'is not a session row — while the destroy path\'s `agent_box_has_other_occupants` '
-      + '(runtime_manager.py:3182) reads the Agent row\'s `_prepared_slot` for exactly this '
+      + '(runtime_manager.py:3182) reads the Agent row\'s `_prepared_slots` for exactly this '
       + 'reason.',
   ).toEqual('');
   const boxState = String((await api.getSandbox(box)).state || '').toUpperCase();
@@ -559,8 +562,8 @@ test('an idle conversation does not park a box holding the Agent\'s prepared slo
   // This is the assertion that would still fail if the box were paused while
   // every flag happened to read right — the shared-box defects in this repo have
   // repeatedly reported READY on a conversation that could not talk. Read
-  // immediately before the click, because a legitimate fix may renew the slot
-  // and swap it for a fresh one, and what the claim must match is what was
+  // immediately before the click, because a legitimate fix may replace the
+  // slot with a fresh one, and what the claim must match is what was
   // advertised at the moment the person arrived.
   const capacityAtClick = preparedCapacity(agentId);
   expect(

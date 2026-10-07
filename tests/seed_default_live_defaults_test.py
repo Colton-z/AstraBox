@@ -164,12 +164,12 @@ async def test_seeded_rows_do_not_copy_deployment_defaults(
 
 @pytest.mark.parametrize(
     ("redis_url", "expected"),
-    [("redis://redis:6379/0", True), (None, False)],
+    [("redis://redis:6379/0", 1), (None, 0)],
     ids=["deployment-can-prewarm", "deployment-cannot-prewarm"],
 )
 @pytest.mark.asyncio
 async def test_seeded_agents_take_the_deployments_prewarm_default(
-    monkeypatch: pytest.MonkeyPatch, redis_url: str | None, expected: bool
+    monkeypatch: pytest.MonkeyPatch, redis_url: str | None, expected: int
 ) -> None:
     """The first-run Agents start ready wherever the deployment can prewarm.
 
@@ -198,7 +198,7 @@ async def test_seeded_agents_take_the_deployments_prewarm_default(
     await app_module._seed_default_agent_if_empty()
 
     assert [row["name"] for row in agents.rows] == ["Claude Code", "Investment Research"]
-    assert [row["prewarm_enabled"] for row in agents.rows] == [expected, expected]
+    assert [row["prepared_capacity"] for row in agents.rows] == [expected, expected]
 
 
 @pytest.mark.asyncio

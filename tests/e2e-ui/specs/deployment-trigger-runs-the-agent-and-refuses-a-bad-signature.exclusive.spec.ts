@@ -60,7 +60,7 @@ test('a signed deployment trigger runs the agent, and a bad signature is refused
       name: agentName,
       model,
       environment_name: environmentName,
-      prewarm_enabled: false,
+      prepared_capacity: 0,
       engine_options: { sdk_options: { max_turns: 6 } },
     });
     agentId = String(agent.agent_id || '');

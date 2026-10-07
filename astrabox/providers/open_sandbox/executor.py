@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
+import weakref
 from datetime import timedelta
 from typing import Any, Protocol
 
@@ -354,6 +355,24 @@ async def _wait_for_execd_command_stream(
         return
 
 
+# One process's writes to one box's Vault are serialized. Each is a read of
+# the revision followed by a patch guarded by it, and the conversations that
+# claim their seats in one shared box together would otherwise race each
+# other's revision until the bounded retries ran out. Writers in other
+# processes still meet at the revision guard.
+_VAULT_WRITE_LOCKS: weakref.WeakValueDictionary[str, asyncio.Lock] = (
+    weakref.WeakValueDictionary()
+)
+
+
+def _vault_write_lock(sandbox_id: str) -> asyncio.Lock:
+    lock = _VAULT_WRITE_LOCKS.get(sandbox_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _VAULT_WRITE_LOCKS[sandbox_id] = lock
+    return lock
+
+
 async def apply_open_sandbox_vault(
     handle: OpenSandboxHandle,
     *,
@@ -363,6 +382,30 @@ async def apply_open_sandbox_vault(
     managed_binding_names: tuple[str, ...] = (),
     managed_basic_scopes: tuple[str, ...] = (),
     create_if_missing: bool = True,
+) -> None:
+    """Create the Vault, or reconcile named entries in an existing revision."""
+
+    async with _vault_write_lock(str(handle.sandbox_id)):
+        await _apply_open_sandbox_vault(
+            handle,
+            vault_write=vault_write,
+            session_id=session_id,
+            managed_credential_names=managed_credential_names,
+            managed_binding_names=managed_binding_names,
+            managed_basic_scopes=managed_basic_scopes,
+            create_if_missing=create_if_missing,
+        )
+
+
+async def _apply_open_sandbox_vault(
+    handle: OpenSandboxHandle,
+    *,
+    vault_write: tuple[list[Any], list[Any]],
+    session_id: str,
+    managed_credential_names: tuple[str, ...],
+    managed_binding_names: tuple[str, ...],
+    managed_basic_scopes: tuple[str, ...],
+    create_if_missing: bool,
 ) -> None:
     """Create the Vault, or reconcile named entries in an existing revision.
 

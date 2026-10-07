@@ -26,7 +26,7 @@ def _template(**overrides: Any) -> Any:
         engine_kind="codex",
         agent_prewarm_fingerprint="fp-1",
         runtime_generation="fp-1",
-        prewarm_enabled=True,
+        prepared_capacity=1,
         model_config={},
         system="Be terse.",
         engine_options={"model_catalog": {"models": []}},
@@ -167,10 +167,9 @@ def test_a_stale_spawn_fingerprint_discards_the_claimed_box(
 
     discards: list[str] = []
 
-    async def _discard(template: Any, manifest: dict[str, Any], *, reason: str) -> None:
+    async def _discard(template: Any, manifest: dict[str, Any], *, reason: str, **_kwargs: Any) -> None:
         discards.append(reason)
 
-    refills: list[str] = []
     provisioned = provisioning.ProvisionedEngineSandbox(
         sandbox=SimpleNamespace(sandbox_id="box-77"),
         sandbox_id="box-77",
@@ -185,11 +184,6 @@ def test_a_stale_spawn_fingerprint_discards_the_claimed_box(
 
     monkeypatch.setattr(startup, "provision_engine_sandbox", _provision)
     monkeypatch.setattr(startup, "_discard_claimed_unit", _discard)
-    monkeypatch.setattr(
-        startup,
-        "schedule_prepared_runtime_refill",
-        lambda template, manager: refills.append(template.agent_id),
-    )
     with pytest.raises(APIError, match="prepared Codex box") as caught:
         asyncio.run(
             startup.start_platform_runtime(
@@ -207,4 +201,3 @@ def test_a_stale_spawn_fingerprint_discards_the_claimed_box(
         )
     assert caught.value.code == "AGENT_PREWARM_CONFIG_INVALID"
     assert len(discards) == 1 and caught.value.code in discards[0]
-    assert refills == ["agent-1"]

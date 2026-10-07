@@ -504,16 +504,28 @@ and use the same login-cookie signing secret on every replica. See
 
 ## Plan capacity for prepared sandboxes {#plan-capacity-for-prepared-sandboxes}
 
-Every Agent with [prewarming](authoring-agents.md#prewarming) on keeps one idle
-prepared sandbox so that its next conversation starts in about two seconds
-instead of starting a sandbox. New Agents have prewarming on wherever
+Every Agent keeps as many idle prepared runtimes as its
+[prepared capacity](authoring-agents.md#prewarming), so that that many new
+conversations can start in under a second at once instead of starting a
+sandbox. New Agents get a capacity of 1 wherever
 `ASTRABOX_AGENT_PREWARM_REDIS_URL` is set, which every bundled Compose
 deployment and the [all-in-one container](all-in-one.md) do; there, the two
-Agents a fresh installation creates have it on as well. The sandbox is held for as long as prewarming stays on and the Agent and
-its Environment are enabled; after a conversation claims it, AstraBox prepares
-a replacement. AstraBox does not cap the number of prepared sandboxes, so size
-the deployment for the Agents you keep, or turn prewarming off for Agents that
-do not need a fast first conversation.
+Agents a fresh installation creates get it as well. The runtimes are held for
+as long as the capacity is above 0 and the Agent and its Environment are
+enabled; after a conversation takes an idle sandbox, AstraBox prepares a
+replacement, up to eight at a time per Agent. Size the deployment for the sum
+of the Agents' `prepared_capacity`: for example, an Agent serving 1,000 users
+that expects 100 conversations to start together needs a capacity of 100, and
+with a sandbox per conversation that is 100 idle sandboxes. When an Agent's
+conversations share a sandbox, each prepared sandbox carries as many seats as
+its memory limit admits with 640 MiB set aside for each, and the Agent keeps
+the capacity divided by that number of idle sandboxes, rounded up. A seat that no
+conversation takes within the sandbox lease (`ASTRABOX_SANDBOX_LEASE_SECONDS`)
+is discarded, like an idle sandbox. Set `ASTRABOX_PREPARED_CAPACITY_LIMIT`
+to the sum the deployment can hold, and AstraBox refuses an Agent write that
+would exceed it; on a Docker host, which reserves nothing for an idle sandbox,
+nothing else stops one Agent's capacity from exhausting the host. Set the
+capacity of Agents that do not need a fast first conversation to 0.
 
 What an idle prepared sandbox uses depends on the engine that the Agent's
 Environment runs:
@@ -536,9 +548,15 @@ sandbox uses 2–5% of one CPU.
 
 Each sandbox may grow to 4 CPUs (on Docker, at most the host's CPU count) and
 4 GiB of memory while it works; the figures above are what idle capacity
-takes. To turn prewarming off for an Agent, clear **Keep a sandbox ready** in
-its **Runtime and availability** settings, or set `"prewarm_enabled": false`
+takes. To turn prewarming off for an Agent, set **Prepared capacity** to 0 in
+its **Runtime and availability** settings, or set `"prepared_capacity": 0`
 through the API or in an `astrabox.yaml` document.
+
+With several platform replicas, one replica at a time replenishes each Agent's
+prepared sandboxes and any replica can hand one to a conversation. A replica
+restarted on the same host resumes replenishing at once; when a replica stops
+for good, another takes over replenishment within about two and a half minutes,
+while conversations keep taking the sandboxes already prepared.
 
 ## Check health and sandbox recovery
 

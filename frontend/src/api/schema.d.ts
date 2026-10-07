@@ -3579,8 +3579,8 @@ export interface components {
          *     ``path``, ``complex``, ``advanced``) appear per field. ``item_schema``
          *     describes the sub-fields of a nested object with this same grammar.
          *     ``default`` is the value an Agent created without the field has. Two
-         *     fields carry one: ``prewarm_enabled``, whose value follows the deployment,
-         *     and ``artifacts_enabled``, which is on.
+         *     fields carry one: ``prepared_capacity``, whose value follows the
+         *     deployment, and ``artifacts_enabled``, which is on.
          */
         AgentFormField: {
             /** Advanced */
@@ -3681,6 +3681,8 @@ export interface components {
             enabled: boolean;
             /** Last Error */
             last_error?: string | null;
+            /** Last Miss At */
+            last_miss_at?: string | null;
             /** Placement */
             placement?: string | null;
             /** Prepared At */
@@ -3695,6 +3697,8 @@ export interface components {
             sandbox_id?: string | null;
             /** State */
             state?: string | null;
+            /** Target */
+            target: number;
         };
         /**
          * AgentRecord
@@ -3760,8 +3764,8 @@ export interface components {
             plugin_repos?: {
                 [key: string]: unknown;
             }[] | null;
-            /** Prewarm Enabled */
-            prewarm_enabled?: boolean | null;
+            /** Prepared Capacity */
+            prepared_capacity?: number | null;
             /** Skills */
             skills?: string[] | null;
             /** State */

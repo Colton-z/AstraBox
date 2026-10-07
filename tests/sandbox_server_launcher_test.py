@@ -671,6 +671,9 @@ def _service_stub(networking: ModuleType, container_ops: ModuleType) -> ModuleTy
         def _cleanup_egress_sidecar(self, sandbox_id: str) -> None:
             return None
 
+        def _container_to_sandbox(self, container: Any, sandbox_id: str | None = None) -> Any:
+            return None
+
     module.DockerSandboxService = DockerSandboxService  # type: ignore[attr-defined]
     return module
 
@@ -1416,6 +1419,48 @@ def test_the_server_labels_every_sidecar_it_creates_with_its_installation(
         if "opensandbox.io/egress-sidecar-for" in (record.get("labels") or {})
     )
     assert sidecar["labels"]["astrabox.installation"] == "this-installation"
+
+
+class _ContainerWhoseImageNeedsAnInspect:
+    """A sandbox container; reading ``image`` stands for docker-py's image inspect."""
+
+    status = "running"
+
+    def __init__(self, reference: str) -> None:
+        self.attrs = {
+            "Config": {
+                "Image": reference,
+                "Labels": {"opensandbox.io/id": "sandbox-1"},
+                "Cmd": ["/entrypoint"],
+            },
+            "State": {"Status": "running", "Running": True},
+            "Created": "2026-10-06T05:00:00Z",
+        }
+        self.image_inspects = 0
+
+    @property
+    def image(self) -> Any:
+        self.image_inspects += 1
+        return SimpleNamespace(tags=["some-other-tag:latest"], short_id="sha256:0123456789ab")
+
+
+def test_a_sandbox_description_names_the_image_it_was_created_from_without_an_image_inspect(
+    document: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    service = _upstream("opensandbox_server.services.docker.docker_service")
+    monkeypatch.setattr(
+        service.DockerSandboxService,
+        launcher.CONTAINER_TO_SANDBOX_ATTR,
+        getattr(service.DockerSandboxService, launcher.CONTAINER_TO_SANDBOX_ATTR),
+    )
+    launcher.describe_sandbox_images_from_their_containers(service)
+    instance = _started_service(document, monkeypatch, tmp_path, _FakeDockerDaemon(held=()))
+    container = _ContainerWhoseImageNeedsAnInspect("astrabox/sandbox-claude-code:0.1.3")
+
+    description = instance._container_to_sandbox(container, "sandbox-1")
+
+    assert description.image.uri == "astrabox/sandbox-claude-code:0.1.3"
+    assert container.image_inspects == 0
 
 
 def test_upstream_proxy_host_ignores_docker_host_ip_when_server_binds_loopback() -> None:

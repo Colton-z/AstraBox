@@ -440,9 +440,9 @@ plugin_repos:
 | `mcp_only` | 可以通过部署的 Agent MCP 接口使用。 |
 | `both` | 两种方式都可以使用。 |
 
-#### `idle_hibernate_seconds` / `prewarm_enabled`
+#### `idle_hibernate_seconds` / `prepared_capacity`
 
-`idle_hibernate_seconds` 控制 Agent 空闲多长时间后休眠沙箱。`prewarm_enabled` 要求 AstraBox 为这个 Agent 保持一个完整的准备运行时；所选沙箱部署必须支持准备容量。文档省略 `prewarm_enabled` 时由部署决定：能够预热的部署创建的 Agent 开启预热，不能预热的部署则关闭；已存在的 Agent 保留已保存的值。每个开启预热的 Agent 都会占用一个空闲的已准备沙箱，不需要快速开始首个对话的 Agent 请写 `prewarm_enabled: false`。参见[预热](../authoring-agents.md#prewarming)和[为已准备沙箱规划容量](../deploy.md#plan-capacity-for-prepared-sandboxes)。
+`idle_hibernate_seconds` 控制 Agent 空闲多长时间后休眠沙箱。`prepared_capacity` 是这个 Agent 同一时刻能在完整的准备运行时上开始的新对话数量，范围 0 到 1000；所选沙箱部署必须支持准备容量。文档省略它时由部署决定：能够预热的部署创建的 Agent 为 1，不能预热的部署为 0；已存在的 Agent 保留已保存的值。每份容量在等待期间都占用资源，请按预计同时开始的对话数设置；不需要快速开始首个对话的 Agent 请写 `prepared_capacity: 0`。参见[预热](../authoring-agents.md#prewarming)和[为已准备沙箱规划容量](../deploy.md#plan-capacity-for-prepared-sandboxes)。
 
 #### 展示和状态字段
 
@@ -850,7 +850,7 @@ agents:
       先收集证据，再给出结论。
       列出使用的每项日志、变更和时间线信息。
     exposure_mode: both
-    prewarm_enabled: true
+    prepared_capacity: 1
     enabled: true
 ```
 
@@ -1030,7 +1030,7 @@ astrabox schema agent --output json
 | `environment_name` | ✅ | Agent 使用的 Environment。 |
 | `exposure_mode` | ❌ | 对话和 MCP 使用方式。 |
 | `idle_hibernate_seconds` | ❌ | 休眠前的空闲时间。 |
-| `prewarm_enabled` | ❌ | 为 Agent 保持完整的准备运行时。创建时省略：能够预热的部署默认开启。 |
+| `prepared_capacity` | ❌ | 同时能在准备运行时上开始的新对话数量，0 到 1000，0 为关闭。创建时省略：能够预热的部署为 1。 |
 | `enabled` | ❌ | Agent 是否可以使用。 |
 
 ---

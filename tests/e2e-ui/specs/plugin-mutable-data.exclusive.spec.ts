@@ -400,7 +400,7 @@ test('a plugin conversation owns its mutable plugin data and registers every dec
     name: agentName,
     model,
     environment_name: environmentName,
-    prewarm_enabled: false,
+    prepared_capacity: 0,
     plugin_repos: [
       {
         url: PLUGIN_REPOSITORY,

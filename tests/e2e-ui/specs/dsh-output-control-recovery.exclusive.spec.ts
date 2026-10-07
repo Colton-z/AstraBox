@@ -36,7 +36,7 @@ for (const scenario of cases) test(scenario.title, async ({ request, page }, inf
   const evidence: Record<string, unknown> = {};
   try {
     agentId = (await api.createAgent({ name: `__e2e_dsh_control_${id}`,
-      environment_name: profile.environment_name, model: profile.model, prewarm_enabled: false })).agent_id;
+      environment_name: profile.environment_name, model: profile.model, prepared_capacity: 0 })).agent_id;
     sessionId = (await api.startConversation(agentId)).session_id;
     sessions.push(sessionId);
     await api.waitForSessionReady(sessionId);

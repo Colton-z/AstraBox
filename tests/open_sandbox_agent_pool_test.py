@@ -32,7 +32,6 @@ from astrabox.core.service.orchestrator.session_workspace_plan import RuntimeWor
 from astrabox.providers.open_sandbox import executor as executor_module
 from astrabox.providers.open_sandbox.agent_pool import (
     OpenSandboxClientPoolRegistry,
-    _client_pool_assignment_id,
     _client_pool_session_id,
 )
 from astrabox.providers.open_sandbox.sandbox import (
@@ -75,7 +74,7 @@ def _template(**overrides: Any) -> SimpleNamespace:
     values = {
         "agent_id": "agent-1",
         "engine_kind": "claude_code",
-        "prewarm_enabled": True,
+        "prepared_capacity": 1,
         "runtime_generation": "a" * 64,
         "sandbox_generation": "a" * 64,
         "client_pool_epoch": "b" * 32,
@@ -260,7 +259,6 @@ async def test_registry_builds_the_official_pool_and_acquires_prepared_only(
     assert created_sdk.id == "created-by-platform"
     assert len(members) == 1
     assert members[0].pool_name == spec.pool_name
-    assert members[0].member_index == 0
     assert prepared == ["sbx-warm"]
     assert acquired is not None and acquired.sandbox_id == "sbx-warm"
     # Supplier acquisition transfers an opaque box. Session ownership is a
@@ -342,18 +340,6 @@ async def test_acquire_refuses_a_pool_not_started_in_this_event_loop() -> None:
 
     assert caught.value.code == "SANDBOX_CLIENT_POOL_UNAVAILABLE"
     assert "not started" in caught.value.message
-
-
-async def test_registry_refuses_capacity_without_distinct_recovery_identities() -> None:
-    spec = _spec(max_idle=2)
-    registry = OpenSandboxClientPoolRegistry(state_store=_FakeStateStore())
-
-    with pytest.raises(APIError) as caught:
-        await registry.ensure(spec, creator=_creator, preparer=_preparer)
-
-    assert caught.value.code == "SANDBOX_CLIENT_POOL_UNSUPPORTED"
-    assert "exactly one" in caught.value.message
-    assert registry._pools == {}
 
 
 async def test_registry_exposes_its_local_official_pool_snapshot(
@@ -467,146 +453,7 @@ async def test_creator_preserves_a_platform_refusal() -> None:
 # Historical create-publication crash recovery.
 
 
-def test_client_pool_member_identity_is_unique_per_create_and_durable_per_slot() -> None:
-    pool_name = _spec().pool_name
-    first_session = _client_pool_session_id(pool_name)
-    second_session = _client_pool_session_id(pool_name)
-
-    assert first_session != second_session
-    assert len(first_session) <= 63
-    assert re.fullmatch(
-        r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?",
-        first_session,
-    )
-    assert _client_pool_assignment_id(pool_name) == _client_pool_assignment_id(pool_name)
-    assert _client_pool_assignment_id(pool_name) != _client_pool_assignment_id("another-pool")
-
-
-async def test_creator_reclaims_an_unpublished_member_before_replenishing(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    spec = _spec()
-    descriptor = SimpleNamespace(
-        sandbox_id="unpublished-warmup",
-        session_id=_client_pool_session_id(spec.pool_name),
-    )
-    lookup = AsyncMock(side_effect=[descriptor, descriptor])
-    destroy_box = AsyncMock(
-        return_value=SandboxDestruction.confirmed_gone(
-            "unpublished-warmup",
-            detail="the control plane reports the sandbox absent",
-        )
-    )
-    create = AsyncMock(return_value=OpenSandboxHandle(_FakeSdkSandbox("replacement")))
-    monkeypatch.setattr(
-        OpenSandboxSandboxProvider,
-        "find_sandbox_by_assignment",
-        lookup,
-    )
-    monkeypatch.setattr(
-        "astrabox.providers.open_sandbox.agent_pool._assignment_release_settle_seconds",
-        lambda: 0,
-    )
-    monkeypatch.setattr(
-        "astrabox.providers.open_sandbox.executor.destroy_open_sandbox_box",
-        destroy_box,
-    )
-
-    result = await OpenSandboxClientPoolRegistry(state_store=_FakeStateStore())._creator(
-        spec, create
-    )(SimpleNamespace(connection_config=object()))
-
-    assert result.id == "replacement"
-    assert lookup.await_count == 2
-    assert all(
-        call.args == (_client_pool_assignment_id(spec.pool_name),)
-        for call in lookup.await_args_list
-    )
-    destroy_box.assert_awaited_once()
-    assert destroy_box.await_args.args[1] == "unpublished-warmup"
-    create.assert_awaited_once()
-
-
-async def test_creator_waits_for_an_acquired_member_to_finish_adoption(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    spec = _spec()
-    descriptor = SimpleNamespace(
-        sandbox_id="member-being-adopted",
-        session_id=_client_pool_session_id(spec.pool_name),
-    )
-    lookup = AsyncMock(side_effect=[descriptor, None])
-    destroy_box = AsyncMock()
-    create = AsyncMock(return_value=OpenSandboxHandle(_FakeSdkSandbox("replacement")))
-    monkeypatch.setattr(
-        OpenSandboxSandboxProvider,
-        "find_sandbox_by_assignment",
-        lookup,
-    )
-    monkeypatch.setattr(
-        "astrabox.providers.open_sandbox.executor.destroy_open_sandbox_box",
-        destroy_box,
-    )
-
-    result = await OpenSandboxClientPoolRegistry(state_store=_FakeStateStore())._creator(
-        spec, create
-    )(SimpleNamespace(connection_config=object()))
-
-    assert result.id == "replacement"
-    assert lookup.await_count == 2
-    destroy_box.assert_not_awaited()
-
-
-async def test_creator_never_reclaims_a_member_still_in_official_inventory(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    spec = _spec()
-    descriptor = SimpleNamespace(
-        sandbox_id="published-warmup",
-        session_id=_client_pool_session_id(spec.pool_name),
-    )
-    monkeypatch.setattr(
-        OpenSandboxSandboxProvider,
-        "find_sandbox_by_assignment",
-        AsyncMock(return_value=descriptor),
-    )
-    create = AsyncMock()
-
-    with pytest.raises(APIError) as caught:
-        await OpenSandboxClientPoolRegistry(
-            state_store=_FakeStateStore(idle_sandbox_ids=("published-warmup",))
-        )._creator(spec, create)(SimpleNamespace(connection_config=object()))
-
-    assert caught.value.code == "SANDBOX_CLIENT_POOL_UNAVAILABLE"
-    create.assert_not_awaited()
-
-
-async def test_creator_refuses_a_durable_assignment_owned_by_another_pool(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    spec = _spec()
-    monkeypatch.setattr(
-        OpenSandboxSandboxProvider,
-        "find_sandbox_by_assignment",
-        AsyncMock(
-            return_value=SimpleNamespace(
-                sandbox_id="foreign-warmup",
-                session_id=_client_pool_session_id("another-pool"),
-            )
-        ),
-    )
-    create = AsyncMock()
-
-    with pytest.raises(APIError) as caught:
-        await OpenSandboxClientPoolRegistry(state_store=_FakeStateStore())._creator(spec, create)(
-            SimpleNamespace(connection_config=object())
-        )
-
-    assert caught.value.code == "SANDBOX_ASSIGNMENT_CONFLICT"
-    create.assert_not_awaited()
-
-
-async def test_retire_shuts_down_then_destroys_namespace_and_unpublished_member(
+async def test_retire_shuts_down_then_destroys_the_namespace(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     events: list[str] = []
@@ -632,19 +479,6 @@ async def test_retire_shuts_down_then_destroys_namespace_and_unpublished_member(
             events.append("destroy-namespace")
             return SimpleNamespace(killed_idle_count=0)
 
-    descriptor = SimpleNamespace(
-        sandbox_id="unpublished-warmup",
-        session_id=_client_pool_session_id(_spec().pool_name),
-    )
-
-    async def destroy_unpublished(*_args: Any) -> SandboxDestruction:
-        events.append("destroy-unpublished")
-        return SandboxDestruction.confirmed_gone(
-            "unpublished-warmup",
-            detail="gone",
-        )
-
-    destroy_box = AsyncMock(side_effect=destroy_unpublished)
     monkeypatch.setattr(
         "astrabox.providers.open_sandbox.agent_pool._config.sdk_connection_config",
         lambda *_args, **_kwargs: object(),
@@ -652,19 +486,6 @@ async def test_retire_shuts_down_then_destroys_namespace_and_unpublished_member(
     monkeypatch.setattr(
         "astrabox.providers.open_sandbox.agent_pool.SandboxPoolManagerAsync",
         _Manager,
-    )
-    monkeypatch.setattr(
-        OpenSandboxSandboxProvider,
-        "find_sandbox_by_assignment",
-        AsyncMock(return_value=descriptor),
-    )
-    monkeypatch.setattr(
-        "astrabox.providers.open_sandbox.agent_pool._assignment_release_settle_seconds",
-        lambda: 0,
-    )
-    monkeypatch.setattr(
-        "astrabox.providers.open_sandbox.executor.destroy_open_sandbox_box",
-        destroy_box,
     )
     registry = OpenSandboxClientPoolRegistry(
         state_store=_FakeStateStore(),
@@ -674,7 +495,7 @@ async def test_retire_shuts_down_then_destroys_namespace_and_unpublished_member(
 
     await registry.retire(_spec().pool_name)
 
-    assert events == ["shutdown", "destroy-namespace", "destroy-unpublished"]
+    assert events == ["shutdown", "destroy-namespace"]
     assert pools[0].shutdown_calls == [True]
 
 
@@ -707,84 +528,6 @@ async def test_retire_uses_a_short_nonzero_tombstone(
     ttl = getattr(options, "tombstone_ttl", None)
     assert isinstance(ttl, timedelta) and ttl.total_seconds() > 0
     assert ttl <= timedelta(hours=1)
-
-
-async def test_retire_does_not_destroy_a_member_being_adopted(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    descriptor = SimpleNamespace(
-        sandbox_id="member-being-adopted",
-        session_id=_client_pool_session_id(_spec().pool_name),
-    )
-    manager = SimpleNamespace(
-        destroy=AsyncMock(return_value=SimpleNamespace(killed_idle_count=0))
-    )
-    lookup = AsyncMock(side_effect=[descriptor, None])
-    destroy_box = AsyncMock()
-    monkeypatch.setattr(
-        "astrabox.providers.open_sandbox.agent_pool.SandboxPoolManagerAsync",
-        lambda **_kwargs: manager,
-    )
-    monkeypatch.setattr(
-        OpenSandboxSandboxProvider,
-        "find_sandbox_by_assignment",
-        lookup,
-    )
-    monkeypatch.setattr(
-        "astrabox.providers.open_sandbox.executor.destroy_open_sandbox_box",
-        destroy_box,
-    )
-    registry = OpenSandboxClientPoolRegistry(state_store=_FakeStateStore())
-    monkeypatch.setattr(registry, "_connection_config", lambda: object())
-
-    await registry.retire(_spec().pool_name)
-
-    assert lookup.await_count == 2
-    destroy_box.assert_not_awaited()
-
-
-async def test_retire_fails_loud_when_an_unpublished_member_survives(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    manager = SimpleNamespace(destroy=AsyncMock(return_value=SimpleNamespace(killed_idle_count=0)))
-    monkeypatch.setattr(
-        "astrabox.providers.open_sandbox.agent_pool.SandboxPoolManagerAsync",
-        lambda **_kwargs: manager,
-    )
-    monkeypatch.setattr(
-        OpenSandboxSandboxProvider,
-        "find_sandbox_by_assignment",
-        AsyncMock(
-            return_value=SimpleNamespace(
-                sandbox_id="surviving-warmup",
-                session_id=_client_pool_session_id(_spec().pool_name),
-            )
-        ),
-    )
-    monkeypatch.setattr(
-        "astrabox.providers.open_sandbox.agent_pool._assignment_release_settle_seconds",
-        lambda: 0,
-    )
-    monkeypatch.setattr(
-        "astrabox.providers.open_sandbox.executor.destroy_open_sandbox_box",
-        AsyncMock(
-            return_value=SandboxDestruction.unconfirmed(
-                "surviving-warmup",
-                detail="the control plane did not confirm deletion",
-            )
-        ),
-    )
-    registry = OpenSandboxClientPoolRegistry(state_store=_FakeStateStore())
-    monkeypatch.setattr(registry, "_connection_config", lambda: object())
-
-    with pytest.raises(APIError) as caught:
-        await registry.retire(_spec().pool_name)
-
-    assert caught.value.code == "SANDBOX_CLIENT_POOL_UNAVAILABLE"
-    assert caught.value.data["leaked_sandbox_id"] == "surviving-warmup"
-
-
-# Provider seam delegation.
 
 
 async def test_provider_shutdown_closes_this_event_loops_registry() -> None:
@@ -916,7 +659,7 @@ async def test_disabled_agent_has_no_sdk_base_pool(
 
     assert (
         await client_pool.build_agent_client_pool_plan(
-            _template(prewarm_enabled=False), runtime_manager=_RuntimeManager()
+            _template(prepared_capacity=0), runtime_manager=_RuntimeManager()
         )
         is None
     )
@@ -1077,7 +820,6 @@ async def test_platform_creator_mounts_storage_and_applies_the_complete_credenti
     assert plan is not None
     member = SandboxClientPoolMember(
         pool_name=plan.spec.pool_name,
-        member_index=0,
         session_id="supplier-member-session",
         assignment_id="pool-assignment",
     )
@@ -1166,7 +908,6 @@ async def test_platform_creator_cleans_up_a_box_whose_mount_is_not_ready(
         await plan.creator(
             SandboxClientPoolMember(
                 pool_name=plan.spec.pool_name,
-                member_index=0,
                 session_id="supplier-member-session",
                 assignment_id="pool-assignment",
             )

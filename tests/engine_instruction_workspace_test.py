@@ -80,6 +80,7 @@ async def test_instruction_publication_uses_the_owned_workspace_before_vendor_st
 
         monkeypatch.setattr(dsh.DshApiLink, "connect", dsh_connect)
         monkeypatch.setattr(dsh, "create_harness_session", create)
+        monkeypatch.setattr(dsh, "resolve_model_route", AsyncMock(return_value="test-route"))
         monkeypatch.setattr(dsh, "_publish_runtime", publish)
         async def install_except_native_state(target_box: Any, *, path: str, **kwargs: Any) -> Any:
             # The harness's private state file is not the instruction under test.

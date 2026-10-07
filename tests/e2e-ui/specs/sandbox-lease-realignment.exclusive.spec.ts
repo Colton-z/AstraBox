@@ -29,7 +29,7 @@ for (const owner of ['agent', 'assistant'] as const) {
       expect(base.environment_name).toBeTruthy();
       expect(base.model).toBeTruthy();
       const agent = await api.createAgent({
-        name, environment_name: base.environment_name, model: base.model, prewarm_enabled: false,
+        name, environment_name: base.environment_name, model: base.model, prepared_capacity: 0,
       });
       agents.push(agent.agent_id);
       for (let index = 0; index < 2; index += 1) {

@@ -313,7 +313,7 @@ test('an idle Agents list keeps its rows and rail count through a lost network, 
     name: AGENT_NAME,
     model,
     environment_name: environmentName,
-    prewarm_enabled: false,
+    prepared_capacity: 0,
     description: DESCRIPTION_BEFORE,
   });
   createdAgentId = String(created.agent_id || '').trim();
@@ -425,7 +425,7 @@ test('an idle Agents list keeps its rows and rail count through a lost network, 
       name: AGENT_NAME,
       model,
       environment_name: environmentName,
-      prewarm_enabled: false,
+      prepared_capacity: 0,
       description: DESCRIPTION_AFTER,
       version: Number(latest.version || 1),
     });

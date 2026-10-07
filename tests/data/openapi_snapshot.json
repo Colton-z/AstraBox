@@ -1446,7 +1446,7 @@
       },
       "AgentFormField": {
         "additionalProperties": true,
-        "description": "One field of the Agent authoring form, as ``agent_schema`` declares it.\n\n``key`` and ``type`` are the two members every entry carries; the optional\npresentation and validation members (``group``, ``required``, ``enum``,\n``path``, ``complex``, ``advanced``) appear per field. ``item_schema``\ndescribes the sub-fields of a nested object with this same grammar.\n``default`` is the value an Agent created without the field has. Two\nfields carry one: ``prewarm_enabled``, whose value follows the deployment,\nand ``artifacts_enabled``, which is on.",
+        "description": "One field of the Agent authoring form, as ``agent_schema`` declares it.\n\n``key`` and ``type`` are the two members every entry carries; the optional\npresentation and validation members (``group``, ``required``, ``enum``,\n``path``, ``complex``, ``advanced``) appear per field. ``item_schema``\ndescribes the sub-fields of a nested object with this same grammar.\n``default`` is the value an Agent created without the field has. Two\nfields carry one: ``prepared_capacity``, whose value follows the\ndeployment, and ``artifacts_enabled``, which is on.",
         "properties": {
           "advanced": {
             "anyOf": [
@@ -1721,6 +1721,17 @@
             ],
             "title": "Last Error"
           },
+          "last_miss_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Miss At"
+          },
           "placement": {
             "anyOf": [
               {
@@ -1783,10 +1794,15 @@
               }
             ],
             "title": "State"
+          },
+          "target": {
+            "title": "Target",
+            "type": "integer"
           }
         },
         "required": [
           "enabled",
+          "target",
           "ready",
           "prepared_count"
         ],
@@ -2013,16 +2029,16 @@
             ],
             "title": "Plugin Repos"
           },
-          "prewarm_enabled": {
+          "prepared_capacity": {
             "anyOf": [
               {
-                "type": "boolean"
+                "type": "integer"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Prewarm Enabled"
+            "title": "Prepared Capacity"
           },
           "skills": {
             "anyOf": [
@@ -9917,7 +9933,7 @@
   "info": {
     "summary": "Self-hosted agent runtime that runs installed Agent programs in isolated sandboxes and streams responses over the AI SDK Data Stream Protocol (SSE).",
     "title": "AstraBox",
-    "version": "0.1.3"
+    "version": "0.1.4"
   },
   "openapi": "3.1.0",
   "paths": {

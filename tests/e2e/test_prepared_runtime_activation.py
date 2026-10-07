@@ -7,6 +7,8 @@ import os
 import subprocess
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 
 import httpx
 import pytest
@@ -70,20 +72,39 @@ print(json.dumps({
 """
 
 
+# A shared-box claim takes the Agent's oldest prepared seat: the seats waiting
+# in boxes the Agent holds, else the seats of the pool box it takes next.
+_OLDEST_SEAT = """
+seats = [seat for seat in seats if seat.get('state') == 'prepared']
+receipt = min(seats, key=lambda seat: str(seat.get('prepared_at') or '')) if seats else {}
+"""
+
+
 def _prepared_identity(agent_id: str, tenancy: str, execute: list[str]) -> dict:
     if tenancy == "agent":
-        program = """
+        ledger = """
 import asyncio, json, sys
 from astrabox.deploy.onebox import ensure_database_wiring
 from astrabox.persistence.repository.agent_repository import AgentRepository
 ensure_database_wiring()
 row = asyncio.run(AgentRepository().get_agent(sys.argv[1]))
-receipt = (row or {}).get('_prepared_slot') or {}
-""" + _PROJECT_RECEIPT
-        command = [
+seats = list((row or {}).get('_prepared_slots') or [])
+""" + _OLDEST_SEAT + _PROJECT_RECEIPT
+        receipt = _run_json([
             "docker", "exec", require_service_container(SERVER_CONTAINER_HANDLE),
-            "python", "-c", program, agent_id,
-        ]
+            "python", "-c", ledger, agent_id,
+        ])
+        if isinstance(receipt, dict) and receipt.get("slot_id"):
+            command: list[str] = []
+        else:
+            program = """
+import json
+from pathlib import Path
+path = Path('/home/agent/.astrabox-prepared-seats.json')
+assert path.is_file(), 'prewarm READY has no prepared seat receipt'
+seats = json.loads(path.read_text())
+""" + _OLDEST_SEAT + _PROJECT_RECEIPT
+            command = [*execute, "python3", "-c", program]
     else:
         program = """
 import json
@@ -93,7 +114,8 @@ assert path.is_file(), 'prewarm READY has no prepared engine receipt'
 receipt = json.loads(path.read_text())
 """ + _PROJECT_RECEIPT
         command = [*execute, "python3", "-c", program]
-    receipt = _run_json(command)
+    if command:
+        receipt = _run_json(command)
     assert isinstance(receipt, dict)
     assert receipt["slot_id"], "Prewarm READY has no initialized engine slot"
     identity = receipt["runtime_identity"]
@@ -167,6 +189,135 @@ def _wait_prepared(
     pytest.fail(f"Agent preparation did not reach the requested generation: {prepared}")
 
 
+def _wait_prepared_count(client: httpx.Client, agent_id: str, count: int, deadline: float) -> dict:
+    prepared: dict = {}
+    while time.monotonic() < deadline:
+        prepared = data(client.get(f"/api/v1/agents/{agent_id}/prepared-runtime"))
+        assert not prepared.get("last_error"), prepared
+        if prepared.get("ready") and int(prepared.get("prepared_count") or 0) >= count:
+            return prepared
+        time.sleep(0.5)
+    pytest.fail(f"Agent did not reach {count} prepared sandboxes: {prepared}")
+
+
+def test_concurrent_conversations_each_claim_a_prepared_sandbox(
+    e2e_client: httpx.Client, live_test_deadline: float,
+) -> None:
+    """An Agent keeps the capacity it asks for; a burst claims all of it.
+
+    The capacity is raised on a running Agent, so its pool is resized rather
+    than started at the new size. Each conversation of a burst as large as the
+    capacity must start on a sandbox that existed before the burst was sent: a
+    cold start creates its sandbox afterwards. One more conversation finds the
+    capacity exhausted, starts cold, and is reported as a miss. The pool then
+    refills to the capacity without another conversation asking.
+    """
+    # The capacity, its refill and one cold box must schedule beside the
+    # deployment's own prewarmed fixture Agents on a single testbed node.
+    capacity = 2
+    profile = current_profile()
+    canonical = data(e2e_client.get(f"/api/v1/agents/{profile['agent_id']}"))
+    created = data(e2e_client.post("/api/v1/agents", json={
+        "name": f"Prepared burst {uuid.uuid4().hex[:8]}",
+        "model": profile["model"],
+        "environment_name": environment_with_tenancy(e2e_client, "conversation"),
+        "prepared_capacity": 1,
+        "engine_options": canonical.get("engine_options") or {},
+        **({"system": canonical["system"]} if canonical.get("system") else {}),
+    }))
+    agent_id = created["agent_id"]
+    release_agent(agent_id)
+    _wait_prepared_count(e2e_client, agent_id, 1, live_test_deadline)
+    resized = data(e2e_client.put(f"/api/v1/agents/{agent_id}", json={
+        "name": created["name"],
+        "model": created["model"],
+        "environment_name": created["environment_name"],
+        "prepared_capacity": capacity,
+        "version": created["version"],
+    }))
+    assert resized["prepared_capacity"] == capacity
+    prepared = _wait_prepared_count(e2e_client, agent_id, capacity, live_test_deadline)
+    assert prepared["target"] == capacity
+    assert prepared["last_miss_at"] is None
+
+    burst_sent_at = datetime.now().astimezone()
+
+    def start() -> str:
+        sid = data(e2e_client.post(f"/api/v1/agents/{agent_id}/conversations", json={}))["session_id"]
+        release_session(sid)
+        poll_until_agent_ready(e2e_client, sid)
+        return sid
+
+    with ThreadPoolExecutor(max_workers=capacity) as executor:
+        sessions = list(executor.map(lambda _: start(), range(capacity)))
+
+    sandbox_ids = [get_admin_session_detail(e2e_client, sid)["sandbox_id"] for sid in sessions]
+    assert len(set(sandbox_ids)) == capacity, sandbox_ids
+    for sandbox_id in sandbox_ids:
+        box = data(e2e_client.get(f"/api/v1/admin/sandboxes/{sandbox_id}"))
+        assert box["created_at"], box
+        created_at = datetime.fromisoformat(str(box["created_at"]).replace("Z", "+00:00"))
+        assert created_at < burst_sent_at, (
+            f"sandbox {sandbox_id} was created at {created_at}, after the burst was "
+            f"sent at {burst_sent_at}: that conversation started cold"
+        )
+
+    overflow_sent_at = datetime.now().astimezone()
+    start()
+    missed = data(e2e_client.get(f"/api/v1/agents/{agent_id}/prepared-runtime"))
+    assert missed["last_miss_at"], missed
+    assert datetime.fromisoformat(missed["last_miss_at"]) >= overflow_sent_at, missed
+
+    _wait_prepared_count(e2e_client, agent_id, capacity, live_test_deadline)
+
+
+def test_a_shared_agent_burst_claims_a_prepared_seat_each(
+    e2e_client: httpx.Client, live_test_deadline: float,
+) -> None:
+    """Conversations sharing a box start a burst as large as the capacity warm.
+
+    The seats wait in a pool box, several to a box, so the burst finds none
+    in the Agent's own boxes and has to take the pool box while it runs. Every
+    conversation must still claim a seat, including those that found the pool
+    already empty because a sibling took the box: one that starts cold is
+    recorded as a miss, and two conversations never share a seat's isolation
+    session.
+    """
+    capacity = 3
+    profile = current_profile()
+    canonical = data(e2e_client.get(f"/api/v1/agents/{profile['agent_id']}"))
+    created = data(e2e_client.post("/api/v1/agents", json={
+        "name": f"Shared burst {uuid.uuid4().hex[:8]}",
+        "model": profile["model"],
+        "environment_name": environment_with_tenancy(e2e_client, "agent"),
+        "prepared_capacity": capacity,
+        "engine_options": canonical.get("engine_options") or {},
+        **({"system": canonical["system"]} if canonical.get("system") else {}),
+    }))
+    agent_id = created["agent_id"]
+    release_agent(agent_id)
+    prepared = _wait_prepared_count(e2e_client, agent_id, capacity, live_test_deadline)
+    assert prepared["placement"] == "shared_slot", prepared
+    assert prepared["last_miss_at"] is None, prepared
+
+    def start() -> str:
+        sid = data(e2e_client.post(f"/api/v1/agents/{agent_id}/conversations", json={}))["session_id"]
+        release_session(sid)
+        poll_until_agent_ready(e2e_client, sid)
+        return sid
+
+    with ThreadPoolExecutor(max_workers=capacity) as executor:
+        sessions = list(executor.map(lambda _: start(), range(capacity)))
+
+    after = data(e2e_client.get(f"/api/v1/agents/{agent_id}/prepared-runtime"))
+    assert after["last_miss_at"] is None, f"a conversation of the burst started cold: {after}"
+    seats = [
+        get_admin_session_detail(e2e_client, sid)["runtime_identity"]["isolated_session_id"]
+        for sid in sessions
+    ]
+    assert all(seats) and len(set(seats)) == capacity, seats
+
+
 @pytest.mark.parametrize("tenancy", ["conversation", "agent"])
 def test_claim_activates_the_already_prepared_engine(
     e2e_client: httpx.Client, live_test_deadline: float, tenancy: str,
@@ -179,7 +330,7 @@ def test_claim_activates_the_already_prepared_engine(
         "name": f"Prepared activation {tenancy} {uuid.uuid4().hex[:8]}",
         "model": profile["model"],
         "environment_name": environment_with_tenancy(e2e_client, tenancy),
-        "prewarm_enabled": True,
+        "prepared_capacity": 1,
         "engine_options": canonical.get("engine_options") or {},
         **({"system": canonical["system"]} if canonical.get("system") else {}),
     }))
@@ -321,7 +472,7 @@ def test_prepared_runtime_resumes_native_history_without_disrupting_sibling(
         "name": f"Warm resume {tenancy} {uuid.uuid4().hex[:8]}",
         "model": profile["model"],
         "environment_name": environment_with_tenancy(e2e_client, tenancy),
-        "prewarm_enabled": True,
+        "prepared_capacity": 1,
         "engine_options": canonical.get("engine_options") or {},
     }))
     agent_id = agent["agent_id"]

@@ -107,24 +107,24 @@ def _vault_off(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
-# ── an empty eligible pool seeds its replacement ─────────────────────────
+# ── only an eligible start claims a prepared seat ───────────────────────
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("resume_key", "prewarm_enabled", "agent_id", "runtime_generation", "workspace_volume"),
+    ("resume_key", "prepared_capacity", "agent_id", "runtime_generation", "workspace_volume"),
     [
-        ("native-session", True, "agent-1", "generation-1", ""),
-        ("native-session", True, "agent-1", "generation-1", "workspace-pvc"),
-        ("", False, "agent-1", "generation-1", ""),
-        ("", True, "", "generation-1", ""),
-        ("", True, "agent-1", "", ""),
+        ("native-session", 1, "agent-1", "generation-1", ""),
+        ("native-session", 1, "agent-1", "generation-1", "workspace-pvc"),
+        ("", 0, "agent-1", "generation-1", ""),
+        ("", 1, "", "generation-1", ""),
+        ("", 1, "agent-1", "", ""),
     ],
     ids=["resume-no-volume", "resume-shared-volume", "prewarm-disabled", "missing-agent", "missing-generation"],
 )
-async def test_prepared_refill_distinguishes_resumable_and_ineligible_starts(
+async def test_prepared_claim_distinguishes_resumable_and_ineligible_starts(
     monkeypatch: pytest.MonkeyPatch,
     resume_key: str,
-    prewarm_enabled: bool,
+    prepared_capacity: int,
     agent_id: str,
     runtime_generation: str,
     workspace_volume: str,
@@ -133,14 +133,15 @@ async def test_prepared_refill_distinguishes_resumable_and_ineligible_starts(
 
     monkeypatch.setenv("ASTRABOX_SANDBOX_WORKSPACE_VOLUME", workspace_volume)
     claim = AsyncMock(return_value=None)
-    refill = Mock()
-    monkeypatch.setattr(prepared_slots, "claim_prepared_slot", claim)
-    monkeypatch.setattr(prepared_slots, "schedule_prepared_runtime_refill", refill)
+    monkeypatch.setattr(prepared_slots, "claim_prepared_seat", claim)
+    from astrabox.core.service.orchestrator.agent import prepared_capacity as capacity_module
+
+    monkeypatch.setattr(capacity_module, "record_prepared_capacity_miss", AsyncMock())
     manager = object()
     template = SimpleNamespace(
         agent_id=agent_id,
         engine_kind="codex",
-        prewarm_enabled=prewarm_enabled,
+        prepared_capacity=prepared_capacity,
         runtime_generation=runtime_generation,
     )
 
@@ -162,14 +163,10 @@ async def test_prepared_refill_distinguishes_resumable_and_ineligible_starts(
     assert result is None
     if resume_key and not workspace_volume:
         claim.assert_awaited_once_with(
-            agent_id=agent_id,
-            session_id="session-1",
-            expected_runtime_generation=runtime_generation,
+            template, session_id="session-1", runtime_manager=manager
         )
-        refill.assert_called_once_with(template, manager)
     else:
         claim.assert_not_awaited()
-        refill.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -190,7 +187,7 @@ async def test_claim_refuses_a_manifest_with_an_unknown_placement(
     }
     monkeypatch.setattr(
         prepared_slots,
-        "claim_prepared_slot",
+        "claim_prepared_seat",
         AsyncMock(return_value=manifest),
     )
     monkeypatch.setattr(
@@ -208,7 +205,7 @@ async def test_claim_refuses_a_manifest_with_an_unknown_placement(
             template=SimpleNamespace(
                 agent_id="agent-1",
                 engine_kind="codex",
-                prewarm_enabled=True,
+                prepared_capacity=1,
                 runtime_generation="generation-1",
             ),
             workspace_plan=SimpleNamespace(resume_engine_session_key=""),
@@ -624,7 +621,7 @@ async def test_claim_refuses_environment_policy_drift_before_connecting(
     }
     monkeypatch.setattr(
         prepared_slots,
-        "claim_prepared_slot",
+        "claim_prepared_seat",
         AsyncMock(return_value=manifest),
     )
 
@@ -642,7 +639,7 @@ async def test_claim_refuses_environment_policy_drift_before_connecting(
     template = SimpleNamespace(
         agent_id="agent-1",
         engine_kind="codex",
-        prewarm_enabled=True,
+        prepared_capacity=1,
         runtime_generation="generation-1",
     )
 
@@ -698,7 +695,7 @@ async def test_claim_rotates_a_secret_behind_the_prepared_placeholder(
     }
     monkeypatch.setattr(
         prepared_slots,
-        "claim_prepared_slot",
+        "claim_prepared_seat",
         AsyncMock(return_value=manifest),
     )
     repoint = AsyncMock()
@@ -759,7 +756,7 @@ async def test_claim_rotates_a_secret_behind_the_prepared_placeholder(
     template = SimpleNamespace(
         agent_id="agent-1",
         engine_kind="codex",
-        prewarm_enabled=True,
+        prepared_capacity=1,
         runtime_generation="generation-1",
         sandbox_permission_level="default",
     )
@@ -820,7 +817,7 @@ async def test_prepared_handoff_only_falls_back_after_confirmed_absence_and_clea
         "environment_credential_contract": [], "runtime_env": {},
         "runtime_identity": {"home_dir": "/home/slot", "linux_user": "slot"},
     }
-    monkeypatch.setattr(prepared_slots, "claim_prepared_slot", AsyncMock(return_value=manifest))
+    monkeypatch.setattr(prepared_slots, "claim_prepared_seat", AsyncMock(return_value=manifest))
     manager = SimpleNamespace(
         resolve_session_egress_credentials=AsyncMock(return_value=[]),
         record_startup_allocation=AsyncMock(),
@@ -835,7 +832,7 @@ async def test_prepared_handoff_only_falls_back_after_confirmed_absence_and_clea
     cleanup = AsyncMock(side_effect=RuntimeError("cleanup not settled") if cleanup_fails else None)
     monkeypatch.setattr(provisioning, "_discard_failed_prepared_claim", cleanup)
     template = SimpleNamespace(
-        agent_id="agent", engine_kind="codex", prewarm_enabled=True, runtime_generation="generation",
+        agent_id="agent", engine_kind="codex", prepared_capacity=1, runtime_generation="generation",
     )
 
     async def handoff() -> Any:
