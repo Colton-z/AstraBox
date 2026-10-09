@@ -130,6 +130,20 @@ async def test_the_owner_scope_is_a_query_term(collection: _Collection) -> None:
     assert collection.queries[-1]["template_name"] == {"$in": ["Mine"]}
 
 
+async def test_an_assistant_named_like_an_agent_stays_out_of_its_scope(
+    collection: _Collection,
+) -> None:
+    collection.rows.append(
+        {"session_id": "e", "template_name": "Mine", "session_kind": "assistant_chat",
+         "state": "READY", "created_at": "2026-08-06T10:00:00+00:00", "deleted": False}
+    )
+    scoped = await SessionRepository().list_all_sessions(template_names=["Mine"])
+    assert "e" not in {row["session_id"] for row in scoped}
+    assert await SessionRepository().count_all_sessions(template_names=["Mine"]) == 2
+    everything = await SessionRepository().list_all_sessions(template_names=None)
+    assert "e" in {row["session_id"] for row in everything}
+
+
 async def test_an_empty_owner_scope_matches_nothing_rather_than_everything(
     collection: _Collection,
 ) -> None:

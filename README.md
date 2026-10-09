@@ -30,21 +30,37 @@
   <strong>English</strong> · <a href="README.zh-CN.md">简体中文</a>
 </p>
 
-Turn the Agent programs you already use into cloud Agents that stay available
-24/7. AstraBox runs Claude Code, Codex, Hermes, DeepSeek Harness and Pi on
-your own infrastructure, with any model. Conversations start
-and resume in seconds; Sessions, sandboxes, credentials and history stay under
-your control.
+<p align="center">
+  <img src="docs/img/demo-session.gif" alt="A Session in the AstraBox console: the Agent writes a Python script in its sandbox, runs it, and streams back the output" />
+</p>
 
-You do not have to turn an Agent program into a service yourself, manage
-sandbox lifecycle, or maintain long-lived connections. Deploy AstraBox, create
-an Agent in the web console, and start a Session. Complex tasks run in a cloud
-sandbox while results stream back in real time.
+AstraBox runs the Agent programs you already use (Claude Code, Codex,
+DeepSeek Harness, Pi and Hermes) as cloud Agents on your own infrastructure,
+with any model. It handles the sandboxes, streaming, state and credentials, so
+you do not have to turn an Agent program into a service yourself.
 
-AstraBox runs the Agent programs you already use as cloud Agents that can be
-reached remotely, continue long-running work, and connect to your applications,
-automations, and messaging platforms. The web console, API, Session records,
-authentication, and sandboxes all run on infrastructure you control.
+```bash
+curl -fsSL https://raw.githubusercontent.com/Colton-z/AstraBox/main/scripts/install.sh | bash
+```
+
+One command on a Linux host or WSL 2 with Docker. The installer asks which
+model service to use and prints the console address, <http://127.0.0.1:8088>.
+See the [Quickstart](#quickstart) for requirements.
+
+- **The vendor's own Agent program** — each Agent runs the real Claude Code,
+  Codex or other program inside its sandbox, so the program's own tools and
+  session format carry over.
+- **Starts in seconds, survives a lost sandbox** — prewarmed sandboxes start
+  conversations quickly, and each program's native session is kept in the
+  platform database and restored into a new sandbox on the next message.
+- **Keys stay outside the sandbox** — credentials are injected at the egress
+  boundary; the Agent only ever sees a placeholder.
+- **Reachable from anywhere** — the web console, HTTP API, CLI, MCP, schedules,
+  signed webhooks, and messaging platforms such as Slack, Discord, Telegram,
+  WhatsApp and LINE.
+
+Already looking at Claude Managed Agents? See
+[how AstraBox compares](docs/compare-claude-code-self-hosted.md).
 
 **One platform for team Agents and personal Assistants.** An
 [Agent](docs/authoring-agents.md) is a reusable cloud Agent for teams and

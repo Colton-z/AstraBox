@@ -34,8 +34,8 @@ from astrabox.core.service.orchestrator.runtime.conversation_identity import (
 from astrabox.core.service.orchestrator.runtime.mcp_servers import (
     sandbox_mcp_egress_hosts,
 )
-from astrabox.core.service.orchestrator.runtime.plugin_repos import (
-    plugin_repo_egress_hosts,
+from astrabox.core.service.orchestrator.runtime.packages import (
+    package_egress_hosts,
 )
 from astrabox.core.service.orchestrator.runtime.runtime_profile import (
     probe_sandbox_runtime_profile,
@@ -281,7 +281,7 @@ async def build_agent_client_pool_plan(
             additional_vault_write=mcp_plan,
             required_hosts=(
                 *tuple(request.required_network_hosts),
-                *plugin_repo_egress_hosts(template),
+                *package_egress_hosts(template),
             ),
             mcp_hosts=tuple(sandbox_mcp_egress_hosts(_value(template, "mcp_servers", None))),
             slot_id=workload_id,
@@ -393,6 +393,7 @@ async def build_agent_client_pool_plan(
                     assistant_id=None,
                     session_id=workload_id if conversation_owned else None,
                 ),
+                backend=provider,
             )
         except BaseException:
             destruction = await provider.confirm_destroyed(sandbox_id)
@@ -462,12 +463,86 @@ async def build_agent_client_pool_plan(
     )
 
 
+async def _record_agent_client_pool(
+    template: Any,
+    plan: AgentClientPoolPlan,
+    *,
+    agent_repo: Any | None,
+) -> None:
+    """Record a namespace as the Agent's before anything starts it.
+
+    A started namespace keeps its boxes until it is retired, and retirement
+    finds namespaces only through the Agent row. The write that records this
+    namespace also queues the one it displaces, so every namespace any path
+    starts stays named until it is retired, whichever Agent writes land around
+    its start. A namespace for a lifetime the Agent row does not carry is
+    refused: another generation superseded it.
+    """
+
+    from astrabox.persistence.repository.agent_repository import AgentRepository
+
+    repo = agent_repo if agent_repo is not None else AgentRepository()
+    agent_id = str(_value(template, "agent_id", "") or "").strip()
+    epoch = str(_value(template, "client_pool_epoch", "") or "").strip()
+    name = plan.spec.pool_name
+    backend = plan.backend_name
+    for _ in range(3):
+        row = await repo.get_agent(agent_id)
+        if not isinstance(row, dict):
+            raise APIError(
+                code="AGENT_NOT_FOUND",
+                message=f"Agent {agent_id!r} disappeared before client pool {name!r} started",
+                status_code=404,
+            )
+        if str(row.get("_client_pool_epoch") or "").strip() != epoch:
+            raise APIError(
+                code="AGENT_RUNTIME_GENERATION_CONFLICT",
+                message=(
+                    f"client pool {name!r} belongs to a superseded runtime "
+                    f"generation of Agent {agent_id!r}; retry with the current "
+                    "Agent definition"
+                ),
+                status_code=409,
+            )
+        recorded = str(row.get(CLIENT_POOL_NAME_FIELD) or "").strip()
+        recorded_backend = str(row.get(CLIENT_POOL_BACKEND_FIELD) or "").strip()
+        if recorded == name and recorded_backend == backend:
+            return
+        retiring = list(row.get("_retiring_client_pools") or [])
+        if recorded:
+            retiring.append({"name": recorded, "backend": recorded_backend})
+        if await repo.compare_and_update_agent(
+            agent_id,
+            expected={
+                key: row[key] if key in row else {"$exists": False}
+                for key in (
+                    "_client_pool_epoch",
+                    CLIENT_POOL_NAME_FIELD,
+                    CLIENT_POOL_BACKEND_FIELD,
+                    "_retiring_client_pools",
+                )
+            },
+            updates={
+                CLIENT_POOL_NAME_FIELD: name,
+                CLIENT_POOL_BACKEND_FIELD: backend,
+                "_retiring_client_pools": retiring,
+            },
+        ):
+            return
+    raise APIError(
+        code="AGENT_RUNTIME_GENERATION_CONFLICT",
+        message=f"Agent {agent_id!r} changed while recording client pool {name!r}",
+        status_code=409,
+    )
+
+
 async def ensure_agent_client_pool(
     template: Any,
     *,
     runtime_manager: Any,
+    agent_repo: Any | None = None,
 ) -> AgentClientPoolPlan | None:
-    """Start or join the supplier pool for the current Agent generation."""
+    """Record, then start or join, the supplier pool for the current Agent generation."""
 
     plan = await build_agent_client_pool_plan(
         template,
@@ -475,6 +550,7 @@ async def ensure_agent_client_pool(
     )
     if plan is None:
         return None
+    await _record_agent_client_pool(template, plan, agent_repo=agent_repo)
     provider = sandbox_for_name(plan.backend_name)
     await provider.ensure_client_pool(
         plan.spec,

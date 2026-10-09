@@ -8,6 +8,11 @@ from astrabox.common.utils.user_context import UserContext
 from astrabox.core.model import AgentView
 from astrabox.core.service.orchestrator.agent_config_service import AgentConfigService
 from astrabox.core.service.orchestrator.channel_ingress_service import ChannelIngressService
+from astrabox.core.service.orchestrator.conversation_targets import (
+    TARGET_AGENT,
+    ConversationTarget,
+    ConversationTargets,
+)
 from astrabox.core.service.orchestrator.engine.platform_mcp import platform_mcp_servers
 from tests.agent_service_visibility_test import _service
 
@@ -19,8 +24,19 @@ async def test_channel_creation_records_source_before_startup_and_normal_runs_ke
     kernel = SimpleNamespace(create_session=AsyncMock(return_value={"session_id": "new"}))
     service._platform = SimpleNamespace(_session_kernel=kernel)
     user = UserContext("executor")
+    ingress = SimpleNamespace(
+        _targets=ConversationTargets(
+            agent_repo=None,
+            agent_service_getter=lambda: service,
+            assistant_service_getter=None,
+            assistant_catalog_repo=SimpleNamespace(),
+        )
+    )
+    target = ConversationTarget(kind=TARGET_AGENT, target_id="pub", owner_user_id="owner", name="pub")
     for execution_user_id in ("executor", ""):
-        await ChannelIngressService._start_channel_conversation(service, user, "pub", execution_user_id)
+        await ChannelIngressService._start_channel_conversation(
+            ingress, target, user, execution_user_id
+        )
         assert kernel.create_session.call_args.kwargs["source_type"] == "channel"
     await service.start_conversation(user, "pub")
     assert kernel.create_session.call_args.kwargs["source_type"] == "agent"

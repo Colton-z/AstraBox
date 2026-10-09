@@ -223,6 +223,33 @@ def _assert_secret_store_is_configured() -> None:
         raise BootstrapConfigError(f"{SECRET_STORE_ENV}: {exc}") from exc
 
 
+def _validate_workspace_routes(default_backend: str | None) -> None:
+    """A configured workspace volume needs a route on the backend that creates boxes.
+
+    Every registered backend's route checks what it needs at startup; the
+    default backend must have one, or every persistent create would fail at
+    its first conversation instead of here.
+    """
+    from astrabox.common.utils.settings import load_astrabox_settings
+    from astrabox.seams.sandbox import registered_sandbox_names, sandbox_for_name
+
+    if not str(load_astrabox_settings().sandbox_workspace_volume or "").strip():
+        return
+    default = sandbox_for_name(default_backend)
+    if default.workspace_route() is None:
+        raise RuntimeError(
+            f"ASTRABOX_SANDBOX_WORKSPACE_VOLUME is set, but sandbox backend "
+            f"{default.name!r} has no workspace route to mount it; unset the volume "
+            "or use a backend that provides one"
+        )
+    validated: list[object] = []
+    for name in registered_sandbox_names():
+        route = sandbox_for_name(name).workspace_route()
+        if route is not None and all(route is not seen for seen in validated):
+            route.validate_configuration()
+            validated.append(route)
+
+
 def bootstrap(*, sandbox_backend: str | None = None) -> None:
     """Compose the provider registries (idempotent; see module docstring).
 
@@ -232,7 +259,6 @@ def bootstrap(*, sandbox_backend: str | None = None) -> None:
     """
     global _bootstrapped
     from astrabox.config.settings import get_settings
-    from astrabox.core.service.orchestrator.runtime.storage.mergerfs import workspace_router
     from astrabox.providers import (
         load_entry_point_providers,
         register_builtin_providers,
@@ -260,7 +286,7 @@ def bootstrap(*, sandbox_backend: str | None = None) -> None:
     _assert_secret_store_is_configured()
     _assert_storage_provider_is_registered()
     try:
-        workspace_router.validate_configuration()
+        _validate_workspace_routes(effective_backend)
     except (RuntimeError, ValueError) as exc:
         raise BootstrapConfigError(f"workspace routing: {exc}") from exc
     _assert_nas_knobs_are_honored(effective_backend)

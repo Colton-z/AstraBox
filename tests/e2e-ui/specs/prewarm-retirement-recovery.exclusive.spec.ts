@@ -218,7 +218,7 @@ test('failed pool retirement retains its address and error, then recovers withou
   await page.addInitScript(() => localStorage.setItem('astrabox-lang', 'en'));
   await page.goto(appPath(`/manage/agents/${agent.agent_id}`));
   await expect(page.getByTestId('prewarm-state')).toHaveText(
-    'The next conversation starts warm while this capacity remains available.',
+    'New conversations start warm while prepared capacity remains.',
   );
 
   let restoreRequired = true;

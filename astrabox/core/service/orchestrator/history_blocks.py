@@ -38,7 +38,6 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any
 
-from astrabox.core.service.artifacts.tools import has_artifact_marker
 from astrabox.core.service.orchestrator.tool_result_semantics import (
     TOOL_RESULT_STATE_AVAILABLE,
 )
@@ -97,7 +96,6 @@ class _Atom:
     is_text: bool
     is_process: bool
     is_carried: bool = False
-    is_artifact: bool = False
 
 
 @dataclass(frozen=True)
@@ -190,17 +188,13 @@ def process_atoms(blocks: list[dict[str, Any]]) -> list[_Atom]:
                 else ""
             )
             failed = state != TOOL_RESULT_STATE_AVAILABLE
-            artifact = result_index is not None and has_artifact_marker(
-                blocks[result_index].get("content")
-            )
             indexes = (index,) if result_index is None else (index, result_index)
             atoms.append(
                 _Atom(
                     block_indexes=tuple(sorted(indexes)),
                     is_tool=True,
                     is_text=False,
-                    is_process=not failed and not artifact,
-                    is_artifact=artifact,
+                    is_process=not failed,
                 )
             )
             continue
@@ -272,7 +266,6 @@ def _deferred_groups(blocks: list[dict[str, Any]]) -> list[_Group]:
             atom
             for index, atom in enumerate(atoms)
             if index <= process_end
-            and not atom.is_artifact
             and (
                 atom.is_process
                 or (normal_end and not interrupted and atom.is_tool)

@@ -1,13 +1,13 @@
 /**
  * A channel thread keeps working after its question's runner or whole box dies.
  *
- * The sibling spec covers the live case: a newer message declines the open
- * AskUserQuestion through the engine, which records an error result for that
- * tool, and then runs its own turn. Here the original engine wait is gone
+ * The sibling spec covers the live case: a newer message stops the turn parked
+ * on the open AskUserQuestion through the engine, which records an error
+ * result for that tool, and then runs its own turn. Here the original engine wait is gone
  * before the newer message arrives, either with its box or with its runner.
  *
- * That difference is load-bearing for the ingress spine, which declines the
- * pending question as a precondition of dispatching. If declining a wait that
+ * That difference is load-bearing for the ingress spine, which stops the
+ * pending question's turn as a precondition of dispatching. If stopping a wait that
  * is not there fails the dispatch, the 409 takes the whole message with it and
  * every later message in the thread meets the same closed door — a channel
  * participant has no browser composer and no card to dismiss, so nothing they
@@ -334,7 +334,11 @@ async function runSupersededQuestion(request: APIRequestContext, fault: 'sandbox
     .some((block) => block.type === 'tool_result' && block.tool_use_id === toolCallId));
   expect(interruptedTool,
     'Claude resume must close the unresolved tool exactly once, without inventing an answer').toHaveLength(1);
-  const interruption = '[Request interrupted by user for tool use]';
+  // Claude Code 2.1.287's own closure for a tool whose session ended before
+  // its result was recorded; it is still an interruption, never an answer.
+  const interruption = "[Tool call interrupted: the session ended before this call's result was "
+    + 'recorded, so its outcome is unknown. Check whether it took effect before relying on it or '
+    + 'running it again.]';
   expect(nativeBlocks(interruptedTool[0].entry)).toEqual([{
     type: 'tool_result', tool_use_id: toolCallId, is_error: true, content: interruption,
   }]);

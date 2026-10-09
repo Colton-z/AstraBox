@@ -207,17 +207,21 @@ also requires persistent workspace storage. See [Files](files.md) and
 [OpenSandbox](providers/opensandbox.md).
 
 When persistent workspaces are enabled, the storage provider supplies their backing
-filesystem, and the platform's common mergerfs router supplies a fixed entry
-for each sandbox. Before delivery, the platform binds that entry to the new or
-existing workspace. OpenSandbox mounts only the workspace child, not the
-router's management root. Engines do not choose the storage medium or implement
-directory routing. Local filesystems suit a single sandbox host; multiple hosts
-require the same shared filesystem. No-volume deployments do not need a router.
+filesystem, and the sandbox backend's workspace route brings it into each
+sandbox. The bundled OpenSandbox backend's route is a mergerfs view per
+sandbox: before delivery, the platform binds that entry to the new or existing
+workspace, and OpenSandbox mounts only the workspace child, not the view's
+management root. A backend that mounts its own storage at create time has a
+route that cannot rebind a created sandbox; a Session that already has files
+then starts on a new sandbox instead of a prepared one. Engines do not choose
+the storage medium or implement directory routing. Local filesystems suit a
+single sandbox host; multiple hosts require the same shared filesystem.
+No-volume deployments do not need a route.
 See [workspace deployment](deploy.md#where-conversation-workspaces-live).
 
 The `mounted_volume` storage plugin uses the deployment's configured volume.
 The `aws_efs` plugin verifies an existing EFS CSI-backed Kubernetes volume with
-shared storage access. Both use the same platform directory routing. The
+shared storage access. Both reach sandboxes through the backend's route. The
 deployment manages the backing filesystem and, for EFS, the filesystem, CSI
 driver, and AWS credentials.
 

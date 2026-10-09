@@ -36,7 +36,9 @@
     "group_operate": "运行",
     "group_system": "系统",
     "group_integrations": "集成服务",
-    "mcp_tokens": "MCP 客户端"
+    "mcp_tokens": "MCP 客户端",
+    "connectors": "Connectors",
+    "assistant_defaults": "Assistant 默认配置"
   },
   "credentials": {
     "title": "凭证",
@@ -263,7 +265,6 @@
     "scene_scheduler": "外部调度器（共享密钥）",
     "scene_schedule": "定时计划",
     "select_agent": "选择 Agent",
-    "agent_help": "收到此触发请求后，由哪个 Agent 处理会话。",
     "scene_help": "选择定时计划、经过鉴权的外部请求，或具体的消息平台。",
     "name_help": "用一个简短名称区分同一 Agent 上的不同定时任务。",
     "prompt_prefix_help": "可选。加在这个触发投递的每条消息前面。",
@@ -310,7 +311,15 @@
     "run_time": "计划或创建时间",
     "run_action": "操作",
     "run_now": "立即运行",
-    "replay": "重放"
+    "replay": "重放",
+    "field_target": "Agent 或 Assistant",
+    "target_help": "这个触发配置在哪个目标上开会话。Assistant 只属于你：会话以你的身份运行，触发配置也只有你能管理。",
+    "target_assistant_label": "{{name}} · Assistant",
+    "field_assistant": "Assistant",
+    "empty_hint_no_targets": "请先创建 Agent 或 Assistant。每项触发配置都必须指定一个目标。",
+    "field_allowed_participants": "允许的发送者",
+    "allowed_participants_help": "哪些消息平台账号发来的消息会进入这个触发配置，每行一个，格式为 平台:用户 ID（例如 telegram:123456789）。留空表示接受所有人。Assistant 必须填上你自己的账号。",
+    "err_allowed_participants_required": "请在“允许的发送者”里填上你自己的消息平台账号：Assistant 只回应它的主人。"
   },
   "assistants": {
     "title": "Assistant",
@@ -361,7 +370,20 @@
     "icon_help": "可选。Assistant 卡片上的图标（emoji 或图片地址）。",
     "system_label": "系统提示词",
     "system_placeholder": "你是一位数据分析助手。报告每个数字时说明含义，并注明来自哪个文件。",
-    "system_help": "可选。定义 Assistant 的角色、表达方式和行为规则。留空则保留 Agent 程序自身的默认设置。修改会在下一次开始对话时生效。"
+    "system_help": "可选。定义 Assistant 的角色、表达方式和行为规则。留空则保留 Agent 程序自身的默认设置。修改会在下一次开始对话时生效。",
+    "section_extensions": "技能、插件与配置",
+    "skills_label": "技能",
+    "skills_help": "SKILL.md 技能的 Git 来源，格式为 仓库@引用#路径。从下一个对话开始可用。",
+    "mcp_label": "MCP 服务器",
+    "mcp_help": "按名称填写服务器定义。此程序支持的传输方式：{{transports}}。修改后，程序会在没有回复进行时重启。",
+    "packages_label": "扩展包",
+    "packages_help": "此程序加载的扩展包，每项来自一个 Git 仓库，并注明其种类。修改后，程序会在没有回复进行时重启。种类：",
+    "native_reserved": "这些键由 AstraBox 自己设置，不能在此填写：{{keys}}。",
+    "timezone_label": "时区",
+    "timezone_placeholder": "选择时区",
+    "timezone_search": "搜索时区",
+    "timezone_empty": "没有匹配的时区",
+    "timezone_help": "属主所在的时区。Assistant 按这个时区计时，它设置的计划（例如每天早上 8 点）按当地时间执行。修改后，程序会在没有回复进行时重启。"
   },
   "sessions": {
     "description": "查看由 Agent 发起的会话。打开 Session 可查看消息、当前状态、沙箱和技术事件。",
@@ -526,7 +548,7 @@
         "label": "网络",
         "type": {
           "label": "出站网络访问",
-          "help": "不受限允许访问全部出站目标。受限模式只允许下方主机，以及平台必需的模型、回调、追踪和已声明 Plugin 仓库主机。",
+          "help": "不受限允许访问全部出站目标。受限模式只允许下方主机，以及平台必需的模型、回调、追踪和已声明扩展包来源的主机。",
           "options": {
             "unrestricted": "不受限",
             "limited": "受限"
@@ -750,5 +772,57 @@
     "revoke": "吊销",
     "empty_title": "还没有密钥。",
     "empty_hint": "在上面签发一把，然后把它给出的那段配置粘贴到 MCP 客户端里。"
+  },
+  "connectors": {
+    "card_title": "Connectors",
+    "card_intro": "这个 Assistant 能使用的办公应用，每个都用你自己在厂商那里的账号登录授权。你连接的应用会自动在这里启用，除非你在这里关闭它。",
+    "card_note": "你的登录凭证只保存在服务器上，Assistant 的沙箱看不到 token。启用或停用 connector 后，Assistant 的后端会在空闲时重启生效。",
+    "status_connected": "已连接",
+    "status_needs_reauth": "需要重新登录",
+    "use_here": "在这个 Assistant 中使用",
+    "use_in_assistant": "在这个 Assistant 中使用 {{name}}",
+    "connect": "连接",
+    "reconnect": "重新连接",
+    "connecting": "正在打开登录页…",
+    "disconnect": "断开",
+    "admin_title": "Connectors",
+    "admin_lede": "每个应用只需配置一次。厂商只给注册过的应用发 OAuth 客户端时，先用回调地址 {{callback}} 注册本部署的应用并填入客户端信息；然后连接你自己的账号以读取应用的工具，再发布。",
+    "dynamic_intro": "这个厂商会自动为 connector hub 注册客户端。",
+    "operator_intro": "这个厂商需要为本部署注册一个 OAuth 应用。",
+    "vendor_guide": "厂商配置说明",
+    "client_id": "Client ID",
+    "client_secret": "Client secret（公开客户端可留空）",
+    "not_set_up": "需要管理员先在 Connectors 页面配置这个应用。",
+    "not_deployed": "服务器未部署",
+    "not_configured": "未配置",
+    "unpublished": "未发布",
+    "published": "已发布",
+    "set_up": "配置",
+    "verify": "连接你的账号",
+    "publish": "发布工具",
+    "remove": "移除",
+    "agent_card_intro": "这个 Agent 提供的办公应用。发起对话的每个人使用自己的登录授权，在“连接”页面中连接。",
+    "agent_card_note": "由消息渠道、定时计划或 webhook 发起的对话不使用任何人的连接。修改后 Agent 的运行时会重新准备。",
+    "offer_here": "在这个 Agent 中提供",
+    "offer_in_agent": "在这个 Agent 中提供 {{name}}"
+  },
+  "assistant_defaults": {
+    "title": "Assistant 默认配置",
+    "lede": "本部署每个 Assistant 都能用的东西。Assistant 启动时读取这里,改动在每个 Assistant 下次启动时生效;用户可以在此之上追加自己的。",
+    "load_failed": "无法读取 Assistant 默认配置",
+    "section_basic": "新建的 Assistant",
+    "environment_automatic": "自动:唯一一个能运行 Assistant 的 Environment",
+    "environment_automatic_named": "自动:{{name}}",
+    "environment_help": "每个用户的第一个 Assistant 建在哪里。只有一个已启用的 Environment 能运行 Assistant 时,自动选择才生效。",
+    "model_label": "模型",
+    "model_help": "Assistant 没有自己指定时使用。留空则用 Environment 的默认模型。",
+    "instructions_label": "组织指令",
+    "instructions_help": "每个 Assistant 都会在其所有者的指令之前收到这些。",
+    "card_note": "Assistant 启动时读取;正在运行的会在下次启动时生效。",
+    "no_environment_title": "没有能运行 Assistant 的 Environment",
+    "no_environment": "在有已启用且能运行 Assistant 的 Environment 之前,用户不会有 Assistant。请在 Environments 中添加。",
+    "vaults_label": "Credential Vault",
+    "vaults_help": "绑定到每个 Assistant,方式与 Assistant 自己的绑定相同。",
+    "vaults_none": "还没有 Credential Vault。请在凭证页创建。"
   }
 }

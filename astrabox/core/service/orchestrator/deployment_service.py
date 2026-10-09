@@ -1,13 +1,16 @@
 """Deployment management and invocation through the Session kernel.
 
-Deployments are trigger bindings on an Agent. Built-in schedules create durable
-Runs through the internal execution adapter; external systems can instead call
-an authenticated webhook or a registered channel provider. Every path starts a
-normal Session and uses the existing turn authority.
+Deployments are trigger bindings on an Agent or an Assistant. Built-in
+schedules create durable Runs through the internal execution adapter; external
+systems can instead call an authenticated webhook or a registered channel
+provider. Every path starts a normal Session on the binding's target through
+:class:`~astrabox.core.service.orchestrator.conversation_targets.ConversationTargets`
+and uses the existing turn authority.
 
-Identity: each webhook is bound to one agent instance; the conversation runs as
-that agent's creator (``agent.user_id``). Channel bindings can delegate to an
-administrator-configured execution account. Auth on the inbound endpoint is the
+Identity: a binding's conversations run as its target's owner (an Agent's
+creator, an Assistant's owner). Channel bindings on an Agent can delegate to an
+administrator-configured execution account; an Assistant is owner-only, so its
+channel bindings admit only the senders listed in ``allowed_participants``. Auth on the inbound endpoint is the
 webhook signature itself (HMAC scene: HMAC-SHA256(secret, timestamp); scheduler:
 the deployment's issued secret), not a login session.
 
@@ -50,6 +53,13 @@ from astrabox.core.service.orchestrator.channel_ingress_service import (
 )
 from astrabox.core.service.orchestrator.channel_credentials import (
     ChannelCredentialService,
+)
+from astrabox.core.service.orchestrator.conversation_targets import (
+    TARGET_AGENT,
+    ConversationTarget,
+    ConversationTargets,
+    target_fields,
+    target_ref,
 )
 from astrabox.core.service.orchestrator.deployment_run_runtime import (
     PermanentDeploymentRunError,
@@ -119,10 +129,16 @@ class DeploymentService:
         run_runtime: Any | None = None,
         session_snapshots_repo: Any | None = None,
         session_events_repo: Any | None = None,
+        assistant_service_getter: Any = None,
     ) -> None:
         self._deployment_repo = deployment_repo
         self._agent_repo = agent_repo
         self._agent_service_getter = agent_service_getter
+        self._targets = ConversationTargets(
+            agent_repo=agent_repo,
+            agent_service_getter=agent_service_getter,
+            assistant_service_getter=assistant_service_getter,
+        )
         self._agent_config = agent_config
         # platform_service.stream_message_events_ds (bound method)
         self._stream_message_events_ds = stream_message_events_ds
@@ -178,6 +194,71 @@ class DeploymentService:
         rows = await self._deployment_repo.list_by_agent(agent_id)
         return [self._sanitize(row) for row in rows]
 
+    async def assert_can_manage_assistant(
+        self, user: UserContext, assistant_id: str
+    ) -> ConversationTarget:
+        """Resolve an Assistant whose bindings the caller may manage.
+
+        An Assistant is owner-only (domain-model.md §2): only its owner manages
+        its bindings, administrators included. Missing and foreign Assistants
+        share one non-disclosing 404.
+        """
+        target = await self._targets.resolve(
+            {"assistant_id": str(assistant_id or "").strip()}
+        )
+        if target is None or not target.owner_user_id or target.owner_user_id != user.user_id:
+            raise APIError(code="NOT_FOUND", message="assistant not found", status_code=404)
+        return target
+
+    async def list_for_assistant(self, assistant_id: str) -> list[dict[str, Any]]:
+        rows = await self._deployment_repo.list_by_assistant(assistant_id)
+        return [self._sanitize(row) for row in rows]
+
+    async def delete_for_assistant(self, assistant_id: str) -> None:
+        """Delete every binding of a deleted Assistant, schedules included."""
+        for row in await self._deployment_repo.list_by_assistant(assistant_id):
+            with contextlib.suppress(APIError):
+                await self.delete(
+                    str(row.get("deployment_id") or ""), assistant_id=assistant_id
+                )
+
+    @staticmethod
+    def _validate_allowed_participants(
+        value: Any, *, is_channel: bool, required: bool
+    ) -> list[str]:
+        """Normalize the external sender identities a channel binding admits."""
+        if value is None:
+            value = []
+        if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+            raise APIError(
+                code="INVALID_REQUEST",
+                message="allowed_participants must be a list of strings",
+                status_code=400,
+            )
+        participants = list(dict.fromkeys(item.strip() for item in value if item.strip()))
+        if participants and not is_channel:
+            raise APIError(
+                code="INVALID_REQUEST",
+                message="allowed_participants applies only to channel scenes",
+                status_code=400,
+            )
+        if not all(item.isprintable() for item in participants):
+            raise APIError(
+                code="INVALID_REQUEST",
+                message="allowed_participants contains control characters",
+                status_code=400,
+            )
+        if required and not participants:
+            raise APIError(
+                code="INVALID_REQUEST",
+                message=(
+                    "a channel binding on an Assistant must list its owner's "
+                    "account in allowed_participants"
+                ),
+                status_code=400,
+            )
+        return participants
+
     @staticmethod
     def _validate_execution_user(
         value: Any, *, actor: UserContext | None, is_channel: bool,
@@ -214,21 +295,34 @@ class DeploymentService:
             if str(row.get("agent_id") or "").strip()
         ]
         agents = await self._agent_repo.list_agents_by_ids(agent_ids)
+        assistants: dict[str, ConversationTarget | None] = {}
         visible: list[dict[str, Any]] = []
         for row in rows:
-            agent_id = str(row.get("agent_id") or "").strip()
-            agent = agents.get(agent_id)
-            if not self._can_manage_agent(user, agent):
+            ref = target_ref(row)
+            if ref is None:
                 continue
+            kind, target_id = ref
             rendered = self._sanitize(row)
-            rendered["agent_name"] = str((agent or {}).get("name") or agent_id)
+            if kind == TARGET_AGENT:
+                agent = agents.get(target_id)
+                if not self._can_manage_agent(user, agent):
+                    continue
+                rendered["agent_name"] = str((agent or {}).get("name") or target_id)
+            else:
+                if target_id not in assistants:
+                    assistants[target_id] = await self._targets.resolve(row)
+                assistant = assistants[target_id]
+                if assistant is None or assistant.owner_user_id != user.user_id:
+                    continue
+                rendered["assistant_name"] = assistant.name
             visible.append(rendered)
         return visible
 
     async def create(
         self,
         *,
-        agent_id: str,
+        agent_id: str = "",
+        assistant_id: str = "",
         creator_user_id: str,
         scene: str,
         name: str = "",
@@ -240,8 +334,17 @@ class DeploymentService:
         callback_base_url: str | None = None,
         schedule: Any = None,
         execution_user_id: Any = None,
+        allowed_participants: Any = None,
         actor: UserContext | None = None,
     ) -> dict[str, Any]:
+        target = target_ref({"agent_id": agent_id, "assistant_id": assistant_id})
+        if target is None:
+            raise APIError(
+                code="INVALID_REQUEST",
+                message="a Deployment names exactly one Agent or Assistant",
+                status_code=400,
+            )
+        on_assistant = target[0] != TARGET_AGENT
         scene = str(scene or "").strip()
         channel_name = channel_scene_name(scene)
         channel_provider = None
@@ -284,13 +387,24 @@ class DeploymentService:
         resolved_policy = self._validate_attention_policy(
             attention_policy, is_channel=channel_name is not None
         )
+        if on_assistant and execution_user_id:
+            raise APIError(
+                code="INVALID_REQUEST",
+                message="an Assistant's conversations always run as its owner",
+                status_code=400,
+            )
         execution_user = self._validate_execution_user(
             execution_user_id, actor=actor, is_channel=channel_name is not None,
         ) if execution_user_id is not None else ""
+        participants = self._validate_allowed_participants(
+            allowed_participants,
+            is_channel=channel_name is not None,
+            required=on_assistant and channel_name is not None,
+        )
         deployment_id = uuid.uuid4().hex
         doc = {
             "deployment_id": deployment_id,
-            "agent_id": str(agent_id).strip(),
+            **target_fields(*target),
             "created_by": str(creator_user_id or "").strip(),
             "enabled": True,
             "deleted": False,
@@ -302,6 +416,7 @@ class DeploymentService:
         normalized_credentials: dict[str, Any] | None = None
         if channel_provider is not None:
             doc["execution_user_id"] = execution_user
+            doc["allowed_participants"] = participants
             descriptor = channel_provider.describe()
             if descriptor.credential_fields and str(secret or "").strip():
                 raise APIError(
@@ -373,7 +488,8 @@ class DeploymentService:
                 cleanup_error: Exception | None = None
                 try:
                     await self._deployment_repo.soft_delete_for_deployment(
-                        deployment_id, str(agent_id).strip()
+                        deployment_id, str(agent_id).strip(),
+                        assistant_id=str(assistant_id).strip(),
                     )
                 except Exception as exc:
                     cleanup_error = cleanup_error or exc
@@ -422,7 +538,8 @@ class DeploymentService:
         self,
         deployment_id: str,
         *,
-        agent_id: str,
+        agent_id: str = "",
+        assistant_id: str = "",
         patch: dict[str, Any],
         actor: UserContext | None = None,
     ) -> dict[str, Any]:
@@ -430,7 +547,9 @@ class DeploymentService:
         # foreign ids remain indistinguishable.  The repository repeats the
         # same scope/deleted predicates on the eventual atomic write, closing
         # the read -> mutation race.
-        existing = await self._get_for_deployment(deployment_id, agent_id)
+        existing = await self._get_for_deployment(
+            deployment_id, agent_id, assistant_id=assistant_id
+        )
         allowed = {
             "enabled",
             "prompt_prefix",
@@ -441,9 +560,23 @@ class DeploymentService:
             "name",
             "schedule",
             "execution_user_id",
+            "allowed_participants",
         }
         updates = {k: v for k, v in patch.items() if k in allowed}
         existing_scene = str(existing.get("scene") or "")
+        if assistant_id and updates.get("execution_user_id"):
+            raise APIError(
+                code="INVALID_REQUEST",
+                message="an Assistant's conversations always run as its owner",
+                status_code=400,
+            )
+        if "allowed_participants" in updates:
+            updates["allowed_participants"] = self._validate_allowed_participants(
+                updates["allowed_participants"],
+                is_channel=channel_scene_name(existing_scene) is not None,
+                required=bool(assistant_id)
+                and channel_scene_name(existing_scene) is not None,
+            )
         if "execution_user_id" in updates:
             updates["execution_user_id"] = self._validate_execution_user(
                 updates["execution_user_id"], actor=actor,
@@ -535,6 +668,7 @@ class DeploymentService:
                     deployment_id,
                     agent_id,
                     {**updates, "updated_at": candidate["updated_at"]},
+                    assistant_id=assistant_id,
                 )
             except Exception:
                 await self._restore_schedule_projection(existing)
@@ -613,6 +747,7 @@ class DeploymentService:
                 deployment_id,
                 agent_id,
                 {**updates, "updated_at": utcnow_iso()},
+                assistant_id=assistant_id,
             )
         except Exception:
             if normalized_credentials is not None:
@@ -728,16 +863,18 @@ class DeploymentService:
             )
         return result
 
-    async def delete(self, deployment_id: str, *, agent_id: str) -> None:
+    async def delete(
+        self, deployment_id: str, *, agent_id: str = "", assistant_id: str = ""
+    ) -> None:
         existing = await self._deployment_repo.get_for_deployment(
-            deployment_id, agent_id
+            deployment_id, agent_id, assistant_id=assistant_id
         )
         if not existing:
             # Repeat the guarded mutation even for an invisible id. Besides
             # preserving the one atomic repository boundary, this keeps a
             # missing/deleted/foreign id indistinguishable under a race.
             await self._deployment_repo.soft_delete_for_deployment(
-                deployment_id, agent_id
+                deployment_id, agent_id, assistant_id=assistant_id
             )
             self._raise_deployment_not_found()
         if str(existing.get("scene") or "") == SCENE_SCHEDULE:
@@ -749,7 +886,7 @@ class DeploymentService:
             await self._channel_credentials.purge(deployment_id)
         try:
             deleted = await self._deployment_repo.soft_delete_for_deployment(
-                deployment_id, agent_id
+                deployment_id, agent_id, assistant_id=assistant_id
             )
         except Exception:
             if str(existing.get("scene") or "") == SCENE_SCHEDULE:
@@ -789,10 +926,10 @@ class DeploymentService:
             raise
 
     async def _get_for_deployment(
-        self, deployment_id: str, agent_id: str
+        self, deployment_id: str, agent_id: str, *, assistant_id: str = ""
     ) -> dict[str, Any]:
         existing = await self._deployment_repo.get_for_deployment(
-            deployment_id, agent_id
+            deployment_id, agent_id, assistant_id=assistant_id
         )
         if not existing:
             self._raise_deployment_not_found()
@@ -842,11 +979,10 @@ class DeploymentService:
         # start a fresh conversation, drive one turn fire-and-forget.
         self._verify_signature(deployment, headers, raw_body)
         content = self._build_content(deployment, raw_body)
-        agent_id = str(deployment.get("agent_id") or "").strip()
-        agent = await self._agent_repo.get_agent(agent_id)
-        if not agent:
+        target = await self._targets.resolve(deployment)
+        if target is None:
             raise APIError(code="NOT_FOUND", message="bound agent not found", status_code=404)
-        creator_user_id = str(agent.get("user_id") or "").strip()
+        creator_user_id = target.owner_user_id
         if not creator_user_id:
             raise APIError(
                 code="DEPLOYMENT_NO_OWNER",
@@ -854,16 +990,15 @@ class DeploymentService:
                 status_code=409,
             )
         user = UserContext(user_id=creator_user_id)
-        agent_service = self._agent_service_getter()
-        started = await agent_service.start_conversation(user, agent_id)
+        started = await self._targets.start_conversation(target, user)
         session_id = str(started.get("session_id") or "")
         self._spawn_background_task(
             self._fire_when_ready(user, session_id, content, deployment_id),
             name=f"deployment-fire-{deployment_id}",
         )
         logger.warning(
-            "deployment trigger accepted: deployment=%s agent=%s creator=%s session=%s scene=%s",
-            deployment_id, agent_id, creator_user_id, session_id,
+            "deployment trigger accepted: deployment=%s %s=%s creator=%s session=%s scene=%s",
+            deployment_id, target.kind, target.target_id, creator_user_id, session_id,
             str(deployment.get("scene") or ""),
         )
         return {
@@ -924,10 +1059,13 @@ class DeploymentService:
         self,
         deployment_id: str,
         *,
-        agent_id: str,
+        agent_id: str = "",
+        assistant_id: str = "",
         limit: int = 50,
     ) -> list[dict[str, Any]]:
-        deployment = await self._get_for_deployment(deployment_id, agent_id)
+        deployment = await self._get_for_deployment(
+            deployment_id, agent_id, assistant_id=assistant_id
+        )
         self._require_schedule(deployment)
         rows = await self._run_runtime.list_runs(deployment_id, limit=limit)
         session_ids = [
@@ -955,9 +1093,11 @@ class DeploymentService:
         ]
 
     async def trigger_now(
-        self, deployment_id: str, *, agent_id: str
+        self, deployment_id: str, *, agent_id: str = "", assistant_id: str = ""
     ) -> dict[str, Any]:
-        deployment = await self._get_for_deployment(deployment_id, agent_id)
+        deployment = await self._get_for_deployment(
+            deployment_id, agent_id, assistant_id=assistant_id
+        )
         self._require_schedule(deployment)
         row = await self._run_runtime.run_now(deployment)
         return self._render_run(row, snapshot=await self._snapshot_for_run(row))
@@ -967,9 +1107,12 @@ class DeploymentService:
         run_id: str,
         *,
         deployment_id: str,
-        agent_id: str,
+        agent_id: str = "",
+        assistant_id: str = "",
     ) -> dict[str, Any]:
-        deployment = await self._get_for_deployment(deployment_id, agent_id)
+        deployment = await self._get_for_deployment(
+            deployment_id, agent_id, assistant_id=assistant_id
+        )
         self._require_schedule(deployment)
         row = await self._run_runtime.replay(deployment, run_id)
         return self._render_run(row, snapshot=await self._snapshot_for_run(row))
@@ -988,13 +1131,12 @@ class DeploymentService:
         """DBOS step target: idempotently create one Run's Session."""
 
         deployment_id = str(context.get("deployment_id") or "").strip()
-        agent_id = str(context.get("agent_id") or "").strip()
         deployment = await self._deployment_repo.get_by_id(deployment_id)
         if (
             not deployment
             or deployment.get("deleted") is True
             or str(deployment.get("scene") or "") != SCENE_SCHEDULE
-            or str(deployment.get("agent_id") or "") != agent_id
+            or target_ref(deployment) != target_ref(context)
         ):
             raise PermanentDeploymentRunError("scheduled Deployment no longer exists")
         if (
@@ -1002,15 +1144,14 @@ class DeploymentService:
             and deployment.get("enabled") is False
         ):
             raise PermanentDeploymentRunError("scheduled Deployment is disabled")
-        agent = await self._agent_repo.get_agent(agent_id)
-        creator_user_id = str((agent or {}).get("user_id") or "").strip()
-        if not agent or not creator_user_id:
+        target = await self._targets.resolve(context)
+        if target is None or not target.owner_user_id:
             raise PermanentDeploymentRunError(
                 "scheduled Deployment's Agent or owner is missing"
             )
-        started = await self._agent_service_getter().start_conversation(
-            UserContext(user_id=creator_user_id),
-            agent_id,
+        started = await self._targets.start_conversation(
+            target,
+            UserContext(user_id=target.owner_user_id),
             idempotency_key=f"deployment-run:{run_id}",
         )
         session_id = str((started or {}).get("session_id") or "").strip()
@@ -1027,10 +1168,9 @@ class DeploymentService:
     ) -> dict[str, Any]:
         """DBOS step target: idempotently admit one Session turn."""
 
-        agent_id = str(context.get("agent_id") or "").strip()
-        agent = await self._agent_repo.get_agent(agent_id)
-        creator_user_id = str((agent or {}).get("user_id") or "").strip()
-        if not agent or not creator_user_id:
+        target = await self._targets.resolve(context)
+        creator_user_id = target.owner_user_id if target is not None else ""
+        if not creator_user_id:
             raise PermanentDeploymentRunError(
                 "Deployment Run's Agent or owner is missing"
             )
@@ -1162,7 +1302,12 @@ class DeploymentService:
             ),
             "agent_id": str(
                 attributes.get("agent_id") or context.get("agent_id") or ""
-            ),
+            )
+            or None,
+            "assistant_id": str(
+                attributes.get("assistant_id") or context.get("assistant_id") or ""
+            )
+            or None,
             "trigger": trigger,
             "status": status,
             "scheduled_for": scheduled_for,

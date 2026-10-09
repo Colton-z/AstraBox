@@ -64,6 +64,11 @@ class _Backend:
     async def find_sandbox_by_assignment(self, _assignment_id: str) -> None:
         return None
 
+    def workspace_route(self) -> Any:
+        from astrabox.core.service.orchestrator.runtime.storage.mergerfs import workspace_router
+
+        return workspace_router
+
     async def create_sandbox(self, spec: Any) -> Any:
         self.spec = spec
         return SimpleNamespace(sandbox_id="box-slot-1", id="box-slot-1")

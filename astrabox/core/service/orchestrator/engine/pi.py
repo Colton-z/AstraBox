@@ -29,6 +29,7 @@ import asyncio
 import contextlib
 import hashlib
 import json
+import re
 import shlex
 import time
 from typing import Any
@@ -55,6 +56,10 @@ from astrabox.core.service.orchestrator.engine.capabilities import (
     EngineRuntimeCapabilities,
     EngineWorkloadDeclaration,
     EngineSessionLogDeclaration,
+)
+from astrabox.core.service.orchestrator.engine.extensions import (
+    AGENTS_HOME_SKILLS_TARGET,
+    EngineExtensions,
 )
 from astrabox.core.service.orchestrator.engine.pi_client import (
     ENGINE_KIND,
@@ -144,6 +149,11 @@ PI_MIRROR_SUBPATH_PREFIX = "pi/"
 PI_SUBAGENT_PACKAGE_PATH = "/opt/pi/node_modules/pi-subagents"
 PI_PLATFORM_MCP_PACKAGE_PATH = "/opt/pi/node_modules/astrabox-platform-mcp"
 PI_PACKAGES_SETTING = "packages"
+#: The registry npm resolves Pi's `npm:` sources and every package's
+#: dependencies from; Pi installs a git source's dependencies too (docs/packages.md).
+_PI_NPM_REGISTRY_HOST = "registry.npmjs.org"
+_PI_URL_HOST = re.compile(r"^[a-z][a-z0-9+.-]*://(?:[^@/]+@)?([^/:?#]+)", re.IGNORECASE)
+_PI_SCP_HOST = re.compile(r"^[^@/\s]+@([^:/\s]+):")
 
 PI_ENGINE_OPTIONS_SCHEMA: tuple[dict[str, Any], ...] = (
     {
@@ -186,6 +196,7 @@ def build_pi_rpc_command(
     engine_env_file: str | None = None,
     isolated: bool = False,
     platform_mcp_servers: dict[str, Any] | None = None,
+    mcp_servers: dict[str, Any] | None = None,
 ) -> str:
     """Build the secret-free command execd starts for one conversation.
 
@@ -204,6 +215,12 @@ def build_pi_rpc_command(
     ``settings`` replaces the conversation-local global settings file as the
     workload user before startup. Empty settings clear the previous Agent
     configuration; Pi owns project merging and interpretation of inner keys.
+
+    ``mcp_servers`` are the author's servers in Pi's own ``mcpServers`` form,
+    written the same way to the user-level ``mcp.json`` Pi reads (docs/mcp.md
+    at 1.0.0). Pi lets a file-configured server override a registered one of
+    the same name, and counts names differing only in ``-`` and ``_`` as one,
+    so an author server may not take a platform server's name.
     """
 
     from astrabox.core.service.orchestrator.engine.platform_mcp import platform_mcp_environment
@@ -217,6 +234,10 @@ def build_pi_rpc_command(
     if any(not value for value in values.values()):
         missing = sorted(key for key, value in values.items() if not value)
         raise ValueError(f"pi launcher is missing: {', '.join(missing)}")
+    platform_names = {name.replace("-", "_") for name in (platform_mcp_servers or {})}
+    clashes = sorted(name for name in (mcp_servers or {}) if name.replace("-", "_") in platform_names)
+    if clashes:
+        raise ValueError(f"pi MCP servers {clashes} take the name of a platform server")
 
     argv = [
         "pi",
@@ -258,6 +279,9 @@ def build_pi_rpc_command(
             "printf '%s\\n' "
             + shlex.quote(json.dumps(settings or {}, ensure_ascii=False))
             + ' > "$PI_CODING_AGENT_DIR/settings.json"',
+            "printf '%s\\n' "
+            + shlex.quote(json.dumps({"mcpServers": mcp_servers or {}}, ensure_ascii=False))
+            + ' > "$PI_CODING_AGENT_DIR/mcp.json"',
             f"cd {shlex.quote(values['workspace'])}",
             "exec " + " ".join(shlex.quote(part) for part in argv),
         )
@@ -324,6 +348,33 @@ def _conversation_execd_port(runtime_identity: dict[str, Any] | None) -> int:
     return runner_port_for_uid(int(uid))
 
 
+def _mcp_servers(template: Any) -> dict[str, Any]:
+    """The author's MCP servers in Pi's ``mcpServers`` form.
+
+    Pi 1.0.0 takes stdio servers (``command``, ``args``, ``env``) and
+    streamable HTTP ones (``url``, ``headers``), selected by which of
+    ``command`` and ``url`` is present; it rejects SSE. Platform servers reach
+    Pi through the image's registration extension instead.
+    """
+
+    from astrabox.core.service.orchestrator.runtime.mcp_servers import author_mcp_servers
+
+    servers: dict[str, Any] = {}
+    for name, server in author_mcp_servers(getattr(template, "mcp_servers", None)).items():
+        if server["type"] == "stdio":
+            rendered: dict[str, Any] = {"command": server["command"], "args": list(server.get("args") or [])}
+            if server.get("env"):
+                rendered["env"] = dict(server["env"])
+        elif server["type"] == "http":
+            rendered = {"url": server["url"]}
+            if server.get("headers"):
+                rendered["headers"] = dict(server["headers"])
+        else:
+            raise ValueError(f"pi takes stdio and streamable HTTP MCP servers, not {server['type']!r} ({name})")
+        servers[name] = rendered
+    return servers
+
+
 def _settings(template: Any) -> dict[str, Any]:
     """The Agent's native Pi settings, carrying the image's own packages.
 
@@ -388,6 +439,7 @@ async def _park_pi_child(
             workspace=cwd,
             model=model,
             settings=_settings(template),
+            mcp_servers=_mcp_servers(template),
             resume_session_key=None,
             engine_env_file=engine_env_file,
             isolated=(runtime_identity or {}).get("sandbox_tenancy") == "agent",
@@ -769,8 +821,13 @@ class PiEngineAdapter(EngineAdapter):
                 root_template=PI_SESSION_DIR_TEMPLATE,
                 namespace=PI_MIRROR_SUBPATH_PREFIX,
             ),
-            engine_options_schema=PI_ENGINE_OPTIONS_SCHEMA,
-            configuration_inputs=frozenset(),
+            # Pi discovers Skills in $HOME/.agents/skills beside its agent
+            # directory's own (docs/skills.md at the pinned release).
+            extensions=EngineExtensions(
+                mcp_transports=frozenset({"stdio", "http"}),
+                skills_target=AGENTS_HOME_SKILLS_TARGET,
+                native_config=PI_ENGINE_OPTIONS_SCHEMA,
+            ),
             # Pi ships no permission system — its own documentation says so
             # and recommends containment instead. An empty declaration is the
             # honest one; the platform then has nothing to validate and must
@@ -1002,6 +1059,7 @@ class PiEngineAdapter(EngineAdapter):
                 workspace=context.cwd,
                 model=model,
                 settings=_settings(template),
+                mcp_servers=_mcp_servers(template),
                 resume_session_key=resume_key or None,
                 engine_env_file=_shared_engine_env_file(identity),
                 isolated=identity.get("sandbox_tenancy") == "agent",
@@ -1050,6 +1108,31 @@ class PiEngineAdapter(EngineAdapter):
                 with contextlib.suppress(BaseException):
                     await client.close()
             raise
+
+    def install_egress_hosts(self, engine_options: dict[str, Any]) -> list[str]:
+        """The hosts Pi reaches installing the Agent's `settings.packages` (docs/packages.md).
+
+        `npm:` sources come from the npm registry, `git:host/path@ref` and URL
+        sources from their host; a local path reaches nothing. Pi installs a
+        remote package's dependencies from the registry as well.
+        """
+
+        settings = engine_options.get("settings")
+        declared = settings.get(PI_PACKAGES_SETTING) if isinstance(settings, dict) else None
+        hosts: list[str] = []
+        for entry in declared if isinstance(declared, list) else ():
+            source = str((entry.get("source") if isinstance(entry, dict) else entry) or "").strip()
+            if not source or source.startswith((".", "/", "~")):
+                continue
+            found = [_PI_NPM_REGISTRY_HOST]
+            if source.startswith("git:"):
+                found.append(source[len("git:"):].split("/", 1)[0].lower())
+            elif match := _PI_URL_HOST.match(source) or _PI_SCP_HOST.match(source):
+                found.append(match.group(1).lower())
+            for host in found:
+                if host not in hosts:
+                    hosts.append(host)
+        return hosts
 
     def shared_conversation_service_launch(
         self, *, home: str, workspace: str, port: int

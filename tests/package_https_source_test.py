@@ -19,7 +19,7 @@ import pytest
 
 from astrabox.core.service.orchestrator.runtime.storage import _git_clone
 from astrabox.core.service.orchestrator.runtime.storage import _plugin_cache
-from astrabox.core.service.orchestrator.runtime.plugin_repos import plugin_repo_egress_hosts
+from astrabox.core.service.orchestrator.runtime.packages import package_egress_hosts
 
 
 class _Commands:
@@ -34,11 +34,12 @@ class _Commands:
         return SimpleNamespace(error=None, exit_code=0, stdout="")
 
 
-def test_https_plugin_repository_host_is_available_to_the_sandbox_policy() -> None:
-    assert plugin_repo_egress_hosts(
+def test_https_package_repository_host_is_available_to_the_sandbox_policy() -> None:
+    assert package_egress_hosts(
         {
-            "plugin_repos": [
+            "packages": [
                 {
+                    "kind": "claude-plugin",
                     "url": "https://GitHub.com/anthropics/financial-services.git",
                     "protocol": "https",
                 }
@@ -68,7 +69,7 @@ async def test_public_https_clone_does_not_require_an_ssh_key(monkeypatch: pytes
         deploy_key_secret_name=None,
         identity=None,
         error_code="AGENT_RUNTIME_PLUGIN_CACHE_FAILED",
-        label="plugin_repos[0]",
+        label="packages[0]",
     )
 
     assert len(commands.calls) == 1
@@ -102,13 +103,14 @@ async def test_agent_prewarm_accepts_https_plugin_repo_and_forwards_protocol(
     monkeypatch.setattr(_plugin_cache, "_clone_git_repo_in_sandbox", _capture_clone)
 
     template = {
-        "plugin_repos": [
+        "packages": [
             {
+                "kind": "claude-plugin",
                 "url": "https://github.com/anthropics/claude-plugins-official.git",
                 "protocol": "https",
                 "branch": "main",
                 "depth": 1,
-                "plugin_paths": ["plugins/frontend-design"],
+                "paths": ["plugins/frontend-design"],
             }
         ]
     }

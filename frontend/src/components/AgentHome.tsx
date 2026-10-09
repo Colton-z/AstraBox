@@ -91,7 +91,7 @@ export function AgentHome({
         // The frame and the centring stay on the wrapper: the shared empty
         // state carries the parts, not the surface they stand on, and the
         // dashed border it does carry has no width to draw with.
-        <div className="flex flex-1 items-center justify-center rounded-xl bg-card ring-1 ring-foreground/10">
+        <div data-testid="agents-empty" className="flex flex-1 items-center justify-center rounded-xl bg-card ring-1 ring-foreground/10">
           <EmptyState
             title={t('agents:home_empty')}
             hint={t('agents:home_empty_hint')}

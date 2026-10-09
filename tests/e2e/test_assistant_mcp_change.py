@@ -124,7 +124,7 @@ def _add_mcp_server(e2e_client: httpx.Client, assistant_id: str) -> None:
     data(
         e2e_client.patch(
             f"/api/v1/assistants/{assistant_id}",
-            json={"mcp_config_override": {"wiki": {"type": "http", "url": _MCP_URL}}},
+            json={"mcp_servers": {"wiki": {"type": "http", "url": _MCP_URL}}},
         )
     )
 
@@ -258,10 +258,10 @@ def test_removing_an_mcp_host_keeps_active_work_and_revokes_it_on_idle_restart(
 
     updated = data(
         e2e_client.patch(
-            f"/api/v1/assistants/{assistant_id}", json={"mcp_config_override": {}}
+            f"/api/v1/assistants/{assistant_id}", json={"mcp_servers": {}}
         )
     )
-    assert updated.get("mcp_config_override") == {}, updated
+    assert updated.get("mcp_servers") == {}, updated
     still_active = get_session(e2e_client, sid)
     assert still_active.get("current_turn_id") == active["current_turn_id"], still_active
     assert still_active.get("state") == "PROCESSING", still_active

@@ -130,7 +130,7 @@
         ]
       },
       "contracts": {
-        "approval_names_target": true,
+        "approval_names_target": false,
         "background_subagent": true,
         "permission_modes": true,
         "plan_interaction": false,

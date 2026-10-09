@@ -9,6 +9,9 @@ from astrabox.common.utils.errors import APIError
 
 EXPOSE_PORT_PLATFORM_SERVER = "expose_port"
 ARTIFACTS_PLATFORM_SERVER = "artifacts"
+CONNECTIONS_PLATFORM_SERVER = "connections"
+#: A work-app connector, relayed to the connector hub as the Session's person.
+CONNECTOR_PLATFORM_SERVER = "connector"
 
 _LOOPBACK_MCP_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 _SSE_ALIASES = frozenset({"sse", "server_sent_events"})
@@ -44,6 +47,16 @@ def artifact_tools_enabled(source_type: str | None) -> bool:
     return source_type != "channel"
 
 
+def personal_connections_enabled(source_type: str | None, *, agent_id: str | None) -> bool:
+    """Whether a Session's connector servers act for a person.
+
+    An Assistant's connectors are its owner's, in every one of its Sessions.
+    An Agent's act as the person who starts the conversation, and a channel,
+    schedule or webhook conversation has no such person.
+    """
+    return not agent_id or source_type != "channel"
+
+
 def binds_artifact_tools(source_type: str | None, *, agent_artifacts_enabled: bool) -> bool:
     """Whether a runtime binding receives the built-in ``artifacts`` server.
 
@@ -54,17 +67,55 @@ def binds_artifact_tools(source_type: str | None, *, agent_artifacts_enabled: bo
 
 
 def binding_mcp_server_definitions(
-    mcp_config: Any, *, session_source_type: str | None = None, artifacts_enabled: bool,
+    mcp_config: Any,
+    *,
+    session_source_type: str | None = None,
+    agent_id: str | None = None,
+    artifacts_enabled: bool,
 ) -> dict[str, Any]:
-    """The binding's servers, with ``artifacts`` added or removed by :func:`binds_artifact_tools`.
+    """The servers one Session's engine is given.
 
-    A removal also drops authored aliases of the platform ``artifacts``
-    server, so no name can reach those tools on a binding that has none.
+    An Agent's connectors are unavailable to external channel participants;
+    where connectors are offered, the platform's connections tools come with
+    them. The ``artifacts`` server is added or removed by
+    :func:`binds_artifact_tools`, and a removal also drops authored aliases of
+    it, so no name can reach those tools on a binding that has none. All of
+    this is decided here, at the engine, rather than in the resolved view:
+    the Agent's runtime generation and its box's egress are the same for
+    every Session of the Agent, so a channel conversation neither retires the
+    Agent's prepared runtime nor gives a box it creates a narrower egress than
+    the Agent's other Sessions need.
     """
     servers = template_mcp_servers(mcp_config)
+    if not personal_connections_enabled(session_source_type, agent_id=agent_id):
+        servers = {name: config for name, config in servers.items()
+                   if platform_mcp_server_id(name, config) != CONNECTOR_PLATFORM_SERVER}
+    elif any(platform_mcp_server_id(name, config) == CONNECTOR_PLATFORM_SERVER for name, config in servers.items()):
+        # The engine is told which offered apps the person has connected and
+        # can ask them to connect one; it decides when.
+        if CONNECTIONS_PLATFORM_SERVER in servers:
+            raise APIError(
+                code="AGENT_MCP_NAME_CONFLICT",
+                message=(
+                    f"the MCP server name {CONNECTIONS_PLATFORM_SERVER!r} is the platform's "
+                    "connections tools, which come with connectors; rename the server"
+                ),
+                status_code=409,
+            )
+        servers = {**servers, CONNECTIONS_PLATFORM_SERVER: {"platform_server": CONNECTIONS_PLATFORM_SERVER}}
     if not binds_artifact_tools(session_source_type, agent_artifacts_enabled=artifacts_enabled):
         return {name: config for name, config in servers.items()
                 if name != ARTIFACTS_PLATFORM_SERVER and platform_mcp_server_id(name, config) != ARTIFACTS_PLATFORM_SERVER}
+    declared = servers.get(ARTIFACTS_PLATFORM_SERVER)
+    if declared is not None and platform_mcp_server_id(ARTIFACTS_PLATFORM_SERVER, declared) != ARTIFACTS_PLATFORM_SERVER:
+        raise APIError(
+            code="AGENT_MCP_NAME_CONFLICT",
+            message=(
+                f"the MCP server name {ARTIFACTS_PLATFORM_SERVER!r} is the platform's artifact "
+                "tools; rename the server"
+            ),
+            status_code=409,
+        )
     return {**servers, ARTIFACTS_PLATFORM_SERVER: {"platform_server": ARTIFACTS_PLATFORM_SERVER}}
 
 
@@ -291,6 +342,7 @@ def runtime_mcp_servers_for_binding(
     proxy_base_url: str,
     deployment_id: str,
     session_source_type: str | None = None,
+    agent_id: str | None = None,
     artifacts_enabled: bool,
 ) -> dict[str, dict[str, Any]]:
     from astrabox.core.service.orchestrator.transcript_capability import mint_platform_mcp_capability
@@ -300,7 +352,7 @@ def runtime_mcp_servers_for_binding(
     bound = binds_artifact_tools(session_source_type, agent_artifacts_enabled=artifacts_enabled)
     servers = (binding_mcp_server_definitions(
                    mcp_config, session_source_type=session_source_type,
-                   artifacts_enabled=artifacts_enabled,
+                   agent_id=agent_id, artifacts_enabled=artifacts_enabled,
                )
                if (base and bid) or not bound
                else template_mcp_servers(mcp_config))
@@ -324,6 +376,20 @@ def runtime_mcp_servers_for_binding(
         }
 
     return result
+
+
+def author_mcp_servers(mcp_config: Any) -> dict[str, dict[str, Any]]:
+    """The author's enabled servers, normalized; platform servers are not the author's.
+
+    Each is ``{"type": "stdio", "command", "args"?, "env"?}`` or
+    ``{"type": "http" | "sse", "url", "headers"?}``, which an engine adapter
+    renders into its own configuration.
+    """
+    return {
+        name: normalize_sandbox_mcp_entry(config)
+        for name, config in template_mcp_servers(mcp_config).items()
+        if mcp_server_enabled(config) and not is_platform_mcp_server(config)
+    }
 
 
 def validate_direct_mcp_servers(mcp_config: Any) -> dict[str, Any]:

@@ -67,22 +67,22 @@ test.describe("@1920", () => {
   }) => {
     await stubApi(page);
     await page.goto("/agents");
-    await expect(page.getByRole("tablist")).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByTestId("agent-option").first()).toBeVisible({ timeout: 15_000 });
     await settle(page);
 
     const edges = await page.evaluate(() => {
-      const tabs = document.querySelector('[role="tablist"]');
-      // The eyebrow above the first card is the content column's own left edge.
-      const heading = document.querySelector("h2, h1, [data-slot='card']");
+      // The page's own title is its chrome; the first card is the content column.
+      const title = document.querySelector("#app-content h1");
+      const card = document.querySelector('[data-testid="agent-option"]');
       return {
-        tabs: tabs ? Math.round(tabs.getBoundingClientRect().left) : null,
-        content: heading ? Math.round(heading.getBoundingClientRect().left) : null,
+        title: title ? Math.round(title.getBoundingClientRect().left) : null,
+        content: card ? Math.round(card.getBoundingClientRect().left) : null,
       };
     });
 
-    expect(edges.tabs).not.toBeNull();
+    expect(edges.title).not.toBeNull();
     expect(edges.content).not.toBeNull();
     // Capping the scroller instead of the column put these 232px apart.
-    expect(Math.abs((edges.tabs ?? 0) - (edges.content ?? 0))).toBeLessThanOrEqual(1);
+    expect(Math.abs((edges.title ?? 0) - (edges.content ?? 0))).toBeLessThanOrEqual(1);
   });
 });

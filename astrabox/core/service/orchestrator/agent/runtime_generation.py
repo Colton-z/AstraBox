@@ -24,9 +24,9 @@ from astrabox.core.service.orchestrator.runtime.config_resolver import (
 from astrabox.core.service.orchestrator.runtime.mcp_servers import (
     sandbox_mcp_egress_hosts,
 )
-from astrabox.core.service.orchestrator.runtime.plugin_repos import (
-    get_template_plugin_repos,
-    plugin_repo_egress_hosts,
+from astrabox.core.service.orchestrator.runtime.packages import (
+    template_packages,
+    package_egress_hosts,
 )
 from astrabox.core.service.orchestrator.runtime.runtime_profile import (
     resolve_sandbox_permission_level,
@@ -136,7 +136,7 @@ async def runtime_generations(
         required_hosts=(
             *tuple(request.required_network_hosts),
             *([model_host] if model_host else []),
-            *plugin_repo_egress_hosts(template),
+            *package_egress_hosts(template),
         ),
         mcp_hosts=sandbox_mcp_egress_hosts(_value(template, "mcp_servers", {})),
     )
@@ -198,7 +198,7 @@ async def runtime_generations(
             "skills": list(_value(template, "skills", []) or []),
             "engine_options": _value(template, "engine_options"),
             "default_repo": _value(template, "default_repo"),
-            "plugin_repos": get_template_plugin_repos(template),
+            "packages": template_packages(template),
             "credential_vault_ids": vault_ids,
             "environment_credentials": environment_credentials_generation_contract(
                 environment_credentials
@@ -232,7 +232,7 @@ async def runtime_generations(
         "agent_program": {
             key: payload["agent_program"][key]
             for key in (
-                "skills", "plugin_repos", "credential_vault_ids", "environment_credentials"
+                "skills", "packages", "credential_vault_ids", "environment_credentials"
             )
         },
     }

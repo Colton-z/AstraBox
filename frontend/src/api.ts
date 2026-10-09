@@ -37,6 +37,7 @@ import type {
   AgentPreparedRuntimeStatus,
   AgentExtensionCatalog,
   AgentDeployment,
+  Connector,
   ChannelProviderDescriptor,
   DeploymentRun,
   AgentDraft,
@@ -1410,19 +1411,35 @@ export async function listChannelProviders(): Promise<ChannelProviderDescriptor[
   );
 }
 
+type DeploymentPayload = {
+  scene: string;
+  name?: string;
+  prompt_prefix?: string;
+  secret?: string;
+  execution_user_id?: string;
+  allowed_participants?: string[];
+  attention_policy?: 'all' | 'mentions';
+  channel_config?: Record<string, unknown>;
+  credentials?: Record<string, unknown>;
+  schedule?: { cron: string; timezone: string };
+};
+
+type DeploymentPatch = Partial<Omit<DeploymentPayload, 'secret'>> & { enabled?: boolean };
+
+/** The Agent or Assistant a Deployment belongs to; an Assistant's are owner routes. */
+export type DeploymentOwner = Pick<AgentDeployment, 'agent_id' | 'assistant_id'>;
+
+function deploymentOwner(owner: DeploymentOwner):
+  | { kind: 'assistant'; id: string }
+  | { kind: 'agent'; id: string } {
+  if (owner.assistant_id) return { kind: 'assistant', id: owner.assistant_id };
+  if (owner.agent_id) return { kind: 'agent', id: owner.agent_id };
+  throw new Error('deployment names no Agent or Assistant');
+}
+
 export async function createAgentDeployment(
   agentId: string,
-  payload: {
-    scene: string;
-    name?: string;
-    prompt_prefix?: string;
-    secret?: string;
-    execution_user_id?: string;
-    attention_policy?: 'all' | 'mentions';
-    channel_config?: Record<string, unknown>;
-    credentials?: Record<string, unknown>;
-    schedule?: { cron: string; timezone: string };
-  }
+  payload: DeploymentPayload,
 ): Promise<AgentDeployment> {
   return send((wire) => client.POST('/api/v1/admin/agents/{agent_id}/deployments', {
     ...wire,
@@ -1431,70 +1448,231 @@ export async function createAgentDeployment(
   })) as Promise<AgentDeployment>;
 }
 
-export async function updateAgentDeployment(
-  agentId: string,
-  deploymentId: string,
-  patch: {
-    enabled?: boolean;
-    name?: string;
-    prompt_prefix?: string;
-    scene?: string;
-    execution_user_id?: string;
-    attention_policy?: 'all' | 'mentions';
-    channel_config?: Record<string, unknown>;
-    credentials?: Record<string, unknown>;
-    schedule?: { cron: string; timezone: string };
-  }
+export async function createAssistantDeployment(
+  assistantId: string,
+  payload: DeploymentPayload,
 ): Promise<AgentDeployment> {
+  return send((wire) => client.POST('/api/v1/assistants/{assistant_id}/deployments', {
+    ...wire,
+    params: { path: { assistant_id: assistantId } },
+    body: undeclared(payload),
+  })) as Promise<AgentDeployment>;
+}
+
+export async function updateDeployment(
+  owner: DeploymentOwner,
+  deploymentId: string,
+  patch: DeploymentPatch,
+): Promise<AgentDeployment> {
+  const target = deploymentOwner(owner);
+  if (target.kind === 'assistant') {
+    return send((wire) => client.PUT('/api/v1/assistants/{assistant_id}/deployments/{deployment_id}', {
+      ...wire,
+      params: { path: { assistant_id: target.id, deployment_id: deploymentId } },
+      body: undeclared(patch),
+    })) as Promise<AgentDeployment>;
+  }
   return send((wire) => client.PUT('/api/v1/admin/agents/{agent_id}/deployments/{deployment_id}', {
     ...wire,
-    params: { path: { agent_id: agentId, deployment_id: deploymentId } },
+    params: { path: { agent_id: target.id, deployment_id: deploymentId } },
     body: undeclared(patch),
   })) as Promise<AgentDeployment>;
 }
 
 export async function listDeploymentRuns(
-  agentId: string,
+  owner: DeploymentOwner,
   deploymentId: string,
   limit = 50,
 ): Promise<DeploymentRun[]> {
+  const target = deploymentOwner(owner);
+  if (target.kind === 'assistant') {
+    return expectList<DeploymentRun>(
+      await send((wire) => client.GET('/api/v1/assistants/{assistant_id}/deployments/{deployment_id}/runs', {
+        ...wire,
+        params: { path: { assistant_id: target.id, deployment_id: deploymentId }, query: { limit } },
+      })),
+      '/assistants/{assistant_id}/deployments/{deployment_id}/runs',
+    );
+  }
   return expectList<DeploymentRun>(
     await send((wire) => client.GET('/api/v1/admin/agents/{agent_id}/deployments/{deployment_id}/runs', {
       ...wire,
-      params: { path: { agent_id: agentId, deployment_id: deploymentId }, query: { limit } },
+      params: { path: { agent_id: target.id, deployment_id: deploymentId }, query: { limit } },
     })),
     '/admin/agents/{agent_id}/deployments/{deployment_id}/runs',
   );
 }
 
 export async function triggerDeploymentRun(
-  agentId: string,
+  owner: DeploymentOwner,
   deploymentId: string,
 ): Promise<DeploymentRun> {
+  const target = deploymentOwner(owner);
+  if (target.kind === 'assistant') {
+    return send((wire) => client.POST('/api/v1/assistants/{assistant_id}/deployments/{deployment_id}/runs', {
+      ...wire,
+      params: { path: { assistant_id: target.id, deployment_id: deploymentId } },
+    })) as Promise<DeploymentRun>;
+  }
   return send((wire) => client.POST('/api/v1/admin/agents/{agent_id}/deployments/{deployment_id}/runs', {
     ...wire,
-    params: { path: { agent_id: agentId, deployment_id: deploymentId } },
+    params: { path: { agent_id: target.id, deployment_id: deploymentId } },
   })) as Promise<DeploymentRun>;
 }
 
 export async function replayDeploymentRun(
-  agentId: string,
+  owner: DeploymentOwner,
   deploymentId: string,
   runId: string,
 ): Promise<DeploymentRun> {
+  const target = deploymentOwner(owner);
+  if (target.kind === 'assistant') {
+    return send((wire) => client.POST('/api/v1/assistants/{assistant_id}/deployments/{deployment_id}/runs/{run_id}/replay', {
+      ...wire,
+      params: { path: { assistant_id: target.id, deployment_id: deploymentId, run_id: runId } },
+    })) as Promise<DeploymentRun>;
+  }
   return send((wire) => client.POST('/api/v1/admin/agents/{agent_id}/deployments/{deployment_id}/runs/{run_id}/replay', {
     ...wire,
-    params: { path: { agent_id: agentId, deployment_id: deploymentId, run_id: runId } },
+    params: { path: { agent_id: target.id, deployment_id: deploymentId, run_id: runId } },
   })) as Promise<DeploymentRun>;
 }
 
-export async function deleteAgentDeployment(
-  agentId: string,
-  deploymentId: string
+export async function deleteDeployment(
+  owner: DeploymentOwner,
+  deploymentId: string,
 ): Promise<Record<string, unknown>> {
+  const target = deploymentOwner(owner);
+  if (target.kind === 'assistant') {
+    return send((wire) => client.DELETE('/api/v1/assistants/{assistant_id}/deployments/{deployment_id}', {
+      ...wire,
+      params: { path: { assistant_id: target.id, deployment_id: deploymentId } },
+    }));
+  }
   return send((wire) => client.DELETE('/api/v1/admin/agents/{agent_id}/deployments/{deployment_id}', {
     ...wire,
-    params: { path: { agent_id: agentId, deployment_id: deploymentId } },
+    params: { path: { agent_id: target.id, deployment_id: deploymentId } },
+  }));
+}
+
+// ── Connectors: work apps an Assistant uses through the connector hub ──
+export async function listConnectors(): Promise<Connector[]> {
+  return expectList<Connector>(
+    await send((wire) => client.GET('/api/v1/connectors', wire)),
+    '/connectors',
+  );
+}
+
+export async function authorizeConnector(connectorId: string): Promise<{ authorize_url: string }> {
+  return send((wire) => client.POST('/api/v1/connectors/{connector_id}/authorize', {
+    ...wire,
+    params: { path: { connector_id: connectorId } },
+  })) as Promise<{ authorize_url: string }>;
+}
+
+/** Turn a just-connected app on in the caller's Assistants that have not turned it off. */
+export async function offerConnectorInAssistants(
+  connectorId: string,
+): Promise<{ connector_id: string; assistant_ids: string[] }> {
+  return send((wire) => client.POST('/api/v1/connectors/{connector_id}/assistants', {
+    ...wire,
+    params: { path: { connector_id: connectorId } },
+  })) as Promise<{ connector_id: string; assistant_ids: string[] }>;
+}
+
+export async function disconnectConnector(connectorId: string): Promise<void> {
+  await send((wire) => client.DELETE('/api/v1/connectors/{connector_id}/connection', {
+    ...wire,
+    params: { path: { connector_id: connectorId } },
+  }));
+}
+
+export async function listAssistantConnectors(assistantId: string): Promise<string[]> {
+  const state = (await send((wire) => client.GET('/api/v1/assistants/{assistant_id}/connectors', {
+    ...wire,
+    params: { path: { assistant_id: assistantId } },
+  }))) as { enabled?: string[] };
+  return state.enabled ?? [];
+}
+
+export async function setAssistantConnector(
+  assistantId: string,
+  connectorId: string,
+  enabled: boolean,
+): Promise<string[]> {
+  const path = { assistant_id: assistantId, connector_id: connectorId };
+  const state = (await send((wire) =>
+    enabled
+      ? client.PUT('/api/v1/assistants/{assistant_id}/connectors/{connector_id}', {
+          ...wire,
+          params: { path },
+        })
+      : client.DELETE('/api/v1/assistants/{assistant_id}/connectors/{connector_id}', {
+          ...wire,
+          params: { path },
+        }),
+  )) as { enabled?: string[] };
+  return state.enabled ?? [];
+}
+
+export async function listAgentConnectors(agentId: string): Promise<string[]> {
+  const state = (await send((wire) => client.GET('/api/v1/agents/{agent_id}/connectors', {
+    ...wire,
+    params: { path: { agent_id: agentId } },
+  }))) as { enabled?: string[] };
+  return state.enabled ?? [];
+}
+
+export async function setAgentConnector(
+  agentId: string,
+  connectorId: string,
+  enabled: boolean,
+): Promise<string[]> {
+  const path = { agent_id: agentId, connector_id: connectorId };
+  const state = (await send((wire) =>
+    enabled
+      ? client.PUT('/api/v1/agents/{agent_id}/connectors/{connector_id}', { ...wire, params: { path } })
+      : client.DELETE('/api/v1/agents/{agent_id}/connectors/{connector_id}', { ...wire, params: { path } }),
+  )) as { enabled?: string[] };
+  return state.enabled ?? [];
+}
+
+export async function listAdminConnectors(): Promise<Connector[]> {
+  return expectList<Connector>(
+    await send((wire) => client.GET('/api/v1/admin/connectors', wire)),
+    '/admin/connectors',
+  );
+}
+
+export async function configureConnector(
+  connectorId: string,
+  payload: { client_id?: string; client_secret?: string },
+): Promise<Connector> {
+  return send((wire) => client.PUT('/api/v1/admin/connectors/{connector_id}', {
+    ...wire,
+    params: { path: { connector_id: connectorId } },
+    body: payload,
+  })) as Promise<Connector>;
+}
+
+export async function verifyConnector(connectorId: string): Promise<{ authorize_url: string }> {
+  return send((wire) => client.POST('/api/v1/admin/connectors/{connector_id}/verify', {
+    ...wire,
+    params: { path: { connector_id: connectorId } },
+  })) as Promise<{ authorize_url: string }>;
+}
+
+export async function publishConnector(connectorId: string): Promise<Connector> {
+  return send((wire) => client.POST('/api/v1/admin/connectors/{connector_id}/publish', {
+    ...wire,
+    params: { path: { connector_id: connectorId } },
+  })) as Promise<Connector>;
+}
+
+export async function removeConnector(connectorId: string): Promise<void> {
+  await send((wire) => client.DELETE('/api/v1/admin/connectors/{connector_id}', {
+    ...wire,
+    params: { path: { connector_id: connectorId } },
   }));
 }
 
@@ -1511,6 +1689,14 @@ export async function listSessionsPage(cursor?: string | null, limit = 50): Prom
     '/sessions',
     'sessions',
   );
+}
+
+/** Record that the owner has read a conversation up to now. */
+export async function markSessionRead(sessionId: string): Promise<{ session_id: string; read_at: string }> {
+  return send((wire) => client.POST('/api/v1/sessions/{session_id}/read', {
+    ...wire,
+    params: { path: { session_id: sessionId } },
+  })) as Promise<{ session_id: string; read_at: string }>;
 }
 
 export async function getSession(sessionId: string, init?: RequestInit): Promise<SessionRecord> {

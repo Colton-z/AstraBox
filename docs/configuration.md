@@ -45,6 +45,10 @@ Settings for credentials, endpoints, feature options, resource limits, and secur
 | `ASTRABOX_CHANNEL_RECONCILE_INTERVAL_SECONDS` | `5` | Interval in seconds for projecting Session output and retrying expired inbound events and unfinished outbound deliveries. Multiple replicas can run this recovery loop. The minimum is 1 second. |
 | `ASTRABOX_CLIENT_ID` | *(none)* | OAuth client id the client subcommands exchange for a short-lived bearer token when ASTRABOX_TOKEN is unset. Requires ASTRABOX_CLIENT_SECRET and ASTRABOX_TOKEN_URL; a partial set is refused rather than downgraded to an unauthenticated request. |
 | `ASTRABOX_CLIENT_SECRET` | *(none)* | OAuth client secret paired with ASTRABOX_CLIENT_ID for the client-credentials exchange. |
+| `ASTRABOX_CONTEXTFORGE_ADMIN_EMAIL` | *(none)* | The connector hub's PLATFORM_ADMIN_EMAIL. AstraBox administers the hub as this user, and an administrator's verifying consent for a connector is stored under it. |
+| `ASTRABOX_CONTEXTFORGE_API_URL` | *(none)* | Where the AstraBox server reaches the connector hub's API (ContextForge), for example http://contextforge:4444. Unset with the other ASTRABOX_CONTEXTFORGE_* variables, the deployment runs no hub and offers no connectors; setting only some of them is refused on first use. |
+| `ASTRABOX_CONTEXTFORGE_JWT_SECRET` | *(none)* | The connector hub's JWT_SECRET_KEY. AstraBox signs the session tokens that make the hub act as one of its users with it. |
+| `ASTRABOX_CONTEXTFORGE_PUBLIC_URL` | *(none)* | The connector hub's browser-facing address: the console's origin followed by /connector-hub, for example https://astrabox.example.com/connector-hub. A vendor returns the browser to <this>/oauth/callback, which AstraBox hands to the hub and which each vendor OAuth app registers as its redirect URI; the hub then returns the browser to the console. Vendors accept only an https address, or http at localhost. |
 | `ASTRABOX_DB_BACKEND` | `postgresql` | Persistence backend name. PostgreSQL is the deployment default; SQLite is included, and the [mongo] extra registers MongoDB. |
 | `ASTRABOX_DB_NAME` | `astrabox` | Mongo database name fallback when the connection URI carries none (mongo backend). |
 | `ASTRABOX_DB_URL` | *(none)* | Database connection URL. The maintained local launchers populate it from generated service-scoped credentials; direct and external deployments must set it explicitly. A PostgreSQL, MongoDB, or SQLite URL also selects the matching backend. |
@@ -56,6 +60,9 @@ Settings for credentials, endpoints, feature options, resource limits, and secur
 | `ASTRABOX_EXTENSION_PROVIDER` | *(none)* | Selects the ExtensionProvider that supplies catalogs, runtime bindings, and provider-owned MCP request authorization. Empty selects the provider that declares itself as the deployment default. |
 | `ASTRABOX_GIT_HTTPS_TOKEN_HOST` | *(none)* | The one Git host ASTRABOX_GIT_HTTPS_TOKEN_SECRET_NAME authenticates to, for example github.com. Required with that setting and refused without it; a clone of any other host does not receive the token. |
 | `ASTRABOX_GIT_HTTPS_TOKEN_SECRET_NAME` | *(none)* | Name of the secret holding a Git host HTTPS access token. It is used only where a sandbox backend cannot reach Git over SSH and an SSH repository is cloned over HTTPS instead, and only for the host in ASTRABOX_GIT_HTTPS_TOKEN_HOST. Startup refuses it on a backend that clones over SSH. A repository declared as HTTPS never receives it; private HTTPS sources use an http_basic Vault credential. |
+| `ASTRABOX_GMAIL_MCP_URL` | *(none)* | Where the connector hub reaches this deployment's google_workspace_mcp instance for Gmail (TOOLS=gmail, external OAuth mode), for example http://gmail-mcp:8000/mcp. Unset leaves the Gmail connector unavailable. |
+| `ASTRABOX_GOOGLE_CALENDAR_MCP_URL` | *(none)* | Where the connector hub reaches this deployment's google_workspace_mcp instance for Google Calendar (TOOLS=calendar). Unset leaves the connector unavailable. |
+| `ASTRABOX_GOOGLE_DRIVE_MCP_URL` | *(none)* | Where the connector hub reaches this deployment's google_workspace_mcp instance for Google Drive (TOOLS=drive). Unset leaves the connector unavailable. |
 | `ASTRABOX_HOST` | `127.0.0.1` | Bind address for the `astrabox serve` / uvicorn entrypoint. Loopback by default (no API auth); the server container sets 0.0.0.0 explicitly. |
 | `ASTRABOX_IMAGE_PREFIX` | `ghcr.io/colton-z/astrabox-` | Repository prefix of every default AstraBox image; the component name (server, sandbox-claude-code, sandbox-hermes, workspace-mounter, ...) is appended. Set it to a registry mirror that holds the published images. scripts/compose.sh sets astrabox/, the prefix `make build-*` gives images built from a checkout. The Compose file applies it to the server image too. |
 | `ASTRABOX_IMAGE_TAG` | `derived` | Tag of every default AstraBox image. Unset, it is the installed AstraBox version, so a release runs the sandbox images published with it. scripts/install.sh writes the installed release; scripts/compose.sh sets latest for images built from a checkout. The Compose file applies it to the server image too. |
@@ -261,9 +268,12 @@ Values prepared by the AstraBox service and read by code inside a sandbox. If on
 | --- | --- | --- |
 | `ASTRABOX_HERMES_CONFIG_DEFAULTS` | *(none)* | User-overridable JSON object merged (setdefault mode) into config.yaml; already-present keys are left untouched. |
 | `ASTRABOX_HERMES_CONFIG_OVERWRITE` | *(none)* | Platform-owned JSON object force-merged (overwrite mode) into the Hermes profile's config.yaml at every nested key; lists replace wholesale. |
+| `ASTRABOX_HERMES_MANAGED_CONFIG` | *(none)* | JSON object of the Assistant owner's engine_options.config, written as config.yaml in Hermes' managed scope. Absent when the owner sets none, which empties the scope. |
 | `ASTRABOX_HERMES_MODEL_API_KEY` | *(none)* | Credential value read by Hermes' configured custom model provider. With Credential Vault enabled this is a non-secret placeholder and the outbound proxy substitutes the operator-managed credential on the matching outbound request. An explicit Vault opt-out writes the real credential. |
+| `ASTRABOX_HERMES_PLUGINS` | *(none)* | JSON list of the Assistant's packages ({kind, key, source}): each cached plugin directory is placed at plugins/<key>, enabled in config.yaml, and its declared Python dependencies installed. Absent when the Assistant has no packages, which removes the plugins the platform placed. |
 | `ASTRABOX_HERMES_PROFILE_HOME` | *(none)* | Per-profile home directory prepared for the workload account before the conversation's Hermes TUI process starts. |
 | `ASTRABOX_HERMES_PROFILE_LINUX_USER` | *(none)* | Per-profile Linux account that owns the profile and runs the Hermes TUI process. Set from the provisioned runtime identity. |
+| `ASTRABOX_HERMES_SKILLS_CACHE` | *(none)* | The box's Skill cache holding the Assistant's Skills, copied into the profile's skills/astrabox category. Absent when the Assistant has no Skills, which removes that category. |
 | `ASTRABOX_HERMES_SOUL_B64` | *(none)* | Base64-encoded UTF-8 SOUL.md content: the Assistant's system prompt, written as the Hermes profile's SOUL.md identity. Absent when the Assistant sets none, which hands a SOUL.md the platform wrote back to Hermes' own default. |
 | `ASTRABOX_HERMES_WORKSPACE` | *(none)* | Absolute path of the profile workspace. The setup script creates it and the per-conversation TUI launcher uses it as Hermes' working directory. |
 | `ASTRABOX_RUNNER_PORT` | `8000` | Port of the resident Agent runner's WebSocket endpoint inside the sandbox. |
@@ -289,13 +299,16 @@ Values prepared by the AstraBox service and read by code inside a sandbox. If on
 | `CONV_DEFAULT_REPO_KEY_B64` | *(none)* | Base64-encoded SSH deploy key used only while cloning the default repository. |
 | `CONV_DEFAULT_REPO_TARGET` | `derived` | Default repository checkout target, derived from CONV_WORKSPACE when omitted. |
 | `CONV_DEFAULT_REPO_URL` | *(none)* | Default repository URL cloned into a newly prepared conversation workspace. |
+| `CONV_ENGINE_INSTALL_B64` | *(none)* | Base64 bash script, from the engine adapter's conversation_install_script, that installs the extensions the engine installs itself (Codex plugins, DeepSeek Harness Bundles), run as the workload account before the engine starts. |
+| `CONV_ENGINE_RESTART_B64` | *(none)* | Base64 bash script, from the engine adapter's resident_restart_script, run as root after an engine install on a box whose engine is the image's resident service, so that service reads the install (DeepSeek Harness Bundles). |
 | `CONV_GID` | *(none)* | Numeric gid allocated for a shared Agent conversation or fixed for an Assistant profile across replacement boxes; supplied with CONV_UID. |
 | `CONV_HOME` | *(none)* | Absolute home directory assigned to the conversation workload account. |
 | `CONV_PLUGIN_CACHE_DIR` | *(none)* | Prepared Agent plugin cache directory verified before conversation links are made. |
 | `CONV_PLUGIN_CACHE_HASH` | *(none)* | Expected content hash of the prepared Agent plugin cache. |
 | `CONV_PLUGIN_LINKS_B64` | *(none)* | Base64-encoded table of prepared Agent plugin-cache paths linked into the conversation config tree. |
-| `CONV_SKILL_CACHE_DIR` | `/opt/conversation-runtime/claude-skills-cache` | Prepared Agent Skill cache directory linked into the conversation config tree. |
+| `CONV_SKILL_CACHE_DIR` | `/opt/conversation-runtime/claude-skills-cache` | Prepared Agent Skill cache directory linked at the conversation's Skills root. |
 | `CONV_SKILL_MANIFEST_B64` | *(none)* | Base64-encoded Skill manifest used to verify and link the prepared Agent Skill cache. |
+| `CONV_SKILL_TARGET` | *(none)* | Absolute path of the conversation engine's Skills root, as its adapter declares it (Claude Code: its configuration directory's skills; Codex, Pi and DeepSeek Harness: ~/.agents/skills). Required when the Agent has Skills. |
 | `CONV_TMP` | *(none)* | Conversation-scoped temporary directory prepared by the bootstrap. |
 | `CONV_UID` | *(none)* | Numeric uid allocated for a shared Agent conversation or fixed for an Assistant profile across replacement boxes; supplied with CONV_GID. |
 | `CONV_USER` | *(none)* | Linux account the image-owned conversation bootstrap verifies or creates. |
@@ -303,6 +316,8 @@ Values prepared by the AstraBox service and read by code inside a sandbox. If on
 | `GIT_HTTPS_TOKEN` | *(none)* | Invocation-local copy of CONV_DEFAULT_REPO_HTTPS_TOKEN read by the temporary Git askpass helper; it is not a deployment setting. |
 | `HERMES_DASHBOARD_SESSION_TOKEN` | *(none)* | Credential the in-box Hermes backend checks a WebSocket upgrade against, written into the Assistant profile's env file and read by the image-owned service that starts `hermes serve`. Vendor-named: it is the variable Hermes' own desktop shell injects for the same purpose. Absent, the backend mints a random one per start and no caller can present it. |
 | `HERMES_HOME` | `/root/.hermes` | Root directory of the Hermes profile the config-merge runtime materializes into. |
+| `HERMES_LAZY_INSTALL_TARGET` | *(none)* | Hermes' own variable: the writable directory Hermes installs plugin Python dependencies into and puts on its import path, outside the root-owned virtualenv and outside the profile. |
+| `HERMES_MANAGED_DIR` | `/etc/astrabox/hermes` | Hermes' own variable: its managed-scope directory, root-owned, whose config.yaml wins over the profile's key by key. |
 | `REDACT_SECRET` | *(none)* | Invocation-local secret used to redact the repository HTTPS credential from bootstrap diagnostics. |
 
 ## Local development

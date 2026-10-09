@@ -99,6 +99,10 @@ class AgentView:
     #: Platform-owned system instructions. Each adapter maps these to
     #: its own native prompt/configuration contract.
     system: str | None = None
+    #: The IANA timezone the Agent program keeps time in: an Assistant's
+    #: owner's, so "every morning at 8" means their morning. ``None`` leaves
+    #: the program's own default.
+    timezone: str | None = None
     #: Remote MCP server definitions as a flat name→server-def map.
     mcp_servers: dict[str, Any] | None = None
     #: Session trigger provenance, set only during runtime resolution.
@@ -110,7 +114,7 @@ class AgentView:
     #: Opaque options interpreted only by the selected engine adapter.
     engine_options: dict[str, Any] | None = None
     default_repo: dict[str, Any] | None = None
-    plugin_repos: list[dict[str, Any]] = field(default_factory=list)
+    packages: list[dict[str, Any]] = field(default_factory=list)
     #: The entries of ``skills`` an administrator's catalog assignment
     #: supplied. The rest, every Plugin repository and every MCP server
     #: without a ``provider`` are the author's own, and the runtime admits

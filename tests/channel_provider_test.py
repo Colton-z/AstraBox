@@ -263,6 +263,7 @@ def _service(**overrides: Any) -> DeploymentService:
                 "pending_interaction": None,
             }
         ),
+        answer_pending_interaction=AsyncMock(),
         supersede_pending_interaction=AsyncMock(),
         spawn_background_task=_spawn,
     )

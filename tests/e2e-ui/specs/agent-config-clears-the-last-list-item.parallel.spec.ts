@@ -41,7 +41,7 @@ async function emptyJsonExample(field: Locator): Promise<string> {
   return example;
 }
 
-test('removing the final skill and plugin repository persists empty lists after reload', async ({ page, request }) => {
+test('removing the final skill and package persists empty lists after reload', async ({ page, request }) => {
   const api = new AstraApi(request);
   const agent = await api.createColdTestAgent(`__e2e_clear_lists_${Date.now()}`);
   agentId = agent.agent_id;
@@ -126,6 +126,7 @@ test('removing the final skill and plugin repository persists empty lists after 
   await expect(skills.getByRole('textbox')).toHaveCount(0);
 
   const repositories = [{
+    kind: 'claude-plugin',
     url: String(process.env.ASTRABOX_E2E_REAL_PLUGIN_REPOSITORY
       || 'https://github.com/anthropics/claude-plugins-official.git'),
     protocol: 'https',
@@ -133,18 +134,18 @@ test('removing the final skill and plugin repository persists empty lists after 
     branch: 'main',
     depth: 1,
     sha: '',
-    plugin_paths: [String(process.env.ASTRABOX_E2E_REAL_PLUGIN_PATH || 'plugins/frontend-design')],
+    paths: [String(process.env.ASTRABOX_E2E_REAL_PLUGIN_PATH || 'plugins/frontend-design')],
   }];
-  const plugins = page.getByRole('textbox', { name: 'Plugin repositories', exact: true });
+  const plugins = page.getByRole('textbox', { name: 'Packages', exact: true });
   await emptyJsonExample(plugins);
   await emptyJsonExample(page.locator('#agent-default_repo'));
   await plugins.fill(JSON.stringify(repositories));
   await plugins.blur();
-  await saveAndReload(page, api, 'plugin_repos', repositories);
+  await saveAndReload(page, api, 'packages', repositories);
   expect(JSON.parse(await plugins.inputValue())).toEqual(repositories);
   await plugins.fill('[]');
   await plugins.blur();
-  await saveAndReload(page, api, 'plugin_repos', []);
+  await saveAndReload(page, api, 'packages', []);
   expect(JSON.parse(await plugins.inputValue())).toEqual([]);
 
   await test.step('managed and custom runtime configuration share named groups and save together', async () => {
@@ -166,9 +167,9 @@ test('removing the final skill and plugin repository persists empty lists after 
     await expect(skillGroup.getByRole('group', { name: 'Custom Skills', exact: true })).toBeVisible();
     await expect(mcpGroup.locator('#agent-extension-skills')).toHaveCount(0);
     await expect(skillGroup.locator('#agent-extension-mcp')).toHaveCount(0);
-    await expect(mcpGroup.locator('#agent-plugin_repos')).toHaveCount(0);
-    await expect(skillGroup.locator('#agent-plugin_repos')).toHaveCount(0);
-    for (const id of ['agent-extension-mcp', 'agent-extension-skills', 'agent-mcp_servers', 'agent-plugin_repos']) {
+    await expect(mcpGroup.locator('#agent-packages')).toHaveCount(0);
+    await expect(skillGroup.locator('#agent-packages')).toHaveCount(0);
+    for (const id of ['agent-extension-mcp', 'agent-extension-skills', 'agent-mcp_servers', 'agent-packages']) {
       await expect(tools.locator(`[id="${id}"]`)).toBeVisible();
     }
     const workspace = page.locator('[data-slot="card"]').filter({
@@ -234,7 +235,7 @@ test('removing the final skill and plugin repository persists empty lists after 
     const stored = await api.data<Record<string, unknown>>('GET', `/agents/${agentId}`);
     expect(stored.mcp_servers).toEqual(directMcp);
     expect(stored.skills).toEqual([descriptor]);
-    expect(stored.plugin_repos).toEqual(repositories);
+    expect(stored.packages).toEqual(repositories);
     expect(stored.prepared_capacity).toBe(0);
     const savedCatalog = await api.data<typeof catalog>('GET', `/agents/${agentId}/extensions`);
     expect(savedCatalog.selected_mcp_server_ids).toEqual([managed.id]);

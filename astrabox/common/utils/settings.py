@@ -469,6 +469,12 @@ class AstraBoxRuntimeSettings(BaseSettings):
             AliasPath("astrabox", "mongodb", "assistant_catalog_collection")
         ),
     )
+    assistant_defaults_collection: str = Field(
+        default="assistant_defaults",
+        validation_alias=AliasChoices(
+            AliasPath("astrabox", "mongodb", "assistant_defaults_collection")
+        ),
+    )
     assistant_workspace_collection: str = Field(
         default="assistant_workspace",
         validation_alias=AliasChoices(

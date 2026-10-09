@@ -1044,29 +1044,42 @@ class TurnDispatchStreamingMixin(SessionOutputSubscriptionMixin):
         session_id: str,
         interaction_id: str,
     ) -> dict[str, Any]:
-        """Close a pending interaction that a newer independent input replaces.
+        """Stop a turn parked on an interaction that a newer input replaces.
 
-        While the engine that raised the question still holds its wait, the
-        decline goes to it: the engine records the refusal as that tool's
-        result and the parked turn resumes in its own worker. Once that
-        engine is gone the wait went with it — nothing can write the tool
-        result and nobody is left to produce the turn's terminal — so the
-        platform settles the parked turn here instead. Both endings retire
-        the interaction and free the conversation for the new input; only the
-        live one reaches the engine, and only the live one produces a tool
-        result.
+        Someone who sends a new message instead of answering has moved on. A
+        decline would let the engine continue the parked turn on its own guess
+        before it reads that message, so the turn is stopped, for every
+        presentation: the engine's interrupt ends its wait, and the interrupt
+        command settles the parked turn. Once that engine is gone the wait
+        went with it — nothing can interrupt it and nobody is left to produce
+        the turn's terminal — so the platform settles the parked turn here
+        instead. Both endings retire the interaction and free the conversation
+        for the new input.
 
-        The terminal 409s below say there is no wait left to answer: either the
+        The terminal 409s below say there is no wait left to stop: either the
         engine runtime is absent, its sandbox is confirmed gone, or the wait
-        already expired. Any other failure still propagates: an interaction
-        that *could* have been declined must never be retired without one.
+        already expired. Any other failure still propagates: a turn that
+        *could* have been stopped must never be retired without it.
         """
+        session = await self._must_get_projection_backed_session(
+            user,
+            session_id,
+            reconcile_conversation=False,
+            internal_wiring=True,
+        )
+        snapshot = await self._session_snapshots_repo.get_snapshot(session_id)
+        if (
+            str((snapshot or {}).get("conversation_state") or "") != "WAITING_FOR_INTERACTION"
+            or str((snapshot or {}).get("active_interaction_id") or "") != interaction_id
+        ):
+            # An answer already resumed the turn (its continuation is running),
+            # or it settled: there is no wait on this interaction to stop, and
+            # stopping the current turn would cut off the answered work.
+            return {"session_id": session_id, "status": "not_parked"}
+        self._require_turn_eligible(session, channel="conversation")
         try:
-            return await self.answer_pending_interaction(
-                user,
-                session_id,
-                interaction_id,
-                {"decline": True},
+            return await self._interrupt_turn(
+                user, session_id, session=session, snapshot=snapshot,
             )
         except APIError as exc:
             if exc.code not in _SUPERSEDE_ABANDON_CODES:
@@ -1341,6 +1354,16 @@ class TurnDispatchStreamingMixin(SessionOutputSubscriptionMixin):
             return {"session_id": session_id, "status": "completed"}
 
         self._require_turn_eligible(session, channel="conversation")
+        return await self._interrupt_turn(user, session_id, session=session, snapshot=snapshot)
+
+    async def _interrupt_turn(
+        self,
+        user: UserContext,
+        session_id: str,
+        *,
+        session: dict[str, Any],
+        snapshot: dict[str, Any] | None,
+    ) -> dict[str, Any]:
         turn_id = str(
             (snapshot or {}).get("current_turn_id")
             or session.get("current_turn_id")

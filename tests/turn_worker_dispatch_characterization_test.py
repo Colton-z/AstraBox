@@ -302,6 +302,7 @@ class FrameJournalSeqTests(unittest.IsolatedAsyncioTestCase):
             }
         )
         ctx = SimpleNamespace(
+            session_id="session-1",
             ordered_assistant_segments=[],
             durable_semantic_coalescer=SimpleNamespace(
                 ingest=lambda item: [dict(item)]

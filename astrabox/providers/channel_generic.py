@@ -17,22 +17,34 @@ trigger endpoint):
   signed-timestamp + body-bound scheme (Slack/DingTalk/Feishu-style — see the
   built-in ``hmac`` webhook scene for the pattern), NOT this one.
 * payload — ``{"text": "...", "message_id": "...", "conversation_id": "...",
-  "reply": {...}}``; ``text`` (required) becomes the turn message.
+  "sender": "...", "reply_to": "...", "action": "...", "reply": {...}}``;
+  ``text`` (required unless ``action`` is set) becomes the turn message.
   ``message_id`` (optional) rides as the at-least-once dedup key — platform
   redeliveries of the same id get an idempotent ``duplicate`` ack.
   ``conversation_id`` (optional) rides as the conversation key — messages
   sharing it land in the SAME agent session instead of one session per
-  message. ``reply.callback_url`` (optional) enables outbound delivery.
+  message. ``sender`` (optional) is the sending account as the bridge names
+  it, matched verbatim against the binding's ``allowed_participants``; a
+  binding with that list refuses a message without it.
+  ``reply_to`` (optional) is the ``message_id`` of a delivered reply this
+  message answers: a reply to a question's message answers that question.
+  ``action`` (optional) is a ``question.choices[].action`` the user picked.
+  ``reply.callback_url`` (optional) enables outbound delivery.
 
-Outbound: ``POST {"text": "<assistant reply>"}`` to ``reply.callback_url``.
-The URL is validated http(s) at inbound time (fail-loud), so a bad binding
-surfaces on the trigger, not silently in the background task.
+Outbound: ``POST {"text": "<assistant reply>", "message_id": "<id>"}`` to
+``reply.callback_url``. When the agent is waiting on a question, ``text``
+already contains it and ``question`` carries it structured (choices with their
+``action`` ids) for a bridge that renders its own buttons. The URL is
+validated http(s) at inbound time (fail-loud), so a bad binding surfaces on
+the trigger, not silently in the background task.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import hmac
 import json
+import uuid
 from typing import Any, Mapping
 
 import httpx
@@ -40,8 +52,10 @@ import httpx
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
 from astrabox.seams.channel import (
+    ChannelDeliveryReceipt,
     ChannelDescriptor,
     ChannelInbound,
+    ChannelInteraction,
     ChannelProvider,
     register_channel,
 )
@@ -58,6 +72,7 @@ def _strip_bearer(value: str) -> str:
 
 class GenericJsonChannelProvider(ChannelProvider):
     name = "generic_json"
+    supports_interaction_actions = True
 
     def describe(self) -> ChannelDescriptor:
         return ChannelDescriptor(name=self.name, label="Generic JSON webhook")
@@ -96,7 +111,8 @@ class GenericJsonChannelProvider(ChannelProvider):
                 status_code=400,
             )
         text = str(payload.get("text") or "").strip()
-        if not text:
+        action = str(payload.get("action") or "").strip() or None
+        if not text and action is None:
             raise APIError(
                 code="CHANNEL_BAD_PAYLOAD",
                 message='payload.text is required (the turn message)',
@@ -120,6 +136,9 @@ class GenericJsonChannelProvider(ChannelProvider):
             reply_context=reply_context,
             dedup_key=str(payload.get("message_id") or "").strip() or None,
             conversation_key=str(payload.get("conversation_id") or "").strip() or None,
+            participant=str(payload.get("sender") or "").strip() or None,
+            reference=str(payload.get("reply_to") or "").strip() or None,
+            action=action,
         )
 
     async def deliver_outbound(
@@ -128,17 +147,25 @@ class GenericJsonChannelProvider(ChannelProvider):
         reply_context: dict[str, Any],
         text: str,
         binding: Mapping[str, Any],
-    ) -> None:
+        interaction: ChannelInteraction | None = None,
+    ) -> ChannelDeliveryReceipt | None:
         _ = binding
         callback_url = str(reply_context.get("callback_url") or "").strip()
         if not callback_url:
-            return
+            return None
+        # The id a later ``reply_to`` names; minted here because the callback
+        # receiver has no message id of its own to give back.
+        message_id = f"astrabox-{uuid.uuid4().hex}"
+        body: dict[str, Any] = {"text": text, "message_id": message_id}
+        if interaction is not None:
+            body["question"] = dataclasses.asdict(interaction)
         async with httpx.AsyncClient(timeout=_OUTBOUND_TIMEOUT_SECONDS) as client:
-            response = await client.post(callback_url, json={"text": text})
+            response = await client.post(callback_url, json=body)
             response.raise_for_status()
         logger.info(
             "generic_json channel delivered reply (%d chars) to callback", len(text)
         )
+        return ChannelDeliveryReceipt(message_ids=[message_id])
 
 
 register_channel(GenericJsonChannelProvider())

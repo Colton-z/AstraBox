@@ -23,10 +23,13 @@
 set -euo pipefail
 
 mirror_mode=0
+scheduler_mode=0
 if [ "${1:-}" = "--mirror" ] && [ "$#" -eq 1 ]; then
   mirror_mode=1
+elif [ "${1:-}" = "--scheduler" ] && [ "$#" -eq 1 ]; then
+  scheduler_mode=1
 elif [ "$#" -ne 0 ]; then
-  printf 'astrabox-hermes-serve: expected no arguments or --mirror\n' >&2
+  printf 'astrabox-hermes-serve: expected no arguments, --mirror or --scheduler\n' >&2
   exit 64
 fi
 
@@ -143,6 +146,41 @@ source "$profile_env"
 log_dir="${ASTRABOX_HERMES_PROFILE_HOME}/.hermes/logs"
 mkdir -p "$log_dir"
 
+# ── the scheduler ────────────────────────────────────────────────────────
+#
+# Hermes runs scheduled jobs in its gateway process, not in `hermes serve`:
+# `website/docs/user-guide/features/cron.md` ("cron runs in the gateway")
+# at the pinned commit. With no messaging platform configured the gateway
+# stays up for cron alone (`gateway/run_startup.py`), so the Assistant's own
+# jobs fire without any platform credential in the box. It starts once the
+# backend answers, because the backend's start is what restores native state
+# and merges the profile config; a scheduler started earlier would read the
+# image's empty profile.
+if [ "$scheduler_mode" -eq 1 ]; then
+  deadline=$(( SECONDS + DEADLINE_SECONDS ))
+  until curl -sS -o /dev/null -m 3 "http://127.0.0.1:${LOOPBACK_PORT}/api/auth/me" 2>/dev/null; do
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      printf 'astrabox-hermes-serve: backend did not answer within %ss; no scheduler\n' \
+        "$DEADLINE_SECONDS" >&2
+      exit 75
+    fi
+    sleep 1
+  done
+  exec runuser -u "$ASTRABOX_HERMES_PROFILE_LINUX_USER" -- env \
+    HOME="$ASTRABOX_HERMES_PROFILE_HOME" \
+    USER="$ASTRABOX_HERMES_PROFILE_LINUX_USER" \
+    LOGNAME="$ASTRABOX_HERMES_PROFILE_LINUX_USER" \
+    bash --noprofile --norc -c "
+      set -euo pipefail
+      source $(printf '%q' "$profile_env")
+      export HOME=$(printf '%q' "$ASTRABOX_HERMES_PROFILE_HOME")
+      export TERMINAL_CWD=$(printf '%q' "$ASTRABOX_HERMES_WORKSPACE")
+      cd $(printf '%q' "$ASTRABOX_HERMES_WORKSPACE")
+      exec \"\$HERMES_VENV/bin/hermes\" gateway run \
+        2>> $(printf '%q' "$log_dir/astrabox-hermes-scheduler.log")
+    "
+fi
+
 # Loopback, for the reason `astrabox-dsh-serve` gives at length: this API runs
 # commands, a real sandbox exposes only nginx and execd outward, and
 # astrabox-hermes-forward publishes it on the adapter's port once it answers.
@@ -160,9 +198,9 @@ mkdir -p "$log_dir"
 # inference provider configured. Run 'hermes model'".
 #
 # Running config-merge here, on every start, is also what the PTY launcher did
-# for every conversation: it is idempotent, it is where skills, SOUL.md and
-# cron jobs are materialized, and a supervised service that restarts must come
-# back with the same profile rather than whatever the last start left behind.
+# for every conversation: it is idempotent, it is where skills and SOUL.md are
+# materialized, and a supervised service that restarts must come back with the
+# same profile rather than whatever the last start left behind.
 exec runuser -u "$ASTRABOX_HERMES_PROFILE_LINUX_USER" -- env \
   HOME="$ASTRABOX_HERMES_PROFILE_HOME" \
   USER="$ASTRABOX_HERMES_PROFILE_LINUX_USER" \

@@ -1,6 +1,6 @@
 import { useCallback, useRef, useState } from 'react';
 import type { UIMessage } from 'ai';
-import { parseArtifactMarkers } from './marker';
+import { cardArtifacts } from './marker';
 import type { ArtifactMarker } from './types';
 export function useArtifactPanelNavigation(
   initialMessages: UIMessage[],
@@ -12,11 +12,10 @@ export function useArtifactPanelNavigation(
     new Set(
       initialMessages.flatMap((message) =>
         message.parts.flatMap((part) =>
-          part.type === 'dynamic-tool'
-            ? parseArtifactMarkers(part.output).map(
-                (marker) => `${part.toolCallId}:${marker.id}:${marker.version}`,
-              )
-            : [],
+          cardArtifacts(part).map(
+            (marker) =>
+              `${String((part as { data?: { toolCallId?: unknown } }).data?.toolCallId)}:${marker.id}:${marker.version}`,
+          ),
         ),
       ),
     ),

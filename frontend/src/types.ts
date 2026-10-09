@@ -99,7 +99,7 @@ export interface AgentDraft {
   mcp_servers?: Record<string, unknown>;
   engine_options?: Record<string, unknown>;
   default_repo?: Record<string, unknown>;
-  plugin_repos?: Record<string, unknown>[];
+  packages?: Record<string, unknown>[];
   // Access control (per-agent). created_by is server-stamped (user id) and read-only.
   created_by?: string;
   admins?: string[];
@@ -182,7 +182,8 @@ export interface CredentialBinding {
 }
 
 export interface VaultBindingHolder {
-  target_type: 'agent' | 'assistant';
+  /** `assistant_defaults`: the layer every Assistant inherits; `target_id` is its scope. */
+  target_type: 'agent' | 'assistant' | 'assistant_defaults';
   target_id: string;
   target_name: string;
   vault_ids: string[];
@@ -230,12 +231,16 @@ export interface ChannelProviderDescriptor {
   uses_trigger_secret: boolean;
 }
 
-// A Deployment is one internal or external trigger binding on an Agent.
+// A Deployment is one internal or external trigger binding on an Agent or an
+// Assistant; exactly one of agent_id and assistant_id is set.
 export interface AgentDeployment {
   execution_user_id?: string;
   deployment_id: string;
-  agent_id: string;
+  agent_id?: string;
   agent_name?: string;
+  assistant_id?: string;
+  assistant_name?: string;
+  allowed_participants?: string[];
   name?: string;
   created_by?: string;
   enabled?: boolean;
@@ -259,7 +264,8 @@ export interface AgentDeployment {
 export interface DeploymentRun {
   run_id: string;
   deployment_id: string;
-  agent_id: string;
+  agent_id?: string | null;
+  assistant_id?: string | null;
   trigger: 'schedule' | 'manual' | 'replay';
   status:
     | 'QUEUED'
@@ -301,7 +307,26 @@ export interface EnvironmentConfig {
   // The environment's engine declares what an Agent's engine_options bag may
   // hold; the Agent form renders these fields for the chosen environment.
   engine_options_schema?: FormFieldSchema[];
+  // What else the engine lets an Agent or Assistant add to it.
+  extensions?: EngineExtensions;
   [key: string]: unknown;
+}
+
+/** One kind of engine-native package, in the engine's own terms. */
+export interface EnginePackageKind {
+  name: string;
+  label: string;
+  help: string;
+  sources: string[];
+  takes_effect: 'next_conversation' | 'restart' | 'live';
+}
+
+/** An engine's extension surface, as `extensions_projection` renders it. */
+export interface EngineExtensions {
+  mcp_transports: string[];
+  skills: boolean;
+  packages: EnginePackageKind[];
+  tracing: boolean;
 }
 
 // ── Schema-driven forms ─────────────────────────────────────────────────────
@@ -342,6 +367,9 @@ export interface FormFieldSchema {
   label?: string;
   help?: string;
   placeholder?: string;
+  // An engine's native configuration block: the keys the platform sets
+  // itself, which the block may not name (dotted for a nested key).
+  protected_keys?: string[];
 }
 
 export interface FormSchemaGroup {
@@ -454,6 +482,9 @@ export interface EngineCapabilityManifest {
 
 export interface SessionRecord {
   assistant_id?: string | null;
+  /** When the conversation last gained a reply, and when its owner last read it. */
+  last_output_at?: string | null;
+  read_at?: string | null;
   /** Which workspace surfaces this session's Agent declares. Platform's, not the engine's. */
   workspace_panels?: { terminal?: boolean; diff?: boolean } | null;
   session_id: string;
@@ -1089,4 +1120,25 @@ export interface FileChange {
   linesAdded: number;
   linesRemoved: number;
   timestamp: number;
+}
+
+/** A work app an Assistant can use through the vendor's own MCP server. */
+export interface Connector {
+  connector_id: string;
+  name: string;
+  /** `dynamic`: the hub registers itself; `operator`: an administrator enters the OAuth app. */
+  registration: 'dynamic' | 'operator' | string;
+  docs_url?: string | null;
+  /** User view: set up and published, so it can be connected now. */
+  available?: boolean | null;
+  status?: 'connected' | 'needs_reauth' | 'disconnected' | string | null;
+  /** Administrator view: the deployment runs the server this connector forwards to. */
+  deployed?: boolean | null;
+  /** Administrator view: registered with the connector hub. */
+  configured?: boolean | null;
+  /** Administrator view: its tools are published to Assistants. */
+  published?: boolean | null;
+  /** Administrator view: the redirect URI to register with the vendor. */
+  redirect_uri?: string | null;
+  server_id?: string | null;
 }

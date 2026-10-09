@@ -804,6 +804,10 @@ class PlatformResidentOutputSink:
                 response_id,
                 event_seq,
             )
+            return
+        # A reply nobody prompted (a scheduled run, a heartbeat) is activity:
+        # the conversation moves to the top of its owner's list.
+        await self._sessions.update_session(self._session_id, {})
 
     # ── journal plumbing ─────────────────────────────────────────────────
 

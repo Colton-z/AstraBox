@@ -30,16 +30,31 @@
   <a href="README.md">English</a> · <strong>简体中文</strong>
 </p>
 
-把你已经在使用的 Agent 程序变成 7×24 小时在线的云端 Agent。AstraBox 在你自己的基础设施上
-运行 Claude Code、Codex、Hermes、DeepSeek Harness 和 Pi，模型任选。
-对话秒级拉起、秒级恢复；会话、沙箱、凭证和历史都留在你自己手里。
+<p align="center">
+  <img src="docs/img/demo-session.gif" alt="在 AstraBox 控制台中进行一次 Session：Agent 在沙箱里编写 Python 脚本、运行它，并实时返回输出" />
+</p>
 
-你无需自己把 Agent 程序改造成服务、管理沙箱生命周期或处理长连接——部署 AstraBox，
-在网页控制台创建 Agent 并启动 Session，即可让复杂任务在云端沙箱中执行并实时接收结果。
+AstraBox 在你自己的基础设施上，把你已经在使用的 Agent 程序（Claude Code、Codex、
+DeepSeek Harness、Pi 和 Hermes）变成云端 Agent，模型任选。沙箱、流式输出、状态和凭证
+都由它负责，你无需自己把 Agent 程序改造成服务。
 
-AstraBox 把你已经在使用的 Agent 程序变成可以远程访问、持续执行长时间任务并接入应用、
-自动化流程和消息平台的云端 Agent。网页控制台、API、Session 记录、身份验证和沙箱都
-运行在你管理的基础设施中。
+```bash
+curl -fsSL https://raw.githubusercontent.com/Colton-z/AstraBox/main/scripts/install.sh | bash
+```
+
+在装有 Docker 的 Linux 主机或 WSL 2 上一条命令即可完成安装。安装脚本会询问使用哪个模型服务，
+并输出控制台地址 <http://127.0.0.1:8088>。环境要求见[快速开始](#快速开始)。
+
+- **运行厂商自己的 Agent 程序**——每个 Agent 在沙箱里运行真正的 Claude Code、Codex
+  等程序，程序自带的工具和会话格式原样可用。
+- **秒级启动，沙箱丢了也不丢对话**——预热沙箱让对话快速拉起；各程序的原生会话保存在平台数据库中，
+  下一条消息到来时恢复到新的沙箱里。
+- **密钥不进沙箱**——凭证在出口边界注入，Agent 只能看到占位符。
+- **随处可达**——网页控制台、HTTP API、CLI、MCP、定时任务、签名 Webhook，以及 Slack、
+  Discord、Telegram、WhatsApp、LINE 等消息平台。
+
+正在考虑 Claude Managed Agents？请看
+[AstraBox 与它的对比](https://www.astrabox.ai/zh-Hans/docs/compare-claude-code-self-hosted)。
 
 **一个平台，同时承载团队 Agent 和个人 Assistant。**[Agent](https://www.astrabox.ai/zh-Hans/docs/authoring-agents)
 是面向团队和自动化的可复用云端 Agent，可以通过网页控制台、API、定时任务、Webhook、消息平台或

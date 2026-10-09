@@ -271,6 +271,23 @@ curl --silent --show-error --request POST \
 控制台使用的非分页数组。这个 Session 路由族只允许更新权限模式；具体可选值由
 所选 Agent 程序定义。
 
+### 未读回复
+
+Session 会记录最后一次得到回复的时间（`last_output_at`），无论回复来自某人发起的轮次，
+还是 Agent 程序自己发出的回复，例如 Assistant 的定时任务或心跳。属主的 `read_at` 记录
+其最后一次阅读的时间：
+
+```bash
+curl --silent --show-error --request POST \
+  "$SERVICE_URL/api/v1/sessions/$SESSION_ID/read" \
+  --header "Authorization: Bearer $ACCESS_TOKEN"
+```
+
+`last_output_at` 晚于 `read_at` 的 Session 为未读。控制台在可见标签页中打开对话时
+将其标记为已读，并在列表里未读对话旁显示圆点。开启通知后（列表中 **Sessions** 旁的
+铃铛），只要有控制台标签页打开（包括后台标签页），每条新的未读回复都会弹出浏览器通知。
+Agent 程序主动发出的回复还会把对话移到列表顶部。
+
 ## Child runs
 
 Agent 程序可以把工作委派给 child run。AstraBox 通过 Session 级接口公开它们的树形

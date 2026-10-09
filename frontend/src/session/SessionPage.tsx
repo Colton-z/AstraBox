@@ -5,6 +5,7 @@ import type { UIMessage as SDKUIMessage } from 'ai';
 import { Queue, QueueItem, QueueItemIndicator, QueueItemContent } from '@/components/ai-elements/queue';
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from '@/components/ui/resizable';
 import { useSessionLifecycle } from './hooks/useSessionLifecycle';
+import { useMarkSessionRead } from './hooks/useMarkSessionRead';
 import { useFirstPageMessages } from './hooks/useFirstPageMessages';
 import { useSessionChat } from './hooks/useSessionChat';
 import { useSessionBootstrapEffects } from './hooks/useSessionBootstrapEffects';
@@ -70,6 +71,7 @@ export function SessionPage({
   const navigate = useNavigate();
 
   const lifecycle = useSessionLifecycle(sessionId);
+  useMarkSessionRead(sessionId, lifecycle.session?.last_output_at);
   const firstPage = useFirstPageMessages(
     sessionId,
     lifecycle.bootstrapPendingInteraction,
@@ -503,6 +505,7 @@ function SessionPageReady({
           loadingMore={historyLoadingMore}
           loadMoreError={historyLoadMoreError}
           onLoadOlder={loadOlderHistory}
+          assistantId={isAssistantConversation ? session.assistant_id : null}
         />
         <SubagentTranscriptDrawer
           sessionId={sessionId}

@@ -67,8 +67,8 @@ class DeploymentServiceReplacement(Protocol):
 
     Runtime protocol checks establish method presence; type checking establishes
     the keyword signatures. Implementations own persistence, but scoped update
-    and delete MUST enforce the agent boundary themselves rather than
-    treating ``agent_id`` as informational. Execution-account changes receive
+    and delete MUST enforce the Agent or Assistant boundary themselves rather
+    than treating ``agent_id``/``assistant_id`` as informational. Execution-account changes receive
     the authenticated ``actor`` and must enforce administrator authorization.
     Calls without ``execution_user_id`` retain their existing keyword shape.
     """
@@ -79,12 +79,19 @@ class DeploymentServiceReplacement(Protocol):
 
     async def list_for_agent(self, agent_id: str) -> list[dict[str, Any]]: ...
 
+    async def assert_can_manage_assistant(self, user: Any, assistant_id: str) -> Any: ...
+
+    async def list_for_assistant(self, assistant_id: str) -> list[dict[str, Any]]: ...
+
+    async def delete_for_assistant(self, assistant_id: str) -> None: ...
+
     async def list_manageable(self, user: Any) -> list[dict[str, Any]]: ...
 
     async def create(
         self,
         *,
-        agent_id: str,
+        agent_id: str = "",
+        assistant_id: str = "",
         creator_user_id: str,
         scene: str,
         name: str = "",
@@ -96,6 +103,7 @@ class DeploymentServiceReplacement(Protocol):
         callback_base_url: str | None = None,
         schedule: Any = None,
         execution_user_id: Any = None,
+        allowed_participants: Any = None,
         actor: Any = None,
     ) -> dict[str, Any]: ...
 
@@ -103,23 +111,27 @@ class DeploymentServiceReplacement(Protocol):
         self,
         deployment_id: str,
         *,
-        agent_id: str,
+        agent_id: str = "",
+        assistant_id: str = "",
         patch: dict[str, Any],
         actor: Any = None,
     ) -> dict[str, Any]: ...
 
-    async def delete(self, deployment_id: str, *, agent_id: str) -> None: ...
+    async def delete(
+        self, deployment_id: str, *, agent_id: str = "", assistant_id: str = ""
+    ) -> None: ...
 
     async def list_runs_for_deployment(
         self,
         deployment_id: str,
         *,
-        agent_id: str,
+        agent_id: str = "",
+        assistant_id: str = "",
         limit: int = 50,
     ) -> list[dict[str, Any]]: ...
 
     async def trigger_now(
-        self, deployment_id: str, *, agent_id: str
+        self, deployment_id: str, *, agent_id: str = "", assistant_id: str = ""
     ) -> dict[str, Any]: ...
 
     async def replay_run(
@@ -127,7 +139,8 @@ class DeploymentServiceReplacement(Protocol):
         run_id: str,
         *,
         deployment_id: str,
-        agent_id: str,
+        agent_id: str = "",
+        assistant_id: str = "",
     ) -> dict[str, Any]: ...
 
     async def start_run_session(

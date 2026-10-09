@@ -58,7 +58,7 @@ async function preparedCapacity(page: Page, agent: Agent): Promise<Prepared> {
     return status.ready && status.prepared_count > 0;
   }, { timeout: 60_000, intervals: [1_000, 2_000] }).toBe(true);
   await expect(page.getByTestId('prewarm-state')).toHaveText(
-    'The next conversation starts warm while this capacity remains available.',
+    'New conversations start warm while prepared capacity remains.',
   );
   await expect(page.getByTestId('prewarm-count')).toHaveText(`Available: ${status.prepared_count} of ${status.target}`);
   expect(status.sandbox_id).toBeTruthy();
@@ -245,9 +245,10 @@ test(`an administrator reprepares installed extensions without interrupting an e
   const skills = page.locator('[role="group"][aria-labelledby="agent-skills-label"]');
   await skills.getByRole('button', { name: 'Add', exact: true }).click();
   await skills.getByRole('textbox').fill('https://github.com/anthropics/skills.git@main#skills/skill-creator');
-  await page.locator('#agent-plugin_repos').fill(JSON.stringify([{
+  await page.locator('#agent-packages').fill(JSON.stringify([{
+    kind: 'claude-plugin',
     url: 'https://github.com/anthropics/claude-plugins-official.git',
-    protocol: 'https', branch: 'main', depth: 1, plugin_paths: ['plugins/frontend-design'],
+    protocol: 'https', branch: 'main', depth: 1, paths: ['plugins/frontend-design'],
   }]));
   const saved = responseFor(page, `/agents/${agent.agent_id}`, 'PUT');
   await page.locator('[data-slot="card"]').filter({ has: skills }).getByRole('button', { name: 'Save', exact: true }).click();

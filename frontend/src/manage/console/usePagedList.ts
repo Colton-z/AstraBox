@@ -115,15 +115,20 @@ export function usePagedList<Page extends CursorPage, Row, Counts>({
       void reload();
       return;
     }
+    // This read supersedes any first read or Refresh still in flight, whose
+    // `finally` then leaves `loading` alone, so it is this read that ends it.
     const token = ++latest.current;
     void read(1).then(
       (next) => {
-        if (token === latest.current) apply(next);
+        if (token !== latest.current) return;
+        apply(next);
+        setLoading(false);
       },
       (e: unknown) => {
         if (token !== latest.current) return;
         onCounts?.(null);
         setError((e as Error).message);
+        setLoading(false);
       },
     );
   }, [apply, onCounts, read, reload]);

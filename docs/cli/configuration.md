@@ -416,9 +416,9 @@ mcp_servers:
 
 The setting shape follows the selected Agent program's MCP support. Remote MCP Servers assigned through the AstraBox registry are combined with the Agent's own definitions.
 
-#### `default_repo` / `plugin_repos`
+#### `default_repo` / `packages`
 
-`default_repo` checks out the Agent's main repository. `plugin_repos` adds repositories that provide Plugins.
+`default_repo` checks out the Agent's main repository. `packages` adds the engine's native packages; each names a `kind` the Environment's engine declares, such as `claude-plugin` for a Claude Code plugin repository.
 
 ```yaml
 default_repo:
@@ -428,15 +428,16 @@ default_repo:
   branch: main
   depth: 1
 
-plugin_repos:
-  - url: https://github.com/example/agent-plugins.git
+packages:
+  - kind: claude-plugin
+    url: https://github.com/example/agent-plugins.git
     protocol: https
     branch: main
-    plugin_paths:
+    paths:
       - plugins/review
 ```
 
-Repository objects support `url`, `protocol`, a deploy-key secret name when required by the protocol, branch, and depth. Deploy-key names resolve from the AstraBox service's process environment, not a Web-console Vault. Plugin repositories may also pin a commit with `sha` and select `plugin_paths`.
+Repository objects support `url`, `protocol`, a deploy-key secret name when required by the protocol, branch, and depth. Deploy-key names resolve from the AstraBox service's process environment, not a Web-console Vault. A package may also pin a commit with `sha` and select directories with `paths`.
 
 #### `exposure_mode`
 
@@ -809,11 +810,12 @@ agents:
       deploy_key_secret_name: application-deploy-key
       branch: main
       depth: 1
-    plugin_repos:
-      - url: https://github.com/example/review-plugins.git
+    packages:
+      - kind: claude-plugin
+        url: https://github.com/example/review-plugins.git
         protocol: https
         branch: main
-        plugin_paths:
+        paths:
           - plugins/review
     skills:
       - <skill-reference>
@@ -1036,7 +1038,7 @@ astrabox schema agent --output json
 | `terminal_panel` | ❌ | Boolean; show the terminal panel. This does not control permission to execute commands. |
 | `diff_panel` | ❌ | Boolean; show the file-diff panel. This does not control permission to change files. |
 | `default_repo` | ❌ | Main repository checkout. |
-| `plugin_repos` | ❌ | Repositories that provide Plugins. |
+| `packages` | ❌ | Engine-native packages, each with the `kind` its engine declares. |
 | `environment_name` | ✅ | Environment used by the Agent. |
 | `exposure_mode` | ❌ | Conversation/MCP exposure. |
 | `idle_hibernate_seconds` | ❌ | Idle time before hibernation. |

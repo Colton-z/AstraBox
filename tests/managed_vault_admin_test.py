@@ -180,6 +180,14 @@ class _AssistantRepo:
         ]
 
 
+class _DefaultsRepo:
+    def __init__(self, layers: list[dict[str, Any]] | None = None) -> None:
+        self.layers = layers or []
+
+    async def list_by_credential_vault_id(self, vault_id: str) -> list[dict[str, Any]]:
+        return [dict(layer) for layer in self.layers if vault_id in layer["credential_vault_ids"]]
+
+
 async def test_vault_holder_list_uses_reverse_indexes_not_one_read_per_target() -> None:
     vaults = _BindingVaultService()
     agents = _AgentRepo(
@@ -205,6 +213,9 @@ async def test_vault_holder_list_uses_reverse_indexes_not_one_read_per_target() 
         vault_service=vaults,  # type: ignore[arg-type]
         agent_repo=agents,  # type: ignore[arg-type]
         assistant_repo=assistants,  # type: ignore[arg-type]
+        defaults_repo=_DefaultsRepo(  # type: ignore[arg-type]
+            [{"scope": "deployment", "credential_vault_ids": ["vlt-1"]}]
+        ),
     )
 
     holders = await service.list_vault_bindings(
@@ -231,6 +242,12 @@ async def test_vault_holder_list_uses_reverse_indexes_not_one_read_per_target() 
             "target_name": "Researcher",
             "vault_ids": ["vlt-1"],
         },
+        {
+            "target_type": "assistant_defaults",
+            "target_id": "deployment",
+            "target_name": "Assistant defaults",
+            "vault_ids": ["vlt-1"],
+        },
     ]
 
 
@@ -241,6 +258,7 @@ async def test_admin_binding_is_saved_on_agent_and_user_cannot_influence_it() ->
         vault_service=vaults,  # type: ignore[arg-type]
         agent_repo=agents,  # type: ignore[arg-type]
         assistant_repo=_AssistantRepo(),  # type: ignore[arg-type]
+        defaults_repo=_DefaultsRepo(),  # type: ignore[arg-type]
     )
     admin = UserContext(user_id="admin-a", org_id="org-1", roles=["admin"])
 
@@ -274,7 +292,27 @@ def _bound_service(
         vault_service=_BindingVaultService(),  # type: ignore[arg-type]
         agent_repo=agents,  # type: ignore[arg-type]
         assistant_repo=_AssistantRepo(assistants),  # type: ignore[arg-type]
+        defaults_repo=_DefaultsRepo(),  # type: ignore[arg-type]
     )
+
+
+async def test_a_vault_the_assistant_defaults_bind_is_refused_deletion() -> None:
+    service = CredentialBindingService(
+        vault_service=_BindingVaultService(),  # type: ignore[arg-type]
+        agent_repo=_AgentRepo(),  # type: ignore[arg-type]
+        assistant_repo=_AssistantRepo(),  # type: ignore[arg-type]
+        defaults_repo=_DefaultsRepo(  # type: ignore[arg-type]
+            [{"scope": "deployment", "credential_vault_ids": ["vlt-managed"]}]
+        ),
+    )
+
+    with pytest.raises(APIError) as blocked:
+        await service.ensure_vault_unbound("vlt-managed", action="delete")
+
+    assert blocked.value.code == "VAULT_IN_USE"
+    assert blocked.value.data["holders"] == [
+        {"target_type": "assistant_defaults", "target_id": "deployment", "target_name": "Assistant defaults"}
+    ]
 
 
 async def test_bound_vault_refusal_names_the_single_holder_and_the_action() -> None:
@@ -363,6 +401,7 @@ async def test_an_unbound_vault_is_not_refused() -> None:
         vault_service=_BindingVaultService(),  # type: ignore[arg-type]
         agent_repo=agents,  # type: ignore[arg-type]
         assistant_repo=_AssistantRepo(),  # type: ignore[arg-type]
+        defaults_repo=_DefaultsRepo(),  # type: ignore[arg-type]
     )
 
     await service.ensure_vault_unbound("vlt-managed", action="delete")

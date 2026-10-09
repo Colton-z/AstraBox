@@ -33,7 +33,7 @@ def _template(*, system: str | None = None, **engine_options: Any) -> SimpleName
         name="buffer-template",
         engine_options={"sdk_options": engine_options},
         system=system,
-        plugin_repos=[],
+        packages=[],
         mcp_servers={},
         skills=[],
     )
@@ -92,7 +92,7 @@ def test_undeclared_engine_options_are_refused_at_the_write_gate(key: str) -> No
     )
 
     register_builtin_providers()
-    schema = capabilities_for_engine_kind("claude_code").engine_options_schema
+    schema = capabilities_for_engine_kind("claude_code").extensions.native_config
     with pytest.raises(APIError) as raised:
         validate_declared_config_bag(
             {key: "value"} if key == "unknown_option" else {"sdk_options": {key: "value"}},

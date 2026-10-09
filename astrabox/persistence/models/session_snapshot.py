@@ -46,6 +46,7 @@ SESSION_SNAPSHOT_FIELD_OWNERSHIP: dict[str, frozenset[str]] = {
             "last_turn_error",
             "last_turn_command_id",
             "last_turn_terminal_frame",
+            "last_output_at",
             "worker_heartbeat_at",
             "degraded_channels.conversation",
         }

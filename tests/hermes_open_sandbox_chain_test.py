@@ -420,8 +420,10 @@ def _bind_real_backend(
         storage_mounts, "storage_provider",
         lambda: SimpleNamespace(provision_mounts=backing_mounts),
     )
-    monkeypatch.setattr(storage_mounts.workspace_router, "provision_mounts", routed_mounts)
-    monkeypatch.setattr(storage_mounts.workspace_router, "attach_sandbox", AsyncMock())
+    from astrabox.core.service.orchestrator.runtime.storage.mergerfs import workspace_router
+
+    monkeypatch.setattr(workspace_router, "provision_mounts", routed_mounts)
+    monkeypatch.setattr(workspace_router, "attach_sandbox", AsyncMock())
     monkeypatch.setattr(provisioning, "plan_workspace_mounts", planned_mounts)
     monkeypatch.setattr(provisioning, "workspace_is_ready", mounted)
     monkeypatch.setattr(startup, "_publish_platform_mcp_binding", no_platform_mcp)

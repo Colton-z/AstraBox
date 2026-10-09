@@ -389,16 +389,20 @@ async def _with_casdoor_checks(
 ) -> IdentityPrincipal:
     """Apply the Casdoor organization check, and read a user's groups from it.
 
-    Casdoor's introspection answer carries no groups, and its access token
-    carries the same groups as the ID token the browser signs in with, so a
-    user's token takes its role from the access token, as a browser sign-in
-    takes it from the ID token.
+    Casdoor's introspection answer carries no groups and no email, and its
+    access token carries the same groups and email as the ID token the
+    browser signs in with, so a user's token takes its role and email from
+    the access token, as a browser sign-in takes them from the ID token.
     """
 
     claims = await _require_casdoor_access_token(config, document, token)
     if claims is None or principal.api_scopes is not None:
         return principal
-    return replace(principal, roles=tuple(roles_from_claims(claims, config)))
+    return replace(
+        principal,
+        roles=tuple(roles_from_claims(claims, config)),
+        email=principal.email or str(claims.get("email") or "").strip() or None,
+    )
 
 
 async def _principal_from_introspection(

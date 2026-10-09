@@ -753,6 +753,11 @@ class SessionRepository:
         query: dict[str, Any] = {"deleted": {"$ne": True}}
         if template_names is not None:
             query["template_name"] = {"$in": list(template_names)}
+            # The scope is Agent names, and an Assistant's conversations carry
+            # its owner-chosen display name in the same field: one named like
+            # an Agent would put a person's own conversations in that Agent's
+            # managers' list.
+            query["session_kind"] = {"$ne": "assistant_chat"}
         if agent_id:
             query["agent_id"] = agent_id
         # The window is over when a conversation STARTED. `updated_at` moves
@@ -1442,6 +1447,23 @@ class SessionRepository:
             if assistant_id in for_session:
                 references.append({**doc, "assistant_id": assistant_id})
         return references
+
+    async def list_assistant_conversations(
+        self, user_id: str, assistant_id: str,
+    ) -> list[dict[str, Any]]:
+        """List the owner's visible conversations with one Assistant."""
+        collection = await get_async_collection(self._collection_name)
+
+        async def _list() -> list[dict[str, Any]]:
+            cursor = collection.find({
+                "user_id": user_id,
+                "workspace_ref.assistant_id": assistant_id,
+                "hidden": {"$ne": True},
+                "deleted": {"$ne": True},
+            })
+            return [doc async for doc in cursor]
+
+        return await run_mongo_with_retry("sessions.list_assistant_conversations", _list)
 
     async def list_sessions_by_agent(
         self,

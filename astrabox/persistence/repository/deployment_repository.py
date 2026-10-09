@@ -11,12 +11,12 @@ from astrabox.common.utils.settings import load_astrabox_settings
 
 
 class DeploymentRepository:
-    """Webhook configs that let external systems trigger an agent conversation.
+    """Trigger bindings that start conversations on an Agent or an Assistant.
 
-    One document per webhook, keyed by a random ``deployment_id``. Each webhook is
-    bound to one agent instance (``agent_id``); an inbound POST to the webhook
-    starts a new conversation on that agent, running as the agent's creator
-    (durable IAM identity). Mirrors EnvironmentRepository's minimal storage shape.
+    One document per binding, keyed by a random ``deployment_id``. Each binding
+    names one target, ``agent_id`` or ``assistant_id``; its triggers start
+    conversations on that target (see
+    :mod:`astrabox.core.service.orchestrator.conversation_targets`).
     """
 
     def __init__(self) -> None:
@@ -25,23 +25,24 @@ class DeploymentRepository:
 
     @staticmethod
     def _active_deployment_filter(
-        deployment_id: str, agent_id: str
+        deployment_id: str, agent_id: str, assistant_id: str = ""
     ) -> dict[str, Any] | None:
         """The nested-resource fence shared by every management mutation.
 
-        ``agent_id`` is part of the write filter, not a value checked only
-        by the service before a later id-only write.  The explicit absent/false
-        ``deleted`` clauses are the live-row filter described in
-        :meth:`list_by_agent`.
+        A Deployment belongs to one Agent or one Assistant. That owning id is
+        part of the write filter, not a value checked only by the service
+        before a later id-only write.  The explicit absent/false ``deleted``
+        clauses are the live-row filter described in :meth:`list_by_agent`.
         """
 
         wid = str(deployment_id or "").strip()
         aid = str(agent_id or "").strip()
-        if not wid or not aid:
+        sid = str(assistant_id or "").strip()
+        if not wid or bool(aid) == bool(sid):
             return None
         return {
             "deployment_id": wid,
-            "agent_id": aid,
+            **({"agent_id": aid} if aid else {"assistant_id": sid}),
             "$or": [{"deleted": {"$exists": False}}, {"deleted": False}],
         }
 
@@ -56,11 +57,11 @@ class DeploymentRepository:
         )
 
     async def get_for_deployment(
-        self, deployment_id: str, agent_id: str
+        self, deployment_id: str, agent_id: str, *, assistant_id: str = ""
     ) -> dict[str, Any] | None:
-        """Return one active webhook only inside ``agent_id``'s scope."""
+        """Return one active Deployment only inside its Agent or Assistant scope."""
 
-        query = self._active_deployment_filter(deployment_id, agent_id)
+        query = self._active_deployment_filter(deployment_id, agent_id, assistant_id)
         if query is None:
             return None
         collection = await get_async_collection(self._collection_name)
@@ -90,6 +91,25 @@ class DeploymentRepository:
             return docs
 
         return await run_mongo_with_retry("deployments.list_by_agent", _list)
+
+    async def list_by_assistant(self, assistant_id: str) -> list[dict[str, Any]]:
+        sid = str(assistant_id or "").strip()
+        if not sid:
+            return []
+
+        async def _list() -> list[dict[str, Any]]:
+            collection = await get_async_collection(self._collection_name)
+            cursor = collection.find(
+                {
+                    "assistant_id": sid,
+                    "$or": [{"deleted": {"$exists": False}}, {"deleted": False}],
+                }
+            )
+            docs = [doc async for doc in cursor]
+            docs.sort(key=lambda item: str(item.get("created_at") or ""))
+            return docs
+
+        return await run_mongo_with_retry("deployments.list_by_assistant", _list)
 
     async def list_active(self) -> list[dict[str, Any]]:
         """Return every live Deployment in one collection read."""
@@ -226,6 +246,8 @@ class DeploymentRepository:
         deployment_id: str,
         agent_id: str,
         updates: dict[str, Any],
+        *,
+        assistant_id: str = "",
     ) -> dict[str, Any] | None:
         """Atomically update and return one active deployment-scoped webhook.
 
@@ -234,10 +256,10 @@ class DeploymentRepository:
         a future caller accidentally includes them in ``updates``.
         """
 
-        query = self._active_deployment_filter(deployment_id, agent_id)
+        query = self._active_deployment_filter(deployment_id, agent_id, assistant_id)
         if query is None:
             return None
-        protected = {"_id", "deployment_id", "agent_id", "deleted"}
+        protected = {"_id", "deployment_id", "agent_id", "assistant_id", "deleted"}
         safe_updates = {
             key: value for key, value in dict(updates or {}).items() if key not in protected
         }
@@ -252,7 +274,7 @@ class DeploymentRepository:
         )
 
     async def soft_delete_for_deployment(
-        self, deployment_id: str, agent_id: str
+        self, deployment_id: str, agent_id: str, *, assistant_id: str = ""
     ) -> bool:
         """Atomically soft-delete one active deployment-scoped webhook.
 
@@ -261,7 +283,7 @@ class DeploymentRepository:
         foreign delete returns ``False`` and the service maps all four to 404.
         """
 
-        query = self._active_deployment_filter(deployment_id, agent_id)
+        query = self._active_deployment_filter(deployment_id, agent_id, assistant_id)
         if query is None:
             return False
         collection = await get_async_collection(self._collection_name)

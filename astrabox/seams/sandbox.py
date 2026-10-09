@@ -62,6 +62,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
 from collections.abc import AsyncIterator, Awaitable, Callable
+from typing import TYPE_CHECKING
 from typing import Any, Literal, Mapping, Protocol, cast, runtime_checkable
 
 from astrabox.common.utils.errors import APIError
@@ -71,6 +72,9 @@ from astrabox.seams.sandbox_disposal import (
     SandboxDestruction,
     claim_from_metadata,
 )
+
+if TYPE_CHECKING:
+    from astrabox.seams.storage import WorkspaceRoute
 
 #: Entry-point group an external package registers a provider under.
 ENTRY_POINT_GROUP = "astrabox.providers.sandbox"
@@ -427,17 +431,16 @@ class SandboxCreateSpec:
     cwd: str | None = None
     env: dict[str, str] = field(default_factory=dict)
     metadata: Mapping[str, str] = field(default_factory=dict)
-    #: ``(box_path, storage_subpath)`` pairs naming what must outlive this box.
-    #: Backend-neutral on purpose: the platform plans WHERE a subject's durable
-    #: files live (`plan_subject_storage_mounts`), and the provider decides what
-    #: medium answers for them. A provider that cannot mount anything must
-    #: refuse a non-empty value rather than create a box whose files vanish with
-    #: it — which is the failure this field exists to end: the seam kept
-    #: `uses_create_oss_mounts = True`, meaning "the create path mounts this",
-    #: while the create path had nothing to mount with.
+    #: ``(box_path, subpath)`` pairs naming what must outlive this box.
+    #: The platform plans WHERE a subject's durable files live
+    #: (`plan_subject_storage_mounts`); by the time a create carries them, this
+    #: backend's workspace route has rewritten them into what its runtime
+    #: mounts, with ``workspace_volume``. A provider that cannot mount anything
+    #: must refuse a non-empty value rather than create a box whose files
+    #: vanish with it.
     workspace_mounts: tuple[tuple[str, str], ...] = ()
     workspace_volume: str | None = None
-    """Storage-provider provisioned volume; the sandbox provider only mounts it."""
+    """Volume the backend's workspace route provisioned; the create only mounts it."""
     workspace_volume_create_if_missing: bool = True
     publish_ports: tuple[int, ...] = ()
     wait_for_inbox_service_port: int | None = None
@@ -1000,19 +1003,6 @@ class SandboxProvider(ABC):
     #: capability must declare the exact host version so new hosts fail loud on
     #: incompatible semantics while SEAMS_API_VERSION remains additive-stable.
     turn_preparation_contract_version: int | None = None
-    #: Every sandbox this backend CREATES ends on its own, without anything
-    #: from AstraBox: the create carries a lease the control plane honours, and
-    #: a box whose lease lapses is terminated by the backend. Default False.
-    #:
-    #: This is a PROMISE, not a method, and it is here because one part of the
-    #: system trades on it: a create whose answer never arrives leaves a box
-    #: nobody holds an id for, and the only thing that bounds that leak is the
-    #: box expiring by itself. A backend that does not declare this flag must
-    #: not be asked to make creates whose id can go missing — the caller has no
-    #: name to retry with and no bound on the leak. Declared here rather than
-    #: assumed in a provider's own docstring so a caller can CHECK it, and so a
-    #: backend for which it is false is refused instead of silently trusted.
-    created_sandboxes_self_expire: bool = False
     #: Whether creates honour an Environment's provider-neutral
     #: ``network_policy`` by creating the box under it.
     #:
@@ -1048,6 +1038,16 @@ class SandboxProvider(ABC):
     #: guard exactly as a failed initial preparation does. ``None`` (the
     #: default) means the prepared state never expires — no refresh runs.
     turn_preparation_validity_seconds: float | None = None
+
+    def workspace_route(self) -> "WorkspaceRoute | None":
+        """How this backend brings persistent workspace storage into its boxes.
+
+        The storage provider says where workspace files live; the route says
+        how this runtime mounts them. ``None`` (the default) means it cannot:
+        a deployment that configures a workspace volume with this backend is
+        refused at startup.
+        """
+        return None
 
     async def create_sandbox(self, spec: SandboxCreateSpec) -> SandboxHandle:
         """Provision one sandbox from a backend-neutral spec; return a durable
@@ -1986,11 +1986,6 @@ def register_sandbox(provider: SandboxProvider) -> None:
     if not isinstance(profile_exclusive, bool):
         raise RuntimeError(
             f"sandbox provider {name!r} capability sandbox_is_profile_exclusive must be bool"
-        )
-    self_expiring = getattr(provider, "created_sandboxes_self_expire", False)
-    if not isinstance(self_expiring, bool):
-        raise RuntimeError(
-            f"sandbox provider {name!r} capability created_sandboxes_self_expire must be bool"
         )
     isolates_sessions = getattr(provider, "supports_isolated_sessions", False)
     if not isinstance(isolates_sessions, bool):

@@ -49,6 +49,24 @@ if [ "$workspace" != "$workspace_source" ]; then
   fi
 fi
 
+# The owner's Hermes configuration lives in Hermes' managed scope
+# (`hermes_cli/managed_scope.py`), which wins over the profile's config.yaml
+# key by key. Root-owned, so the agent reads it and cannot change it; without
+# an owner configuration the scope holds nothing.
+managed_dir="$(required HERMES_MANAGED_DIR)"
+install -d -o root -g root -m 0755 "$managed_dir"
+if [ -n "${ASTRABOX_HERMES_MANAGED_CONFIG:-}" ]; then
+  managed_tmp="$(mktemp "$managed_dir/.config.yaml.XXXXXX")"
+  "$HERMES_VENV/bin/python" -c '
+import json, os, sys, yaml
+sys.stdout.write(yaml.safe_dump(json.loads(os.environ["ASTRABOX_HERMES_MANAGED_CONFIG"]), sort_keys=False, allow_unicode=True))
+' > "$managed_tmp"
+  chmod 0644 "$managed_tmp"
+  mv -f -- "$managed_tmp" "$managed_dir/config.yaml"
+else
+  rm -f -- "$managed_dir/config.yaml"
+fi
+
 # This directory is the workload account's persistent profile, never a shared
 # system path. The env file was written through the sandbox file API as root;
 # hand the entire newly-provisioned profile back to its owner before Hermes

@@ -38,7 +38,6 @@ const VIEWPORTS = [
 
 const PAGES = [
   { path: "/agents", name: "agent picker" },
-  { path: "/assistants", name: "assistant picker" },
   { path: "/sessions/s-001", name: "session" },
   { path: "/manage/agents", name: "console · agents" },
   { path: "/manage/deployments", name: "console · deployments" },

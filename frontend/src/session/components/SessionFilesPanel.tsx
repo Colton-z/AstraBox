@@ -264,6 +264,7 @@ function DirectoryRow({
   onSelect: (path: string) => void;
   children: ReactNode;
 }) {
+  const { t } = useTranslation();
   return (
     <Collapsible onOpenChange={() => onToggle(path)} open={expanded}>
       {/* The node of the `role="tree"` that `FileTree` opens: the row and the
@@ -280,6 +281,7 @@ function DirectoryRow({
               name selects it. Looking inside a directory is not the same act as
               choosing where the next upload and the next new folder land. */}
           <CollapsibleTrigger
+            aria-label={t('chat:files.folder_contents', { name })}
             render={(
               <button
                 className="flex shrink-0 cursor-pointer items-center border-none bg-transparent p-0"
@@ -314,7 +316,7 @@ function DirectoryRow({
           {actions ? <FileTreeActions>{actions}</FileTreeActions> : null}
         </div>
         <CollapsibleContent>
-          <div className="ml-4 min-w-0 border-l pl-2">{children}</div>
+          <div className="ml-4 min-w-0 border-l pl-2" role="group">{children}</div>
         </CollapsibleContent>
       </div>
     </Collapsible>

@@ -64,6 +64,14 @@ CONVERSATIONS_COLLECTION = "channel_conversations"
 OUTBOX_COLLECTION = "channel_outbox"
 ALIASES_COLLECTION = "channel_aliases"
 OUTPUT_SUBSCRIPTIONS_COLLECTION = "channel_output_subscriptions"
+INTERACTIONS_COLLECTION = "channel_interactions"
+
+# A question a channel showed: OPEN while it can still be answered there;
+# ANSWERED once the engine accepted the participant's answer; CLOSED when the
+# interaction ended any other way (superseded, answered elsewhere, expired).
+INTERACTION_OPEN = "OPEN"
+INTERACTION_ANSWERED = "ANSWERED"
+INTERACTION_CLOSED = "CLOSED"
 
 # Inbound work item states (see module docstring for the machine).
 INBOUND_RECEIVED = "RECEIVED"
@@ -153,7 +161,8 @@ class ChannelRepository:
         deployment_id: str,
         dedup_key: str | None,
         channel_name: str,
-        agent_id: str,
+        agent_id: str = "",
+        assistant_id: str = "",
         payload: dict[str, Any],
         now: float | None = None,
     ) -> tuple[dict[str, Any], str]:
@@ -185,7 +194,7 @@ class ChannelRepository:
             "deployment_id": deployment_id,
             "dedup_key": dedup_key,
             "channel_name": channel_name,
-            "agent_id": agent_id,
+            **({"assistant_id": assistant_id} if assistant_id else {"agent_id": agent_id}),
             "payload": dict(payload),
             "state": INBOUND_RECEIVED,
             "owner_token": owner,
@@ -372,6 +381,36 @@ class ChannelRepository:
                 "generation": int(generation),
             },
             {"$set": updates},
+        )
+        return bool(getattr(result, "modified_count", 0))
+
+    async def mark_inbound_answer(
+        self,
+        *,
+        item_id: str,
+        owner_token: str,
+        generation: int,
+        interaction_ref: str,
+        question_index: int,
+    ) -> bool:
+        """Record which shown question this item answers, before it is used.
+
+        A re-drive reads the mark instead of re-reading the message against
+        the question shown *now*, which may already be the next one.
+        """
+        collection = await get_async_collection(INBOUND_COLLECTION)
+        result = await collection.update_one(
+            {
+                "_id": item_id,
+                "state": {"$in": list(_INBOUND_LIVE_STATES)},
+                "owner_token": owner_token,
+                "generation": int(generation),
+            },
+            {"$set": {
+                "answer_ref": interaction_ref,
+                "answer_question_index": int(question_index),
+                "updated_at": utcnow_iso(),
+            }},
         )
         return bool(getattr(result, "modified_count", 0))
 
@@ -632,6 +671,25 @@ class ChannelRepository:
             updated = await collection.find_one(query)
         return updated.get("frozen_input") if isinstance(updated, dict) else None
 
+    async def exclude_inbound_from_context(self, item: dict[str, Any]) -> None:
+        """Keep an answer to a question out of later turns' conversation context.
+
+        Only this item moves: earlier retained messages it did not consume stay
+        pending for the next turn.
+        """
+        collection = await get_async_collection(INBOUND_COLLECTION)
+        result = await collection.update_one(
+            {
+                "_id": item["_id"],
+                "state": {"$in": list(_INBOUND_LIVE_STATES)},
+                "owner_token": item["owner_token"],
+                "generation": int(item["generation"]),
+            },
+            {"$set": {"context_excluded": True, "updated_at": utcnow_iso()}},
+        )
+        if not result.matched_count:
+            raise RuntimeError("channel answer lost dispatch ownership before leaving the context")
+
     async def mark_context_submitted(self, item: dict[str, Any]) -> None:
         """Mark exactly the frozen message set after its original turn settles."""
         if not await self.renew_inbound_lease(
@@ -669,7 +727,8 @@ class ChannelRepository:
         deployment_id: str,
         conversation_key: str,
         session_id: str,
-        agent_id: str,
+        agent_id: str = "",
+        assistant_id: str = "",
         replaces_session_id: str | None = None,
         execution_user_id: str = "",
     ) -> dict[str, Any] | None:
@@ -688,7 +747,7 @@ class ChannelRepository:
                 "deployment_id": deployment_id,
                 "conversation_key": conversation_key,
                 "session_id": session_id,
-                "agent_id": agent_id,
+                **({"assistant_id": assistant_id} if assistant_id else {"agent_id": agent_id}),
                 "execution_user_id": execution_user_id,
                 "created_at": now,
                 "last_inbound_at": now,
@@ -970,6 +1029,7 @@ class ChannelRepository:
         deployment_id: str | None = None,
         conversation_key: str | None = None,
         session_id: str | None = None,
+        interaction_ref: str | None = None,
     ) -> bool:
         """Persist platform message aliases before the row is marked DELIVERED.
 
@@ -1009,6 +1069,10 @@ class ChannelRepository:
                     "outbox_id": outbox_id,
                     "created_at": utcnow_iso(),
                 }
+                if interaction_ref:
+                    # A reply to this message answers the question it shows.
+                    alias_doc["interaction_ref"] = interaction_ref
+                    alias_doc["question_index"] = 0
                 await alias_collection.update_one(
                     {"_id": _scoped_id("alias", deployment_id, str(alias))},
                     {"$set": alias_doc},
@@ -1041,6 +1105,11 @@ class ChannelRepository:
             "conversation_key": anchor.get("conversation_key"),
             "session_id": anchor.get("session_id"),
             "outbox_id": anchor.get("outbox_id"),
+            **{
+                key: anchor[key]
+                for key in ("interaction_ref", "question_index")
+                if key in anchor
+            },
             "linked_from": str(existing_alias),
             "created_at": utcnow_iso(),
         }
@@ -1050,6 +1119,159 @@ class ChannelRepository:
             upsert=True,
         )
         return doc
+
+    async def record_question_aliases(
+        self,
+        *,
+        deployment_id: str,
+        aliases: list[str],
+        conversation_key: str | None,
+        session_id: str,
+        interaction_ref: str,
+        question_index: int,
+    ) -> None:
+        """Make a follow-up question's message a reply target for that question."""
+        collection = await get_async_collection(ALIASES_COLLECTION)
+        for alias in aliases:
+            await collection.update_one(
+                {"_id": _scoped_id("alias", deployment_id, str(alias))},
+                {"$set": {
+                    "deployment_id": deployment_id,
+                    "alias": str(alias),
+                    "conversation_key": conversation_key,
+                    "session_id": session_id,
+                    "outbox_id": None,
+                    "interaction_ref": interaction_ref,
+                    "question_index": int(question_index),
+                    "created_at": utcnow_iso(),
+                }},
+                upsert=True,
+            )
+
+    async def open_channel_interaction(
+        self,
+        *,
+        deployment_id: str,
+        ref: str,
+        session_id: str,
+        interaction_id: str,
+        conversation_key: str | None,
+        channel_name: str,
+        reply_context: dict[str, Any],
+        view: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Record that a channel showed a question; idempotent per question.
+
+        Keyed by the question's ref, so a redelivered message converges on the
+        record its first delivery created, answers included.
+        """
+        collection = await get_async_collection(INTERACTIONS_COLLECTION)
+        now = utcnow_iso()
+        await collection.update_one(
+            {"_id": _scoped_id("interaction", deployment_id, ref)},
+            {"$setOnInsert": {
+                "deployment_id": deployment_id,
+                "ref": ref,
+                "session_id": session_id,
+                "interaction_id": interaction_id,
+                "conversation_key": conversation_key,
+                "channel_name": channel_name,
+                "reply_context": dict(reply_context),
+                # The question as it was shown, so a reply that arrives after
+                # it closed can still be recognised as an answer to it.
+                "view": dict(view),
+                "state": INTERACTION_OPEN,
+                "question_index": 0,
+                "answers": [],
+                "created_at": now,
+                "updated_at": now,
+            }},
+            upsert=True,
+        )
+        record = await self.get_channel_interaction(deployment_id=deployment_id, ref=ref)
+        if record is None:
+            raise RuntimeError(f"channel interaction {ref} vanished after it was recorded")
+        return record
+
+    async def get_channel_interaction(
+        self, *, deployment_id: str, ref: str
+    ) -> dict[str, Any] | None:
+        collection = await get_async_collection(INTERACTIONS_COLLECTION)
+        return await collection.find_one({"_id": _scoped_id("interaction", deployment_id, ref)})
+
+    async def record_channel_answer(
+        self,
+        *,
+        deployment_id: str,
+        ref: str,
+        question_index: int,
+        answers: list[dict[str, Any]],
+    ) -> bool:
+        """Keep the answers so far and move to the next question.
+
+        ``answers`` is every answer up to and including this question's; the
+        compare on the question number makes the whole-list write safe.
+        """
+        collection = await get_async_collection(INTERACTIONS_COLLECTION)
+        result = await collection.update_one(
+            {
+                "_id": _scoped_id("interaction", deployment_id, ref),
+                "state": INTERACTION_OPEN,
+                "question_index": int(question_index),
+            },
+            {
+                "$inc": {"question_index": 1},
+                "$set": {"answers": list(answers), "updated_at": utcnow_iso()},
+            },
+        )
+        return bool(getattr(result, "modified_count", 0))
+
+    async def stage_channel_answer(
+        self,
+        *,
+        deployment_id: str,
+        ref: str,
+        item_id: str,
+        question_index: int,
+        answer: dict[str, Any],
+    ) -> bool:
+        """Claim the last question's answer for one inbound item, before the engine sees it.
+
+        One item wins; a re-drive of that same item finds its own claim.
+        """
+        collection = await get_async_collection(INTERACTIONS_COLLECTION)
+        result = await collection.update_one(
+            {
+                "_id": _scoped_id("interaction", deployment_id, ref),
+                "state": INTERACTION_OPEN,
+                "question_index": int(question_index),
+                "answering_item": {"$exists": False},
+            },
+            {"$set": {
+                "answering_item": item_id,
+                "staged_answer": answer,
+                "updated_at": utcnow_iso(),
+            }},
+        )
+        return bool(getattr(result, "modified_count", 0))
+
+    async def settle_channel_interaction(
+        self,
+        *,
+        deployment_id: str,
+        ref: str,
+        state: str,
+        participant: str | None = None,
+    ) -> bool:
+        """End a shown question; only an OPEN one moves."""
+        if state not in {INTERACTION_ANSWERED, INTERACTION_CLOSED}:
+            raise ValueError(f"not a settled channel interaction state: {state!r}")
+        collection = await get_async_collection(INTERACTIONS_COLLECTION)
+        result = await collection.update_one(
+            {"_id": _scoped_id("interaction", deployment_id, ref), "state": INTERACTION_OPEN},
+            {"$set": {"state": state, "settled_by": participant, "updated_at": utcnow_iso()}},
+        )
+        return bool(getattr(result, "modified_count", 0))
 
     async def resolve_alias(
         self, *, deployment_id: str, alias: str

@@ -1,10 +1,11 @@
 /**
  * A new channel message supersedes an unanswered questionnaire in that thread.
  *
- * Channel users do not have the browser composer that is replaced by the
- * questionnaire card. A later independent message therefore closes the old
- * AskUserQuestion as declined, then starts its own turn on the same resident
- * sandbox. The old answer path must not be reused as the new message's input.
+ * A later message that does not answer the question means the participant
+ * moved on: the parked turn is stopped, which closes the old AskUserQuestion
+ * with an error result, then the message starts its own turn on the same
+ * resident sandbox. The old answer path must not be reused as the new
+ * message's input.
  */
 import { expect, test, type APIRequestContext } from '@playwright/test';
 
@@ -63,7 +64,7 @@ async function triggerThreadMessage(
   return (envelope.data ?? envelope) as ChannelTriggerReceipt;
 }
 
-test('a newer channel message declines the open AskUserQuestion before its own turn', async ({
+test('a newer channel message stops the open AskUserQuestion before its own turn', async ({
   request,
 }) => {
   const api = new AstraApi(request);

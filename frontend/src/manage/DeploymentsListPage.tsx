@@ -63,10 +63,14 @@ export default function DeploymentsListPage() {
       setAgents(agentList);
       setRows(deployments.map((deployment) => ({
         deployment,
-        agentName:
-          deployment.agent_name
-          || agentNames.get(deployment.agent_id)
-          || deployment.agent_id,
+        agentName: deployment.assistant_id
+          ? t('manage:deployments.target_assistant_label', {
+            name: deployment.assistant_name || deployment.assistant_id,
+          })
+          : deployment.agent_name
+            || agentNames.get(deployment.agent_id ?? '')
+            || deployment.agent_id
+            || '',
       })));
       setError('');
       loaded.current = true;
@@ -76,7 +80,7 @@ export default function DeploymentsListPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     void refresh();

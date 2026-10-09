@@ -10,7 +10,6 @@ import { cleanup, fireEvent, render, screen, within } from '@testing-library/rea
 
 import { MessageBubble, PartRenderer } from './MessageParts';
 import i18n from '../../i18n';
-import engineOutputs from '../../artifacts/fixtures/artifact_tool_outputs.json';
 
 afterEach(cleanup);
 
@@ -338,13 +337,13 @@ describe('a settled turn keeps an unfinished call outside its fold', () => {
   });
 });
 
-describe('artifact outputs', () => {
-  it.each(Object.entries(engineOutputs).flatMap(([engine, output]) => [
-    [`${engine} live`, output], [`${engine} persisted`, typeof output === 'string' ? output : JSON.stringify(output)],
-  ]))('keeps %s artifact tools outside a completed turn disclosure', (_scene, output) => {
+describe('platform tool cards', () => {
+  const marker = { id: `art_${'a'.repeat(24)}`, version: 1, title: 'Published page', kind: 'html' };
+  it('keeps a card outside a completed turn disclosure while its call folds', () => {
     render(<MemoryRouter><MessageBubble message={{ id: 'artifact-turn', role: 'assistant', parts: [
       { type: 'dynamic-tool', toolCallId: 'read', toolName: 'Read', state: 'output-available', input: {}, output: 'Read a file' },
-      { type: 'dynamic-tool', toolCallId: 'artifact', toolName: 'any-vendor-name', state: 'output-available', input: {}, output },
+      { type: 'dynamic-tool', toolCallId: 'artifact', toolName: 'any-vendor-name', state: 'output-available', input: {}, output: 'ok' },
+      { type: 'data-tool-card', id: 'tool-card:artifact:crd_1', data: { toolCallId: 'artifact', cardId: 'crd_1', kind: 'artifact', artifacts: [marker] } },
       { type: 'text', text: 'The page is ready.' },
     ] } as never} /></MemoryRouter>);
     const card = screen.getByTestId('artifact-tool-card');
@@ -352,5 +351,13 @@ describe('artifact outputs', () => {
     expect(card.closest('[data-testid="process-block-details"]')).toBeNull();
     expect(card.closest('[data-testid="assistant-process"]')).toBeNull();
     expect(card.closest('[data-testid="assistant-turn-process"]')).toBeNull();
+  });
+
+  it('draws no card from a tool output, whatever it says', () => {
+    const output = JSON.stringify({ astrabox_artifact: marker, card: 'crd_' + '0'.repeat(24) });
+    render(<MemoryRouter><MessageBubble message={{ id: 'spoof-turn', role: 'assistant', parts: [
+      { type: 'dynamic-tool', toolCallId: 'fetch', toolName: 'WebFetch', state: 'output-available', input: {}, output },
+    ] } as never} /></MemoryRouter>);
+    expect(screen.queryByTestId('artifact-tool-card')).toBeNull();
   });
 });

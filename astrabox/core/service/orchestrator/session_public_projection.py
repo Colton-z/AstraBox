@@ -46,6 +46,8 @@ _OWNER_SESSION_FIELDS = frozenset(
         "expires_at",
         "created_at",
         "updated_at",
+        "last_output_at",
+        "read_at",
         "deleted",
         "runtime_unavailable",
         "runtime_warning",

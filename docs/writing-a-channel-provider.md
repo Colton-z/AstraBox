@@ -66,7 +66,7 @@ Return a `ChannelInbound` with stable values from the messaging product:
 | `conversation_key` | Stable conversation, room, ticket, or thread ID |
 | `reply_context` | Non-secret routing values for delivering the reply |
 | `attention` | Direct-message, mention, and reply signals |
-| `participant` | External sender identity recorded with the message |
+| `participant` | External sender identity recorded with the message and matched against the trigger's Allowed senders; a trigger with that list refuses a message without it |
 
 `reference` links an inbound reply to an earlier platform message.
 `ack_extra` adds product-required fields to the callback response.
@@ -268,6 +268,21 @@ Session output; do not require an inbound command to deliver it. `progress`
 contains the reply's accumulated text, including its earlier text blocks.
 Treat it as replacement content when updating a message. Text-only delivery
 omits replies with no text; native tool cards remain available in Web.
+
+### Questions and approvals {#questions-and-approvals}
+
+When the Agent stops to ask a question or to request approval, the reply so far
+is delivered with the question appended to `text`, so a provider that only
+sends text already shows it. The participant answers by replying to that
+message, or by sending only the option number. Return the message ID in the
+receipt and map quoted replies to `reference`, or replies cannot target the
+question.
+
+To show buttons, set `supports_interaction_actions = True` and accept an
+`interaction` argument in `deliver_outbound()`. It is a `ChannelInteraction`:
+render one button for each choice that has an `action`, and report a press as a
+`ChannelInbound` whose `action` is that string. AstraBox resolves the action to
+its question; the provider does not parse answers or track question state.
 
 AstraBox retains the subscription cursor and reconstructs partial replies
 from the Session journal after a restart. The durable outbox owns retries;

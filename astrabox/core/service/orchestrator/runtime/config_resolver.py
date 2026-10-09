@@ -139,6 +139,56 @@ def required_network_host(url: str, *, label: str) -> str:
     return host
 
 
+def _catalog_mcp_hosts(template: Any) -> list[str]:
+    """Hosts reached only through catalog-assigned MCP servers, not the author's own."""
+
+    from astrabox.core.service.orchestrator.runtime.mcp_servers import (
+        sandbox_mcp_egress_hosts,
+        template_mcp_servers,
+    )
+
+    servers = template_mcp_servers(getattr(template, "mcp_servers", None))
+
+    def assigned(config: Any) -> bool:
+        return isinstance(config, dict) and bool(config.get("provider"))
+
+    authored = set(
+        sandbox_mcp_egress_hosts(
+            {name: config for name, config in servers.items() if not assigned(config)}
+        )
+    )
+    return [
+        host
+        for host in sandbox_mcp_egress_hosts(
+            {name: config for name, config in servers.items() if assigned(config)}
+        )
+        if host not in authored
+    ]
+
+
+def _engine_install_hosts(template: Any) -> list[str]:
+    """Hosts the engine's own installer reaches for the template's native
+    options and for the kinds of package it declares."""
+
+    engine_kind = str(getattr(template, "engine_kind", "") or "").strip()
+    if not engine_kind:
+        return []
+    from astrabox.core.service.orchestrator.engine.registry import get_engine_adapter
+
+    adapter = get_engine_adapter(engine_kind)
+    options = getattr(template, "engine_options", None)
+    hosts = list(adapter.install_egress_hosts(dict(options))) if isinstance(options, dict) and options else []
+    kinds = {
+        str(package.get("kind") or "")
+        for package in getattr(template, "packages", None) or ()
+        if isinstance(package, dict)
+    }
+    for name in sorted(kinds):
+        kind = adapter.capabilities.extensions.package_kind(name)
+        hosts.extend(kind.installer_hosts if kind is not None else ())
+    return hosts
+
+
 def resolve_network_policy(
     template: AgentView,
     *,
@@ -175,10 +225,16 @@ def resolve_network_policy(
     if networking.mode != SANDBOX_NETWORK_LIMITED:
         return SandboxNetworkPolicy(mode=networking.mode)
 
+    # allow_mcp_servers admits remote MCP URLs declared on the Agent itself. A
+    # catalog assignment (the server carrying `provider`) is reached through
+    # the deployment's extension gateway, which an administrator runs, so its
+    # host is a platform destination rather than an author's; a host an
+    # author also declares directly stays behind the setting.
+    catalog_hosts = _catalog_mcp_hosts(template)
     explicit_mcp_hosts = [
-        str(host).strip().lower()
-        for host in mcp_hosts
-        if str(host or "").strip()
+        host
+        for host in (str(item).strip().lower() for item in mcp_hosts if str(item or "").strip())
+        if host not in catalog_hosts
     ]
     if explicit_mcp_hosts and not networking.allow_mcp_servers:
         raise APIError(
@@ -203,13 +259,15 @@ def resolve_network_policy(
     # A catalog-resolved MCP server is the one carrying `provider`; the view
     # builder refuses that field on an author's own server.
     catalog_skills = set(getattr(template, "catalog_skills", ()) or ())
+    engine_hosts = _engine_install_hosts(template)
     check_author_egress_hosts(
         networking,
         author_egress_hosts(
+            engine_hosts=engine_hosts,
             skills=[
                 skill for skill in (template.skills or []) if skill not in catalog_skills
             ],
-            plugin_repos=getattr(template, "plugin_repos", None),
+            packages=getattr(template, "packages", None),
             mcp_servers={
                 name: config
                 for name, config in template_mcp_servers(
@@ -226,6 +284,7 @@ def resolve_network_policy(
     )
 
     candidates.extend(skill_repo_egress_hosts(template.skills))
+    candidates.extend(engine_hosts)
     candidates.extend(platform_callback_egress_targets())
     candidates.extend(
         str(host).strip()
@@ -233,6 +292,7 @@ def resolve_network_policy(
         if str(host or "").strip()
     )
     candidates.extend(explicit_mcp_hosts)
+    candidates.extend(catalog_hosts)
 
     tracing = runtime_tracing_spec(template)
     if tracing and tracing.active and tracing.endpoint_host:

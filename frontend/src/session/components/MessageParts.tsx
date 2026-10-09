@@ -23,7 +23,8 @@ import { localizeDisplayText, toolPreview } from '../../utils/format';
 import { filterSupersededSingletonInteractionParts } from '../toolState';
 import { getSdkMessageTurnId } from '../utils/chatHelpers';
 import { LazyProcessBlock, ProcessSummaryCache } from './LazyProcessBlock';
-import { parseArtifactMarkers } from '@/artifacts/marker';
+import { cardArtifacts } from '@/artifacts/marker';
+import { ConnectionRequestCard } from '@/connections/ConnectionRequestCard';
 import { ArtifactToolCard } from '@/artifacts/ArtifactToolCard';
 import { ToolPartCard } from './ToolParts';
 import { ApiRetryNote, ResultPartCard, TurnFailureCard } from './ResultCards';
@@ -46,6 +47,8 @@ const STANDALONE_DATA_PARTS = new Set([
   'data-api-retry',
   'data-process-block',
   'data-interaction',
+  // A platform tool's card is what that call showed the reader.
+  'data-tool-card',
 ]);
 // The outcome and the decisions inside a turn. A group holding one of these is
 // never folded behind the turn's own header, whichever side of the last tool
@@ -97,7 +100,6 @@ function isProcessPart(
   if (part.type === 'reasoning') return true;
   if (part.type !== 'dynamic-tool') return false;
   const dp = part as DynamicToolUIPart;
-  if (parseArtifactMarkers(dp.output).length) return false;
   // Once the turn has ended, a call that never returned is not work that ran:
   // it is the call the stop landed on, and the durable projection leaves it
   // outside the fold for the same reason it leaves an errored one there.
@@ -310,9 +312,7 @@ export function MessageBubble({
   // stop landed on, or one still waiting on an answer — stays outside on every
   // kind of end: the fold only ever applies to a settled turn, and the durable
   // projection leaves a call without a result outside for the same reason.
-  const isAlertPart = (part: MessagePart) => (
-    part.type === 'dynamic-tool' && parseArtifactMarkers(part.output).length > 0
-  ) || ALERT_DATA_PARTS.has(part.type)
+  const isAlertPart = (part: MessagePart) => ALERT_DATA_PARTS.has(part.type)
     || (
       part.type === 'dynamic-tool'
       && (
@@ -681,15 +681,6 @@ export function PartRenderer({
       return <ThinkingPartCard text={part.text} isStreaming={isStreaming} />;
     case 'dynamic-tool': {
       const dp = part as DynamicToolUIPart;
-      const artifacts = parseArtifactMarkers(dp.output);
-      if (artifacts.length) return <>{artifacts.map(marker => (
-        <ArtifactToolCard
-          key={`${marker.id}:${marker.version}`}
-          marker={marker}
-          live={isActiveTurn}
-          toolCallId={dp.toolCallId}
-        />
-      ))}</>;
       const isPending = dp.toolCallId === pendingToolCallId;
       return <ToolPartCard dp={dp} isPending={isPending} isActiveTurn={isActiveTurn} />;
     }
@@ -723,6 +714,20 @@ export function PartRenderer({
             ))}
           />
         );
+      }
+      if (anyPart.type === 'data-tool-card' && anyPart.data) {
+        const card = anyPart.data as { toolCallId?: string; kind?: string; connectorId?: string; name?: string };
+        if (card.kind === 'connection_request' && card.connectorId && card.name) {
+          return <ConnectionRequestCard connectorId={card.connectorId} name={card.name} />;
+        }
+        return <>{cardArtifacts(part).map((marker) => (
+          <ArtifactToolCard
+            key={`${marker.id}:${marker.version}`}
+            marker={marker}
+            live={isActiveTurn}
+            toolCallId={String(card.toolCallId ?? '')}
+          />
+        ))}</>;
       }
       if (typeof anyPart.type === 'string' && anyPart.type === 'data-result' && anyPart.data) {
         return <ResultPartCard data={anyPart.data as Record<string, unknown>} />;

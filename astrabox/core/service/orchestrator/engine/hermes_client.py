@@ -36,10 +36,13 @@ from astrabox.common.logger.logger_factory import get_logger
 from astrabox.core.service.orchestrator.engine.base import (
     EngineCapabilityManifest,
     EngineConversationBinding,
+    EngineEventSink,
     EngineInputCommand,
     EngineOutputCheckpoint,
     EngineStreamDetached,
     EngineTurnReceipt,
+    ResidentOutputCheckpoint,
+    ResidentOutputSink,
 )
 from astrabox.core.service.orchestrator.engine.child_runs import (
     ChildRunProjectionError,
@@ -58,6 +61,11 @@ from astrabox.core.service.orchestrator.engine.interaction_contract import (
 from astrabox.core.service.orchestrator.engine.input_delivery import (
     input_response_message_id,
 )
+from astrabox.core.service.orchestrator.engine.hermes_cron import HermesCronDelivery
+from astrabox.core.service.orchestrator.engine.resident_relay import ResidentRelay
+from astrabox.persistence.repository.hermes_cron_repository import (
+    HermesCronJobRepository,
+)
 from astrabox.core.service.orchestrator.runtime.execd_json_lines import (
     ExecdChannelDetached,
 )
@@ -71,6 +79,17 @@ from astrabox.core.service.orchestrator.runtime.pty_terminal import (
 
 _CONNECT_TIMEOUT_SECONDS = 20.0
 _RPC_TIMEOUT_SECONDS = 120.0
+
+#: Context occupancy, in percent of the model's window, at which an idle
+#: conversation is compressed ahead of need. Hermes compresses inside a turn
+#: at 50% of the window, or 75% for windows under 512K tokens
+#: (``agent/context_compressor.py`` at the pinned commit), and the user waits
+#: for that. Compressing between turns, well below it, leaves every turn the
+#: headroom it needs to run without compressing itself.
+_IDLE_COMPACT_AT_PERCENT = 40
+#: How long a conversation must stay quiet after a reply before it is compressed.
+_IDLE_COMPACT_QUIET_SECONDS = 15.0
+_COMPRESS_TIMEOUT_SECONDS = 900.0
 _ANCHOR_PREFIX = "hermes-tui-v1."
 
 logger = get_logger(__name__)
@@ -557,6 +576,126 @@ def translate_tui_event(
     }
 
 
+class HermesTurnTranslator:
+    """Frames for one Hermes run: the open text and reasoning blocks it carries.
+
+    Hermes streams text and reasoning as bare deltas; the AI SDK stream needs
+    each contiguous run of them wrapped in a start/end pair, closed when the
+    other kind, a tool, an approval or the terminal arrives. A platform turn
+    and an engine-started run translate the same way.
+
+    ``block_prefix`` names the blocks; ``turn_id`` names approvals and the
+    vendor translation's own ids. When ``offset`` is given, block ids carry it,
+    which keeps a recovered stream's ids distinct from the committed ones.
+    """
+
+    def __init__(
+        self,
+        *,
+        block_prefix: str,
+        turn_id: str,
+        recovered: bool = False,
+        text_open_id: str | None = None,
+        reasoning_open_id: str | None = None,
+    ) -> None:
+        self._block_prefix = block_prefix
+        self.turn_id = turn_id
+        self._recovered = recovered
+        self._active_tool_id: str | None = None
+        self._text_id = text_open_id
+        self._text_open = bool(text_open_id)
+        self._reasoning_id = reasoning_open_id
+        self._reasoning_open = bool(reasoning_open_id)
+        self._saw_delta = False
+        self._segment = 0
+        self._reasoning_segment = 0
+
+    def restart(self, turn_id: str) -> None:
+        """Begin the next run on the same stream, with no block open."""
+
+        self.turn_id = turn_id
+        self._active_tool_id = None
+        self._text_id = None
+        self._text_open = False
+        self._reasoning_id = None
+        self._reasoning_open = False
+        self._saw_delta = False
+        self._segment = 0
+        self._reasoning_segment = 0
+
+    def _close_text(self) -> list[dict[str, Any]]:
+        if not self._text_open:
+            return []
+        frame = {"type": "text-end", "id": self._text_id}
+        self._text_open = False
+        self._text_id = None
+        return [frame]
+
+    def _close_reasoning(self) -> list[dict[str, Any]]:
+        if not self._reasoning_open:
+            return []
+        frame = {"type": "reasoning-end", "id": self._reasoning_id}
+        self._reasoning_open = False
+        self._reasoning_id = None
+        return [frame]
+
+    def frames(self, event: dict[str, Any], *, offset: int | None) -> list[dict[str, Any]]:
+        event_type = str(event.get("type") or "").strip()
+        payload = event.get("payload")
+        payload = payload if isinstance(payload, dict) else {}
+        out: list[dict[str, Any]] = []
+        if event_type == "tool.start":
+            self._active_tool_id = str(payload.get("tool_id") or "").strip() or None
+        position = "" if offset is None else f":{offset}"
+
+        # message.complete carries the full final string as a fallback. On a
+        # recovered suffix that would duplicate deltas already committed
+        # before the cursor, so only use it on an uninterrupted stream that
+        # emitted no deltas.
+        if (
+            event_type == "message.complete"
+            and not self._recovered
+            and not self._saw_delta
+            and str(payload.get("text") or "")
+        ):
+            self._text_id = f"hermes-text:{self._block_prefix}{position}"
+            out.append({"type": "text-start", "id": self._text_id})
+            out.append(
+                {"type": "text-delta", "id": self._text_id, "delta": str(payload.get("text") or "")}
+            )
+            self._text_open = True
+
+        for frame in translate_tui_event(
+            event, turn_id=self.turn_id, active_tool_id=self._active_tool_id
+        ):
+            frame_type = str(frame.get("type") or "")
+            if frame_type == "text-delta":
+                out.extend(self._close_reasoning())
+                if not self._text_open:
+                    self._segment += 1
+                    self._text_id = f"hermes-text:{self._block_prefix}{position}:{self._segment}"
+                    out.append({"type": "text-start", "id": self._text_id})
+                    self._text_open = True
+                frame["id"] = self._text_id
+                self._saw_delta = True
+            elif frame_type == "reasoning-delta":
+                out.extend(self._close_text())
+                if not self._reasoning_open:
+                    self._reasoning_segment += 1
+                    self._reasoning_id = (
+                        f"hermes-reasoning:{self._block_prefix}{position}:"
+                        f"{self._reasoning_segment}"
+                    )
+                    out.append({"type": "reasoning-start", "id": self._reasoning_id})
+                    self._reasoning_open = True
+                frame["id"] = self._reasoning_id
+            elif frame_type in {"tool-input-start", "interaction.request", "result"}:
+                out.extend(self._close_text())
+                out.extend(self._close_reasoning())
+            out.append(frame)
+        return out
+
+
 class HermesTuiProcess:
     """One attachment to a box's resident Hermes backend.
 
@@ -760,6 +899,9 @@ class HermesGatewayEventStream(Protocol):
 
     tui_session_id: str
 
+    @property
+    def last_offset(self) -> int: ...
+
     async def next_event(self) -> HermesTuiWireEvent: ...
 
 
@@ -792,6 +934,107 @@ class HermesGatewayPort(Protocol):
     def unsubscribe(self, subscription: Any) -> None: ...
 
 
+
+class _HermesRelaySeam:
+    """Hermes' answers to the resident relay, in its TUI gateway vocabulary.
+
+    Hermes opens every model run with ``message.start`` and ends it with
+    ``message.complete`` (or ``error``), whether ``prompt.submit`` started it
+    or Hermes did on its own: a ``/loop`` or ``/heartbeat`` tick, a finished
+    background process or delegation, a queued follow-up
+    (``tui_gateway/session_notifications.py``, ``tui_gateway/prompt_turn.py``
+    at the pinned commit). A run belongs to the platform when an input is
+    pending or a platform turn is active, the same rule pi uses.
+
+    A record's offset counts frames on one WebSocket attachment and starts
+    again on the next (``runtime/hermes_backend_channel.py``), so the relay's
+    sequence is that offset above ``base``: the highest position the
+    Session's journal already holds when the attachment's reader starts.
+    """
+
+    engine_kind = "assistant"
+
+    def __init__(self, client: "HermesTuiEngineClient", *, base: int = 0) -> None:
+        self._client = client
+        self._base = int(base)
+
+    def sequence(self, wire: HermesTuiWireEvent) -> int:
+        return self._base + int(wire.output_offset)
+
+    @staticmethod
+    def record(wire: HermesTuiWireEvent) -> dict[str, Any]:
+        return wire.event
+
+    def starts_run(self, record: dict[str, Any]) -> bool:
+        # Hermes refuses some inputs with an ``error`` and no ``message.start``
+        # (an ownership refusal, a cancel before the agent was ready). While a
+        # submit is in flight that error is the run its input started.
+        event_type = str(record.get("type") or "")
+        return event_type == "message.start" or (
+            event_type == "error" and self._client.submitting
+        )
+
+    @staticmethod
+    def platform_run(record: dict[str, Any], *, pending: bool, active: bool) -> bool:
+        return pending or active
+
+    @staticmethod
+    def settles_run(record: dict[str, Any]) -> bool:
+        return str(record.get("type") or "") in {"message.complete", "error"}
+
+    @staticmethod
+    def handoff_to_platform(
+        translator: HermesTurnTranslator, record: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        # The platform FIFO submits the next input only after the previous
+        # run's message.complete, so no input arrives inside an engine run.
+        return None
+
+    def response_id(self, record: dict[str, Any], sequence: int) -> str:
+        key = str(self._client.engine_session_key or "").strip()
+        if not key:
+            raise RuntimeError("Hermes run began before the native session was known")
+        return f"{key}:{sequence}"
+
+    @staticmethod
+    def new_translator() -> HermesTurnTranslator:
+        run = f"hermes-run-{uuid.uuid4().hex[:12]}"
+        return HermesTurnTranslator(block_prefix=run, turn_id=run)
+
+    @staticmethod
+    def translate(
+        translator: HermesTurnTranslator, record: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        # An approval is opened through ``interaction`` instead.
+        return [
+            frame
+            for frame in translator.frames(record, offset=None)
+            if frame.get("type") != "interaction.request"
+        ]
+
+    @staticmethod
+    async def child_facts(record: dict[str, Any]) -> list[dict[str, Any]]:
+        return []
+
+    @staticmethod
+    def native_records() -> list[dict[str, Any]]:
+        return []
+
+    @staticmethod
+    def owed_child_reads() -> list[dict[str, Any]]:
+        return []
+
+    @staticmethod
+    def carries_child_facts(record: dict[str, Any]) -> bool:
+        return False
+
+    @staticmethod
+    def interaction(record: dict[str, Any]) -> dict[str, Any] | None:
+        if str(record.get("type") or "") != "approval.request":
+            return None
+        return next(iter(translate_tui_event(record, turn_id="resident")), None)
+
+
 class HermesTuiEngineClient:
     """EngineClient for one conversation on the profile's resident gateway.
 
@@ -811,8 +1054,30 @@ class HermesTuiEngineClient:
         gateway: HermesGatewayPort,
         platform_session_id: str,
         resume_session_key: str | None = None,
+        resident_output_sink: ResidentOutputSink | None = None,
+        event_sink: EngineEventSink | None = None,
+        output_checkpoint: ResidentOutputCheckpoint | None = None,
+        read_cron_run_output: Any = None,
+        cron_store: HermesCronJobRepository | None = None,
     ) -> None:
         self._gateway = gateway
+        self._read_cron_run_output = read_cron_run_output
+        self._cron_store = cron_store
+        self._cron_delivery: HermesCronDelivery | None = None
+        self._resident_output_sink = resident_output_sink
+        self._event_sink = event_sink
+        self._output_checkpoint = output_checkpoint
+        #: The session's one reader for the life of its subscription; a turn
+        #: reads what the relay hands it (see ``resident_relay``).
+        self._relay: ResidentRelay | None = None
+        self._submission_numbers: dict[str, int] = {}
+        self._submitting = False
+        #: Where this attachment's frame offsets start in the Session journal.
+        self._sequence_base = 0
+        #: The latest context occupancy Hermes reported, and the background
+        #: compression waiting for the conversation to go quiet.
+        self._context_percent: int | None = None
+        self._compaction: asyncio.Task[None] | None = None
         self._platform_session_id = str(platform_session_id)
         self._resume_session_key = str(resume_session_key or "").strip() or None
         self._engine_session_key = self._resume_session_key
@@ -853,6 +1118,12 @@ class HermesTuiEngineClient:
         return self._engine_session_key
 
     @property
+    def submitting(self) -> bool:
+        """Whether a ``prompt.submit`` for a platform input is in flight."""
+
+        return self._submitting
+
+    @property
     def active_receipt(self) -> EngineTurnReceipt | None:
         return self._active_receipt
 
@@ -889,13 +1160,17 @@ class HermesTuiEngineClient:
                     "Hermes resident gateway is not live for this profile"
                 )
             if self._resume_session_key:
+                # Compression ends a Hermes session and continues it in a child,
+                # and resume answers with the child it followed the lineage to
+                # (``tui_gateway/methods_session.py`` ``_resume_follow_tip`` at the
+                # pinned commit). The key that was asked for still names the
+                # whole conversation: every later resume of it reaches the
+                # newest child, so it stays this conversation's durable key.
                 result = await self._gateway.request(
                     "session.resume",
                     {"session_id": self._resume_session_key, "cols": 120},
                 )
-                engine_session_key = str(
-                    result.get("resumed") or self._resume_session_key
-                ).strip()
+                engine_session_key = self._resume_session_key
             else:
                 result = await self._gateway.request(
                     "session.create", {"cols": 120}
@@ -922,6 +1197,171 @@ class HermesTuiEngineClient:
             info = result.get("info")
             if isinstance(info, dict):
                 self._server_info = dict(info)
+            await self._start_relay(self._subscription)
+
+    async def _start_relay(self, subscription: HermesGatewayEventStream) -> None:
+        """Make ``subscription`` the session's one reader, through a new relay."""
+
+        await self._stop_relay()
+        checkpoint, self._output_checkpoint = self._output_checkpoint, None
+        sink = self._resident_output_sink
+        if checkpoint is None and sink is not None:
+            checkpoint = await sink.restore_resident_output(
+                engine_kind="assistant", engine_session_key=self._engine_session_key
+            )
+        base = 0
+        if checkpoint is not None:
+            base = max(
+                int(checkpoint.high_water_sequence or 0),
+                int(checkpoint.replay_after_sequence or 0),
+                int(checkpoint.after_sequence or 0),
+            )
+        self._sequence_base = base
+        cron = self._new_cron_delivery(subscription)
+
+        async def current_sequence() -> int:
+            return base + int(subscription.last_offset)
+
+        async def send_command(payload: dict[str, Any]) -> Any:
+            raise RuntimeError("the Hermes relay sends no engine commands")
+
+        async def next_record() -> HermesTuiWireEvent:
+            wire = await subscription.next_event()
+            if cron is not None:
+                await cron.observe(wire.event)
+            self._observe_context(wire.event)
+            return wire
+
+        relay = ResidentRelay(
+            seam=_HermesRelaySeam(self, base=base),
+            session_id=self._platform_session_id,
+            engine_session_key=self._engine_session_key,
+            next_record=next_record,
+            send_command=send_command,
+            current_sequence=current_sequence,
+            resident_output_sink=self._resident_output_sink,
+            event_sink=self._event_sink,
+            checkpoint=checkpoint,
+        )
+        self._relay = relay
+        relay.start()
+        self._cron_delivery = cron
+        if cron is not None:
+            cron.start()
+
+    def _new_cron_delivery(
+        self, subscription: HermesGatewayEventStream
+    ) -> HermesCronDelivery | None:
+        """Deliver this conversation's own cron runs while its reader is attached."""
+
+        profile_key = str(getattr(self._gateway, "profile_key", "") or "")
+        sink = self._resident_output_sink
+        if not profile_key or sink is None or self._read_cron_run_output is None:
+            return None
+
+        async def list_jobs() -> list[dict[str, Any]]:
+            listed = await self._gateway.request(
+                "cron.manage", {"action": "list", "include_disabled": True}
+            )
+            jobs = listed.get("jobs")
+            return [job for job in jobs if isinstance(job, dict)] if isinstance(jobs, list) else []
+
+        return HermesCronDelivery(
+            profile_key=profile_key,
+            session_id=self._platform_session_id,
+            store=self._cron_store or HermesCronJobRepository(),
+            sink=sink,
+            list_jobs=list_jobs,
+            read_run_output=self._read_cron_run_output,
+            engine_session_key=lambda: self._engine_session_key,
+            sequence=lambda: self._sequence_base + int(subscription.last_offset),
+        )
+
+    def _observe_context(self, event: dict[str, Any]) -> None:
+        """Track context occupancy and compress after a reply once the conversation is quiet.
+
+        Hermes' manual compression snapshots the history and summarizes it
+        without holding the history lock, so a message the user sends while
+        it runs is submitted and answered at once on the full history; the
+        compression result is then discarded by Hermes' history-version fence
+        and the next quiet period compresses again
+        (``tui_gateway/session_compression.py`` at the pinned commit).
+        """
+
+        payload = event.get("payload")
+        usage = payload.get("usage") if isinstance(payload, dict) else None
+        percent = usage.get("context_percent") if isinstance(usage, dict) else None
+        if isinstance(percent, (int, float)) and not isinstance(percent, bool):
+            self._context_percent = int(percent)
+        if str(event.get("type") or "") != "message.complete":
+            return
+        if (self._context_percent or 0) < _IDLE_COMPACT_AT_PERCENT:
+            return
+        if self._compaction is not None and not self._compaction.done():
+            return
+        self._compaction = asyncio.get_running_loop().create_task(
+            self._compact_when_quiet(), name=f"hermes-idle-compaction-{self._platform_session_id}"
+        )
+
+    def _conversation_quiet(self) -> bool:
+        return (
+            not self._closed
+            and self._active_receipt is None
+            and not self._pending_command_ids
+            and not self._submitting
+        )
+
+    async def _compact_when_quiet(self) -> None:
+        await asyncio.sleep(_IDLE_COMPACT_QUIET_SECONDS)
+        tui_session_id = self._tui_session_id
+        if not tui_session_id or not self._conversation_quiet():
+            return
+        try:
+            result = await self._gateway.request(
+                "session.compress",
+                {"session_id": tui_session_id},
+                timeout=_COMPRESS_TIMEOUT_SECONDS,
+            )
+            self._context_percent = None
+            logger.info(
+                "Hermes idle compression: session=%s status=%s before=%s after=%s",
+                self._platform_session_id,
+                result.get("status"),
+                result.get("before_tokens"),
+                result.get("after_tokens"),
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — a later quiet period retries
+            logger.info(
+                "Hermes idle compression skipped: session=%s error=%s",
+                self._platform_session_id,
+                exc,
+            )
+
+    async def _stop_relay(self) -> None:
+        compaction, self._compaction = self._compaction, None
+        if compaction is not None and not compaction.done():
+            compaction.cancel()
+        cron, self._cron_delivery = self._cron_delivery, None
+        if cron is not None:
+            await cron.stop()
+        relay, self._relay = self._relay, None
+        if relay is not None:
+            await relay.stop()
+
+    async def _next_turn_wire(self) -> HermesTuiWireEvent:
+        """The next record of the platform's own turn, as the relay routed it."""
+
+        relay = self._relay
+        if relay is None:
+            raise EngineStreamDetached("Hermes relay is not running")
+        if relay.failure is not None and relay.turn_inbox.empty():
+            raise relay.failure
+        item = await relay.turn_inbox.get()
+        if isinstance(item, BaseException):
+            raise item
+        return item
 
     def _require_anchor_gateway(self, anchor: dict[str, str]) -> None:
         """Adopt a turn anchor, or fail loud when this client's attachment is gone.
@@ -955,7 +1395,7 @@ class HermesTuiEngineClient:
             for row in live.get("sessions") or []
         )
 
-    def _forget_lost_session(self) -> None:
+    async def _forget_lost_session(self) -> None:
         """Drop a TUI session the backend does not hold.
 
         The conversation itself is not lost: Hermes keeps it in its session
@@ -969,6 +1409,7 @@ class HermesTuiEngineClient:
         self._subscription = None
         self._tui_session_id = None
         self._resume_session_key = self._engine_session_key or self._resume_session_key
+        await self._stop_relay()
 
     @staticmethod
     def _input_consumed_frame(command: EngineInputCommand) -> dict[str, Any]:
@@ -1032,10 +1473,26 @@ class HermesTuiEngineClient:
             try:
                 await self._ensure_session()
                 assert self._tui_session_id is not None
-                await self._gateway.request(
-                    "prompt.submit",
-                    {"session_id": self._tui_session_id, "text": command.content},
-                )
+                relay = self._relay
+                if relay is not None:
+                    self._submission_numbers[command_id] = relay.platform_input_submitted()
+                self._submitting = True
+                try:
+                    await self._gateway.request(
+                        "prompt.submit",
+                        {"session_id": self._tui_session_id, "text": command.content},
+                    )
+                except BaseException:
+                    if relay is not None:
+                        relay.platform_input_rejected()
+                    raise
+                finally:
+                    self._submitting = False
+                if relay is not None:
+                    # Accepted: every record until the run's terminal is this
+                    # turn's, including one Hermes sends without a preceding
+                    # ``message.start``.
+                    relay.platform_turn_reattached()
             except BaseException:
                 # A submit that raised never proved consumption, and consumption
                 # is proven by the engine's own boundary frame rather than by
@@ -1064,6 +1521,10 @@ class HermesTuiEngineClient:
             if self._active_command_id == command.command_id:
                 return self._active_receipt
             raise RuntimeError("Hermes already has an active turn")
+        if not consumption_confirmed and self._relay is not None:
+            self._relay.platform_turn_begins(
+                self._submission_numbers.get(command.command_id)
+            )
         if command.command_id not in self._commands:
             if consumption_confirmed:
                 self._commands[command.command_id] = command
@@ -1086,6 +1547,8 @@ class HermesTuiEngineClient:
                     self._pending_command_ids.remove(command.command_id)
                 self._active_command_id = command.command_id
                 self._consumed_command_ids.add(command.command_id)
+                if self._relay is not None:
+                    self._relay.platform_turn_reattached()
             else:
                 started = await self._submit_fifo_head(
                     expected_command_id=command.command_id
@@ -1141,7 +1604,6 @@ class HermesTuiEngineClient:
     ) -> AsyncIterator[EngineTurnEmission]:
         async for frame in self._iter_events(
             receipt,
-            starting_after_sequence=None,
             text_block_open_id=None,
             reasoning_block_open_id=None,
             recovered=False,
@@ -1166,7 +1628,6 @@ class HermesTuiEngineClient:
         )
         frames = self._iter_events(
             receipt,
-            starting_after_sequence=output_checkpoint.after_sequence,
             text_block_open_id=text_block_open_id,
             reasoning_block_open_id=reasoning_block_open_id,
             recovered=True,
@@ -1184,7 +1645,6 @@ class HermesTuiEngineClient:
         self,
         receipt: EngineTurnReceipt,
         *,
-        starting_after_sequence: int | None,
         text_block_open_id: str | None,
         reasoning_block_open_id: str | None,
         recovered: bool,
@@ -1192,7 +1652,7 @@ class HermesTuiEngineClient:
         anchor = decode_turn_anchor(receipt.engine_turn_id)
         self._require_anchor_gateway(anchor)
         if recovered and not await self._backend_holds_session(anchor["tui_session_id"]):
-            self._forget_lost_session()
+            await self._forget_lost_session()
             yield {
                 "type": "result",
                 "finishReason": "error",
@@ -1207,26 +1667,25 @@ class HermesTuiEngineClient:
                 },
             }
             return
+        if receipt.engine_session_key:
+            self._engine_session_key = receipt.engine_session_key
         if (
             recovered
             or self._subscription is None
             or self._subscription.tui_session_id != anchor["tui_session_id"]
         ):
-            # A fresh subscription starts after the durable cursor to avoid
-            # duplicate delivery. This transport subscribes to live events; it
-            # does not request vendor replay of events missed during a host
-            # disconnect. The durable recovery lane settles the recovered turn.
-            # See docs/maintainers/hermes-transport.md.
+            # This transport subscribes to live events and requests no vendor
+            # replay of events missed during a host disconnect; the durable
+            # recovery lane settles the recovered turn. A new subscription only
+            # receives what the backend sends from now on, and the stored
+            # sequence counted frames on an attachment that may be gone, so it
+            # filters nothing here. See docs/maintainers/hermes-transport.md.
             if self._subscription is not None:
                 self._gateway.unsubscribe(self._subscription)
-            self._subscription = self._gateway.subscribe(
-                anchor["tui_session_id"],
-                after_offset=int(starting_after_sequence or 0),
-            )
-        subscription = self._subscription
-        assert subscription is not None
-        if receipt.engine_session_key:
-            self._engine_session_key = receipt.engine_session_key
+            self._subscription = self._gateway.subscribe(anchor["tui_session_id"])
+            await self._start_relay(self._subscription)
+        if recovered and self._relay is not None:
+            self._relay.platform_turn_reattached()
         active_command = self._commands.get(self._active_command_id or "")
         if not recovered and active_command is None and not receipt.input_consumed:
             raise RuntimeError("Hermes active receipt has no matching FIFO command")
@@ -1238,127 +1697,21 @@ class HermesTuiEngineClient:
             self._consumed_command_ids.add(active_command.command_id)
             yield self._input_consumed_frame(active_command)
 
-        active_tool_id: str | None = None
-        text_id = text_block_open_id
-        text_open = bool(text_id)
-        reasoning_id = reasoning_block_open_id
-        reasoning_open = bool(reasoning_id)
-        saw_delta = False
-        segment = 0
-        reasoning_segment = 0
-
+        translator = HermesTurnTranslator(
+            block_prefix=anchor["turn_id"],
+            turn_id=(
+                active_command.command_id if active_command is not None else anchor["turn_id"]
+            ),
+            recovered=recovered,
+            text_open_id=text_block_open_id,
+            reasoning_open_id=reasoning_block_open_id,
+        )
         while True:
-            # Session routing and offset dedup live in the gateway pump and
-            # the subscription; what arrives here is this session's events
-            # plus unscoped process-level notices, exactly once each.
-            wire = await subscription.next_event()
-            event = wire.event
-            event_type = str(event.get("type") or "").strip()
-            payload = event.get("payload")
-            payload = payload if isinstance(payload, dict) else {}
-            if event_type == "tool.start":
-                active_tool_id = str(payload.get("tool_id") or "").strip() or None
-
-            # message.complete carries the full final string as a fallback. On
-            # a recovered suffix that would duplicate deltas already committed
-            # before the cursor, so only use it on an uninterrupted stream that
-            # genuinely emitted no deltas.
-            if (
-                event_type == "message.complete"
-                and not recovered
-                and not saw_delta
-                and str(payload.get("text") or "")
-            ):
-                text_id = f"hermes-text:{anchor['turn_id']}:{wire.output_offset}"
-                yield {
-                    "type": "text-start",
-                    "id": text_id,
-                    "__engine_sequence_number": wire.output_offset,
-                }
-                yield {
-                    "type": "text-delta",
-                    "id": text_id,
-                    "delta": str(payload.get("text") or ""),
-                    "__engine_sequence_number": wire.output_offset,
-                }
-                text_open = True
-
-            frames = list(
-                translate_tui_event(
-                    event,
-                    turn_id=(
-                        active_command.command_id
-                        if active_command is not None
-                        else anchor["turn_id"]
-                    ),
-                    active_tool_id=active_tool_id,
-                )
-            )
-            for frame in frames:
+            # The relay is the subscription's one reader; it hands this turn
+            # the records of the run its input started, in wire order.
+            wire = await self._next_turn_wire()
+            for frame in translator.frames(wire.event, offset=wire.output_offset):
                 frame_type = str(frame.get("type") or "")
-                if frame_type == "text-delta":
-                    if reasoning_open:
-                        yield {
-                            "type": "reasoning-end",
-                            "id": reasoning_id,
-                            "__engine_sequence_number": wire.output_offset,
-                        }
-                        reasoning_open = False
-                        reasoning_id = None
-                    if not text_open:
-                        segment += 1
-                        text_id = f"hermes-text:{anchor['turn_id']}:{wire.output_offset}:{segment}"
-                        yield {
-                            "type": "text-start",
-                            "id": text_id,
-                            "__engine_sequence_number": wire.output_offset,
-                        }
-                        text_open = True
-                    frame["id"] = text_id
-                    saw_delta = True
-                elif frame_type == "reasoning-delta":
-                    if text_open:
-                        yield {
-                            "type": "text-end",
-                            "id": text_id,
-                            "__engine_sequence_number": wire.output_offset,
-                        }
-                        text_open = False
-                        text_id = None
-                    if not reasoning_open:
-                        reasoning_segment += 1
-                        reasoning_id = (
-                            f"hermes-reasoning:{anchor['turn_id']}:"
-                            f"{wire.output_offset}:{reasoning_segment}"
-                        )
-                        yield {
-                            "type": "reasoning-start",
-                            "id": reasoning_id,
-                            "__engine_sequence_number": wire.output_offset,
-                        }
-                        reasoning_open = True
-                    frame["id"] = reasoning_id
-                elif frame_type in {
-                    "tool-input-start",
-                    "interaction.request",
-                    "result",
-                }:
-                    if text_open:
-                        yield {
-                            "type": "text-end",
-                            "id": text_id,
-                            "__engine_sequence_number": wire.output_offset,
-                        }
-                        text_open = False
-                        text_id = None
-                    if reasoning_open:
-                        yield {
-                            "type": "reasoning-end",
-                            "id": reasoning_id,
-                            "__engine_sequence_number": wire.output_offset,
-                        }
-                        reasoning_open = False
-                        reasoning_id = None
                 if frame_type == "result":
                     completed_command = active_command
                     next_command = await self._submit_fifo_head()
@@ -1366,25 +1719,19 @@ class HermesTuiEngineClient:
                         if completed_command is not None:
                             self._commands.pop(completed_command.command_id, None)
                             self._consumed_command_ids.discard(completed_command.command_id)
+                            self._submission_numbers.pop(completed_command.command_id, None)
                         yield {
                             "type": "response-result",
                             "data": {key: value for key, value in frame.items() if key != "type"},
-                            "__engine_sequence_number": wire.output_offset,
+                            "__engine_sequence_number": self._sequence_base + wire.output_offset,
                         }
                         active_command = next_command
-                        active_tool_id = None
-                        text_id = None
-                        text_open = False
-                        reasoning_id = None
-                        reasoning_open = False
-                        saw_delta = False
-                        segment = 0
-                        reasoning_segment = 0
+                        translator.restart(next_command.command_id)
                         self._consumed_command_ids.add(next_command.command_id)
                         yield self._input_consumed_frame(next_command)
                         continue
                 out = dict(frame)
-                out["__engine_sequence_number"] = wire.output_offset
+                out["__engine_sequence_number"] = self._sequence_base + wire.output_offset
                 # Settle BEFORE the terminal frame is yielded. The consumer
                 # stops iterating as soon as it has that frame, which closes
                 # this generator — anything after the yield never runs, and
@@ -1398,8 +1745,11 @@ class HermesTuiEngineClient:
                     if active_command is not None:
                         self._commands.pop(active_command.command_id, None)
                         self._consumed_command_ids.discard(active_command.command_id)
+                        self._submission_numbers.pop(active_command.command_id, None)
                     self._active_receipt = None
                     self._active_command_id = None
+                    if self._relay is not None:
+                        self._relay.platform_turn_finished()
                 elif frame_type == "interaction.request":
                     # The turn is NOT over: an approval suspends it, and the
                     # receipt is what the answer reattaches to.
@@ -1483,6 +1833,7 @@ class HermesTuiEngineClient:
     async def close(self) -> None:
         self._closed = True
         self._consumed_command_ids.clear()
+        await self._stop_relay()
         subscription, self._subscription = self._subscription, None
         if subscription is not None:
             self._gateway.unsubscribe(subscription)
@@ -1516,6 +1867,7 @@ class HermesTuiEngineClient:
                         tui_session_id,
                         exc,
                     )
+            await self._stop_relay()
             subscription, self._subscription = self._subscription, None
             if subscription is not None:
                 self._gateway.unsubscribe(subscription)

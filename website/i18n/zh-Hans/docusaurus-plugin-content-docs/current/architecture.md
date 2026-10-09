@@ -151,11 +151,13 @@ AstraBox Credential Vault 是组织级资源。`local` Secret Store 使用 AES-G
 仓库或另行保存。Assistant 暂停会先保存原生状态，再释放计算资源；保留工作区文件还需
 配置持久工作区存储。详见[文件](files.md)和 [OpenSandbox](providers/opensandbox.md)。
 
-启用持久工作区时，存储插件提供底层文件系统，平台的公共 mergerfs 路由为每个沙箱提供
-固定的目录入口。交付前，平台把入口关联到新建或已有工作区。OpenSandbox 只挂载工作区
-子目录，不挂载路由的管理根目录。Agent 程序不负责选择存储介质或实现目录路由。本地
+启用持久工作区时，存储插件提供底层文件系统，沙箱后端的工作区路由把它带进每个沙箱。
+内置 OpenSandbox 后端的路由为每个沙箱提供一个 mergerfs 视图：交付前，平台把这个入口
+关联到新建或已有工作区，OpenSandbox 只挂载工作区子目录，不挂载视图的管理根目录。
+在创建时自行挂载存储的后端，其路由不能改绑已创建的沙箱；已有文件的 Session 因此会使用
+新建的沙箱，而不是预热好的沙箱。Agent 程序不负责选择存储介质或实现目录路由。本地
 文件系统适用于单个沙箱主机；多台主机需要访问同一个共享文件系统。未配置工作区卷的
-部署不需要运行目录路由。配置方法见[工作区部署](deploy.md#where-conversation-workspaces-live)。
+部署不需要路由。配置方法见[工作区部署](deploy.md#where-conversation-workspaces-live)。
 
 `mounted_volume` 存储插件使用部署配置的卷。`aws_efs` 插件校验已经配置、支持共享访问的
 EFS CSI Kubernetes 卷。两者使用同一套平台目录路由。部署者管理底层文件系统；使用 EFS

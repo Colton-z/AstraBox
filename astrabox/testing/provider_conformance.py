@@ -206,9 +206,22 @@ class ChannelProviderContractSuite:
 
     def test_capability_flags_are_booleans(self) -> None:
         provider = self.make_provider()
-        for flag in ("supports_streaming_delivery", "supports_source"):
+        for flag in (
+            "supports_streaming_delivery", "supports_source", "supports_interaction_actions",
+        ):
             assert isinstance(getattr(provider, flag, False), bool), (
                 f"{flag} must be a bool"
+            )
+
+    def test_interaction_actions_capability_is_complete_or_absent(self) -> None:
+        import inspect
+
+        provider = self.make_provider()
+        if getattr(provider, "supports_interaction_actions", False):
+            assert "interaction" in inspect.signature(
+                type(provider).deliver_outbound
+            ).parameters, (
+                "supports_interaction_actions requires deliver_outbound to accept an interaction"
             )
 
     def test_streaming_capability_is_complete_or_absent(self) -> None:

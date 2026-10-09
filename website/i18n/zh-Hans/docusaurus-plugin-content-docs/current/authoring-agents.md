@@ -31,7 +31,7 @@ Agent 在 Session 中执行任务。AstraBox 让 Agent 随时可用，创建或�
 | `mcp_servers` | object | 否 | MCP 服务器配置，以服务器名称为键 |
 | `artifacts_enabled` | boolean | 否 | Agent 的对话是否提供内置 `artifacts` 工具。创建时省略则为 `true`；参见 [Artifacts](artifacts.md#create-an-artifact) |
 | `default_repo` | object | 否 | 每个新 Session 默认克隆的代码仓库 |
-| `plugin_repos` | array | 否 | 要安装的 Plugin 仓库及经过审核的版本 |
+| `packages` | array | 否 | 要安装的引擎原生扩展包及经过审核的版本；每项用 `kind` 写明环境所用引擎声明的类型，例如 Claude Code 插件仓库是 `claude-plugin` |
 | `environment_name` | string | 是 | 提供 Agent 程序、沙箱、网络策略和模型连接的运行环境 |
 | `exposure_mode` | string | 否 | Agent 的使用入口：`chat_only`、`mcp_only` 或 `both` |
 | `idle_hibernate_seconds` | integer | 否 | Session 运行实例空闲多久后执行运行环境设置的暂停或回收方式 |
@@ -82,6 +82,10 @@ Session 身份、通信设置和已分配的模型凭证由平台管理。
 读写文件、编辑代码和执行命令等原生工具由所选 Agent 程序提供，AstraBox 不会重新定义这些工具。Agent 使用相应程序支持的原生格式配置 MCP 服务器、Skill 和 Plugin。在「管理台 > Agent」中打开一个 Agent，即可选择管理员配置的远程 MCP 服务和 Skill，也可以直接添加 Plugin 仓库。
 
 更多配置参见 [MCP 服务器、Skill 和 Plugin](adding-tools.md)。
+
+### Connector
+
+Agent 管理页面上的 **Connectors** 卡片向 Agent 的调用者提供 Gmail、Notion 等办公应用。每个与 Agent 发起对话的人都使用自己的登录授权，在 **连接** 页面中连接；没有连接这个应用的人会收到 connector 发出的登录请求。由消息渠道、定时计划或 webhook 发起的对话没有这样的人，因此不提供任何 connector。connector 是一个以应用命名的 MCP 服务器，所以不能与 Agent 自己的 MCP 服务器同名。connector 的工作方式和管理员的配置步骤参见 [连接办公应用](assistants.md#connectors)。
 
 ## 管理 Agent
 

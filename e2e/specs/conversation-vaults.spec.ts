@@ -71,13 +71,6 @@ async function terminalOutput(
   }
 }
 
-function hermesGatewayCount(terminalStream: string): number {
-  const match = terminalStream.match(/ASTRABOX_GATEWAY_COUNT=(\d+)/);
-  expect(match, `terminal output did not contain a Gateway count: ${terminalStream.slice(0, 500)}`)
-    .not.toBeNull();
-  return Number(match?.[1] ?? "-1");
-}
-
 function terminalProbeProcessCount(terminalStream: string): number {
   const match = terminalStream.match(/ASTRABOX_TERMINAL_PROCESS_COUNT=(\d+)/);
   expect(match, `terminal output did not contain a terminal-process count: ${terminalStream.slice(0, 500)}`)
@@ -362,6 +355,8 @@ test("Hermes automatically uses the protected gateway credential for a real mode
           sandbox_backend: "open_sandbox",
           runtime_template_name: HERMES_IMAGE,
           sandbox_tenancy: "agent",
+          // Isolated conversation areas in one box need the advanced level.
+          sandbox_permission_level: "advanced",
           endpoint_provider: "litellm",
         },
       }),
@@ -435,12 +430,12 @@ test("Hermes automatically uses the protected gateway credential for a real mode
       intervals: [1_000, 2_000, 3_000],
     }).toBe("READY");
 
-    await page.goto("/assistants");
+    await page.goto("/agents");
     await expect(tid(page, LIVE_TESTIDS.sessionsPage)).toBeVisible();
-    const assistantCard = page.locator(
-      `[data-testid="${LIVE_TESTIDS.assistantOption}"][data-assistant-id="${assistantId}"]`,
+    const assistantRow = page.locator(
+      `[data-testid="${LIVE_TESTIDS.assistantRow}"][data-assistant-id="${assistantId}"]`,
     );
-    await expect(assistantCard).toHaveAttribute("data-assistant-state", "READY");
+    await expect(assistantRow).toBeVisible();
     // The browser output channel is a session-level resource: the client opens
     // one standing `follow=session` stream when the conversation mounts, and
     // every turn's frames return on it — there is no send-time GET to await.
@@ -457,13 +452,13 @@ test("Hermes automatically uses the protected gateway credential for a real mode
     const [conversationRequest, conversationResponse] = await Promise.all([
       page.waitForRequest((candidate) =>
         candidate.method() === "POST"
-        && candidate.url().includes(`/api/v1/assistants/${assistantId}/conversations`),
+        && candidate.url().includes(`/api/v1/assistants/${assistantId}/main-conversation`),
       ),
       page.waitForResponse((candidate) =>
         candidate.request().method() === "POST"
-        && candidate.url().includes(`/api/v1/assistants/${assistantId}/conversations`),
+        && candidate.url().includes(`/api/v1/assistants/${assistantId}/main-conversation`),
       ),
-      assistantCard.getByRole("button").click(),
+      assistantRow.getByRole("link").click(),
     ]);
     expect(conversationRequest.postData()).toBeNull();
     const created = await responseData<{ session_id: string }>(
@@ -550,10 +545,6 @@ test("Hermes automatically uses the protected gateway credential for a real mode
       ).toBe("v1");
     }
 
-    const gatewayCountCommand = [
-      "printf 'ASTRABOX_GATEWAY_COUNT='",
-      "ps -eo comm=,args= | awk '$1 ~ /^python([0-9.]*)?$/ && /[t]ui_gateway[.]entry/{count++} END{print count+0}'",
-    ].join("; ");
     const terminalProcessMarker = `astrabox-terminal-${runId}`;
     await terminalOutput(
       request,
@@ -567,13 +558,6 @@ test("Hermes automatically uses the protected gateway credential for a real mode
     expect(terminalProbeProcessCount(
       await terminalOutput(request, sessionId, terminalProbeCountCommand),
     )).toBe(1);
-    const gatewaysBeforeDelete = hermesGatewayCount(
-      await terminalOutput(request, sessionId, gatewayCountCommand),
-    );
-    expect(
-      gatewaysBeforeDelete,
-      "the completed conversation must still own a resident Hermes Gateway before deletion",
-    ).toBeGreaterThan(0);
 
     // Exercise shared-workspace conversation cleanup inside the asserted flow;
     // focused tests separately pin Hermes session.close and OpenSandbox PTY deletion.
@@ -586,9 +570,8 @@ test("Hermes automatically uses the protected gateway credential for a real mode
     sessionId = "";
 
     // The Assistant sandbox is intentionally retained, so inspect that same
-    // production-style workspace through a fresh conversation. Exactly the
-    // deleted conversation's Gateway must be gone while unrelated resident
-    // processes remain.
+    // production-style workspace through a fresh conversation: the deleted
+    // conversation's terminal process must be gone while the workspace stays.
     const cleanupProbe = await responseData<{ session_id: string }>(
       await request.post(`/api/v1/assistants/${assistantId}/conversations`),
       "start a cleanup probe conversation in the retained Assistant workspace",
@@ -600,10 +583,6 @@ test("Hermes automatically uses the protected gateway credential for a real mode
       "read cleanup probe Session",
     );
     expect(String(cleanupProbeSession.sandbox_id || "")).toBe(sandboxId);
-    const gatewaysAfterDelete = hermesGatewayCount(
-      await terminalOutput(request, cleanupProbeSessionId, gatewayCountCommand),
-    );
-    expect(gatewaysAfterDelete).toBe(gatewaysBeforeDelete - 1);
     expect(terminalProbeProcessCount(
       await terminalOutput(request, cleanupProbeSessionId, terminalProbeCountCommand),
     )).toBe(0);
@@ -637,6 +616,7 @@ test("Hermes automatically uses the protected gateway credential for a real mode
         sandbox_backend: "open_sandbox",
         runtime_template_name: HERMES_IMAGE,
         sandbox_tenancy: "agent",
+        sandbox_permission_level: "advanced",
         endpoint_provider: "litellm",
       },
     }).catch(() => undefined);

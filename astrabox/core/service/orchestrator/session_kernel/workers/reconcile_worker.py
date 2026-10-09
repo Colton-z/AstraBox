@@ -40,6 +40,9 @@ from astrabox.persistence.repository.backend import (
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.time_utils import parse_iso_utc, utcnow_iso
+from astrabox.core.service.orchestrator.engine.base import EngineTranscriptRecovery
+from astrabox.core.service.orchestrator.engine.registry import get_engine_adapter
+from astrabox.core.service.orchestrator.engine_kind_utils import resolve_session_engine_kind
 from astrabox.core.service.orchestrator.session_kernel.conversation_recovery import (
     TURN_RECOVERY_PHASE_TRANSCRIPT_PENDING,
     derive_turn_recovery_phase,
@@ -83,6 +86,18 @@ class DeadSandboxRecoverySettlement:
     """An anchor recovery that settled because its sandbox is confirmed gone."""
 
     snapshot: dict[str, Any]
+
+
+def _recovers_from_transcript(session: dict[str, Any]) -> bool:
+    """Whether the session's engine settles a pending turn from its mirrored transcript.
+
+    The turn coordinator owns only that lane and returns without a write for
+    any other engine. A resident engine continues from its durable turn anchor
+    through the recovery below, which also settles a row that names no turn;
+    sent to the coordinator instead, its row stays selected on every tick.
+    """
+    adapter = get_engine_adapter(resolve_session_engine_kind(session))
+    return isinstance(adapter, EngineTranscriptRecovery)
 
 
 def _why_recovery_can_never_run(snapshot: dict[str, Any] | None) -> str:
@@ -329,12 +344,15 @@ class ReconcileWorker:
                             str((latest_snapshot or {}).get("conversation_state") or ""),
                         )
                         continue
-                # TRANSCRIPT_PENDING belongs to the mirror-fed turn coordinator.
-                # Ownerless rows have already left the candidate set above;
-                # live rows reach this handoff after answer projection repair.
+                # TRANSCRIPT_PENDING belongs to the mirror-fed turn coordinator
+                # when the engine recovers from its transcript; a resident
+                # engine's row falls through to anchor recovery. Ownerless rows
+                # have already left the candidate set above; live rows reach
+                # this handoff after answer projection repair.
                 if (
                     recovery_phase == TURN_RECOVERY_PHASE_TRANSCRIPT_PENDING
                     and self._wakeup_turn_coordinator is not None
+                    and _recovers_from_transcript(session)
                 ):
                     self._wakeup_turn_coordinator(session_id)
                     summary["transcript_pending_routed"] += 1

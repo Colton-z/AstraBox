@@ -1,0 +1,82 @@
+From 41acb4a55f621b12c58837e5d7fe678b424d7924 Mon Sep 17 00:00:00 2001
+From: Colton Qi <zhenchangqi@gmail.com>
+Date: Tue, 6 Oct 2026 11:42:39 -0700
+Subject: [PATCH 2/2] feat(oauth): let a user delete their own stored OAuth
+ token
+
+ContextForge stores each user's OAuth token per gateway but exposed no
+way for that user to remove it, so a user could not disconnect an app.
+
+Adds DELETE /oauth/token/{gateway_id}, which deletes the caller's own
+stored token through TokenStorageService.revoke_user_tokens. The
+identity comes from authentication, never from the request, so a user
+can remove only their own authorization. It does not call the
+provider's revocation endpoint (RFC 7009).
+
+Carried until a release includes a per-user revocation endpoint
+(IBM/mcp-context-forge#5501).
+
+Signed-off-by: Colton Qi <zhenchangqi@gmail.com>
+---
+ mcpgateway/routers/oauth_router.py | 48 ++++++++++++++++++++++++++++++
+ 1 file changed, 48 insertions(+)
+
+diff --git a/mcpgateway/routers/oauth_router.py b/mcpgateway/routers/oauth_router.py
+index e833ce1ae..77253e4d7 100644
+--- a/mcpgateway/routers/oauth_router.py
++++ b/mcpgateway/routers/oauth_router.py
+@@ -1562,6 +1562,54 @@ async def get_oauth_status(
+         raise HTTPException(status_code=500, detail="Failed to get OAuth status")
+ 
+ 
++@oauth_router.delete("/token/{gateway_id}")
++@require_permission(Permissions.GATEWAYS_READ)
++async def revoke_own_oauth_token(
++    gateway_id: str,
++    request: Request,
++    current_user: dict = Depends(get_current_user_with_permissions),
++    db: Session = Depends(get_db),
++) -> dict:
++    """Delete the caller's own stored OAuth token for a gateway.
++
++    The identity comes from authentication, never from the request, so a user
++    can only remove their own authorization. This deletes the token ContextForge
++    holds; it does not call the provider's revocation endpoint (RFC 7009).
++
++    Args:
++        gateway_id: ID of the gateway
++        request: Request with token-scoping context.
++        current_user: Authenticated user (enforces authentication)
++        db: Database session
++
++    Returns:
++        ``{"revoked": bool}``: whether a stored token was removed.
++
++    Raises:
++        HTTPException: If not authenticated, not authorized, gateway not found, or error
++    """
++    try:
++        gateway = db.execute(select(Gateway).where(Gateway.id == gateway_id)).scalar_one_or_none()
++        if not gateway:
++            raise HTTPException(status_code=404, detail="Gateway not found")
++
++        await _enforce_gateway_access(gateway_id, gateway, current_user, db, request=request)
++
++        requester_email = get_user_email(current_user)
++        if requester_email == "unknown" or not requester_email.strip():
++            raise HTTPException(status_code=401, detail="Authenticated user email is required")
++
++        token_storage = TokenStorageService(db, _build_user_context(current_user))
++        revoked = await token_storage.revoke_user_tokens(gateway_id, requester_email)
++        return {"revoked": bool(revoked)}
++
++    except HTTPException:
++        raise
++    except Exception as e:
++        logger.error(f"Failed to revoke OAuth token: {str(e)}")
++        raise HTTPException(status_code=500, detail="Failed to revoke OAuth token")
++
++
+ OAUTH_STATUS_BATCH_MAX_IDS = 100
+ 
+ # Upper bound on how long the batch endpoint will wait for the whole

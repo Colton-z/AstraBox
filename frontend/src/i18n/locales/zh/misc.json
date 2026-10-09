@@ -1,18 +1,4 @@
 {
-  "assistant": {
-    "loading": "正在加载 Assistant…",
-    "pick_title": "选择 Assistant",
-    "pick_subtitle": "每个 Assistant 都是仅供一位用户使用的长期工作区，文件会在不同会话之间保留。",
-    "creating": "正在开始会话…",
-    "start_conversation": "开始对话",
-    "cards_empty": "暂无可用的 Assistant。请先在管理台创建。",
-    "state_ready": "就绪",
-    "state_materializing": "启动中",
-    "state_hibernating": "已暂停",
-    "state_recovery_required": "需要处理",
-    "state_not_materialized": "未启动",
-    "state_unknown": "未知"
-  },
   "diff": {
     "unavailable": "写入已完成；引擎未提供修改前后的差异。",
     "empty_title": "还没有文件变更。",
@@ -313,8 +299,8 @@
         "label": "文件差异面板",
         "help": "在此 Agent 的对话中显示文件修改。此设置只控制面板显示，不限制 Agent 编辑文件的能力。"
       },
-      "plugin_repos": {
-        "label": "Plugin 仓库"
+      "packages": {
+        "label": "扩展包"
       },
       "environment_name": {
         "label": "运行环境",
@@ -402,5 +388,18 @@
     "capability_permissions": "权限",
     "assistant_identity_missing": "此对话未提供来源 Assistant 的标识，无法列出作品。",
     "keep_expiry": "保留当前到期时间"
+  },
+  "connections": {
+    "title": "连接",
+    "intro": "你在各办公应用里的登录授权。你自己的 Assistant 会使用它们；提供该应用的 Agent 在你发起的对话中也会使用。",
+    "connected_now": "已连接 {{name}}",
+    "none": "这个部署还没有配置任何办公应用。",
+    "card_title": "连接 {{name}}",
+    "card_waiting": "在新标签页登录 {{name}}，agent 就能使用它。",
+    "card_shared": "agent 请求连接 {{name}}。",
+    "card_unavailable": "这个部署上没有提供 {{name}}。",
+    "popup_blocked": "浏览器拦截了登录标签页，请允许本网站弹出窗口。",
+    "adopted_one": "已在你的 {{count}} 个 Assistant 中启用 {{name}}。",
+    "adopted_other": "已在你的 {{count}} 个 Assistant 中启用 {{name}}。"
   }
 }

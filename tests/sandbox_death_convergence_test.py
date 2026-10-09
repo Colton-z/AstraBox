@@ -187,6 +187,32 @@ class _FakeAssistantWorkspaceService:
             if str(row.get("current_sandbox_id") or "").strip() == sandbox_id
         ]
 
+    async def list_lease_renewal_candidates(
+        self, *, now_iso: str, renew_before_iso: str, limit: int = 50
+    ) -> list[dict[str, Any]]:
+        return [
+            dict(row)
+            for row in self.rows
+            if row.get("state") == "READY"
+            and now_iso < str(row.get("current_sandbox_expires_at") or "") <= renew_before_iso
+        ][:limit]
+
+    async def list_ready_workspaces(
+        self, *, now_iso: str, after_assistant_id: str | None, limit: int
+    ) -> list[dict[str, Any]]:
+        rows = sorted(self.rows, key=lambda row: str(row.get("assistant_id") or ""))
+        return [
+            dict(row)
+            for row in rows
+            if row.get("state") == "READY"
+            and str(row.get("current_sandbox_id") or "").strip()
+            and str(row.get("current_sandbox_expires_at") or "") > now_iso
+            and (
+                after_assistant_id is None
+                or str(row.get("assistant_id") or "") > after_assistant_id
+            )
+        ][:limit]
+
     async def list_dead_binding_probe_candidates(
         self, *, now_iso: str, after_assistant_id: str | None = None, limit: int = 50
     ) -> list[dict[str, Any]]:
@@ -283,6 +309,9 @@ class _FakeRuntimeManager:
 
     async def keep_prewarmed_agents_ready(self) -> dict[str, int]:
         return {}
+
+    def live_runtimes(self) -> list[Any]:
+        return []
 
     async def get_sandbox_lifecycle_probe(self, sandbox_id: str) -> Any:
         self.probe_calls.append(sandbox_id)
@@ -842,7 +871,12 @@ class WatcherShutdownTests(unittest.IsolatedAsyncioTestCase):
                     reap_abandoned_agent_boxes=AsyncMock(return_value={}),
                     reap_ownerless_sandboxes=AsyncMock(return_value={}),
                     keep_prewarmed_agents_ready=AsyncMock(return_value={}),
-                )
+                    live_runtimes=lambda: [],
+                ),
+                _assistant_workspace_service=SimpleNamespace(
+                    list_lease_renewal_candidates=AsyncMock(return_value=[]),
+                    list_ready_workspaces=AsyncMock(return_value=[]),
+                ),
             )
         )
         dead_sweep_started = asyncio.Event()

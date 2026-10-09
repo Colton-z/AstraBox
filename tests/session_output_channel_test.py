@@ -23,6 +23,9 @@ from astrabox.core.service.orchestrator.session_kernel.service_mixins._helpers i
     _emit_resumable_payloads,
 )
 from astrabox.core.service.orchestrator.session_message_view import SessionMessageView
+from astrabox.core.service.orchestrator.session_kernel.workers.turn._replay import (
+    _DurableSemanticFrameCoalescer,
+)
 
 
 def _state(**over) -> _TailFrameState:
@@ -107,7 +110,8 @@ class SessionFollowerDeliversLiveBrokerFramesTests(unittest.IsolatedAsyncioTestC
         harness = _SessionFollowerHarness(
             {
                 "type": "ai_sdk_live_frame",
-                "live_seq": 1,
+                # A command's live counter starts at zero.
+                "live_seq": 0,
                 "command_id": "command-1",
                 "turn_id": "turn-1",
                 "payload": payload,
@@ -343,6 +347,112 @@ class SessionFollowerResponseBoundaryTests(unittest.IsolatedAsyncioTestCase):
         )
         with self.assertRaises(StopAsyncIteration):
             await asyncio.wait_for(anext(stream), timeout=0.2)
+
+
+class SessionFollowerAttachedMidTextRunTests(unittest.IsolatedAsyncioTestCase):
+    async def test_a_page_reloaded_mid_run_receives_the_text_streamed_before_it(self) -> None:
+        """A reload during a text run still shows the text the run streamed earlier.
+
+        The turn worker publishes every chunk live and journals the run as one
+        row when the next non-delta frame arrives; that row carries the live
+        sequence of the run's last chunk. The page reloads after the first two
+        chunks were published, so only the closing chunk reaches it live. The
+        reply must still read in full, with the block closing after its text.
+        """
+        command_id, turn_id = "command-a", "turn-a"
+        text_id = "hermes-text:session-1:command-a:441:1"
+        chunks = [
+            "I'll create a comprehensive HTML page for the timeline.",
+            " Let me design a clean, dark-themed layout.",
+            "\n\n⚠ Stream stalled mid tool-call (write_file); the action was not executed.",
+        ]
+        published = [
+            {"type": "start", "messageId": "assistant-a", "messageMetadata": {"turn_id": turn_id}},
+            {"type": "text-start", "id": text_id},
+            *({"type": "text-delta", "id": text_id, "delta": chunk} for chunk in chunks),
+            {"type": "text-end", "id": text_id},
+        ]
+
+        coalescer = _DurableSemanticFrameCoalescer()
+        rows: list[dict[str, Any]] = []
+        for live_seq, frame in enumerate(published):
+            for record in coalescer.ingest({**frame, "__live_seq": live_seq}):
+                row_live_seq = record.pop("__live_seq")
+                rows.append({
+                    "session_id": "session-1",
+                    "frame_seq": len(rows) + 1,
+                    "turn_id": turn_id,
+                    "scope": "turn",
+                    "command_id": command_id,
+                    "live_seq": row_live_seq,
+                    "payload": record,
+                })
+        # The finish is journal-only: the turn worker keeps it off the live lane.
+        rows.append({
+            "session_id": "session-1",
+            "frame_seq": len(rows) + 1,
+            "turn_id": turn_id,
+            "scope": "turn",
+            "command_id": command_id,
+            "payload": {"type": "finish", "finishReason": "stop"},
+        })
+        self.assertEqual(
+            [(row["payload"]["type"], row.get("live_seq")) for row in rows],
+            [("start", 0), ("text-start", 1), ("text-delta", 4), ("text-end", 5), ("finish", None)],
+            "the producer journals the three chunks as one row keyed by the last",
+        )
+
+        def live(live_seq: int) -> dict[str, Any]:
+            return {
+                "type": "ai_sdk_live_frame",
+                "command_id": command_id,
+                "turn_id": turn_id,
+                "live_seq": live_seq,
+                "payload": dict(published[live_seq]),
+                "source_cursor": {"live_seq": live_seq},
+            }
+
+        def journalled(row: dict[str, Any]) -> dict[str, Any]:
+            event = {
+                "type": "ai_sdk_frame",
+                "command_id": command_id,
+                "turn_id": turn_id,
+                "scope": "turn",
+                "frame_seq": row["frame_seq"],
+                "payload": dict(row["payload"]),
+            }
+            if "live_seq" in row:
+                event["live_seq"] = row["live_seq"]
+            return event
+
+        harness = _DurableFollowerHarness()
+        # The journal as the reloaded page finds it: the run's chunks are
+        # still in the producer's coalescer. Later rows reach the page through
+        # the broker, as they do for any attached page.
+        harness._session_events_repo.frames = rows[:2]
+        harness._broker = _LiveFrameBroker(live(4))
+        for event in (live(5), *(journalled(row) for row in rows[2:])):
+            harness._broker.queue.put_nowait(event)
+
+        async def collect() -> list[dict[str, Any]]:
+            return [
+                frame
+                async for frame in harness.follow_session_stream(
+                    object(),  # type: ignore[arg-type]
+                    "session-1",
+                )
+            ]
+
+        block = [
+            frame for frame in await asyncio.wait_for(collect(), timeout=1.0)
+            if frame.get("id") == text_id
+        ]
+        self.assertEqual(
+            "".join(str(frame.get("delta") or "") for frame in block if frame["type"] == "text-delta"),
+            "".join(chunks),
+        )
+        self.assertEqual(block[0]["type"], "text-start")
+        self.assertEqual(block[-1]["type"], "text-end", "the block closes after all of its text")
 
 
 class ToolInvocationResumeBoundaryTests(unittest.TestCase):

@@ -10,8 +10,10 @@ might still be created for.
 
 from __future__ import annotations
 
+import hashlib
+import sys
 from datetime import datetime, timedelta, timezone
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from typing import Any, Mapping
 
 import pytest
@@ -20,6 +22,9 @@ from astrabox.core.service.orchestrator.runtime.storage import mounts
 from astrabox.core.service.orchestrator.runtime.storage._mergerfs_docker import (
     DockerMounts,
     _docker_timestamp,
+)
+from astrabox.core.service.orchestrator.runtime.storage._mergerfs_kubernetes import (
+    KubernetesMounts,
 )
 from astrabox.core.service.orchestrator.runtime.storage.mergerfs import (
     INSTALLATION,
@@ -39,7 +44,6 @@ from astrabox.seams.sandbox import (
 from astrabox.seams.storage import StorageMountPlan
 
 _LONG_AGO = datetime.now(timezone.utc) - timedelta(hours=1)
-_JUST_NOW = datetime.now(timezone.utc) - timedelta(seconds=30)
 
 
 class _Router:
@@ -75,11 +79,12 @@ class _Router:
             if "sandbox_id" not in view
         ]
 
-    async def release_mounts(self, assignment_id: str) -> None:
+    async def release_mounts(self, assignment_id: str) -> bool:
         if assignment_id in self.refuse:
             raise RuntimeError("workspace PVC still has sandbox Pod consumers")
         self.released.append(assignment_id)
         del self.views[assignment_id]
+        return True
 
 
 class _Backend:
@@ -130,7 +135,9 @@ class _Backend:
 @pytest.fixture
 def router(monkeypatch: pytest.MonkeyPatch) -> _Router:
     fake = _Router()
-    monkeypatch.setattr(mounts, "workspace_router", fake)
+    # The route belongs to the backend that creates the box.
+    monkeypatch.setattr(_Backend, "workspace_route", lambda _self: fake, raising=False)
+    monkeypatch.setattr(mounts, "registered_sandbox_names", lambda: ["fake"])
     monkeypatch.setenv("ASTRABOX_SANDBOX_WORKSPACE_VOLUME", "astrabox-workspaces")
 
     async def _backing(assignment: str, planned: Any) -> StorageMountPlan:
@@ -221,7 +228,8 @@ async def test_a_view_still_inside_its_create_window_is_kept(
     with pytest.raises(RuntimeError):
         await mounts.create_sandbox_with_storage(backend, _spec("s"))
     for view in router.views.values():
-        view["created_at"] = _JUST_NOW
+        # Taken now, not at import: a long suite can outlast the window itself.
+        view["created_at"] = datetime.now(timezone.utc) - timedelta(seconds=30)
 
     await mounts.reconcile_workspace_mounts()
 
@@ -323,3 +331,71 @@ def test_docker_lists_only_this_installations_helpers_without_a_receipt() -> Non
             datetime(2026, 9, 23, 10, 11, 12, 500000, tzinfo=timezone.utc),
         )
     ]
+
+
+def test_kubernetes_keeps_a_view_until_its_terminating_pod_is_gone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """OpenSandbox answers 404 for a box as soon as its deletion is accepted,
+    while the Pod spends its termination grace period with the view claim
+    still mounted. That is a wait, not a failure; only a consumer that is not
+    terminating is refused."""
+    exceptions = ModuleType("kubernetes.client.exceptions")
+    exceptions.ApiException = type("ApiException", (Exception,), {"status": None})  # type: ignore[attr-defined]
+    client = ModuleType("kubernetes.client")
+    client.exceptions = exceptions  # type: ignore[attr-defined]
+    package = ModuleType("kubernetes")
+    package.client = client  # type: ignore[attr-defined]
+    for module in (package, client, exceptions):
+        monkeypatch.setitem(sys.modules, module.__name__, module)
+
+    digest = hashlib.sha256(b"assignment").hexdigest()
+    claim = "astrabox-view-" + digest[:32]
+    labels = {MANAGED: "mergerfs", OWNER: digest[:63]}
+
+    def pod(deleting: str | None) -> Any:
+        return SimpleNamespace(
+            metadata=SimpleNamespace(name="box-0", deletion_timestamp=deleting),
+            spec=SimpleNamespace(
+                volumes=[
+                    SimpleNamespace(persistent_volume_claim=SimpleNamespace(claim_name=claim))
+                ]
+            ),
+        )
+
+    class _Api:
+        def __init__(self) -> None:
+            self.pods: list[Any] = []
+            self.deleted: list[str] = []
+
+        def list_namespaced_pod(self, _namespace: str, _request_timeout: int) -> Any:
+            return SimpleNamespace(items=self.pods)
+
+        def _view(self, *_args: Any, _request_timeout: int) -> Any:
+            return SimpleNamespace(metadata=SimpleNamespace(labels=labels, uid="uid"))
+
+        read_namespaced_pod = read_persistent_volume = _view
+        read_namespaced_persistent_volume_claim = _view
+
+        def _delete(self, kind: str) -> Any:
+            return lambda *_args, **_kwargs: self.deleted.append(kind)
+
+    api = _Api()
+    api.delete_namespaced_pod = api._delete("helper")  # type: ignore[attr-defined]
+    api.delete_persistent_volume = api._delete("pv")  # type: ignore[attr-defined]
+    api.delete_namespaced_persistent_volume_claim = api._delete("pvc")  # type: ignore[attr-defined]
+    driver = object.__new__(KubernetesMounts)
+    driver.api = api
+    driver.namespace = "opensandbox"
+
+    api.pods = [pod(None)]
+    with pytest.raises(RuntimeError, match="consumers \\['box-0'\\]"):
+        driver.release("assignment")
+
+    api.pods = [pod("2026-10-09T02:09:15Z")]
+    assert driver.release("assignment") is False
+    assert api.deleted == []
+
+    api.pods = []
+    assert driver.release("assignment") is True
+    assert api.deleted == ["helper", "pv", "pvc"]

@@ -15,6 +15,7 @@ from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.user_context import UserContext
 from astrabox.core.service.orchestrator.agent_config_service import AgentConfigService
 from astrabox.persistence.repository.assistant_catalog_repository import AssistantCatalogRepository
+from astrabox.persistence.repository.assistant_defaults_repository import AssistantDefaultsRepository
 from astrabox.persistence.repository.assistant_workspace_repository import AssistantWorkspaceRepository
 from astrabox.persistence.repository.session_repository import SessionRepository
 from astrabox.persistence.repository.sqlite.collection import _project
@@ -53,12 +54,14 @@ def cleanup() -> Any:
         "owner_id": owner["assistant_id"], "deleted": True, "hidden": True,
         "sandbox_id": None, "title": "private title",
     }
+    layers: list[dict[str, Any]] = []
     rows = {
         catalog._collection_name: _Rows([owner]),
         workspaces._collection_name: _Rows([workspace]),
         sessions._collection_name: _Rows([session]),
+        AssistantDefaultsRepository()._collection_name: _Rows(layers),
     }
-    state = SimpleNamespace(owner=owner, workspace=workspace, session=session, deleted=False)
+    state = SimpleNamespace(owner=owner, workspace=workspace, session=session, layers=layers, deleted=False)
 
     async def remove(name: str, check: Any) -> None:
         assert name == "retired"
@@ -148,3 +151,17 @@ async def test_resource_free_assistant_history_does_not_retain_environment(clean
     }
     assert cleanup.session["title"] == "private title"
     assert cleanup.workspace["assistant_profiles"] == {"private-user": {"private": "profile"}}
+
+
+async def test_assistant_defaults_that_name_the_environment_retain_it(cleanup: Any) -> None:
+    cleanup.layers.append({"scope": "deployment", "environment_name": "retired"})
+    with pytest.raises(APIError) as refused:
+        await cleanup.service.delete_environment_config(ADMIN, "retired")
+    assert refused.value.code == "ENVIRONMENT_IN_USE"
+    assert refused.value.data == {"holders": [{
+        "target_type": "assistant_defaults", "target_id": "deployment", "target_name": "Assistant defaults",
+    }]}
+    cleanup.layers.clear()
+    assert await cleanup.service.delete_environment_config(ADMIN, "retired") == {
+        "name": "retired", "deleted": True,
+    }

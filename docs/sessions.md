@@ -300,6 +300,27 @@ same list route returns the console's unpaged array. Permission mode is the only
 Session configuration this route family updates; the selected Agent program
 defines its accepted values.
 
+### Unread replies
+
+A Session records when it last gained a reply (`last_output_at`), whether a
+person's turn produced it or the Agent program replied on its own, such as an
+Assistant's scheduled job or heartbeat. Its owner's `read_at` records when they
+last read it:
+
+```bash
+curl --silent --show-error --request POST \
+  "$SERVICE_URL/api/v1/sessions/$SESSION_ID/read" \
+  --header "Authorization: Bearer $ACCESS_TOKEN"
+```
+
+A Session whose `last_output_at` is later than its `read_at` is unread. The
+console marks it read while it is open in a visible tab and shows a dot beside
+an unread conversation in the list. With notifications turned on (the bell
+beside **Sessions** in the list), it shows a browser notification for each new
+unread reply while a console tab is open, including a tab in the background.
+A reply the Agent program sent on its own also moves its conversation to the
+top of the list.
+
 ## Child Runs
 
 An Agent program can delegate work to child runs. AstraBox exposes their tree,

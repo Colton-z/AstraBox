@@ -1,8 +1,8 @@
 # AWS EFS 工作区存储
 
 `aws_efs` 存储适配器通过官方 AWS EFS CSI driver 接入部署方管理的 EFS 文件系统，
-不创建或删除云文件系统、挂载目标或 access point。平台仍通过统一的 mergerfs 路由在
-交付沙箱前绑定工作区；引擎不选择存储介质，也不实现 EFS 专属恢复流程。
+不创建或删除云文件系统、挂载目标或 access point。OpenSandbox 后端仍通过它的 mergerfs
+路由在交付沙箱前绑定工作区；引擎不选择存储介质，也不实现 EFS 专属恢复流程。
 
 该适配器目前要求 Kubernetes 和静态配置、可读写的 EFS CSI claim，其 `volumeHandle`
 必须与文件系统 ID 完全相同。该适配器未实现 Docker 运行时、包含 access point 或子目录的

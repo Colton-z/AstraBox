@@ -354,12 +354,23 @@ def assistant_app() -> Iterator[TestClient]:
         yield client
 
 
+class _AssistantPlatformService:
+    async def delete_assistant_conversations(self, user: object, assistant_id: str) -> None:
+        return None
+
+    async def delete_all_assistant_deployments(self, assistant_id: str) -> None:
+        return None
+
+
 @pytest.fixture
 def assistant_client(
     assistant_app: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> TestClient:
     monkeypatch.setattr(assistant_routes, "get_current_user_context", _current_user)
+    # Deleting an Assistant also removes its deployments; that store is not
+    # the wire under test, and the real one opens the deployment database.
+    monkeypatch.setattr(assistant_routes, "get_platform_service", lambda: _AssistantPlatformService())
     return assistant_app
 
 

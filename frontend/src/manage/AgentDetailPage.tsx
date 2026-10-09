@@ -1,11 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { ArrowUpRight, BookOpenText, PlugZap } from 'lucide-react';
 
 import i18n from '@/i18n';
-import { Button } from '@/components/ui/button';
-import { FieldLegend, FieldSet } from '@/components/ui/field';
 import {
   agentAccessPayload,
   createAgentExtensionConsoleSession,
@@ -32,8 +29,6 @@ import {
   ConsoleEditSections,
   ConsoleFact,
   ConsoleFactRail,
-  ConsoleFieldRow,
-  ConsoleSearchMultiSelect,
   ConsoleRecordLoading,
   ConsoleRecordPage,
   ConsoleErrorState,
@@ -44,6 +39,8 @@ import {
   type EditFieldSpec,
   type EditSectionSpec,
 } from './console';
+import { CatalogExtensionField, sameIds } from './CatalogExtensionField';
+import { ConnectorsCard } from './ConnectorsCard';
 import { agentDisplayName, agentModelLabel, formatDateTime } from './agentConfig';
 import { buildAgentEditSections } from './agentEditConfig';
 import { useFrontendReleaseHold } from '@/hooks/useFrontendReleaseHold';
@@ -51,9 +48,6 @@ import { AgentPrewarmStatus } from './AgentPrewarmStatus';
 
 /** The edit helpers speak plain records; a typed draft is one. */
 const draftRecordOf = (v: unknown) => (v ?? null) as Record<string, unknown> | null;
-
-const sameIds = (left: string[], right: string[]) =>
-  left.length === right.length && left.every((value) => right.includes(value));
 
 /**
  * One Agent on its own page.
@@ -335,48 +329,23 @@ export default function AgentDetailPage() {
     if (field.key !== 'mcp_servers' && field.key !== 'skills') return customField;
     const isMcp = field.key === 'mcp_servers';
     const kind = isMcp ? 'mcp' : 'skills';
-    const id = `agent-extension-${kind}`;
     return (
-      <FieldSet className="gap-4 rounded-lg border p-4">
-        <FieldLegend variant="label" className="px-1">
-          {t(isMcp ? 'manage:agents.mcp_configuration' : 'manage:agents.skill_configuration')}
-        </FieldLegend>
-        <ConsoleFieldRow
-          label={t(isMcp ? 'manage:agents.mcp_field_label' : 'manage:agents.skills_field_label')}
-          htmlFor={id}
-          help={t(isMcp ? 'manage:agents.mcp_field_help' : 'manage:agents.skills_field_help')}
-        >
-          <div className="flex flex-col gap-2 sm:flex-row">
-            <div className="min-w-0 flex-1">
-              <ConsoleSearchMultiSelect
-                id={id}
-                value={isMcp ? extensionMcpIds : extensionSkillIds}
-                onChange={isMcp ? setExtensionMcpIds : setExtensionSkillIds}
-                options={(isMcp ? extensionCatalog?.mcp_servers ?? [] : extensionCatalog?.skills ?? [])
-                  .map((item) => ({ value: item.id, label: item.name }))}
-                placeholder={t(extensionLoading ? 'manage:agents.loading_extensions'
-                  : isMcp ? 'manage:agents.select_mcp_placeholder' : 'manage:agents.select_skills_placeholder')}
-                searchPlaceholder={t(isMcp ? 'manage:agents.search_mcp_placeholder' : 'manage:agents.search_skills_placeholder')}
-                emptyLabel={t(isMcp ? 'manage:agents.no_mcp_servers' : 'manage:agents.no_skills')}
-                disabled={extensionLoading || savingSection !== null}
-              />
-            </div>
-            <Button
-              type="button"
-              variant="outline"
-              disabled={extensionOpening !== null}
-              onClick={() => void openExtensions(kind)}
-              className="shrink-0 gap-2"
-            >
-              {isMcp ? <PlugZap className="size-4" aria-hidden /> : <BookOpenText className="size-4" aria-hidden />}
-              {t(extensionOpening === kind ? 'manage:agents.opening_extensions'
-                : isMcp ? 'manage:agents.manage_mcp_catalog' : 'manage:agents.manage_skills_catalog')}
-              <ArrowUpRight className="size-3.5" aria-hidden />
-            </Button>
-          </div>
-        </ConsoleFieldRow>
+      <CatalogExtensionField
+        kind={kind}
+        id={`agent-extension-${kind}`}
+        catalog={extensionCatalog}
+        value={isMcp ? extensionMcpIds : extensionSkillIds}
+        onChange={isMcp ? setExtensionMcpIds : setExtensionSkillIds}
+        loading={extensionLoading}
+        disabled={savingSection !== null}
+        manage={{
+          opening: extensionOpening === kind,
+          busy: extensionOpening !== null,
+          onOpen: () => void openExtensions(kind),
+        }}
+      >
         {customField}
-      </FieldSet>
+      </CatalogExtensionField>
     );
   };
 
@@ -455,6 +424,7 @@ export default function AgentDetailPage() {
           })}
         />
       )}
+      {record?.can_manage && <ConnectorsCard kind="agent" targetId={record.agent_id} />}
     </ConsoleRecordPage>
   );
 }

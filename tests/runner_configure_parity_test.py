@@ -435,7 +435,7 @@ def test_default_claude_code_tools_preset_crosses_the_runner_wire(
     template = SimpleNamespace(
         name="default-tools",
         engine_options={"sdk_options": {"strict_mcp_config": True}},
-        plugin_repos=[],
+        packages=[],
         mcp_servers={},
         skills=[],
     )
@@ -472,7 +472,7 @@ def test_workload_identity_is_process_environment_not_an_sdk_user_switch() -> No
     template = SimpleNamespace(
         name="identity-probe",
         engine_options={},
-        plugin_repos=[],
+        packages=[],
         mcp_servers={},
         skills=[],
     )

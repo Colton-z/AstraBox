@@ -46,7 +46,8 @@ for (const theme of ["light", "dark"] as const) {
       }, theme);
       await page.goto(path, { waitUntil: "domcontentloaded" });
       await settle(page);
-      await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
+      // next-themes marks the root with the theme's class (main.tsx).
+      await expect(page.locator("html")).toHaveClass(new RegExp(`(^|\\s)${theme}(\\s|$)`));
 
       const results = await new AxeBuilder({ page })
         .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"])

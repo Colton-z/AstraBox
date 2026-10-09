@@ -27,6 +27,10 @@ from sqlalchemy import make_url
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
 from astrabox.config.settings import get_settings
+from astrabox.core.service.orchestrator.conversation_targets import (
+    target_fields,
+    target_ref,
+)
 
 
 logger = get_logger(__name__)
@@ -69,9 +73,10 @@ def _workflow_context(
     trigger: str = "schedule",
     replayed_from_run_id: str | None = None,
 ) -> dict[str, Any]:
+    target = target_ref(deployment)
     context: dict[str, Any] = {
         "deployment_id": str(deployment.get("deployment_id") or "").strip(),
-        "agent_id": str(deployment.get("agent_id") or "").strip(),
+        **(target_fields(*target) if target is not None else {}),
         "input_text": str(deployment.get("prompt_prefix") or ""),
         "trigger": trigger,
     }
@@ -83,9 +88,10 @@ def _workflow_context(
 def _workflow_attributes(
     context: dict[str, Any], scheduled_at: datetime
 ) -> dict[str, Any]:
+    target = target_ref(context)
     attributes: dict[str, Any] = {
         "deployment_id": str(context.get("deployment_id") or ""),
-        "agent_id": str(context.get("agent_id") or ""),
+        **(target_fields(*target) if target is not None else {}),
         "trigger": str(context.get("trigger") or "schedule"),
     }
     if attributes["trigger"] == "schedule":

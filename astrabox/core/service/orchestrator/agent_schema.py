@@ -18,7 +18,7 @@ Design notes:
   ``@dataclass`` convention used across the codebase and to stay trivially
   JSON-serializable for the GET endpoint.
 - Validation here is intentionally thin: types / required / enum only. Deep
-  normalization (plugin_repos, default_repo, mcp) stays in its existing owners.
+  normalization (packages, default_repo, mcp) stays in its existing owners.
   The payload is never rewritten here and defaults are never filled in. Two
   fields serve a ``default`` so the form shows what an Agent saved without
   touching them gets: ``prepared_capacity``, which the create path writes from
@@ -87,14 +87,16 @@ _DEFAULT_REPO_ITEM_SCHEMA: list[dict[str, Any]] = [
     {"key": "depth", "type": "integer", "advanced": True},
 ]
 
-_PLUGIN_REPO_ITEM_SCHEMA: list[dict[str, Any]] = [
+_PACKAGE_ITEM_SCHEMA: list[dict[str, Any]] = [
+    # One of the package kinds the Environment's engine declares.
+    {"key": "kind", "type": "string", "required": True},
     {"key": "url", "type": "string", "required": True},
     {"key": "protocol", "type": "enum", "enum": _REPO_PROTOCOLS, "advanced": True},
     {"key": "deploy_key_secret_name", "type": "string", "advanced": True},
     {"key": "branch", "type": "string", "advanced": True},
     {"key": "depth", "type": "integer", "advanced": True},
     {"key": "sha", "type": "string", "advanced": True},
-    {"key": "plugin_paths", "type": "string_list", "advanced": True},
+    {"key": "paths", "type": "string_list", "advanced": True},
 ]
 
 # The authoritative editable field list. Order = render order on the form.
@@ -184,12 +186,12 @@ AGENT_FIELD_SCHEMA: list[dict[str, Any]] = [
         "item_schema": _DEFAULT_REPO_ITEM_SCHEMA,
     },
     {
-        "key": "plugin_repos",
+        "key": "packages",
         "type": "object_list",
         "advanced": True,
         "group": GROUP_TOOLS,
         "complex": True,
-        "item_schema": _PLUGIN_REPO_ITEM_SCHEMA,
+        "item_schema": _PACKAGE_ITEM_SCHEMA,
     },
     # ── runtime ───────────────────────────────────────────────────────────
     # The environment supplies sandbox/image/install + provider access; the
@@ -264,7 +266,7 @@ _DISPLAY_META_REQUEST_FIELDS = frozenset(
     if str(field.get("path") or "").startswith("display_meta.")
 )
 _DEFAULT_REPO_REQUEST_FIELDS = frozenset(str(field["key"]) for field in _DEFAULT_REPO_ITEM_SCHEMA)
-_PLUGIN_REPO_REQUEST_FIELDS = frozenset(str(field["key"]) for field in _PLUGIN_REPO_ITEM_SCHEMA)
+_PACKAGE_REQUEST_FIELDS = frozenset(str(field["key"]) for field in _PACKAGE_ITEM_SCHEMA)
 
 
 def agent_artifacts_enabled(agent: Mapping[str, Any]) -> bool:
@@ -331,14 +333,14 @@ def _reject_unknown_fields(payload: dict[str, Any], *, allow_version: bool) -> N
     if isinstance(default_repo, dict):
         _reject_unknown_nested("default_repo", default_repo, _DEFAULT_REPO_REQUEST_FIELDS)
 
-    plugin_repos = payload.get("plugin_repos")
-    if isinstance(plugin_repos, list):
-        for index, repo in enumerate(plugin_repos):
+    packages = payload.get("packages")
+    if isinstance(packages, list):
+        for index, repo in enumerate(packages):
             if isinstance(repo, dict):
                 _reject_unknown_nested(
-                    f"plugin_repos[{index}]",
+                    f"packages[{index}]",
                     repo,
-                    _PLUGIN_REPO_REQUEST_FIELDS,
+                    _PACKAGE_REQUEST_FIELDS,
                 )
 
 

@@ -54,7 +54,13 @@ def _post(target: dict[str, Any], operation: str, fields: dict[str, Any]) -> dic
     return data
 
 
-def load_snapshot(target: dict[str, Any]) -> dict[str, Any]:
+#: Where each archive kind lives under the platform's runtime-state base URL:
+#: the native SessionDB at the root, the profile state beside it.
+SESSION_DB = ""
+PROFILE = "profile/"
+
+
+def load_snapshot(target: dict[str, Any], archive: str = SESSION_DB) -> dict[str, Any]:
     """Return snapshot_id and verified payload bytes, or explicit None values.
 
     Only a valid platform response declaring no saved snapshot returns None.
@@ -63,7 +69,7 @@ def load_snapshot(target: dict[str, Any]) -> dict[str, Any]:
     URL or snapshot content.
     The platform-issued owner is forwarded unchanged.
     """
-    data = _post(target, "load", {})
+    data = _post(target, archive + "load", {})
     if not {"snapshot_id", "payload_b64", "sha256", "size"}.issubset(data):
         raise RuntimeError("Incomplete runtime-state load response")
     snapshot_id = data["snapshot_id"]
@@ -92,7 +98,12 @@ def load_snapshot(target: dict[str, Any]) -> dict[str, Any]:
     return {"snapshot_id": snapshot_id, "payload": payload}
 
 
-def save_snapshot(target: dict[str, Any], payload: bytes, expected_snapshot_id: str | None) -> str:
+def save_snapshot(
+    target: dict[str, Any],
+    payload: bytes,
+    expected_snapshot_id: str | None,
+    archive: str = SESSION_DB,
+) -> str:
     """Save snapshot bytes against the caller's predecessor and return its ID.
 
     The platform owns identity and conflict decisions. A conflict or any other
@@ -107,7 +118,7 @@ def save_snapshot(target: dict[str, Any], payload: bytes, expected_snapshot_id: 
         raise RuntimeError("Invalid runtime-state predecessor")
     data = _post(
         target,
-        "save",
+        archive + "save",
         {
             "payload_b64": base64.b64encode(payload).decode("ascii"),
             "sha256": hashlib.sha256(payload).hexdigest(),

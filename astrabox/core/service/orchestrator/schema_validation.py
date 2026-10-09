@@ -169,7 +169,11 @@ def validate_declared_config_bag(
             raise invalid_request(f"{bag_label}.{key} must be an object")
         if not isinstance(block, dict):
             continue
-        protected = sorted(set(block).intersection(field.get("protected_keys", ())))
+        # A dotted protected key names a nested key, so a platform-managed
+        # list can be reserved while its siblings stay the author's.
+        protected = sorted(
+            path for path in field.get("protected_keys", ()) if get_by_path(block, path)[0]
+        )
         if protected:
             raise invalid_request(
                 f"{bag_label}.{field['key']} contains platform-managed keys: "

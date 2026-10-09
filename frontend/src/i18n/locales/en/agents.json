@@ -1,5 +1,4 @@
 {
-  "load_failed": "Failed to load",
   "state_active": "Active",
   "state_provisioning": "Initializing",
   "state_hibernating": "Hibernating",

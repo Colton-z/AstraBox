@@ -41,7 +41,7 @@ class _AtomicWebhookRepo:
         )
 
     async def _get_for_deployment(
-        self, deployment_id: str, agent_id: str
+        self, deployment_id: str, agent_id: str, *, assistant_id: str = ""
     ) -> dict[str, Any] | None:
         return dict(self.webhook) if self._matches(deployment_id, agent_id) else None
 
@@ -50,6 +50,8 @@ class _AtomicWebhookRepo:
         deployment_id: str,
         agent_id: str,
         updates: dict[str, Any],
+        *,
+        assistant_id: str = "",
     ) -> dict[str, Any] | None:
         if self.delete_before_update and self.webhook is not None:
             self.webhook["deleted"] = True
@@ -59,7 +61,7 @@ class _AtomicWebhookRepo:
         return dict(self.webhook)  # type: ignore[arg-type]
 
     async def _soft_delete_for_deployment(
-        self, deployment_id: str, agent_id: str
+        self, deployment_id: str, agent_id: str, *, assistant_id: str = ""
     ) -> bool:
         if not self._matches(deployment_id, agent_id):
             return False
@@ -210,7 +212,7 @@ async def test_deployment_mutation_accepts_its_own_agent() -> None:
     assert deployment_repo.webhook is not None and deployment_repo.webhook["deleted"] is True
     deployment_repo.update_for_deployment.assert_awaited_once()
     deployment_repo.soft_delete_for_deployment.assert_awaited_once_with(
-        "wh-1", "agent-1"
+        "wh-1", "agent-1", assistant_id=""
     )
 
 

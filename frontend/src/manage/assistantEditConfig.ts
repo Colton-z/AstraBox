@@ -36,6 +36,26 @@ const systemField = (
   help: i18n.t('manage:assistant_form.system_help'),
 });
 
+// The owner's timezone, shared by create and edit: the IANA names this browser
+// knows, searchable, since the list is long.
+const timezoneField = (
+  accessors: {
+    get: (d: Record<string, unknown>) => unknown;
+    set: (d: Record<string, unknown>, value: unknown) => Record<string, unknown>;
+  },
+): EditFieldSpec => ({
+  key: 'timezone',
+  label: i18n.t('manage:assistant_form.timezone_label'),
+  type: 'search_select',
+  ...accessors,
+  idTag: 'timezone',
+  options: Intl.supportedValuesOf('timeZone').map((zone) => ({ value: zone, label: zone })),
+  placeholder: i18n.t('manage:assistant_form.timezone_placeholder'),
+  searchPlaceholder: i18n.t('manage:assistant_form.timezone_search'),
+  emptyLabel: i18n.t('manage:assistant_form.timezone_empty'),
+  help: i18n.t('manage:assistant_form.timezone_help'),
+});
+
 function permissionField(
   accessors: {
     get: (d: Record<string, unknown>) => unknown;
@@ -172,6 +192,7 @@ export function buildAssistantCreateSections(
             label: permissionModeLabel(mode),
           })),
         ),
+        timezoneField(field('timezone')),
         systemField(field('system')),
       ],
     },
@@ -188,6 +209,11 @@ export interface AssistantEditDraft {
   icon: string;
   permission_mode_default: string;
   system: string;
+  timezone: string;
+  skills: string[];
+  mcp_servers: Record<string, unknown> | undefined;
+  packages: unknown[] | undefined;
+  engine_options: Record<string, unknown>;
 }
 
 /** Seed an edit draft from a record (null-safe — icon/description may be null). */
@@ -198,6 +224,11 @@ export function buildAssistantEditDraft(a: AssistantRecord): AssistantEditDraft 
     icon: a.icon || '',
     permission_mode_default: a.permission_mode_default || '',
     system: a.system || '',
+    timezone: a.timezone || '',
+    skills: a.skills ?? [],
+    mcp_servers: a.mcp_servers ?? undefined,
+    packages: a.packages ?? undefined,
+    engine_options: a.engine_options ?? {},
   };
 }
 
@@ -260,8 +291,121 @@ export function buildAssistantEditSections(hasPermissionMode: boolean): EditSect
           editField('permission_mode_default'),
           hasPermissionMode ? permissionOptions() : [],
         ),
+        timezoneField(editField('timezone')),
         systemField(editField('system')),
       ],
     },
   ];
+}
+
+// ── Extensions ───────────────────────────────────────────────────────────────
+// What the Assistant adds to its program, rendered from the program's own
+// declaration (the Environment's `extensions` and `engine_options_schema`), so
+// a program offers only what it reads and a new program needs no form change.
+
+/** The extension fields the Environment's program reads, in a PATCH body. */
+export function assistantExtensionUpdate(
+  environment: EnvironmentConfig | undefined,
+  draft: AssistantEditDraft,
+): Record<string, unknown> {
+  const extensions = environment?.extensions;
+  if (!extensions) return {};
+  return {
+    ...(extensions.skills ? { skills: draft.skills } : {}),
+    ...(extensions.mcp_transports.length > 0 ? { mcp_servers: draft.mcp_servers ?? null } : {}),
+    ...(extensions.packages.length > 0 ? { packages: draft.packages ?? [] } : {}),
+    ...((environment?.engine_options_schema ?? []).length > 0
+      ? { engine_options: draft.engine_options }
+      : {}),
+  };
+}
+
+/** The Extensions card for the Environment's program, or null when it reads none. */
+export function buildAssistantExtensionSection(
+  environment: EnvironmentConfig | undefined,
+): EditSectionSpec | null {
+  const extensions = environment?.extensions;
+  if (!extensions) return null;
+  const fields: EditFieldSpec[] = [];
+  if (extensions.skills) {
+    fields.push({
+      key: 'skills',
+      label: i18n.t('manage:assistant_form.skills_label'),
+      type: 'list',
+      get: (d) => (d as unknown as AssistantEditDraft).skills,
+      set: (d, value) => ({
+        ...d,
+        skills: Array.isArray(value) ? value.map(String).filter((item) => item.trim() !== '') : [],
+      }),
+      idTag: 'skills',
+      example: 'https://github.com/anthropics/skills.git@main#skills/brand-guidelines',
+      help: i18n.t('manage:assistant_form.skills_help'),
+    });
+  }
+  if (extensions.mcp_transports.length > 0) {
+    fields.push({
+      key: 'mcp_servers',
+      label: i18n.t('manage:assistant_form.mcp_label'),
+      type: 'json',
+      get: (d) => (d as unknown as AssistantEditDraft).mcp_servers,
+      set: (d, value) => ({ ...d, mcp_servers: value }),
+      idTag: 'mcp_servers',
+      rows: 6,
+      example: JSON.stringify({ docs: { type: 'http', url: 'https://mcp.example.com/mcp' } }, null, 2),
+      help: i18n.t('manage:assistant_form.mcp_help', {
+        transports: extensions.mcp_transports.join(', '),
+      }),
+    });
+  }
+  if (extensions.packages.length > 0) {
+    const [first] = extensions.packages;
+    fields.push({
+      key: 'packages',
+      label: i18n.t('manage:assistant_form.packages_label'),
+      type: 'json',
+      get: (d) => (d as unknown as AssistantEditDraft).packages,
+      set: (d, value) => ({ ...d, packages: value }),
+      idTag: 'packages',
+      rows: 6,
+      example: JSON.stringify([{
+        kind: first.name,
+        url: 'https://github.com/example/plugins.git',
+        protocol: 'https',
+        branch: 'main',
+        paths: ['my-plugin'],
+      }], null, 2),
+      help: [
+        i18n.t('manage:assistant_form.packages_help'),
+        ...extensions.packages.map((kind) => `${kind.name} — ${kind.label}. ${kind.help}`),
+      ].join('\n'),
+    });
+  }
+  for (const block of environment?.engine_options_schema ?? []) {
+    const reserved = block.protected_keys ?? [];
+    fields.push({
+      key: `engine_options.${block.key}`,
+      label: block.label ?? block.key,
+      type: 'json',
+      // The page renders its sections against an empty draft before the
+      // record arrives, so the bag may be absent.
+      get: (d) => (d as Partial<AssistantEditDraft>).engine_options?.[block.key],
+      set: (d, value) => {
+        const bag = { ...(d as Partial<AssistantEditDraft>).engine_options };
+        if (value === undefined) delete bag[block.key];
+        else bag[block.key] = value;
+        return { ...d, engine_options: bag };
+      },
+      idTag: `engine_options-${block.key}`,
+      rows: 6,
+      help: [
+        block.help,
+        reserved.length > 0
+          ? i18n.t('manage:assistant_form.native_reserved', { keys: reserved.join(', ') })
+          : '',
+      ].filter(Boolean).join('\n'),
+    });
+  }
+  return fields.length > 0
+    ? { label: i18n.t('manage:assistant_form.section_extensions'), fields }
+    : null;
 }

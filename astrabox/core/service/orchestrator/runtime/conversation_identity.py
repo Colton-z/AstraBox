@@ -889,6 +889,9 @@ def _build_conversation_bootstrap_env(
     normalized: dict[str, Any],
     *,
     skills: list[str] | tuple[str, ...] | None = None,
+    skills_target: str | None = None,
+    install_script: str | None = None,
+    restart_script: str | None = None,
     default_repo: dict[str, Any] | None = None,
     plugin_links: list[dict[str, Any]] | None = None,
     plugin_cache_hash: str | None = None,
@@ -918,6 +921,29 @@ def _build_conversation_bootstrap_env(
         manifest = _skill_manifest(skill_items)
         env["CONV_SKILL_MANIFEST_B64"] = base64.b64encode(manifest.encode("utf-8")).decode("ascii")
         env["CONV_SKILL_CACHE_DIR"] = AGENT_RUNTIME_SKILL_CACHE_DIR
+        if not str(skills_target or "").strip():
+            raise APIError(
+                code="CONVERSATION_BOOTSTRAP_FAILED",
+                message="conversation bootstrap has Skills but no target its engine declares",
+                status_code=500,
+            )
+        # Where the conversation's engine discovers Skills, as its adapter
+        # declares it (engine/extensions.py).
+        env["CONV_SKILL_TARGET"] = str(skills_target)
+    if str(install_script or "").strip():
+        # The engine's own installer for the extensions it installs itself
+        # (EngineAdapter.conversation_install_script), run as the workload
+        # account before the engine starts.
+        env["CONV_ENGINE_INSTALL_B64"] = base64.b64encode(
+            str(install_script).encode("utf-8")
+        ).decode("ascii")
+    if str(restart_script or "").strip():
+        # The engine's own restart of the image's resident service
+        # (EngineAdapter.resident_restart_script), run as root after the
+        # install so the running service reads it.
+        env["CONV_ENGINE_RESTART_B64"] = base64.b64encode(
+            str(restart_script).encode("utf-8")
+        ).decode("ascii")
     repo = dict(default_repo or {}) if isinstance(default_repo, dict) else {}
     if repo:
         url = _clean(repo.get("url"))
@@ -1064,6 +1090,9 @@ async def run_conversation_bootstrap_script(
     sidecar_endpoint: str | None = None,
     bootstrap_transport: str = CONVERSATION_BOOTSTRAP_TRANSPORT_SIDECAR_HTTP,
     skills: list[str] | tuple[str, ...] | None = None,
+    skills_target: str | None = None,
+    install_script: str | None = None,
+    restart_script: str | None = None,
     default_repo: dict[str, Any] | None = None,
     plugin_links: list[dict[str, Any]] | None = None,
     plugin_cache_hash: str | None = None,
@@ -1081,6 +1110,9 @@ async def run_conversation_bootstrap_script(
     env = _build_conversation_bootstrap_env(
         normalized,
         skills=skills,
+        skills_target=skills_target,
+        install_script=install_script,
+        restart_script=restart_script,
         default_repo=default_repo,
         plugin_links=plugin_links,
         plugin_cache_hash=plugin_cache_hash,

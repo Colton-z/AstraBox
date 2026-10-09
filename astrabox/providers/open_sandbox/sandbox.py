@@ -968,14 +968,6 @@ class OpenSandboxSandboxProvider(SandboxProvider):
     # One create = one box with its own network namespace and fixed in-box
     # ports; a sandbox is never reassigned across profiles.
     sandbox_is_profile_exclusive = True
-    # Every create this backend makes carries `timeout` = the deployment's
-    # sandbox lease (`create_open_sandbox_box`, and the pool lend alongside it),
-    # and both OpenSandbox runtimes terminate a box whose lease lapses. That is
-    # what makes a create whose ANSWER is lost a bounded leak rather than an
-    # unbounded one, and the pool checks this flag before making such a create
-    # at all — the promise is declared where a caller can read it instead of
-    # being assumed.
-    created_sandboxes_self_expire = True
     supports_create_network_policy = True
     supports_pause = True
     supports_client_pool = True
@@ -1254,6 +1246,12 @@ class OpenSandboxSandboxProvider(SandboxProvider):
         # Lets ``sandbox_for_sandbox`` reverse-map a live handle to this
         # provider. True exactly for the ``OpenSandboxHandle`` type.
         return isinstance(sandbox, OpenSandboxHandle)
+
+    def workspace_route(self) -> Any:
+        """Host mergerfs helpers beside this backend's Docker or Kubernetes runtime."""
+        from astrabox.core.service.orchestrator.runtime.storage.mergerfs import workspace_router
+
+        return workspace_router
 
     async def create_sandbox(self, spec: SandboxCreateSpec) -> OpenSandboxHandle:
         """Provision one sandbox from the neutral spec; no agent started.

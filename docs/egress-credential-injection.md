@@ -157,7 +157,9 @@ bindings or inspect Plugin-internal MCP declarations:
 
 The model endpoint, AstraBox callback host, and declared Plugin Git origins are
 derived by the platform. `allow_mcp_servers` admits remote MCP URLs declared
-directly on the Agent. A Plugin remains engine-native and opaque; an
+directly on the Agent. A server assigned from the extension catalog is reached
+through the deployment's extension gateway, whose host is admitted without it.
+A Plugin remains engine-native and opaque; an
 administrator lists any destinations used inside it. Requests to every other
 host are blocked unless an attached Vault binding explicitly authorizes that
 exact destination.

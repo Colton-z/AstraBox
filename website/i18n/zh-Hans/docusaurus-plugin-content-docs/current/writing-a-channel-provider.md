@@ -50,7 +50,7 @@ AstraBox 会先保存入站任务，再返回确认。适配器提供稳定的 `
 | `conversation_key` | 稳定的对话、群组、工单或话题 ID |
 | `reply_context` | 投递回复时使用的非敏感路由信息 |
 | `attention` | 私聊、提及和回复信号 |
-| `participant` | 随消息记录的外部发送者身份 |
+| `participant` | 随消息记录的外部发送者身份，并与触发配置的“允许的发送者”比对；设置了该列表的触发配置会拒绝不带此字段的消息 |
 
 `reference` 将入站回复关联到之前发出的平台消息；`ack_extra` 在回调响应中加入产品要求的字段；`alias_link` 记录投递后才获取的平台消息 ID；`ignore_reason` 标记不应触发执行的已认证事件。
 
@@ -203,6 +203,12 @@ AstraBox 会为目标渠道订阅 Session 输出，与 Web 读取同一份内容
 输出的 `command_id` 和 `turn_id` 可以为空，不应以存在入站命令作为投递条件。`progress`
 包含回复的累计正文，包括之前的文本块；更新消息时应替换正文。纯文本投递省略没有正文的
 回复，原生工具卡片仍可在 Web 查看。
+
+### 提问与审批 {#questions-and-approvals}
+
+Agent 停下来提问或请求审批时，到此为止的回复会连同问题一起投递，问题已追加在 `text` 中，因此只发送文本的适配器也能显示它。参与者回复这条消息，或只发送选项编号，即可作答。请在回执中返回消息 ID，并把引用回复映射到 `reference`，否则回复无法指向问题。
+
+如需显示按钮，请设置 `supports_interaction_actions = True`，并让 `deliver_outbound()` 接受 `interaction` 参数。它是一个 `ChannelInteraction`：为每个带有 `action` 的选项渲染一个按钮，点击时上报一个 `action` 为该字符串的 `ChannelInbound`。AstraBox 会把 action 解析到对应的问题；适配器不解析答案，也不跟踪问题状态。
 
 AstraBox 保留订阅游标，并在重启后从 Session 事件记录重新构建未完成的回复。持久化
 outbox 负责重试，provider 负责展示和目标平台 API 的幂等行为。

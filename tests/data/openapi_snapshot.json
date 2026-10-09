@@ -1251,6 +1251,28 @@
         "title": "AdminThreads",
         "type": "object"
       },
+      "AdoptedConnector": {
+        "description": "An app just connected, and the caller's Assistants it was turned on in.",
+        "properties": {
+          "assistant_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Assistant Ids",
+            "type": "array"
+          },
+          "connector_id": {
+            "title": "Connector Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "connector_id",
+          "assistant_ids"
+        ],
+        "title": "AdoptedConnector",
+        "type": "object"
+      },
       "AgentAccess": {
         "additionalProperties": true,
         "description": "The Agent authorization settings returned by ``_agent_access_view``.\n\n``created_by`` is stamped on insert and is absent from documents seeded\nwithout an owner, so it is the one optional member of the response.",
@@ -1298,6 +1320,27 @@
         "title": "AgentAccess",
         "type": "object"
       },
+      "AgentConnectorState": {
+        "properties": {
+          "agent_id": {
+            "title": "Agent Id",
+            "type": "string"
+          },
+          "enabled": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Enabled",
+            "type": "array"
+          }
+        },
+        "required": [
+          "agent_id",
+          "enabled"
+        ],
+        "title": "AgentConnectorState",
+        "type": "object"
+      },
       "AgentEnvironmentModels": {
         "additionalProperties": true,
         "description": "The model ids an Environment's gateway offers. Empty when it offers none.",
@@ -1340,6 +1383,12 @@
             },
             "title": "Engine Options Schema",
             "type": "array"
+          },
+          "extensions": {
+            "additionalProperties": true,
+            "default": {},
+            "title": "Extensions",
+            "type": "object"
           },
           "name": {
             "title": "Name",
@@ -2014,7 +2063,7 @@
             ],
             "title": "Name"
           },
-          "plugin_repos": {
+          "packages": {
             "anyOf": [
               {
                 "items": {
@@ -2027,7 +2076,7 @@
                 "type": "null"
               }
             ],
-            "title": "Plugin Repos"
+            "title": "Packages"
           },
           "prepared_capacity": {
             "anyOf": [
@@ -2629,6 +2678,28 @@
         "title": "ApiEnvelope[AdminSystemOverview]",
         "type": "object"
       },
+      "ApiEnvelope_AdoptedConnector_": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/AdoptedConnector"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[AdoptedConnector]",
+        "type": "object"
+      },
       "ApiEnvelope_AgentAccess_": {
         "properties": {
           "code": {
@@ -2649,6 +2720,28 @@
           "data"
         ],
         "title": "ApiEnvelope[AgentAccess]",
+        "type": "object"
+      },
+      "ApiEnvelope_AgentConnectorState_": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/AgentConnectorState"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[AgentConnectorState]",
         "type": "object"
       },
       "ApiEnvelope_AgentEnvironmentModels_": {
@@ -2937,6 +3030,72 @@
         "title": "ApiEnvelope[ArtifactShare]",
         "type": "object"
       },
+      "ApiEnvelope_AssistantConnectorState_": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/AssistantConnectorState"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[AssistantConnectorState]",
+        "type": "object"
+      },
+      "ApiEnvelope_AssistantDefaultsExtensionCatalog_": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/AssistantDefaultsExtensionCatalog"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[AssistantDefaultsExtensionCatalog]",
+        "type": "object"
+      },
+      "ApiEnvelope_AssistantDefaults_": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/AssistantDefaults"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[AssistantDefaults]",
+        "type": "object"
+      },
       "ApiEnvelope_AssistantDeletion_": {
         "properties": {
           "code": {
@@ -2959,6 +3118,28 @@
         "title": "ApiEnvelope[AssistantDeletion]",
         "type": "object"
       },
+      "ApiEnvelope_AssistantExtensionCatalog_": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/AssistantExtensionCatalog"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[AssistantExtensionCatalog]",
+        "type": "object"
+      },
       "ApiEnvelope_AssistantListPage_": {
         "properties": {
           "code": {
@@ -2979,6 +3160,28 @@
           "data"
         ],
         "title": "ApiEnvelope[AssistantListPage]",
+        "type": "object"
+      },
+      "ApiEnvelope_AssistantScheduledJobs_": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/AssistantScheduledJobs"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[AssistantScheduledJobs]",
         "type": "object"
       },
       "ApiEnvelope_AssistantWorkspaceDestruction_": {
@@ -3069,6 +3272,28 @@
         "title": "ApiEnvelope[Assistant]",
         "type": "object"
       },
+      "ApiEnvelope_AuthorizeResponse_": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/AuthorizeResponse"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[AuthorizeResponse]",
+        "type": "object"
+      },
       "ApiEnvelope_ChildRunMessagePage_": {
         "properties": {
           "code": {
@@ -3111,6 +3336,28 @@
           "data"
         ],
         "title": "ApiEnvelope[ChildRunStopResult]",
+        "type": "object"
+      },
+      "ApiEnvelope_Connector_": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/Connector"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[Connector]",
         "type": "object"
       },
       "ApiEnvelope_ConversationEndResult_": {
@@ -3839,6 +4086,28 @@
         "title": "ApiEnvelope[SessionMessagePage]",
         "type": "object"
       },
+      "ApiEnvelope_SessionRead_": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/SessionRead"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[SessionRead]",
+        "type": "object"
+      },
       "ApiEnvelope_SessionRecord_": {
         "properties": {
           "code": {
@@ -4405,6 +4674,32 @@
           "data"
         ],
         "title": "ApiEnvelope[list[Assistant]]",
+        "type": "object"
+      },
+      "ApiEnvelope_list_Connector__": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/Connector"
+            },
+            "title": "Data",
+            "type": "array"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[list[Connector]]",
         "type": "object"
       },
       "ApiEnvelope_list_DeploymentRecord__": {
@@ -5403,6 +5698,18 @@
             ],
             "title": "Engine Kind"
           },
+          "engine_options": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Engine Options"
+          },
           "environment_name": {
             "anyOf": [
               {
@@ -5425,7 +5732,28 @@
             ],
             "title": "Icon"
           },
-          "mcp_config_override": {
+          "inherited": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InheritedExtensions"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "main_session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Main Session Id"
+          },
+          "mcp_servers": {
             "anyOf": [
               {
                 "additionalProperties": true,
@@ -5435,7 +5763,7 @@
                 "type": "null"
               }
             ],
-            "title": "Mcp Config Override"
+            "title": "Mcp Servers"
           },
           "model_config_override": {
             "anyOf": [
@@ -5460,18 +5788,7 @@
             ],
             "title": "Owner Id"
           },
-          "permission_mode_default": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Permission Mode Default"
-          },
-          "plugin_repos_override": {
+          "packages": {
             "anyOf": [
               {
                 "items": {
@@ -5484,9 +5801,31 @@
                 "type": "null"
               }
             ],
-            "title": "Plugin Repos Override"
+            "title": "Packages"
           },
-          "skill_manifest_override": {
+          "permission_mode_default": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Permission Mode Default"
+          },
+          "primary": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Primary"
+          },
+          "skills": {
             "anyOf": [
               {
                 "items": {
@@ -5498,7 +5837,7 @@
                 "type": "null"
               }
             ],
-            "title": "Skill Manifest Override"
+            "title": "Skills"
           },
           "system": {
             "anyOf": [
@@ -5510,6 +5849,17 @@
               }
             ],
             "title": "System"
+          },
+          "timezone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timezone"
           },
           "updated_at": {
             "anyOf": [
@@ -5535,6 +5885,317 @@
           }
         },
         "title": "Assistant",
+        "type": "object"
+      },
+      "AssistantConnectorState": {
+        "properties": {
+          "assistant_id": {
+            "title": "Assistant Id",
+            "type": "string"
+          },
+          "enabled": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Enabled",
+            "type": "array"
+          }
+        },
+        "required": [
+          "assistant_id",
+          "enabled"
+        ],
+        "title": "AssistantConnectorState",
+        "type": "object"
+      },
+      "AssistantDefaults": {
+        "additionalProperties": false,
+        "description": "The layer as stored, with the Environment new Assistants would use now.",
+        "properties": {
+          "assistant_environment_names": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Assistant Environment Names",
+            "type": "array"
+          },
+          "credential_vault_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Credential Vault Ids"
+          },
+          "effective_environment_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective Environment Name"
+          },
+          "engine_options": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Engine Options"
+          },
+          "environment_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Environment Name"
+          },
+          "instructions": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Instructions"
+          },
+          "mcp_servers": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mcp Servers"
+          },
+          "model_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Name"
+          },
+          "packages": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Packages"
+          },
+          "skills": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Skills"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          }
+        },
+        "required": [
+          "assistant_environment_names"
+        ],
+        "title": "AssistantDefaults",
+        "type": "object"
+      },
+      "AssistantDefaultsExtensionCatalog": {
+        "additionalProperties": true,
+        "description": "The extension catalog with the deployment layer's selection marked.",
+        "properties": {
+          "mcp_servers": {
+            "items": {
+              "$ref": "#/components/schemas/AgentExtensionItem"
+            },
+            "title": "Mcp Servers",
+            "type": "array"
+          },
+          "selected_mcp_server_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Selected Mcp Server Ids",
+            "type": "array"
+          },
+          "selected_skill_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Selected Skill Ids",
+            "type": "array"
+          },
+          "skills": {
+            "items": {
+              "$ref": "#/components/schemas/AgentExtensionItem"
+            },
+            "title": "Skills",
+            "type": "array"
+          }
+        },
+        "required": [
+          "mcp_servers",
+          "skills",
+          "selected_mcp_server_ids",
+          "selected_skill_ids"
+        ],
+        "title": "AssistantDefaultsExtensionCatalog",
+        "type": "object"
+      },
+      "AssistantDefaultsFields": {
+        "additionalProperties": false,
+        "description": "The layer's authored fields, named as an Assistant's own are.",
+        "properties": {
+          "credential_vault_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Credential Vault Ids"
+          },
+          "engine_options": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Engine Options"
+          },
+          "environment_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Environment Name"
+          },
+          "instructions": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Instructions"
+          },
+          "mcp_servers": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mcp Servers"
+          },
+          "model_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Name"
+          },
+          "packages": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Packages"
+          },
+          "skills": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Skills"
+          }
+        },
+        "title": "AssistantDefaultsFields",
         "type": "object"
       },
       "AssistantDeletion": {
@@ -5565,6 +6226,53 @@
           }
         },
         "title": "AssistantDeletion",
+        "type": "object"
+      },
+      "AssistantExtensionCatalog": {
+        "additionalProperties": true,
+        "description": "The provider's catalog with this Assistant's selection marked, as for an Agent.",
+        "properties": {
+          "assistant_id": {
+            "title": "Assistant Id",
+            "type": "string"
+          },
+          "mcp_servers": {
+            "items": {
+              "$ref": "#/components/schemas/AgentExtensionItem"
+            },
+            "title": "Mcp Servers",
+            "type": "array"
+          },
+          "selected_mcp_server_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Selected Mcp Server Ids",
+            "type": "array"
+          },
+          "selected_skill_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Selected Skill Ids",
+            "type": "array"
+          },
+          "skills": {
+            "items": {
+              "$ref": "#/components/schemas/AgentExtensionItem"
+            },
+            "title": "Skills",
+            "type": "array"
+          }
+        },
+        "required": [
+          "assistant_id",
+          "mcp_servers",
+          "skills",
+          "selected_mcp_server_ids",
+          "selected_skill_ids"
+        ],
+        "title": "AssistantExtensionCatalog",
         "type": "object"
       },
       "AssistantListPage": {
@@ -5621,6 +6329,54 @@
           "has_more"
         ],
         "title": "AssistantListPage",
+        "type": "object"
+      },
+      "AssistantScheduledJobs": {
+        "additionalProperties": false,
+        "description": "What an Assistant scheduled for itself, read from its program's own store.\n\nEach job carries the program's own field names (Hermes: ``id``, ``name``,\n``prompt``, ``schedule_display``, ``state``, ``next_run_at``,\n``last_run_at``, ``last_status``, ...). ``jobs`` is null when there is no\nlive list to read, and ``reason`` says why: ``workspace_not_running`` or\n``engine_keeps_no_schedule``.",
+        "properties": {
+          "assistant_id": {
+            "title": "Assistant Id",
+            "type": "string"
+          },
+          "jobs": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Jobs"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "workspace_state": {
+            "title": "Workspace State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "assistant_id",
+          "workspace_state",
+          "jobs",
+          "reason"
+        ],
+        "title": "AssistantScheduledJobs",
         "type": "object"
       },
       "AssistantWorkspace": {
@@ -5821,6 +6577,19 @@
           }
         },
         "title": "AssistantWorkspaceHibernation",
+        "type": "object"
+      },
+      "AuthorizeResponse": {
+        "properties": {
+          "authorize_url": {
+            "title": "Authorize Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "authorize_url"
+        ],
+        "title": "AuthorizeResponse",
         "type": "object"
       },
       "BackgroundTaskState": {
@@ -6126,6 +6895,148 @@
           "status"
         ],
         "title": "ChildRunStopResult",
+        "type": "object"
+      },
+      "ConfigureRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "client_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Client Id"
+          },
+          "client_secret": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Client Secret"
+          }
+        },
+        "title": "ConfigureRequest",
+        "type": "object"
+      },
+      "Connector": {
+        "additionalProperties": false,
+        "description": "One work app: whether it is set up, and the caller's connection to it.",
+        "properties": {
+          "available": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Available"
+          },
+          "configured": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Configured"
+          },
+          "connector_id": {
+            "title": "Connector Id",
+            "type": "string"
+          },
+          "deployed": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deployed"
+          },
+          "docs_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Docs Url"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "published": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Published"
+          },
+          "redirect_uri": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Redirect Uri"
+          },
+          "registration": {
+            "title": "Registration",
+            "type": "string"
+          },
+          "server_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Server Id"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          }
+        },
+        "required": [
+          "connector_id",
+          "name",
+          "registration"
+        ],
+        "title": "Connector",
         "type": "object"
       },
       "ConversationEndResult": {
@@ -6775,7 +7686,7 @@
       },
       "DeploymentRecord": {
         "additionalProperties": true,
-        "description": "One trigger binding on an Agent, as ``DeploymentService`` stores it.\n\n``secret`` is the credential the calling system signs with, returned so the\nconfigurer can register it there. The document is open — the service strips\nonly the storage id — so ``extra=\"allow\"`` carries anything a scene adds.",
+        "description": "One trigger binding on an Agent or Assistant, as ``DeploymentService`` stores it.\n\n``secret`` is the credential the calling system signs with, returned so the\nconfigurer can register it there. The document is open — the service strips\nonly the storage id — so ``extra=\"allow\"`` carries anything a scene adds.",
         "properties": {
           "agent_id": {
             "anyOf": [
@@ -6798,6 +7709,42 @@
               }
             ],
             "title": "Agent Name"
+          },
+          "allowed_participants": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Allowed Participants"
+          },
+          "assistant_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assistant Id"
+          },
+          "assistant_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assistant Name"
           },
           "attention_policy": {
             "anyOf": [
@@ -6940,6 +7887,32 @@
         "title": "DeploymentTriggerAck",
         "type": "object"
       },
+      "EnsurePrimaryAssistantRequest": {
+        "additionalProperties": false,
+        "description": "What a first-created primary Assistant starts with; ignored when it exists.",
+        "properties": {
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "timezone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timezone"
+          }
+        },
+        "required": [
+          "display_name"
+        ],
+        "title": "EnsurePrimaryAssistantRequest",
+        "type": "object"
+      },
       "ExposedPortUrl": {
         "additionalProperties": true,
         "description": "A freshly minted browser-reachable URL for one sandbox port.\n\nThe URL is short-lived and carries its own bearer, so a caller re-requests\nit rather than caching it.",
@@ -6991,6 +7964,56 @@
           }
         },
         "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "InheritedExtensions": {
+        "additionalProperties": false,
+        "description": "What an Assistant inherits from the layers above it, by name and source.\n\nCredential Vaults are counted, not named; nothing here can be edited\nthrough the Assistant.",
+        "properties": {
+          "catalog_mcp_servers": {
+            "title": "Catalog Mcp Servers",
+            "type": "integer"
+          },
+          "credential_vaults": {
+            "title": "Credential Vaults",
+            "type": "integer"
+          },
+          "instructions": {
+            "title": "Instructions",
+            "type": "boolean"
+          },
+          "mcp_servers": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Mcp Servers",
+            "type": "array"
+          },
+          "packages": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Packages",
+            "type": "array"
+          },
+          "skills": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Skills",
+            "type": "array"
+          }
+        },
+        "required": [
+          "instructions",
+          "skills",
+          "mcp_servers",
+          "catalog_mcp_servers",
+          "packages",
+          "credential_vaults"
+        ],
+        "title": "InheritedExtensions",
         "type": "object"
       },
       "InteractionAnswerReceipt": {
@@ -8433,6 +9456,25 @@
         "title": "SessionMessagePage",
         "type": "object"
       },
+      "SessionRead": {
+        "description": "When the owner last read a conversation.",
+        "properties": {
+          "read_at": {
+            "title": "Read At",
+            "type": "string"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "read_at"
+        ],
+        "title": "SessionRead",
+        "type": "object"
+      },
       "SessionRecord": {
         "additionalProperties": false,
         "description": "One session, as the read paths project it.\n\nThe stored session document is not an API DTO. The platform facade builds\nthis closed projection field by field; runtime identity, engine resume\nhandles, ownership wiring and share capabilities never cross this model.\n\nWhich members are populated depends on the read. The paged list summarizes\neach row to the fields in ``_SESSION_LIST_SUMMARY_FIELDS``\n(``astrabox/core/service/orchestrator/session_kernel/service_mixins/session_read.py``);\ndetail adds the per-session reads that are too expensive to run per row —\n``pending_interaction``, ``delivery_failure``, ``pending_inputs`` and\n``engine_capabilities``.",
@@ -8600,6 +9642,17 @@
             ],
             "title": "Last Error"
           },
+          "last_output_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Output At"
+          },
           "last_turn_command_id": {
             "anyOf": [
               {
@@ -8714,6 +9767,17 @@
               }
             ],
             "title": "Permission Mode"
+          },
+          "read_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Read At"
           },
           "recovery_policy": {
             "anyOf": [
@@ -9933,7 +10997,7 @@
   "info": {
     "summary": "Self-hosted agent runtime that runs installed Agent programs in isolated sandboxes and streams responses over the AI SDK Data Stream Protocol (SSE).",
     "title": "AstraBox",
-    "version": "0.1.4"
+    "version": "0.1.5"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -10609,6 +11673,114 @@
         "summary": "Set Agent Mcp Servers"
       }
     },
+    "/api/v1/admin/assistant-defaults": {
+      "get": {
+        "operationId": "get_assistant_defaults_api_v1_admin_assistant_defaults_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_AssistantDefaults_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Assistant Defaults"
+      },
+      "put": {
+        "operationId": "set_assistant_defaults_api_v1_admin_assistant_defaults_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssistantDefaultsFields"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_AssistantDefaults_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Assistant Defaults"
+      }
+    },
+    "/api/v1/admin/assistant-defaults/extensions": {
+      "get": {
+        "operationId": "get_assistant_defaults_extensions_api_v1_admin_assistant_defaults_extensions_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_AssistantDefaultsExtensionCatalog_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Assistant Defaults Extensions"
+      },
+      "put": {
+        "operationId": "set_assistant_defaults_extensions_api_v1_admin_assistant_defaults_extensions_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetAgentExtensionsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_AssistantDefaultsExtensionCatalog_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Assistant Defaults Extensions"
+      }
+    },
     "/api/v1/admin/assistants/{assistant_id}/credential-vaults": {
       "get": {
         "operationId": "get_assistant_credential_binding_api_v1_admin_assistants__assistant_id__credential_vaults_get",
@@ -10709,6 +11881,186 @@
           }
         },
         "summary": "List Channel Providers"
+      }
+    },
+    "/api/v1/admin/connectors": {
+      "get": {
+        "operationId": "admin_list_connectors_api_v1_admin_connectors_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_list_Connector__"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Admin List Connectors"
+      }
+    },
+    "/api/v1/admin/connectors/{connector_id}": {
+      "delete": {
+        "operationId": "admin_remove_connector_api_v1_admin_connectors__connector_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connector_id",
+            "required": true,
+            "schema": {
+              "title": "Connector Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Remove Connector"
+      },
+      "put": {
+        "operationId": "admin_configure_connector_api_v1_admin_connectors__connector_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connector_id",
+            "required": true,
+            "schema": {
+              "title": "Connector Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConfigureRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_Connector_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Configure Connector"
+      }
+    },
+    "/api/v1/admin/connectors/{connector_id}/publish": {
+      "post": {
+        "operationId": "admin_publish_connector_api_v1_admin_connectors__connector_id__publish_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connector_id",
+            "required": true,
+            "schema": {
+              "title": "Connector Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_Connector_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Publish Connector"
+      }
+    },
+    "/api/v1/admin/connectors/{connector_id}/verify": {
+      "post": {
+        "operationId": "admin_verify_connector_api_v1_admin_connectors__connector_id__verify_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connector_id",
+            "required": true,
+            "schema": {
+              "title": "Connector Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_AuthorizeResponse_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Verify Connector"
       }
     },
     "/api/v1/admin/deployments": {
@@ -12373,6 +13725,139 @@
           }
         },
         "summary": "Set Agent Access"
+      }
+    },
+    "/api/v1/agents/{agent_id}/connectors": {
+      "get": {
+        "operationId": "agent_connectors_api_v1_agents__agent_id__connectors_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "title": "Agent Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_AgentConnectorState_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Agent Connectors"
+      }
+    },
+    "/api/v1/agents/{agent_id}/connectors/{connector_id}": {
+      "delete": {
+        "operationId": "disable_agent_connector_api_v1_agents__agent_id__connectors__connector_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "title": "Agent Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "connector_id",
+            "required": true,
+            "schema": {
+              "title": "Connector Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_AgentConnectorState_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Disable Agent Connector"
+      },
+      "put": {
+        "operationId": "enable_agent_connector_api_v1_agents__agent_id__connectors__connector_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "title": "Agent Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "connector_id",
+            "required": true,
+            "schema": {
+              "title": "Connector Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_AgentConnectorState_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Enable Agent Connector"
       }
     },
     "/api/v1/agents/{agent_id}/conversations": {
@@ -15299,6 +16784,44 @@
         "summary": "Create Assistant"
       }
     },
+    "/api/v1/assistants/primary": {
+      "post": {
+        "operationId": "ensure_primary_assistant_api_v1_assistants_primary_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnsurePrimaryAssistantRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_Assistant_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Ensure Primary Assistant"
+      }
+    },
     "/api/v1/assistants/{assistant_id}": {
       "delete": {
         "operationId": "delete_assistant_api_v1_assistants__assistant_id__delete",
@@ -15424,6 +16947,139 @@
         "summary": "Update Assistant"
       }
     },
+    "/api/v1/assistants/{assistant_id}/connectors": {
+      "get": {
+        "operationId": "assistant_connectors_api_v1_assistants__assistant_id__connectors_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "assistant_id",
+            "required": true,
+            "schema": {
+              "title": "Assistant Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_AssistantConnectorState_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Assistant Connectors"
+      }
+    },
+    "/api/v1/assistants/{assistant_id}/connectors/{connector_id}": {
+      "delete": {
+        "operationId": "disable_assistant_connector_api_v1_assistants__assistant_id__connectors__connector_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "assistant_id",
+            "required": true,
+            "schema": {
+              "title": "Assistant Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "connector_id",
+            "required": true,
+            "schema": {
+              "title": "Connector Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_AssistantConnectorState_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Disable Assistant Connector"
+      },
+      "put": {
+        "operationId": "enable_assistant_connector_api_v1_assistants__assistant_id__connectors__connector_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "assistant_id",
+            "required": true,
+            "schema": {
+              "title": "Assistant Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "connector_id",
+            "required": true,
+            "schema": {
+              "title": "Connector Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_AssistantConnectorState_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Enable Assistant Connector"
+      }
+    },
     "/api/v1/assistants/{assistant_id}/conversations": {
       "post": {
         "operationId": "start_assistant_conversation_api_v1_assistants__assistant_id__conversations_post",
@@ -15496,6 +17152,495 @@
           }
         },
         "summary": "Start Assistant Conversation"
+      }
+    },
+    "/api/v1/assistants/{assistant_id}/deployments": {
+      "get": {
+        "operationId": "list_assistant_deployments_api_v1_assistants__assistant_id__deployments_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "assistant_id",
+            "required": true,
+            "schema": {
+              "title": "Assistant Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_list_DeploymentRecord__"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Assistant Deployments"
+      },
+      "post": {
+        "operationId": "create_assistant_deployment_api_v1_assistants__assistant_id__deployments_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "assistant_id",
+            "required": true,
+            "schema": {
+              "title": "Assistant Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_DeploymentRecord_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Assistant Deployment"
+      }
+    },
+    "/api/v1/assistants/{assistant_id}/deployments/{deployment_id}": {
+      "delete": {
+        "operationId": "delete_assistant_deployment_api_v1_assistants__assistant_id__deployments__deployment_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "assistant_id",
+            "required": true,
+            "schema": {
+              "title": "Assistant Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "deployment_id",
+            "required": true,
+            "schema": {
+              "title": "Deployment Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_DeletedDeployment_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Assistant Deployment"
+      },
+      "put": {
+        "operationId": "update_assistant_deployment_api_v1_assistants__assistant_id__deployments__deployment_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "assistant_id",
+            "required": true,
+            "schema": {
+              "title": "Assistant Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "deployment_id",
+            "required": true,
+            "schema": {
+              "title": "Deployment Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_DeploymentRecord_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Assistant Deployment"
+      }
+    },
+    "/api/v1/assistants/{assistant_id}/deployments/{deployment_id}/runs": {
+      "get": {
+        "operationId": "list_assistant_deployment_runs_api_v1_assistants__assistant_id__deployments__deployment_id__runs_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "assistant_id",
+            "required": true,
+            "schema": {
+              "title": "Assistant Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "deployment_id",
+            "required": true,
+            "schema": {
+              "title": "Deployment Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Assistant Deployment Runs"
+      },
+      "post": {
+        "operationId": "trigger_assistant_deployment_run_api_v1_assistants__assistant_id__deployments__deployment_id__runs_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "assistant_id",
+            "required": true,
+            "schema": {
+              "title": "Assistant Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "deployment_id",
+            "required": true,
+            "schema": {
+              "title": "Deployment Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Trigger Assistant Deployment Run"
+      }
+    },
+    "/api/v1/assistants/{assistant_id}/deployments/{deployment_id}/runs/{run_id}/replay": {
+      "post": {
+        "operationId": "replay_assistant_deployment_run_api_v1_assistants__assistant_id__deployments__deployment_id__runs__run_id__replay_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "assistant_id",
+            "required": true,
+            "schema": {
+              "title": "Assistant Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "deployment_id",
+            "required": true,
+            "schema": {
+              "title": "Deployment Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Replay Assistant Deployment Run"
+      }
+    },
+    "/api/v1/assistants/{assistant_id}/extensions": {
+      "get": {
+        "operationId": "get_assistant_extensions_api_v1_assistants__assistant_id__extensions_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "assistant_id",
+            "required": true,
+            "schema": {
+              "title": "Assistant Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_AssistantExtensionCatalog_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Assistant Extensions"
+      },
+      "put": {
+        "operationId": "set_assistant_extensions_api_v1_assistants__assistant_id__extensions_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "assistant_id",
+            "required": true,
+            "schema": {
+              "title": "Assistant Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetAgentExtensionsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_AssistantExtensionCatalog_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Assistant Extensions"
+      }
+    },
+    "/api/v1/assistants/{assistant_id}/main-conversation": {
+      "post": {
+        "operationId": "open_main_conversation_api_v1_assistants__assistant_id__main_conversation_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "assistant_id",
+            "required": true,
+            "schema": {
+              "title": "Assistant Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_StartedAssistantConversation_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Open Main Conversation"
+      }
+    },
+    "/api/v1/assistants/{assistant_id}/scheduled-jobs": {
+      "get": {
+        "operationId": "list_assistant_scheduled_jobs_api_v1_assistants__assistant_id__scheduled_jobs_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "assistant_id",
+            "required": true,
+            "schema": {
+              "title": "Assistant Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_AssistantScheduledJobs_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Assistant Scheduled Jobs"
       }
     },
     "/api/v1/assistants/{assistant_id}/workspace": {
@@ -15613,6 +17758,155 @@
           }
         },
         "summary": "Wake Workspace"
+      }
+    },
+    "/api/v1/channel-providers": {
+      "get": {
+        "operationId": "list_channel_providers_for_owner_api_v1_channel_providers_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Channel Providers For Owner"
+      }
+    },
+    "/api/v1/connectors": {
+      "get": {
+        "operationId": "list_connectors_api_v1_connectors_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_list_Connector__"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Connectors"
+      }
+    },
+    "/api/v1/connectors/{connector_id}/assistants": {
+      "post": {
+        "operationId": "offer_connector_in_assistants_api_v1_connectors__connector_id__assistants_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connector_id",
+            "required": true,
+            "schema": {
+              "title": "Connector Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_AdoptedConnector_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Offer Connector In Assistants"
+      }
+    },
+    "/api/v1/connectors/{connector_id}/authorize": {
+      "post": {
+        "operationId": "authorize_connector_api_v1_connectors__connector_id__authorize_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connector_id",
+            "required": true,
+            "schema": {
+              "title": "Connector Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_AuthorizeResponse_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Authorize Connector"
+      }
+    },
+    "/api/v1/connectors/{connector_id}/connection": {
+      "delete": {
+        "operationId": "disconnect_connector_api_v1_connectors__connector_id__connection_delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connector_id",
+            "required": true,
+            "schema": {
+              "title": "Connector Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Disconnect Connector"
       }
     },
     "/api/v1/deployments/{deployment_id}/trigger": {
@@ -16008,6 +18302,104 @@
           }
         },
         "summary": "Runtime State Load"
+      }
+    },
+    "/api/v1/sbxcap/{cap_token}/api/v1/runtime-state/profile/load": {
+      "post": {
+        "operationId": "runtime_profile_load_api_v1_sbxcap__cap_token__api_v1_runtime_state_profile_load_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cap_token",
+            "required": true,
+            "schema": {
+              "title": "Cap Token",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RuntimeStateLoadRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_RuntimeStateLoadResult_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Runtime Profile Load"
+      }
+    },
+    "/api/v1/sbxcap/{cap_token}/api/v1/runtime-state/profile/save": {
+      "post": {
+        "operationId": "runtime_profile_save_api_v1_sbxcap__cap_token__api_v1_runtime_state_profile_save_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cap_token",
+            "required": true,
+            "schema": {
+              "title": "Cap Token",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RuntimeStateSaveRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_RuntimeStateSaveResult_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Runtime Profile Save"
       }
     },
     "/api/v1/sbxcap/{cap_token}/api/v1/runtime-state/save": {
@@ -17425,6 +19817,45 @@
           }
         },
         "summary": "Update Session Permission Mode"
+      }
+    },
+    "/api/v1/sessions/{session_id}/read": {
+      "post": {
+        "operationId": "mark_session_read_api_v1_sessions__session_id__read_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_SessionRead_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Mark Session Read"
       }
     },
     "/api/v1/sessions/{session_id}/recover": {

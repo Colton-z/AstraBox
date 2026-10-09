@@ -406,7 +406,7 @@ class _Runtime:
         async def run(command: str) -> Any:
             self.sandbox_commands.append(command)
             argv = shlex.split(command)
-            programs = {"astrabox-hermes-state-mirror", "astrabox-hermes"}
+            programs = {"astrabox-hermes-scheduler", "astrabox-hermes-state-mirror", "astrabox-hermes"}
             if argv[:2] == ["supervisorctl", "stop"] and argv[2] in programs:
                 self.stopped_programs.add(argv[2])
                 self.save_operations.append(f"stop:{argv[2]}")
@@ -899,6 +899,8 @@ async def test_hibernated_workspace_rebuilds_from_storage_on_a_new_box() -> None
     assert hibernated["previous_sandbox_id"] == "sbx-1"
     assert hibernated["sandbox_id"] is None
     stop_and_verify = [
+        "stop:astrabox-hermes-scheduler",
+        "status:astrabox-hermes-scheduler",
         "stop:astrabox-hermes-state-mirror",
         "status:astrabox-hermes-state-mirror",
         "stop:astrabox-hermes",

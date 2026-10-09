@@ -1,0 +1,59 @@
+# Google Workspace overlay for the connector hub: one google_workspace_mcp
+# instance each for Gmail, Google Calendar and Google Drive. Google runs its
+# own MCP servers for these only as a developer preview limited to your own
+# organization, so the hub forwards to these, which call Google's generally
+# available APIs with each person's token.
+#
+# Usage, after compose.connectors.yaml:
+#   GOOGLE_OAUTH_CLIENT_ID=... GOOGLE_OAUTH_CLIENT_SECRET=... \
+#   scripts/compose.sh -f containers/compose.connectors.yaml \
+#     -f containers/compose.connectors-google.yaml up -d --build
+#
+# GOOGLE_OAUTH_* are the deployment's Google OAuth web client: the servers
+# need its client ID to check tokens, and the administrator enters the same
+# client under Connectors for the hub's consent.
+x-google-workspace-mcp: &google-workspace-mcp
+  image: ghcr.io/taylorwilsdon/google_workspace_mcp:2.0.1@sha256:e839e6b77732d8840d77dbdac87fa57551f6c2ba524b069bf12bf3f60e68f6e9
+  restart: unless-stopped
+  networks:
+    - connectors
+  environment: &google-workspace-mcp-environment
+    # Resource-server mode: the hub sends each user's Google token as the
+    # bearer, and the server keeps nothing.
+    MCP_ENABLE_OAUTH21: "true"
+    EXTERNAL_OAUTH21_PROVIDER: "true"
+    WORKSPACE_MCP_STATELESS_MODE: "true"
+    WORKSPACE_MCP_TOKEN_VALIDATION_CACHE_TTL: "300"
+    PORT: "8000"
+    TOOL_TIER: extended
+    FASTMCP_HOME: /tmp/fastmcp
+    GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:?set the deployment's Google OAuth web client ID}
+    GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET:?set the deployment's Google OAuth web client secret}
+
+services:
+  gmail-mcp:
+    <<: *google-workspace-mcp
+    environment:
+      <<: *google-workspace-mcp-environment
+      TOOLS: gmail
+      WORKSPACE_EXTERNAL_URL: http://gmail-mcp:8000
+
+  google-calendar-mcp:
+    <<: *google-workspace-mcp
+    environment:
+      <<: *google-workspace-mcp-environment
+      TOOLS: calendar
+      WORKSPACE_EXTERNAL_URL: http://google-calendar-mcp:8000
+
+  google-drive-mcp:
+    <<: *google-workspace-mcp
+    environment:
+      <<: *google-workspace-mcp-environment
+      TOOLS: drive
+      WORKSPACE_EXTERNAL_URL: http://google-drive-mcp:8000
+
+  server:
+    environment:
+      ASTRABOX_GMAIL_MCP_URL: http://gmail-mcp:8000/mcp
+      ASTRABOX_GOOGLE_CALENDAR_MCP_URL: http://google-calendar-mcp:8000/mcp
+      ASTRABOX_GOOGLE_DRIVE_MCP_URL: http://google-drive-mcp:8000/mcp

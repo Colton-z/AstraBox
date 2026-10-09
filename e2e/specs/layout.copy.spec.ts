@@ -85,7 +85,7 @@ test.describe("management copy", () => {
     await page.goto("/manage/agents", { waitUntil: "domcontentloaded" });
     await settle(page);
     await page.getByRole("button", { name: "Settings", exact: true }).click();
-    await page.getByRole("button", { name: "ZH", exact: true }).click();
+    await page.getByRole("combobox", { name: "Language", exact: true }).selectOption({ label: "中文" });
 
     for (const [path, copy] of CHINESE) {
       await page.goto(path, { waitUntil: "domcontentloaded" });
@@ -117,47 +117,21 @@ test.describe("management copy", () => {
     await expect(page.getByText(/^manage:errors\./)).toHaveCount(0);
   });
 
-  test("Agent and Assistant choices explain what starts and what persists", async ({ page }) => {
+  test("Agent choices explain what starts", async ({ page }) => {
     await stubApi(page);
 
     await page.goto("/agents", { waitUntil: "domcontentloaded" });
     await settle(page);
     await expect(page.getByText("Choose an Agent to start a conversation.", { exact: true })).toBeVisible();
-
-    await page.goto("/assistants", { waitUntil: "domcontentloaded" });
-    await settle(page);
-    await expect(page.getByText(
-      "Each Assistant is a private, long-lived workspace for one user. Its files remain available across conversations.",
-      { exact: true },
-    )).toBeVisible();
-    const startButtons = page.getByRole("button", { name: "Start workspace", exact: true });
-    const resumeButtons = page.getByRole("button", { name: "Resume workspace", exact: true });
-    await expect(startButtons).toHaveCount(3);
-    await expect(startButtons.first()).toBeVisible();
-    await expect(resumeButtons).toHaveCount(3);
-    await expect(resumeButtons.first()).toBeVisible();
   });
 
-  test("Agent and Assistant choices use direct Chinese", async ({ page }) => {
+  test("Agent choices use direct Chinese", async ({ page }) => {
     await page.addInitScript(() => window.localStorage.setItem("astrabox-lang", "zh"));
     await stubApi(page);
 
     await page.goto("/agents", { waitUntil: "domcontentloaded" });
     await settle(page);
     await expect(page.getByText("选择一个 Agent，开始新的会话。", { exact: true })).toBeVisible();
-
-    await page.goto("/assistants", { waitUntil: "domcontentloaded" });
-    await settle(page);
-    await expect(page.getByText(
-      "每个 Assistant 都是仅供一位用户使用的长期工作区，文件会在不同会话之间保留。",
-      { exact: true },
-    )).toBeVisible();
-    const startButtons = page.getByRole("button", { name: "启动工作区", exact: true });
-    const resumeButtons = page.getByRole("button", { name: "恢复工作区", exact: true });
-    await expect(startButtons).toHaveCount(3);
-    await expect(startButtons.first()).toBeVisible();
-    await expect(resumeButtons).toHaveCount(3);
-    await expect(resumeButtons.first()).toBeVisible();
   });
 
   test("Assistant workspace actions describe the actual operation", async ({ page }) => {
@@ -205,7 +179,7 @@ test.describe("management copy", () => {
     await page.goto("/manage/assistants/new", { waitUntil: "domcontentloaded" });
     await settle(page);
     await expect(page.getByText(
-      "Select the Environment used by this Assistant. It supplies the Assistant engine, sandbox settings, and model connection. Credential Vaults are assigned separately.",
+      "Select the Environment used by this Assistant. It supplies the Assistant runtime, sandbox settings, and model connection. Credential Vaults are assigned separately.",
       { exact: true },
     )).toBeVisible();
 
@@ -213,7 +187,7 @@ test.describe("management copy", () => {
     await page.reload({ waitUntil: "domcontentloaded" });
     await settle(page);
     await expect(page.getByText(
-      "选择 Assistant 使用的 Environment（运行环境）。它提供 Assistant 引擎、沙箱设置和模型连接。Credential Vault（凭证库）需要另行分配。",
+      "选择 Assistant 使用的 Environment（运行环境）。它提供 Assistant 运行程序、沙箱设置和模型连接。Credential Vault（凭证库）需要另行分配。",
       { exact: true },
     )).toBeVisible();
   });
@@ -232,7 +206,7 @@ test.describe("management copy", () => {
       { exact: false },
     )).toBeVisible();
     await expect(page.getByText(
-      "Outbound network rules for the sandbox, in JSON.",
+      "Unrestricted permits every outbound destination.",
       { exact: false },
     )).toBeVisible();
     await expect(page.getByText("security boundary", { exact: false })).toHaveCount(0);
@@ -247,11 +221,11 @@ test.describe("management copy", () => {
       { exact: false },
     )).toBeVisible();
     await expect(page.getByText(
-      "选择负责创建和管理此 Environment 沙箱的后端。",
+      "选择负责创建和管理此 Environment 沙箱的服务。",
       { exact: false },
     )).toBeVisible();
     await expect(page.getByText(
-      "沙箱的出站网络规则，使用 JSON 格式。",
+      "不受限允许访问全部出站目标。",
       { exact: false },
     )).toBeVisible();
     await expect(page.getByText("箱子", { exact: false })).toHaveCount(0);
@@ -435,7 +409,9 @@ test.describe("management copy", () => {
       "System",
     ]);
     await expect(page.getByRole("heading", { name: "Triggers", exact: true })).toBeVisible();
-    await expect(page.getByRole("link", { name: "Triggers", exact: true })).toBeVisible();
+    await expect(
+      page.getByRole("navigation", { name: "Primary navigation" }).getByRole("link", { name: "Triggers", exact: true }),
+    ).toBeVisible();
     const gatewayLink = page.getByRole("link", { name: /LiteLLM gateway/ });
     await expect(gatewayLink).toBeVisible();
     await expect(gatewayLink).toHaveAttribute("href", "/litellm");
@@ -472,7 +448,9 @@ test.describe("management copy", () => {
 
     await page.goto("/agents", { waitUntil: "domcontentloaded" });
     await settle(page);
-    await expect(page.getByRole("tab", { name: "Agent", exact: true })).toBeVisible();
+    await expect(
+      page.getByRole("navigation", { name: "当前位置" }).getByText("Agent", { exact: true }),
+    ).toBeVisible();
 
     await page.goto("/manage/assistants", { waitUntil: "domcontentloaded" });
     await settle(page);
@@ -513,7 +491,7 @@ test.describe("management copy", () => {
     await page.getByRole("button", { name: "Close subagent activity" }).click();
 
     await page.getByRole("button", { name: /Operator/ }).click();
-    await page.getByRole("button", { name: "ZH", exact: true }).click();
+    await page.getByRole("combobox", { name: "Language", exact: true }).selectOption({ label: "中文" });
     await page.goto("/sessions/s-004", { waitUntil: "domcontentloaded" });
     await settle(page);
     await page.getByRole("tab", { name: "Agents", exact: true }).click();

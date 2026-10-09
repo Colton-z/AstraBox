@@ -14,6 +14,14 @@ Reads up to two env JSON blobs and deep-merges them into
   ``SOUL.md`` content, base64-encoded to preserve multiline markdown through
   shell env plumbing. Present, the platform owns ``SOUL.md``; absent, a
   ``SOUL.md`` the platform wrote is handed back to Hermes' own default.
+- ``ASTRABOX_HERMES_SKILLS_CACHE`` - the runtime Skill cache, copied into the
+  ``skills/astrabox`` category. Absent, that category is removed.
+- ``ASTRABOX_HERMES_PLUGINS`` - JSON ``[{"kind", "key", "source"}]``: each
+  cached plugin directory is placed at ``plugins/<key>`` (keys are
+  ``astrabox/<directory>``), enabled, and its declared Python dependencies
+  installed into ``HERMES_LAZY_INSTALL_TARGET``. The ``astrabox`` category and
+  the keys the platform enabled are the platform's; every other plugin and
+  Skill in the profile is left alone.
 
 All envs are optional. The script is the single contract between platform and
 the Hermes runtime image: adding profile config/materialization fields should
@@ -28,6 +36,7 @@ import base64
 import hashlib
 import json
 import os
+import shutil
 import sys
 from pathlib import Path
 from typing import Any
@@ -45,6 +54,18 @@ _MANAGED_SOUL_DIGEST_FILE = "astrabox-managed-soul.sha256"
 #: recursive merge only adds and overwrites, so without this record a server
 #: removed from the Assistant would stay in Hermes' config forever.
 _MANAGED_MCP_SERVERS_FILE = "astrabox-managed-mcp-servers.json"
+_SKILLS_CACHE_ENV = "ASTRABOX_HERMES_SKILLS_CACHE"
+_PLUGINS_ENV = "ASTRABOX_HERMES_PLUGINS"
+#: The category directory the platform owns under ``skills/`` and ``plugins/``.
+_CATEGORY = "astrabox"
+#: Inside each platform category: the digest of what was placed there, so an
+#: unchanged configuration is not copied again on every start.
+_PLACED_DIGEST_FILE = ".astrabox-placed.sha256"
+#: Beside config.yaml: the plugin keys the platform last enabled.
+_MANAGED_PLUGINS_FILE = "astrabox-managed-plugins.json"
+#: Which file identifies a package of each kind (``hermes_cli/plugins_discovery.py``:
+#: a directory with ``plugin.yaml`` is a native plugin even beside a ``plugin.json``).
+_PLUGIN_MANIFESTS = {"hermes-plugin": ("plugin.yaml", "plugin.yml"), "agent-plugin": ("plugin.json",)}
 
 
 def deep_merge(target: dict[str, Any], source: dict[str, Any], mode: str) -> None:
@@ -128,6 +149,164 @@ def materialize_soul(home: Path) -> bool:
     return True
 
 
+def _replace_tree(staging: Path, target: Path) -> None:
+    """Put ``staging`` at ``target``, removing what was there."""
+
+    previous = target.with_name(f".{target.name}.{os.getpid()}.old")
+    if target.exists():
+        os.replace(target, previous)
+    os.replace(staging, target)
+    shutil.rmtree(previous, ignore_errors=True)
+
+
+def _place(target: Path, digest: str, fill: Any) -> bool:
+    """Make ``target`` hold what ``fill`` copies into a fresh directory.
+
+    Skipped when ``target`` already records ``digest``; returns whether it was
+    rewritten.
+    """
+
+    recorded = target / _PLACED_DIGEST_FILE
+    if recorded.exists() and recorded.read_text(encoding="utf-8").strip() == digest:
+        return False
+    staging = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+    shutil.rmtree(staging, ignore_errors=True)
+    staging.mkdir(parents=True)
+    try:
+        fill(staging)
+        (staging / _PLACED_DIGEST_FILE).write_text(f"{digest}\n", encoding="utf-8")
+        _replace_tree(staging, target)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+    return True
+
+
+def materialize_skills(home: Path) -> None:
+    """Make ``skills/astrabox`` hold exactly the Assistant's Skills."""
+
+    target = home / "skills" / _CATEGORY
+    cache = os.environ.get(_SKILLS_CACHE_ENV)
+    if not cache:
+        if target.exists():
+            shutil.rmtree(target)
+            print("ASTRABOX_HERMES_SKILLS_RELEASED")
+        return
+    source = Path(cache)
+    digest = (source / ".skill-cache-hash").read_text(encoding="utf-8").strip()
+
+    def fill(staging: Path) -> None:
+        for skill in sorted(source.iterdir()):
+            if skill.is_dir() and not skill.name.startswith("."):
+                shutil.copytree(skill, staging / skill.name, symlinks=True)
+
+    if _place(target, digest, fill):
+        print("ASTRABOX_HERMES_SKILLS_READY")
+
+
+def configured_plugins() -> list[dict[str, str]]:
+    raw = (os.environ.get(_PLUGINS_ENV) or "").strip()
+    if not raw:
+        return []
+    plugins = json.loads(raw)
+    if not isinstance(plugins, list) or not all(
+        isinstance(plugin, dict)
+        and plugin.get("kind") in _PLUGIN_MANIFESTS
+        and str(plugin.get("key") or "").startswith(f"{_CATEGORY}/")
+        and plugin.get("source")
+        for plugin in plugins
+    ):
+        raise TypeError(f"{_PLUGINS_ENV} must list {{kind, key, source}} plugins")
+    return plugins
+
+
+def materialize_plugins(cfg: dict[str, Any], plugins: list[dict[str, str]], home: Path) -> None:
+    """Make ``plugins/astrabox`` hold the Assistant's plugins, and enable exactly those.
+
+    Hermes loads a user plugin only when its key is in ``plugins.enabled`` and
+    not in ``plugins.disabled``. The enabled list keeps the owner's own keys and
+    gains exactly the configured ones; a key the platform recorded but the
+    configuration omits is taken out.
+    """
+
+    target = home / "plugins" / _CATEGORY
+    if not plugins:
+        if target.exists():
+            shutil.rmtree(target)
+            print("ASTRABOX_HERMES_PLUGINS_RELEASED")
+    else:
+        for plugin in plugins:
+            source = Path(plugin["source"])
+            manifests = _PLUGIN_MANIFESTS[plugin["kind"]]
+            if not any((source / name).is_file() for name in manifests):
+                raise TypeError(
+                    f"package {plugin['key']} of kind {plugin['kind']} has no {' or '.join(manifests)}"
+                )
+            if plugin["kind"] == "agent-plugin" and (source / "plugin.yaml").exists():
+                raise TypeError(f"package {plugin['key']} has a plugin.yaml: Hermes loads it as a hermes-plugin")
+
+        def fill(staging: Path) -> None:
+            for plugin in plugins:
+                shutil.copytree(
+                    plugin["source"],
+                    staging / plugin["key"].split("/", 1)[1],
+                    symlinks=True,
+                    ignore=shutil.ignore_patterns(".git"),
+                )
+
+        digest = _sha256(json.dumps(plugins, sort_keys=True).encode("utf-8"))
+        if _place(target, digest, fill):
+            print("ASTRABOX_HERMES_PLUGINS_READY")
+
+    managed_path = home / _MANAGED_PLUGINS_FILE
+    previous: list[Any] = []
+    if managed_path.exists():
+        recorded = json.loads(managed_path.read_text(encoding="utf-8"))
+        if not isinstance(recorded, list):
+            raise TypeError(f"{_MANAGED_PLUGINS_FILE} must hold a JSON array")
+        previous = recorded
+    keys = [plugin["key"] for plugin in plugins]
+    section = cfg.get("plugins")
+    if keys or (isinstance(section, dict) and previous):
+        if not isinstance(section, dict):
+            section = cfg["plugins"] = {}
+        enabled = [key for key in section.get("enabled") or [] if key not in previous and key not in keys]
+        section["enabled"] = enabled + keys
+        disabled = [key for key in section.get("disabled") or [] if key not in keys]
+        if disabled or "disabled" in section:
+            section["disabled"] = disabled
+    if previous != keys:
+        _write_private(managed_path, json.dumps(keys).encode("utf-8"))
+
+
+def install_plugin_dependencies(plugins: list[dict[str, str]], home: Path) -> None:
+    """Install each Hermes plugin's declared Python dependencies, or fail.
+
+    Hermes' own installer (``hermes_cli/plugin_python_deps.py``, what
+    ``hermes plugins enable`` runs) puts them in ``HERMES_LAZY_INSTALL_TARGET``
+    and reports a failure without raising, leaving a plugin that cannot import;
+    here that stops the start. Skipped while the target records this plugin
+    set, so a lost target is filled again.
+    """
+
+    native = [plugin for plugin in plugins if plugin["kind"] == "hermes-plugin"]
+    lazy_target = (os.environ.get("HERMES_LAZY_INSTALL_TARGET") or "").strip()
+    if not native or not lazy_target:
+        return
+    marker = Path(lazy_target) / ".astrabox-plugins.sha256"
+    digest = _sha256(json.dumps(native, sort_keys=True).encode("utf-8"))
+    if marker.exists() and marker.read_text(encoding="utf-8").strip() == digest:
+        return
+    from hermes_cli.plugin_python_deps import install_for_plugin_dir
+
+    for plugin in native:
+        outcome = install_for_plugin_dir(home / "plugins" / plugin["key"])
+        if outcome.status not in {"none", "installed"}:
+            raise RuntimeError(f"plugin {plugin['key']}: {outcome.message}")
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    _write_private(marker, f"{digest}\n".encode("ascii"))
+    print("ASTRABOX_HERMES_PLUGIN_DEPENDENCIES_READY")
+
+
 def release_unconfigured_mcp_servers(
     cfg: dict[str, Any], overwrite: dict[str, Any], home: Path
 ) -> None:
@@ -209,6 +388,15 @@ def main() -> int:
     except TypeError:
         return 65
 
+    try:
+        materialize_skills(home)
+        plugins = configured_plugins()
+        materialize_plugins(cfg, plugins, home)
+    except (OSError, TypeError, ValueError) as exc:
+        sys.stderr.write(f"ASTRABOX_HERMES_EXTENSIONS_FAILED {exc}\n")
+        return 65
+    applied_config = applied_config or bool(plugins) or "plugins" in cfg
+
     if not applied_config and not cfg_path.exists():
         if materialized_soul:
             return 0
@@ -219,6 +407,13 @@ def main() -> int:
         cfg_path,
         yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True).encode("utf-8"),
     )
+    # After config.yaml: Hermes resolves a plugin's dependencies together with
+    # those of every plugin config.yaml enables.
+    try:
+        install_plugin_dependencies(plugins, home)
+    except (OSError, RuntimeError) as exc:
+        sys.stderr.write(f"ASTRABOX_HERMES_EXTENSIONS_FAILED {exc}\n")
+        return 65
     print("ASTRABOX_HERMES_CONFIG_READY")
     return 0
 

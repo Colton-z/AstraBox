@@ -2,6 +2,8 @@
 
 MCP 服务器、Skill 和 Plugin 可以扩展 Agent 的能力。在创建或更新 Agent 时配置它们，让 Agent 可以访问外部服务、使用领域流程和打包扩展。
 
+Agent 能添加什么取决于它的 Agent 程序，由程序自己声明；程序不读取的字段会在保存 Agent 时被拒绝。Skill 适用于所有内置程序：Claude Code 从其配置目录读取，Codex、Pi 和 DeepSeek Harness 从三者共同扫描的 `~/.agents/skills` 读取。Codex 接受 Codex 插件（kind 为 `codex-plugin` 的 `packages`）：带 Codex、Claude Code 或 Cursor `plugin.json`，或 Agent Plugins v1.0 `plugin.json` 的插件目录，AstraBox 在 Codex 启动前于对话的 home 中写入一个插件市场，由 Codex 自己安装。作者声明的 MCP 服务器适用于所有程序，各自写入程序自己的配置：Claude Code 和 Hermes 接受 stdio、HTTP 和 SSE 服务器；Codex、Pi 和 DeepSeek Harness 接受 stdio 和 streamable HTTP 服务器。Claude Code 插件（kind 为 `claude-plugin` 的 `packages`）适用于 Claude Code。Pi 从其设置（`engine_options.settings`）的 `packages` 列表安装自己的包，Pi 在启动时拉取它们。DeepSeek Harness 接受插件 Bundle，即其 web profile `package.json` 的 `dependencies`（`engine_options.profile_package`），AstraBox 在 harness 启动前写入并用 `dsh plugin --profile web install` 安装；profile 组装（patch 层）也以 Bundle 的形式打包。受限 Environment 会像放行 Skill 的 Git 来源一样放行这些来源所指的主机（它们的 git 主机和 npm registry）：公网主机会为该 Agent 自动加入，私网主机只有 Environment 列出时才放行。连接器适用于所有程序。原生工具始终可用。
+
 ## 扩展的作用
 
 读写文件、编辑代码、执行命令和搜索等原生工具由所选 Agent 程序提供。AstraBox 不使用单独的 `tools` 字段复制一套工具定义。
@@ -92,11 +94,12 @@ provider 只在符合规则的受保护出站请求上加入凭证，让密钥�
   "skills": [
     "https://github.com/example/agent-skills.git@REVIEWED_COMMIT_SHA#skills/code-review"
   ],
-  "plugin_repos": [
+  "packages": [
     {
+      "kind": "claude-plugin",
       "url": "https://github.com/example/agent-plugins.git",
       "sha": "REVIEWED_COMMIT_SHA",
-      "plugin_paths": ["plugins/code-review"]
+      "paths": ["plugins/code-review"]
     }
   ]
 }
@@ -149,11 +152,12 @@ Plugin 或 Skill 配置中的仓库 URL 保持不含 Token，完成分配后新�
   "skills": [
     "https://github.com/example/agent-skills.git@REVIEWED_COMMIT_SHA#skills/code-review"
   ],
-  "plugin_repos": [
+  "packages": [
     {
+      "kind": "claude-plugin",
       "url": "https://github.com/example/agent-plugins.git",
       "sha": "REVIEWED_COMMIT_SHA",
-      "plugin_paths": ["plugins/development"]
+      "paths": ["plugins/development"]
     }
   ]
 }

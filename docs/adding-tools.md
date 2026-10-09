@@ -5,9 +5,30 @@
 
 MCP servers, Skills, and Plugins extend what an Agent can do. Configure them when creating or updating an Agent to give it external services, domain procedures, and packaged extensions.
 
-The Agent-level MCP, Skill, and Plugin configuration described here currently
-targets Claude Code. AstraBox's Codex, DeepSeek Harness, and Pi integrations
-reject these fields when saving an Agent. Their native tools remain available.
+What an Agent can add depends on its Agent program, which declares it; a field
+the program does not read is refused when the Agent is saved. Skills work with
+every bundled program: Claude Code reads them from its configuration
+directory, and Codex, Pi and DeepSeek Harness from `~/.agents/skills`, the
+shared Skills root all three scan. Codex takes Codex plugins (`packages` of
+kind `codex-plugin`): a plugin directory with a Codex, Claude Code or Cursor
+`plugin.json`, or an Agent Plugins v1.0 one, which Codex installs from a
+marketplace AstraBox writes in the conversation's home before Codex starts.
+MCP servers an author declares work with every program, each in its own
+configuration: Claude Code and Hermes take stdio, HTTP and SSE servers;
+Codex, Pi and DeepSeek Harness take stdio and streamable HTTP ones. Claude
+Code plugins (`packages` of kind `claude-plugin`) work with Claude Code.
+Pi installs its own packages from the `packages` list of its settings
+(`engine_options.settings`), which Pi fetches when it starts. DeepSeek
+Harness takes plugin Bundles as
+the `dependencies` of its web profile's `package.json`
+(`engine_options.profile_package`), which AstraBox writes and installs with
+`dsh plugin --profile web install` before the harness starts; a Bundle is
+also how a profile composition (a patch layer) is packaged. A limited
+Environment admits the hosts these sources name (their git hosts and the npm
+registry) the way it admits a Skill's Git origin: a public host is added for
+the Agent, and a private one only if the Environment names it. Connectors work
+with every program.
+Native tools always remain available.
 
 ## What Extensions Do
 
@@ -113,11 +134,12 @@ For an existing Agent, **MCP configuration** and **Skill configuration** each gr
   "skills": [
     "https://github.com/example/agent-skills.git@REVIEWED_COMMIT_SHA#skills/code-review"
   ],
-  "plugin_repos": [
+  "packages": [
     {
+      "kind": "claude-plugin",
       "url": "https://github.com/example/agent-plugins.git",
       "sha": "REVIEWED_COMMIT_SHA",
-      "plugin_paths": ["plugins/code-review"]
+      "paths": ["plugins/code-review"]
     }
   ]
 }
@@ -173,11 +195,12 @@ inside the Plugin needs its own service credential; see
   "skills": [
     "https://github.com/example/agent-skills.git@REVIEWED_COMMIT_SHA#skills/code-review"
   ],
-  "plugin_repos": [
+  "packages": [
     {
+      "kind": "claude-plugin",
       "url": "https://github.com/example/agent-plugins.git",
       "sha": "REVIEWED_COMMIT_SHA",
-      "plugin_paths": ["plugins/development"]
+      "paths": ["plugins/development"]
     }
   ]
 }

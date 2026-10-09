@@ -4,6 +4,11 @@ The chunk store composes the existing idempotent transcript batch writer in a
 separate collection. Its sequence allocator is not a completeness signal. A
 single owner-scoped head is the only publication point; interrupted writes leave
 the previous head readable. The owner identifies the native runtime profile.
+
+One owner can hold more than one kind of archive, each in its own pair of
+collections: the engine's native SessionStore, and the profile state beside
+it (an Assistant's memories, skills and scheduled jobs). They are saved and
+restored independently, so either kind's history and format are its own.
 """
 
 from __future__ import annotations
@@ -20,8 +25,22 @@ from astrabox.persistence.repository.backend import get_async_collection, run_mo
 from astrabox.persistence.repository.transcript_entry_repository import TranscriptEntryRepository
 
 CHUNK_SIZE = 256 * 1024
-HEAD_COLLECTION_NAME = "runtime_state_snapshot_heads"
-CHUNK_COLLECTION_NAME = "runtime_state_snapshot_chunks"
+
+
+@dataclass(frozen=True)
+class RuntimeStateArchive:
+    """Where one kind of owner archive keeps its heads and chunks."""
+
+    heads: str
+    chunks: str
+
+
+NATIVE_SESSION_STORE = RuntimeStateArchive(
+    heads="runtime_state_snapshot_heads", chunks="runtime_state_snapshot_chunks"
+)
+PROFILE_STATE = RuntimeStateArchive(
+    heads="runtime_profile_snapshot_heads", chunks="runtime_profile_snapshot_chunks"
+)
 
 
 def _sha256(value: bytes) -> str:
@@ -76,8 +95,9 @@ class RuntimeStateSnapshotCorrupt(RuntimeError):
 
 
 class RuntimeStateSnapshotRepository:
-    def __init__(self) -> None:
-        self._chunks = TranscriptEntryRepository(collection_name=CHUNK_COLLECTION_NAME)
+    def __init__(self, archive: RuntimeStateArchive = NATIVE_SESSION_STORE) -> None:
+        self._heads = archive.heads
+        self._chunks = TranscriptEntryRepository(collection_name=archive.chunks)
 
     @staticmethod
     def _owner_fields(owner: RuntimeStateOwner) -> dict[str, str]:
@@ -121,7 +141,7 @@ class RuntimeStateSnapshotRepository:
             raise RuntimeStateSnapshotCorrupt("runtime state snapshot head is invalid")
 
     async def _head(self, owner: RuntimeStateOwner) -> dict[str, Any] | None:
-        collection = await get_async_collection(HEAD_COLLECTION_NAME)
+        collection = await get_async_collection(self._heads)
         value = await collection.find_one({"_id": self._owner_fields(owner)["_id"]})
         if value is None:
             return None
@@ -232,7 +252,7 @@ class RuntimeStateSnapshotRepository:
                 "chunk_count": len(entries),
             }
             await self._read_snapshot(owner, head)
-            collection = await get_async_collection(HEAD_COLLECTION_NAME)
+            collection = await get_async_collection(self._heads)
             if current is None:
                 try:
                     await collection.insert_one(head)

@@ -68,6 +68,9 @@ logger = get_logger(__name__)
 
 ENGINE_KIND = "codex"
 
+#: The marketplace Codex knows the platform's plugins by.
+CODEX_PLUGIN_MARKETPLACE = "astrabox"
+
 #: Codex's own `SandboxMode`, verbatim. These are the names the CLI's `-s`
 #: flag takes and the strings `thread/start` accepts, so the console offers
 #: the engine's vocabulary rather than a set invented here.
@@ -215,6 +218,7 @@ class CodexEngineClient:
             # The model is deliberately NOT re-sent with it. That one IS
             # thread state, and overriding it on every rejoin would move a
             # running conversation to a different model without anyone asking.
+            await self._trust_platform_plugin_hooks()
             resume: dict[str, Any] = {"threadId": durable_key}
             if self._thread_config:
                 resume["config"] = dict(self._thread_config)
@@ -222,6 +226,7 @@ class CodexEngineClient:
             self._remember_effective_model(resumed)
             self._thread_id = durable_key
         elif self._thread_id is None:
+            await self._trust_platform_plugin_hooks()
             params: dict[str, Any] = {}
             if self._cwd:
                 params["cwd"] = self._cwd
@@ -243,6 +248,37 @@ class CodexEngineClient:
                 raise RuntimeError("codex thread/start returned no thread id")
             self._remember_effective_model(created)
             self._thread_id = thread_id
+
+    async def _trust_platform_plugin_hooks(self) -> None:
+        """Trust the hooks of the plugins the platform installed, before a thread.
+
+        Codex runs a hook from outside managed configuration only once its
+        hash is recorded as trusted under ``hooks.state`` (codex-rs/hooks
+        discovery at rust-v0.160.0); otherwise it lists the hook and skips
+        it. Its TUI asks the person and records the answer with
+        ``config/batchWrite``, and this writes the same record. A plugin in
+        the platform's marketplace is one the Agent's author declared at a
+        pinned revision, which is that review; any other hook, such as a
+        project's own, still waits for one.
+        """
+
+        listed = await self._link.call("hooks/list", {"cwds": [self._cwd]} if self._cwd else {})
+        trusted = {
+            str(hook["key"]): {"trusted_hash": str(hook["currentHash"])}
+            for entry in (listed or {}).get("data") or []
+            for hook in entry.get("hooks") or []
+            if hook.get("source") == "plugin"
+            and str(hook.get("pluginId") or "").endswith(f"@{CODEX_PLUGIN_MARKETPLACE}")
+            and hook.get("trustStatus") in {"untrusted", "modified"}
+        }
+        if trusted:
+            await self._link.call(
+                "config/batchWrite",
+                {
+                    "edits": [{"keyPath": "hooks.state", "value": trusted, "mergeStrategy": "upsert"}],
+                    "reloadUserConfig": True,
+                },
+            )
 
     def _remember_effective_model(self, response: Any) -> None:
         if not isinstance(response, dict):

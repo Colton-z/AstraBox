@@ -9,17 +9,18 @@ from typing import Any
 
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.settings import load_astrabox_settings
-from astrabox.core.service.orchestrator.runtime.storage.mergerfs import OWNER, workspace_router
+from astrabox.core.service.orchestrator.runtime.storage.mergerfs import OWNER
 from astrabox.seams.sandbox import (
     SANDBOX_INSTALLATION_METADATA_KEY,
     SANDBOX_LIFECYCLE_PROBE_NOT_FOUND,
     SANDBOX_MANAGED_BY_METADATA_KEY,
     SANDBOX_MANAGED_BY_METADATA_VALUE,
     SandboxCreateSpec,
+    registered_sandbox_names,
     sandbox_for_name,
     sandbox_installation_id,
 )
-from astrabox.seams.storage import storage_provider
+from astrabox.seams.storage import WorkspaceRoute, storage_provider
 
 logger = get_logger(__name__)
 
@@ -33,11 +34,23 @@ logger = get_logger(__name__)
 UNCLAIMED_VIEW_GRACE_SECONDS = 600.0
 
 
+def workspace_route_for(backend: Any) -> WorkspaceRoute:
+    """The route through which this backend's boxes mount persistent workspaces."""
+    route = backend.workspace_route()
+    if route is None:
+        raise RuntimeError(
+            f"sandbox backend {backend.name!r} has no workspace route, so it cannot "
+            "mount a persistent workspace"
+        )
+    return route
+
+
 async def create_sandbox_with_storage(backend: Any, spec: SandboxCreateSpec) -> Any:
     """Prepare storage before create, preserving a recovered box's original entry."""
     if not spec.workspace_mounts:
         return await backend.create_sandbox(spec)
     storage = storage_provider()
+    workspace_router = workspace_route_for(backend)
     existing = await backend.find_sandbox_by_assignment(spec.assignment_id)
     if existing is not None:
         storage_assignment = existing.metadata.get(OWNER)
@@ -85,6 +98,11 @@ async def bind_prepared_workspace(
     """Bind storage after allocation ownership and before prepared-engine activation."""
     if not mounts:
         return
+    workspace_router = workspace_route_for(backend)
+    if not workspace_router.supports_late_binding:
+        # Placement gives such a route only Sessions that adopt the workspace
+        # the prepared box was created with, so its mounts are already theirs.
+        return
     storage = storage_provider()
     descriptor = await backend.describe_sandbox(sandbox_id)
     assignment = str(descriptor.metadata.get(OWNER) or "").strip()
@@ -105,21 +123,36 @@ async def reconcile_workspace_mounts() -> dict[str, int]:
     Either release still refuses while a consumer mounts the view (Docker will
     not remove a volume a container references; the Kubernetes driver checks
     for Pods using the claim), and one view that cannot be released does not
-    stop the others.
+    stop the others. A view whose consumer is still shutting down is left for
+    the next pass and counted as waiting, not as a failure.
     """
     summary = {
         "workspace_mounts_released": 0,
         "workspace_mounts_unclaimed_released": 0,
+        "workspace_mounts_awaiting_consumer_exit": 0,
         "workspace_mount_release_failures": 0,
     }
     if not load_astrabox_settings().sandbox_workspace_volume:
         return summary
+    routes: list[WorkspaceRoute] = []
+    for name in registered_sandbox_names():
+        route = sandbox_for_name(name).workspace_route()
+        if route is not None and all(route is not seen for seen in routes):
+            routes.append(route)
+    for workspace_router in routes:
+        await _reconcile_route(workspace_router, summary)
+    return summary
+
+
+async def _reconcile_route(workspace_router: WorkspaceRoute, summary: dict[str, int]) -> None:
     for assignment, backend_name, sandbox_id in await workspace_router.attached_mounts():
         try:
             probe = await sandbox_for_name(backend_name).probe(sandbox_id)
             if probe.probe_status != SANDBOX_LIFECYCLE_PROBE_NOT_FOUND:
                 continue
-            await workspace_router.release_mounts(assignment)
+            if not await workspace_router.release_mounts(assignment):
+                _awaiting_consumer_exit(assignment, summary)
+                continue
             summary["workspace_mounts_released"] += 1
         except Exception:
             logger.exception(
@@ -140,7 +173,9 @@ async def reconcile_workspace_mounts() -> dict[str, int]:
             )
             if carriers.total_items:
                 continue
-            await workspace_router.release_mounts(assignment)
+            if not await workspace_router.release_mounts(assignment):
+                _awaiting_consumer_exit(assignment, summary)
+                continue
             summary["workspace_mounts_unclaimed_released"] += 1
             logger.info(
                 "released workspace view assignment=%s: no sandbox carries it %.0fs after "
@@ -151,4 +186,12 @@ async def reconcile_workspace_mounts() -> dict[str, int]:
         except Exception:
             logger.exception("unclaimed workspace view release failed assignment=%s", assignment)
             summary["workspace_mount_release_failures"] += 1
-    return summary
+
+
+def _awaiting_consumer_exit(assignment: str, summary: dict[str, int]) -> None:
+    logger.info(
+        "workspace view assignment=%s is still mounted by a box that is shutting down; "
+        "the next pass releases it",
+        assignment,
+    )
+    summary["workspace_mounts_awaiting_consumer_exit"] += 1

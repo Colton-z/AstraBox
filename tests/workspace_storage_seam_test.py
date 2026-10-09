@@ -26,6 +26,20 @@ from astrabox.core.service.orchestrator.engine.provisioning import (
 from astrabox.seams.storage import StorageProvider, WorkspaceRef, register_storage
 
 
+class _OpenSandboxRoute:
+    """The bundled backend, reduced to the route it mounts workspaces through."""
+
+    name = "open_sandbox"
+
+    def workspace_route(self) -> Any:
+        from astrabox.core.service.orchestrator.runtime.storage.mergerfs import workspace_router
+
+        return workspace_router
+
+
+_OPEN_SANDBOX = _OpenSandboxRoute()
+
+
 class _RecordingProvider(StorageProvider):
     """A medium that records what it was asked, and can refuse."""
 
@@ -151,6 +165,7 @@ async def test_every_planned_mount_is_confirmed_before_the_box_is_used(
             ("/home/conversations/asst/.hermes", "/nas/assistants/asst_abc/config"),
         ),
         ref=WorkspaceRef(subject_kind="assistant", subject_id="asst_abc"),
+        backend=_OPEN_SANDBOX,
     )
 
     assert provider.prepared == [
@@ -178,6 +193,7 @@ async def test_a_box_whose_mount_did_not_arrive_is_refused(
             object(),
             (("/workspace", "/nas/assistants/asst_abc/workspace"),),
             ref=WorkspaceRef(subject_kind="assistant", subject_id="asst_abc"),
+            backend=_OPEN_SANDBOX,
         )
 
 
@@ -188,7 +204,8 @@ async def test_a_deployment_that_plans_no_mounts_asks_nothing(
     """Disposable boxes are a deployment shape, not a failure to report."""
 
     await workspace_is_ready(
-        object(), (), ref=WorkspaceRef(subject_kind="agent", subject_id="agent-7")
+        object(), (), ref=WorkspaceRef(subject_kind="agent", subject_id="agent-7"),
+        backend=_OPEN_SANDBOX,
     )
 
     assert provider.prepared == []

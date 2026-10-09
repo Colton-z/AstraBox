@@ -12,9 +12,9 @@ from astrabox.core.service.orchestrator.engine.capabilities import (
     EngineRuntimeProfileDeclaration,
     unsupported_engine_configuration_inputs,
 )
-from astrabox.core.service.orchestrator.runtime.plugin_repos import (
-    build_plugin_repo_checkout_dir,
-    get_template_plugin_repos,
+from astrabox.core.service.orchestrator.runtime.packages import (
+    build_package_checkout_dir,
+    template_packages,
 )
 from astrabox.seams.sandbox import (
     SANDBOX_PERMISSION_LEVEL_DEFAULT,
@@ -182,7 +182,7 @@ def template_capability_hash(template: Any | None) -> str:
     """Hash resolved Agent fields that change runtime capabilities."""
     payload = {
         "skills": _template_value(template, "skills") or [],
-        "plugin_repos": get_template_plugin_repos(template),
+        "packages": template_packages(template),
         "mcp_config": _template_value(template, "mcp_servers") or {},
         "default_repo": _template_value(template, "default_repo") or {},
         "system": _template_value(template, "system") or "",
@@ -248,16 +248,23 @@ def plan_capabilities(template: Any | None, identity: dict[str, Any]) -> dict[st
         )
 
     skills = [str(item).strip() for item in (_template_value(template, "skills") or []) if str(item).strip()]
-    plugin_repos = get_template_plugin_repos(template)
+    packages = template_packages(template)
     mcp_servers_map = _template_value(template, "mcp_servers") or {}
     default_repo = _template_value(template, "default_repo")
     from astrabox.core.service.orchestrator.runtime.mcp_servers import (
+        is_platform_mcp_server,
         template_mcp_servers,
     )
 
     mcp_servers = template_mcp_servers(mcp_servers_map)
+    # Platform servers (connectors, artifacts) are not the author's
+    # configuration: every engine reaches them through the platform's MCP
+    # route, so they never decide what an engine must consume or materialize.
+    author_mcp_servers = {
+        name: config for name, config in mcp_servers.items() if not is_platform_mcp_server(config)
+    }
     engine_kind = str(_template_value(template, "engine_kind") or "").strip()
-    if not engine_kind and (skills or plugin_repos or mcp_servers):
+    if not engine_kind and (skills or packages or author_mcp_servers):
         raise APIError(
             code="ENGINE_CAPABILITY_UNAVAILABLE",
             message="engine identity is required to plan configured runtime inputs",
@@ -267,9 +274,9 @@ def plan_capabilities(template: Any | None, identity: dict[str, Any]) -> dict[st
         unsupported_engine_configuration_inputs(
             engine_kind,
             {
-                "mcp_servers": mcp_servers,
+                "mcp_servers": author_mcp_servers,
                 "skills": skills,
-                "plugin_repos": plugin_repos,
+                "packages": packages,
             },
         )
         if engine_kind
@@ -284,16 +291,36 @@ def plan_capabilities(template: Any | None, identity: dict[str, Any]) -> dict[st
             ),
             status_code=409,
         )
-    if not config_dir and (skills or plugin_repos or mcp_servers):
-        raise APIError(
-            code="ENGINE_CAPABILITY_UNAVAILABLE",
-            message=(
-                "this engine declares no configuration directory, so it cannot "
-                "materialize Agent skills, plugins, or MCP configuration"
-            ),
-            status_code=409,
+    from astrabox.core.service.orchestrator.engine.capabilities import capabilities_for_engine_kind
+    from astrabox.core.service.orchestrator.engine.extensions import render_extension_target
+
+    extensions = capabilities_for_engine_kind(engine_kind).extensions if engine_kind else None
+    skills_target = ""
+    if skills and extensions is not None:
+        skills_target = render_extension_target(
+            str(extensions.skills_target), home_dir=home_dir, config_dir=config_dir or None
         )
-    plugin_base_dir = f"{config_dir}/plugins" if config_dir else ""
+    # Where each package goes, as its kind declares (unsupported kinds were
+    # refused above): a checkout linked under the target, or the target the
+    # engine's own installer fills.
+    package_targets: list[tuple[str, bool]] = []
+    for repo in packages:
+        kind = extensions.package_kind(str(repo.get("kind") or "")) if extensions is not None else None
+        if kind is None:
+            raise APIError(
+                code="ENGINE_CAPABILITY_UNAVAILABLE",
+                message=f"package kind {repo.get('kind')!r} has no declared place in this runtime",
+                status_code=409,
+            )
+        try:
+            target = render_extension_target(kind.target, home_dir=home_dir, config_dir=config_dir or None)
+        except ValueError as exc:
+            raise APIError(
+                code="ENGINE_CAPABILITY_UNAVAILABLE",
+                message=f"{kind.label} packages cannot be placed in this runtime: {exc}",
+                status_code=409,
+            ) from exc
+        package_targets.append((target, kind.installed_by_engine))
     credential_items: list[dict[str, Any]] = []
     if isinstance(default_repo, dict) and str(default_repo.get("deploy_key_secret_name") or "").strip():
         credential_items.append(
@@ -305,12 +332,12 @@ def plan_capabilities(template: Any | None, identity: dict[str, Any]) -> dict[st
                 "ownership_repair": "required",
             }
         )
-    for index, repo in enumerate(plugin_repos):
+    for index, repo in enumerate(packages):
         if str(repo.get("deploy_key_secret_name") or "").strip():
             credential_items.append(
                 {
                     "kind": "credential",
-                    "source": f"plugin_repos[{index}].deploy_key_secret_name",
+                    "source": f"packages[{index}].deploy_key_secret_name",
                     "target_path": f"{home_dir}/.ssh/id_ed25519",
                     "execute_as": "sidecar_broker",
                     "ownership_repair": "required",
@@ -323,7 +350,7 @@ def plan_capabilities(template: Any | None, identity: dict[str, Any]) -> dict[st
                 "kind": "skill",
                 "name": skill,
                 "execute_as": "workload_user",
-                "target_path": f"{config_dir}/skills",
+                "target_path": skills_target,
                 "ownership_repair": "not_required",
             }
             for skill in skills
@@ -334,17 +361,21 @@ def plan_capabilities(template: Any | None, identity: dict[str, Any]) -> dict[st
                 "index": index,
                 "url": repo.get("url"),
                 "execute_as": "workload_user",
-                "target_path": build_plugin_repo_checkout_dir(
-                    str(identity.get("session_id") or ""),
-                    index,
-                    repo,
-                    base_dir=plugin_base_dir,
+                "target_path": (
+                    package_targets[index][0]
+                    if package_targets[index][1]
+                    else build_package_checkout_dir(
+                        str(identity.get("session_id") or ""),
+                        index,
+                        repo,
+                        base_dir=package_targets[index][0],
+                    )
                 ),
                 "ownership_repair": "required",
             }
-            for index, repo in enumerate(plugin_repos)
+            for index, repo in enumerate(packages)
         ],
-        "mcp_plan": _mcp_plan(mcp_servers, config_dir),
+        "mcp_plan": _mcp_plan(author_mcp_servers, config_dir),
         "default_repo_plan": (
             [
                 {
@@ -539,7 +570,7 @@ def validate_workload_identity_evidence(
     if debug_file and not _is_under(debug_file, f"{expected_config}/debug"):
         raise _workload_mismatch("debug_file", debug_file, f"{expected_config}/debug")
 
-    for path_value in evidence.get("plugin_paths") or []:
+    for path_value in evidence.get("paths") or []:
         path_text = str(path_value or "").strip()
         if path_text and not _is_under(path_text, f"{expected_config}/plugins"):
             raise _workload_mismatch("plugin_path", path_text, f"{expected_config}/plugins")
@@ -553,7 +584,7 @@ def validate_workload_identity_evidence(
         ]
     reported_plugins = {
         str(item or "").strip()
-        for item in evidence.get("plugin_paths") or []
+        for item in evidence.get("paths") or []
         if str(item or "").strip()
     }
     for expected_plugin in expected_plugins:
@@ -569,6 +600,12 @@ def validate_workload_identity_evidence(
 
 
 def _mcp_plan(servers: dict[str, Any], config_dir: str) -> list[dict[str, Any]]:
+    """Author MCP servers; the target is the configuration directory's, where one exists.
+
+    An engine without one (Codex, which takes its servers in the thread's
+    config) has no file to place, and admission already refused an engine
+    that declares no MCP transports.
+    """
     if not servers:
         return []
     return [
@@ -576,7 +613,7 @@ def _mcp_plan(servers: dict[str, Any], config_dir: str) -> list[dict[str, Any]]:
             "kind": "mcp",
             "server_name": str(name),
             "execute_as": "workload_user",
-            "target_path": f"{config_dir}/mcp/{name}",
+            **({"target_path": f"{config_dir}/mcp/{name}"} if config_dir else {}),
             "ownership_repair": "not_required",
         }
         for name in servers

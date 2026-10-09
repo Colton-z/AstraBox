@@ -232,10 +232,11 @@ scripts/compose.sh up --build -d
 工作区文件持久化是可选能力。默认存储适配器为
 `ASTRABOX_STORAGE_PROVIDER=mounted_volume`。启用持久化时，通过
 `ASTRABOX_SANDBOX_WORKSPACE_VOLUME` 指定已有的 Kubernetes PersistentVolumeClaim
-或 Docker named volume，各工作区使用该文件系统中的独立目录。平台在用户沙箱之外通过
-mergerfs 创建固定的工作区视图，OpenSandbox 使用标准 PVC 或 named volume 接口挂载
-这些视图。在交给用户之前，平台将视图绑定到新建或已有的工作区目录。存储适配器选择
-底层介质，工作区路由由平台统一完成。
+或 Docker named volume，各工作区使用该文件系统中的独立目录。使用内置 OpenSandbox
+后端时，用户沙箱之外创建的 mergerfs 视图承载这些目录，OpenSandbox 使用标准 PVC 或
+named volume 接口挂载这些视图。在交给用户之前，平台将视图绑定到新建或已有的工作区
+目录。存储适配器选择底层介质，沙箱后端决定如何挂载；设置了该卷时，不能挂载持久工作区的
+后端会在启动时被拒绝。
 
 未设置或设为空值时，工作区文件保存在沙箱的临时文件系统中；替换沙箱可能丢失这些文件。
 这项配置只影响工作区文件，原生 SessionStore 仍由平台数据库保存。无卷部署不会启动挂载
@@ -331,6 +332,29 @@ Deployment 并填写 provider 表单；详情页会显示回调地址或连接�
 地址后运行一个共享连接程序：将 `ASTRABOX_CHANNEL_GATEWAY_BASE_URL` 设置为该地址，
 并在 AstraBox 和连接程序上设置相同的 `ASTRABOX_CHANNEL_GATEWAY_TOKEN`。要求见
 [仓库中的配置参考](https://github.com/Colton-z/AstraBox/blob/main/docs/configuration.md)。
+
+## 运行 connector hub {#run-the-connector-hub}
+
+Assistant 和 Agent 的 connector（Gmail、Notion 以及[连接办公应用](assistants.md#connectors)中的其他办公应用）通过 connector hub ContextForge 运行，基础安装不会启动它。在仓库克隆中，带上 hub 的密钥加入它的 Compose 叠加文件，并带上本部署的 Google OAuth web 客户端加入 Google 叠加文件（用于 Gmail、Google 日历和 Drive）：
+
+```bash
+export CONTEXTFORGE_JWT_SECRET=$(openssl rand -hex 32)
+export CONTEXTFORGE_AUTH_ENCRYPTION_SECRET=$(openssl rand -hex 32)
+export CONTEXTFORGE_ADMIN_EMAIL=connectors@your-domain.example
+export CONTEXTFORGE_ADMIN_PASSWORD='<强密码>'
+export ASTRABOX_CONTEXTFORGE_PUBLIC_URL=https://<你的-astrabox-地址>/connector-hub
+export GOOGLE_OAUTH_CLIENT_ID=<client ID> GOOGLE_OAUTH_CLIENT_SECRET=<client secret>
+scripts/compose.sh -f containers/compose.connectors.yaml \
+  -f containers/compose.connectors-google.yaml up -d --build
+```
+
+第一个叠加文件启动 ContextForge（由 `containers/contextforge` 构建，即固定版本加上其中列出的补丁），并让 server 指向它。第二个为 Gmail、Google 日历和 Google Drive 各启动一个 google_workspace_mcp 实例；不加它时这三个 connector 不可用，其他 connector 照常工作。
+
+- **浏览器** 只在控制台同源的 `/connector-hub/oauth/callback` 访问 hub，每个厂商在用户授权后把浏览器送回这里；在每个厂商的 OAuth 应用中把这个地址登记为回调地址。厂商只接受 HTTPS 地址，或 `localhost`。
+- **沙箱** 不直接访问 hub。agent 通过 AstraBox server 的平台 MCP 路由调用 connector，server 以这段对话所代表的那个人的身份把请求转给 hub，所以沙箱里既没有 hub 的地址也没有任何人的 token，hub 也不需要接入沙箱网络。
+- **管理员邮箱** 的域名必须是 hub 接受的邮箱域名，不能是 `.local` 这类保留域名；每个 AstraBox 用户的 hub 账号都以这个域名命名。
+
+hub 把每个人的厂商 token 保存在它自己的加密数据库中（`contextforge-data` 卷），请和平台数据一起备份。
 
 ## 运行多个平台副本
 

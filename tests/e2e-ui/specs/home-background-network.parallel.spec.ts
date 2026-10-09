@@ -41,12 +41,12 @@ for (const subject of ['agents', 'assistants'] as const) {
       return route.fulfill({ status: gatewayStatus, contentType: 'text/plain', body: 'Gateway unavailable' });
     });
     await page.addInitScript(() => localStorage.setItem('astrabox-lang', 'en'));
-    await page.goto(appPath(`/${subject}`), { waitUntil: 'domcontentloaded' });
+    // Agents are the home page's cards; Assistants are the rail's rows beside
+    // it, and every user has at least their primary one.
+    await page.goto(appPath('/agents'), { waitUntil: 'domcontentloaded' });
     await expect.poll(() => answered).toBeGreaterThan(0);
-    const cards = page.getByTestId(subject === 'agents' ? 'agent-option' : 'assistant-option');
-    if (subject === 'agents') await expect(cards.first()).toBeVisible();
-    else await expect(page.getByText('Loading Assistants…', { exact: true })).toHaveCount(0);
-    // An empty Assistant catalog is a valid cached answer too.
+    const cards = page.getByTestId(subject === 'agents' ? 'agent-option' : 'assistant-row');
+    await expect(cards.first()).toBeVisible();
     await expect(page.getByRole('alert')).toHaveCount(0);
     const before = await cards.allTextContents();
     await watchAlerts(page);

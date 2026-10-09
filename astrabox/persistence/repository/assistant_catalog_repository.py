@@ -131,6 +131,20 @@ class AssistantCatalogRepository:
 
         return await run_mongo_with_retry("assistant_catalog.list_owner", _list)
 
+    async def count_owner_primaries(self, owner_id: str) -> int:
+        """How many primary Assistants ``owner_id`` has had, deleted ones included."""
+
+        collection = await get_async_collection(self._collection_name)
+
+        async def _count() -> int:
+            cursor = collection.find(
+                {"owner_id": str(owner_id or ""), "primary": True},
+                projection={"assistant_id": 1},
+            )
+            return len([doc async for doc in cursor])
+
+        return await run_mongo_with_retry("assistant_catalog.count_owner_primaries", _count)
+
     async def list_owner_assistants_page(
         self,
         owner_id: str,

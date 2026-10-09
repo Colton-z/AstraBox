@@ -5,8 +5,31 @@ import type { AddressInfo } from 'node:net';
 
 import { absoluteBaseUrl } from './env';
 
+/** The structured question a generic_json reply carries while the Agent waits. */
+export interface ChannelQuestion {
+  interaction_id: string;
+  presentation: string;
+  title: string;
+  detail: string;
+  choices: Array<{ number: number; label: string; description: string; action: string }>;
+  multi_select: boolean;
+  free_text: boolean;
+  position: [number, number];
+  text: string;
+  version: number;
+}
+
+export interface ChannelDelivery {
+  text: string;
+  messageId: string;
+  question: ChannelQuestion | null;
+  receivedAt: number;
+}
+
+const DELIVERY_KEYS = new Set(['text', 'message_id', 'question']);
+
 export async function channelCallback() {
-  const deliveries: Array<{ text: string; receivedAt: number }> = [];
+  const deliveries: ChannelDelivery[] = [];
   const errors: string[] = [];
   const route = `/channel-reply/${randomUUID()}`;
   // The maintained AWS runner and the selected deployment share this host.
@@ -24,12 +47,22 @@ export async function channelCallback() {
       const chunks: Buffer[] = [];
       for await (const chunk of request) chunks.push(Buffer.from(chunk));
       const payload: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-      if (!payload || typeof payload !== 'object' || Array.isArray(payload)
-        || Object.keys(payload).join(',') !== 'text'
-        || typeof (payload as { text?: unknown }).text !== 'string') {
-        throw new Error('generic_json delivery must be exactly a text object');
+      if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+        throw new Error('generic_json delivery must be an object');
       }
-      deliveries.push({ text: (payload as { text: string }).text, receivedAt: Date.now() });
+      const body = payload as { text?: unknown; message_id?: unknown; question?: unknown };
+      const unknownKeys = Object.keys(body).filter((key) => !DELIVERY_KEYS.has(key));
+      if (unknownKeys.length || typeof body.text !== 'string' || typeof body.message_id !== 'string'
+        || !body.message_id || (body.question !== undefined
+          && (!body.question || typeof body.question !== 'object' || Array.isArray(body.question)))) {
+        throw new Error(`generic_json delivery has an unexpected shape: ${JSON.stringify(body)}`);
+      }
+      deliveries.push({
+        text: body.text,
+        messageId: body.message_id,
+        question: (body.question as ChannelQuestion | undefined) ?? null,
+        receivedAt: Date.now(),
+      });
       response.writeHead(200, { 'Content-Type': 'application/json' }).end('{}');
     } catch (error) {
       errors.push(String(error));

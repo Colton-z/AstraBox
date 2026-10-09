@@ -10,6 +10,7 @@ from astrabox.api.routes.response_envelope import ApiEnvelope
 from astrabox.common.utils.api_response import error_response, success_response
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.user_context import get_current_user_context
+from astrabox.core.service.orchestrator.runtime.mcp_servers import CONNECTOR_PLATFORM_SERVER
 from astrabox.core.service.orchestrator.service_registry import get_platform_service
 from astrabox.core.service.orchestrator.transcript_capability import verify_platform_mcp_capability
 
@@ -76,6 +77,23 @@ def register_platform_mcp_routes(app: Any) -> None:
                 ),
                 status_code=404,
             )
+        if target.get("platform_server") == CONNECTOR_PLATFORM_SERVER:
+            try:
+                answer = await _service.platform_mcp.relay_connector(
+                    target, body,
+                    session_id=request.headers.get("mcp-session-id"),
+                    protocol_version=request.headers.get("mcp-protocol-version"),
+                )
+            except APIError as exc:
+                return JSONResponse(
+                    {"jsonrpc": "2.0", "id": body.get("id"),
+                     "error": {"code": -32603, "message": f"{exc.code}: {exc.message}"}},
+                    status_code=502,
+                )
+            headers = {"Mcp-Session-Id": answer.session_id} if answer.session_id else None
+            if answer.message is None:
+                return Response(status_code=answer.status, headers=headers)
+            return JSONResponse(answer.message, status_code=answer.status, headers=headers)
         response = await _service.platform_mcp.handle_jsonrpc(
             deployment_id,
             server_name,

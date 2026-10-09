@@ -241,7 +241,7 @@ async def test_recovery_borrows_replacement_compute_without_replacing_workspace_
             session_id="s",
             assignment_id="command",
             template=object(),
-            backend_adapter=object(),
+            backend_adapter=_backend_with_route(late_binding=True),
             workspace_plan=SimpleNamespace(resume_engine_session_key="native-session"),
             recovered_assignment=None,
         )
@@ -249,6 +249,44 @@ async def test_recovery_borrows_replacement_compute_without_replacing_workspace_
     assert result.sandbox is acquired.sandbox
     assert result.workspace_id == "original-workspace"
     borrow.assert_awaited_once()
+
+
+def _backend_with_route(*, late_binding: bool) -> SimpleNamespace:
+    route = SimpleNamespace(supports_late_binding=late_binding)
+    return SimpleNamespace(name="backend", workspace_route=lambda: route)
+
+
+@pytest.mark.asyncio
+async def test_a_route_that_cannot_rebind_starts_a_session_with_files_cold():
+    """A prepared box mounts its own workspace; only a rebinding route may hand it over."""
+    repo = SimpleNamespace(
+        get_session=AsyncMock(return_value={"workspace_id": "original-workspace"})
+    )
+    borrow = AsyncMock()
+    with (
+        patch(
+            "astrabox.core.service.orchestrator.engine.provisioning.SessionRepository",
+            return_value=repo,
+        ),
+        patch(
+            "astrabox.core.service.orchestrator.engine.provisioning.load_astrabox_settings",
+            return_value=SimpleNamespace(sandbox_workspace_volume="durable-pvc"),
+        ),
+        patch(
+            "astrabox.core.service.orchestrator.agent.client_pool.acquire_agent_client_pool", borrow
+        ),
+    ):
+        result = await _claim_conversation_pool_box(
+            object(),
+            session_id="s",
+            assignment_id="command",
+            template=object(),
+            backend_adapter=_backend_with_route(late_binding=False),
+            workspace_plan=SimpleNamespace(resume_engine_session_key="native-session"),
+            recovered_assignment=None,
+        )
+    assert result is None
+    borrow.assert_not_awaited()
 
 
 @pytest.mark.asyncio

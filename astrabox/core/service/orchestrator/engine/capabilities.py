@@ -21,6 +21,11 @@ import re
 from dataclasses import dataclass
 from typing import Any, Literal, Mapping, cast
 
+from astrabox.core.service.orchestrator.engine.extensions import (
+    EngineExtensions,
+    accepted_configuration_inputs,
+    validate_engine_extensions,
+)
 from astrabox.seams.sandbox import SANDBOX_TENANCIES
 
 
@@ -32,22 +37,6 @@ _SESSION_KIND_DEFAULT_ENGINE: dict[str, str] = {
 }
 SESSION_KINDS = frozenset(_SESSION_KIND_DEFAULT_ENGINE)
 SessionKind = Literal["agent_chat", "assistant_chat"]
-
-#: Platform configuration inputs whose materialization depends on the selected
-#: engine. Their values remain opaque to this declaration; the set only says
-#: whether the adapter has a real consumer for the platform field.
-ENGINE_CONFIGURATION_INPUTS = frozenset({
-    "mcp_servers",
-    "skills",
-    "plugin_repos",
-    # Another ENVIRONMENT field rather than an Agent one. The question the set
-    # answers is the same either way — does the selected adapter have a real
-    # consumer — and the answer is engine-specific in the usual way: Claude
-    # Code reads `OTEL_*` from its process environment, Codex takes an `[otel]`
-    # table over its app-server protocol, and an engine that emits no telemetry
-    # at all declares nothing and has the field refused.
-    "tracing",
-})
 
 _ENGINE_OPTIONS_FIELD_KEYS = frozenset({
     "key",
@@ -215,15 +204,11 @@ class EngineRuntimeCapabilities:
     #: Absent means the engine hands its transcript over some protocol of its
     #: own — which is a different mechanism, not a missing one.
     session_log: EngineSessionLogDeclaration | None = None
-    #: Native JSON blocks accepted by the engine. Labels and help identify
-    #: their vendor targets and merge rules. Only block names, object shape,
-    #: and platform-owned keys are validated here; inner semantics are native.
-    #: An empty declaration means the engine accepts no bag at all.
-    engine_options_schema: tuple[dict[str, Any], ...] = ()
-    #: Optional platform configuration the adapter actually consumes. Saving a
-    #: value outside this set would create an inert knob: it could be read back
-    #: from the Agent or Assistant even though no selected engine path uses it.
-    configuration_inputs: frozenset[str] = frozenset()
+    #: What an Agent or Assistant may add to the engine: author MCP servers,
+    #: Skills, engine-native packages and native configuration documents.
+    #: Saving anything the declaration does not accept would create an inert
+    #: knob, so it is refused.
+    extensions: EngineExtensions = EngineExtensions()
 
 
 def validate_runtime_profile_declaration(
@@ -476,21 +461,7 @@ def validate_engine_capabilities(
                 f"engine_kind={normalized_kind!r} permission-mode default "
                 f"{default_mode!r} is not in permission_modes"
             )
-    configuration_inputs = capabilities.configuration_inputs
-    if not isinstance(configuration_inputs, frozenset) or any(
-        not isinstance(name, str) or not name.strip()
-        for name in configuration_inputs
-    ):
-        raise ValueError(
-            f"engine_kind={normalized_kind!r} configuration_inputs must be a "
-            "frozenset of non-empty platform field names"
-        )
-    unknown_inputs = sorted(configuration_inputs - ENGINE_CONFIGURATION_INPUTS)
-    if unknown_inputs:
-        raise ValueError(
-            f"engine_kind={normalized_kind!r} declares unknown configuration "
-            f"inputs: {unknown_inputs!r}"
-        )
+    validate_engine_extensions(normalized_kind, capabilities.extensions)
     session_log = capabilities.session_log
     if session_log is not None:
         # Every field is load-bearing at a moment nobody is watching: the root
@@ -515,16 +486,17 @@ def validate_engine_capabilities(
             raise ValueError(
                 f"engine_kind={normalized_kind!r} session_log.glob is required"
             )
-    validate_engine_options_schema(normalized_kind, capabilities.engine_options_schema)
+    validate_engine_options_schema(normalized_kind, capabilities.extensions.native_config)
 
 
 def unsupported_engine_configuration_inputs(
     engine_kind: str,
     values: Mapping[str, Any],
 ) -> tuple[str, ...]:
-    """Configured platform fields the selected adapter does not consume."""
+    """Configured platform fields and package kinds the selected adapter does not consume."""
 
-    supported = capabilities_for_engine_kind(engine_kind).configuration_inputs
+    extensions = capabilities_for_engine_kind(engine_kind).extensions
+    supported = accepted_configuration_inputs(extensions)
 
     def configured(value: Any) -> bool:
         if value is None:
@@ -537,13 +509,23 @@ def unsupported_engine_configuration_inputs(
         # may give a more specific error, but it must never become an inert knob.
         return True
 
-    return tuple(
-        sorted(
-            name
-            for name, value in values.items()
-            if configured(value) and name not in supported
+    refused = [
+        name
+        for name, value in values.items()
+        if configured(value) and name not in supported
+    ]
+    packages = values.get("packages")
+    if "packages" in supported and isinstance(packages, list):
+        declared = sorted(kind.name for kind in extensions.packages)
+        refused.extend(
+            f"packages[{index}] of kind {kind!r} (it loads {', '.join(declared)})"
+            for index, kind in enumerate(
+                package.get("kind") if isinstance(package, dict) else None
+                for package in packages
+            )
+            if kind not in declared
         )
-    )
+    return tuple(sorted(refused))
 
 
 def require_session_kind(session_kind: str | None) -> SessionKind:

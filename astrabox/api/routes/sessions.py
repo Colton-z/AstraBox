@@ -153,6 +153,10 @@ class SessionRecord(BaseModel):
     expires_at: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
+    #: When the conversation last gained a reply, and when its owner last
+    #: read it: newer output than ``read_at`` is unread.
+    last_output_at: str | None = None
+    read_at: str | None = None
     deleted: bool | None = None
     runtime_unavailable: bool | None = None
     runtime_warning: bool | None = None
@@ -701,6 +705,25 @@ async def get_webshell(session_id: str, request: Request):
 async def delete_session(session_id: str, request: Request):
     user = await _resolve_user(request)
     result = await _svc().delete_session(user, session_id)
+    return success_response(result)
+
+
+class SessionRead(BaseModel):
+    """When the owner last read a conversation."""
+
+    session_id: str
+    read_at: str
+
+
+@router.post(
+    "/api/v1/sessions/{session_id}/read",
+    response_model=ApiEnvelope[SessionRead],
+)
+async def mark_session_read(session_id: str, request: Request):
+    # The console calls this while the owner has the conversation open, so
+    # output that arrived meanwhile is not shown as unread.
+    user = await _resolve_user(request)
+    result = await _svc().mark_session_read(user, session_id)
     return success_response(result)
 
 

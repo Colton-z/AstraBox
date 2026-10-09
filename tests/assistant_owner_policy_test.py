@@ -284,14 +284,16 @@ async def test_create_defaults_to_the_assistant_engine() -> None:
     ("field", "value", "capability_name"),
     [
         (
-            "plugin_repos_override",
-            [{"url": "https://example.invalid/plugin.git", "protocol": "https"}],
-            "plugin_repos",
+            "packages",
+            [{"kind": "claude-plugin", "url": "https://example.invalid/plugin.git", "protocol": "https"}],
+            "packages",
         ),
-        ("skill_manifest_override", ["repo/skill"], "skills"),
+        # The platform reconciles the plugins it installed through this list,
+        # while the rest of the plugins section stays the owner's.
+        ("engine_options", {"config": {"plugins": {"enabled": ["astrabox/notes"]}}}, "plugins.enabled"),
     ],
 )
-async def test_assistant_rejects_configuration_its_engine_does_not_consume(
+async def test_assistant_rejects_configuration_hermes_does_not_take(
     field: str,
     value: Any,
     capability_name: str,
@@ -320,11 +322,11 @@ async def test_assistant_accepts_the_mcp_configuration_hermes_consumes() -> None
         {
             "display_name": "Jarvis",
             "environment_name": "env-1",
-            "mcp_config_override": {"search": {"type": "http", "url": "https://mcp.invalid"}},
+            "mcp_servers": {"search": {"type": "http", "url": "https://mcp.invalid"}},
         },
     )
 
-    assert catalog.rows[created["assistant_id"]]["mcp_config_override"] == {
+    assert catalog.rows[created["assistant_id"]]["mcp_servers"] == {
         "search": {"type": "http", "url": "https://mcp.invalid"}
     }
 
@@ -492,7 +494,7 @@ class _WorkspaceReleaseRuntimeManager:
 
     async def _run_command(self, command: str) -> Any:
         argv = shlex.split(command)
-        programs = {"astrabox-hermes-state-mirror", "astrabox-hermes"}
+        programs = {"astrabox-hermes-scheduler", "astrabox-hermes-state-mirror", "astrabox-hermes"}
         if argv[:2] == ["supervisorctl", "stop"] and argv[2] in programs:
             self.stopped_programs.add(argv[2])
             self.calls.append(f"stop:{argv[2]}")
@@ -570,6 +572,7 @@ def _ready_workspace(assistant_id: str, sandbox_id: str = "sbx-1") -> dict[str, 
 
 _NATIVE_SAVE_CALLS = [
     "connect",
+    "stop:astrabox-hermes-scheduler", "status:astrabox-hermes-scheduler",
     "stop:astrabox-hermes-state-mirror", "status:astrabox-hermes-state-mirror",
     "stop:astrabox-hermes", "status:astrabox-hermes",
     "save", "close",
@@ -883,6 +886,35 @@ async def test_deleting_is_refused_while_the_sandbox_cannot_be_confirmed_gone() 
     assert workspace.workspace["current_sandbox_id"] is None
     assert created["assistant_id"] not in catalog.rows
 
+
+
+async def test_destroying_the_workspace_kills_its_box_before_answering_destroyed() -> None:
+    """``destroyed`` was answered after only a state write, with the box
+    still running and a watcher later free to build another one."""
+    runtime = _ConfirmedKillRuntimeManager()
+    service, _catalog, workspace = _service(runtime_manager=runtime)
+    created = await service.create_assistant(
+        _user("owner-1"), {"display_name": "Jarvis", "environment_name": "env-1"}
+    )
+    workspace.workspace = {
+        "assistant_id": created["assistant_id"],
+        "state": "READY",
+        "current_sandbox_id": "sbx-1",
+        "provisioning_session_id": "hidden-1",
+    }
+
+    result = await service.destroy_workspace(_user("owner-1"), created["assistant_id"])
+
+    assert result["destroyed"] is True
+    assert runtime.calls == [{"sandbox_id": "sbx-1"}]
+    assert workspace.workspace["current_sandbox_id"] is None
+
+    service._runtime_manager = _UnconfirmedKillRuntimeManager()
+    workspace.workspace["current_sandbox_id"] = "sbx-2"
+    with pytest.raises(APIError) as raised:
+        await service.destroy_workspace(_user("owner-1"), created["assistant_id"])
+    assert raised.value.code == "ASSISTANT_SANDBOX_UNDESTROYED"
+    assert workspace.workspace["current_sandbox_id"] == "sbx-2"
 
 class _FakeSessionKernel:
     def __init__(self) -> None:

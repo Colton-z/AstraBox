@@ -1,0 +1,66 @@
+# Connector hub overlay: ContextForge, which holds each person's vendor tokens
+# and calls the vendors' MCP servers with them for the AstraBox server.
+#
+# Usage from the repository root, with the base file:
+#   CONTEXTFORGE_JWT_SECRET=<32+ random characters> \
+#   CONTEXTFORGE_AUTH_ENCRYPTION_SECRET=<32+ random characters> \
+#   CONTEXTFORGE_ADMIN_EMAIL=connectors@example.com \
+#   CONTEXTFORGE_ADMIN_PASSWORD=<strong password> \
+#   ASTRABOX_CONTEXTFORGE_PUBLIC_URL=https://astrabox.example.com/connector-hub \
+#   scripts/compose.sh -f containers/compose.connectors.yaml up -d --build
+#
+# Add compose.connectors-google.yaml for Gmail, Google Calendar and Drive. The
+# hub's own secrets are read by ContextForge alone; docs/deploy.md has the
+# set-up and docs/configuration.md each ASTRABOX_ variable.
+services:
+  contextforge:
+    image: ${ASTRABOX_CONTEXTFORGE_IMAGE:-${ASTRABOX_IMAGE_PREFIX:-ghcr.io/colton-z/astrabox-}contextforge:${ASTRABOX_IMAGE_TAG:-}}
+    build:
+      context: ./contextforge
+    restart: unless-stopped
+    # Only the AstraBox server reaches the hub; sandboxes reach a connector
+    # through the server's platform MCP route.
+    networks:
+      - platform
+      - connectors
+    volumes:
+      - contextforge-data:/data
+    environment:
+      HOST: 0.0.0.0
+      PORT: "4444"
+      DATABASE_URL: sqlite:////data/mcp.db
+      # The default is two per CPU, up to 16, at about 180 MiB each.
+      GUNICORN_WORKERS: "2"
+      JWT_SECRET_KEY: ${CONTEXTFORGE_JWT_SECRET:?set the connector hub's JWT secret}
+      AUTH_ENCRYPTION_SECRET: ${CONTEXTFORGE_AUTH_ENCRYPTION_SECRET:?set the connector hub's token encryption secret}
+      PLATFORM_ADMIN_EMAIL: ${CONTEXTFORGE_ADMIN_EMAIL:?set the connector hub's administrator email}
+      PLATFORM_ADMIN_PASSWORD: ${CONTEXTFORGE_ADMIN_PASSWORD:?set the connector hub's administrator password}
+      DEFAULT_USER_PASSWORD: ${CONTEXTFORGE_ADMIN_PASSWORD}
+      AUTH_REQUIRED: "true"
+      MCPGATEWAY_UI_ENABLED: "false"
+      MCPGATEWAY_ADMIN_API_ENABLED: "false"
+      # Browser redirects back to the console must share this origin.
+      APP_DOMAIN: ${ASTRABOX_CONTEXTFORGE_PUBLIC_URL:?set the hub's public URL, the console origin followed by /connector-hub}
+      # The Google Workspace servers are on this deployment's own network.
+      SSRF_ALLOW_PRIVATE_NETWORKS: "true"
+      # Every request reaches the hub from the AstraBox server, so ContextForge's
+      # per-client limits would count the whole deployment as one client: 30
+      # OAuth requests and 100 tool calls a minute for everyone, then a
+      # 15-minute lockout of all of them after repeated overruns.
+      RATE_LIMITING_ENABLED: "false"
+
+  server:
+    environment:
+      ASTRABOX_CONTEXTFORGE_API_URL: http://contextforge:4444
+      ASTRABOX_CONTEXTFORGE_PUBLIC_URL: ${ASTRABOX_CONTEXTFORGE_PUBLIC_URL}
+      ASTRABOX_CONTEXTFORGE_JWT_SECRET: ${CONTEXTFORGE_JWT_SECRET}
+      ASTRABOX_CONTEXTFORGE_ADMIN_EMAIL: ${CONTEXTFORGE_ADMIN_EMAIL}
+    networks:
+      - connectors
+
+networks:
+  connectors:
+    driver: bridge
+
+volumes:
+  contextforge-data:

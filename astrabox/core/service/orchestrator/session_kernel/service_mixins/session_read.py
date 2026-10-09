@@ -91,6 +91,7 @@ _SESSION_LIST_ROW_PROJECTION: dict[str, int] = {
     "expires_at": 1,
     "created_at": 1,
     "updated_at": 1,
+    "read_at": 1,
     "runtime_unavailable": 1,
     "last_error": 1,
     "startup_progress": 1,
@@ -117,6 +118,7 @@ _SESSION_LIST_SNAPSHOT_PROJECTION: dict[str, int] = {
     "delivery_state": 1,
     "last_turn_failure_phase": 1,
     "last_turn_terminal_reason": 1,
+    "last_output_at": 1,
     "active_interaction_id": 1,
     "agent_binding": 1,
     "current_turn_remote_anchor": 1,
@@ -145,6 +147,7 @@ _SESSION_LIST_SUMMARY_FIELDS = frozenset(
         "title",
         "source_type",
         "agent_id",
+        "assistant_id",
         "deployment_name",
         "agent_runtime",
         "session_kind",
@@ -152,6 +155,8 @@ _SESSION_LIST_SUMMARY_FIELDS = frozenset(
         "expires_at",
         "created_at",
         "updated_at",
+        "last_output_at",
+        "read_at",
         "runtime_unavailable",
         "last_error",
         "startup_progress",
@@ -1197,6 +1202,9 @@ class SessionReadRenderingMixin:
         clean["last_turn_failure_phase"] = last_turn_failure_phase or None
         last_turn_terminal_reason = str(snapshot.get("last_turn_terminal_reason") or "").strip()
         clean["last_turn_terminal_reason"] = last_turn_terminal_reason or None
+        # When the conversation last gained a reply; the console compares it
+        # with the owner's ``read_at`` from the session row.
+        clean["last_output_at"] = str(snapshot.get("last_output_at") or "").strip() or None
         agent_binding = snapshot.get("agent_binding")
         if isinstance(agent_binding, dict):
             agent_id = str(agent_binding.get("agent_id") or "").strip()

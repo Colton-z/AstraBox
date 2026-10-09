@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any
@@ -11,6 +12,8 @@ import pytest
 
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.user_context import UserContext
+from astrabox.core.model import AgentView
+from astrabox.core.service.orchestrator.agent import client_pool
 from astrabox.core.service.orchestrator.agent import prepared_slots
 from astrabox.core.service.orchestrator.agent import runtime_generation as runtime_generation_module
 from astrabox.core.service.orchestrator.agent.agent_service import AgentService
@@ -45,8 +48,12 @@ class _Repo:
         self.compares.append((agent_id, dict(expected), dict(updates)))
         if self.row is None:
             return False
-        if any(self.row.get(key) != value for key, value in expected.items()):
-            return False
+        for key, value in expected.items():
+            if isinstance(value, dict) and set(value) == {"$exists"}:
+                if (key in self.row) != bool(value["$exists"]):
+                    return False
+            elif self.row.get(key) != value:
+                return False
         self.row.update(updates)
         return True
 
@@ -303,3 +310,117 @@ async def test_regular_viewer_cannot_read_prepared_runtime_status() -> None:
         await service.get_prepared_runtime_status(UserContext("viewer-1"), "agent-1")
 
     assert caught.value.code == "FORBIDDEN"
+
+
+async def test_an_agent_edit_during_a_pass_leaves_no_client_pool_unnamed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every namespace a pass starts is recorded or retired, whatever lands meanwhile.
+
+    The demo seed converges the Environment and then edits the Agent's prompt.
+    The edit landed while the Environment's pass was starting its namespace:
+    that namespace was never recorded, the follow-up pass retired only the one
+    recorded before it, and its scheduler kept a box with nothing naming it.
+    """
+
+    agent_id = "198c0391-3448-4484-9910-8ca4834a6186"
+    first_epoch = "0" * 32
+    first_pool = client_pool._pool_name(agent_id, first_epoch)
+    repo = _Repo({
+        "agent_id": agent_id,
+        "environment_name": "demo",
+        "enabled": True,
+        "version": 1,
+        "system": "prompt-1",
+        "prepared_capacity": 1,
+        # The Environment write changed the recipe this generation was made from.
+        "_runtime_generation": "generation-before-environment-write",
+        "_sandbox_generation": "generation-before-environment-write",
+        "_client_pool_epoch": first_epoch,
+        "_client_pool_name": first_pool,
+        "_client_pool_backend": "open_sandbox",
+        "_retiring_client_pools": [],
+    })
+
+    class _StoredAgentConfig(_AgentConfig):
+        """Resolve the Agent from its stored row, as the configuration service does."""
+
+        async def resolve_agent_harness(self, target: str) -> Any:
+            row = await repo.get_agent(target)
+            assert row is not None
+            return AgentView(
+                agent_id=target,
+                system=row["system"],
+                version=row["version"],
+                engine_kind="pi",
+                environment_name=row["environment_name"],
+                prepared_capacity=row["prepared_capacity"],
+                runtime_template_name="astrabox/sandbox-pi:test",
+                sandbox_backend="open_sandbox",
+                sandbox_tenancy="conversation",
+                runtime_generation=row.get("_runtime_generation"),
+                sandbox_generation=row.get("_sandbox_generation"),
+                client_pool_epoch=row.get("_client_pool_epoch"),
+            )
+
+    service = _service(repo, None)
+    service._agent_config = _StoredAgentConfig(None)
+
+    async def edit_agent_prompt() -> None:
+        # ``upsert_agent_config``'s write, then ``update_agent``'s scheduling.
+        assert await repo.compare_and_update_agent(
+            agent_id,
+            expected={"version": 1},
+            updates={"system": "prompt-2", "version": 2},
+        )
+        service.schedule_runtime_reconciliation(agent_id)
+
+    class _Supplier:
+        name = "open_sandbox"
+        supports_client_pool = True
+
+        def __init__(self) -> None:
+            self.started: list[str] = []
+            self.retired: list[str] = []
+
+        async def ensure_client_pool(self, spec: Any, *, creator: Any, preparer: Any) -> None:
+            self.started.append(spec.pool_name)
+            if len(self.started) == 1:
+                await edit_agent_prompt()
+
+        async def retire_client_pool(self, pool_name: str) -> None:
+            self.retired.append(pool_name)
+
+    supplier = _Supplier()
+    monkeypatch.setattr(
+        client_pool,
+        "load_astrabox_settings",
+        lambda: SimpleNamespace(
+            agent_prewarm_redis_url="redis://redis.test:6379/0",
+            sandbox_lease_seconds=3600,
+            sandbox_ready_timeout_seconds=30,
+        ),
+    )
+    monkeypatch.setattr(client_pool, "sandbox_for_template", lambda _template: supplier)
+    monkeypatch.setattr(client_pool, "sandbox_for_name", lambda _name: supplier)
+    monkeypatch.setattr(client_pool, "get_engine_adapter", lambda _kind: object())
+
+    async def generations(template: Any, *, runtime_manager: Any) -> tuple[str, str]:
+        return (f"generation-{template.system}",) * 2
+
+    monkeypatch.setattr(runtime_generation_module, "runtime_generations", generations)
+
+    # The Environment write's reconciliation.
+    assert service.schedule_runtime_reconciliation(agent_id) is True
+    while service._preparation_tasks:
+        await asyncio.gather(*service._preparation_tasks, return_exceptions=True)
+        await asyncio.sleep(0)
+
+    assert len(supplier.started) == 2
+    recorded = repo.row["_client_pool_name"]
+    assert recorded == supplier.started[-1]
+    assert [
+        name for name in [first_pool, *supplier.started]
+        if name != recorded and name not in supplier.retired
+    ] == []
+    assert repo.row["_retiring_client_pools"] == []

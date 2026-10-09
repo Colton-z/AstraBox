@@ -110,8 +110,9 @@ def restore_once(env_path: Path) -> None:
             print("HERMES_STATE_RESTORE_ALREADY_INITIALIZED", flush=True)
             return
 
+    import hermes_profile_state
     from hermes_native_store import restore
-    from hermes_state_transport import load_snapshot
+    from hermes_state_transport import PROFILE, load_snapshot
 
     loaded = load_snapshot(target)
     if loaded["snapshot_id"] is None:
@@ -124,10 +125,24 @@ def restore_once(env_path: Path) -> None:
             with os.fdopen(descriptor, "wb") as stream:
                 stream.write(loaded["payload"])
             restore(source, home)
+    # No saved profile means none was published yet; whatever the home holds
+    # (a persistent workspace's files, or nothing) stays and is published next.
+    profile = load_snapshot(target, PROFILE)
+    if profile["snapshot_id"] is not None:
+        hermes_profile_state.restore(profile["payload"], home)
     # This cold restore supersedes the previous box's unacknowledged local copy.
     # The mirror cannot adopt this profile until the new receipt is published.
     (home / "astrabox-runtime-state-pending.db").unlink(missing_ok=True)
-    atomic_json(receipt_path, {**identity, "snapshot_id": loaded["snapshot_id"]}, mode=0o600)
+    (home / "astrabox-profile-state-pending.tar.gz").unlink(missing_ok=True)
+    atomic_json(
+        receipt_path,
+        {
+            **identity,
+            "snapshot_id": loaded["snapshot_id"],
+            "profile_snapshot_id": profile["snapshot_id"],
+        },
+        mode=0o600,
+    )
     print("HERMES_STATE_RESTORE_COMPLETE", flush=True)
 
 

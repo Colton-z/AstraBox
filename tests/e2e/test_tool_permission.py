@@ -47,7 +47,6 @@ from tests.e2e._sandbox_helpers import (
     release_session,
     respond_interaction,
     stream_turn,
-    tool_name,
     tool_names,
     wait_for_file,
     wait_for_pending_interaction,
@@ -55,6 +54,20 @@ from tests.e2e._sandbox_helpers import (
 )
 
 pytestmark = pytest.mark.e2e
+
+
+def _write_request(path: str, content: str) -> str:
+    """Ask for one file write in words every engine's model can act on.
+
+    The request names the action and nothing about how. The profile's write
+    roles are what an approval carries, which for Codex are app-server item
+    types (`commandExecution`, `fileChange`), not tools its model can call:
+    asked to use one, it answered that no such tool exists. Told to run no
+    other tool or command, a Codex session whose only way to write a file
+    is its shell refused for that reason instead.
+    """
+
+    return f"Create a file at {path} containing {content}, and do nothing else."
 
 
 def _assert_modeless_write_has_no_gate(
@@ -67,10 +80,7 @@ def _assert_modeless_write_has_no_gate(
     result = stream_turn(
         e2e_client,
         sid,
-        content=(
-            f"Use the {tool_name('write')} tool to create a file at {path} "
-            f"containing exactly {content}. Do not run any other tool or command."
-        ),
+        content=_write_request(path, f"exactly {content}"),
     )
     assert result.error is None, f"modeless write failed: {result.error}"
     assert not result.interactions, (
@@ -165,8 +175,7 @@ def test_tool_permission_approve_runs_the_write(e2e_client: httpx.Client) -> Non
         pi = _capture_write_interaction(
             e2e_client,
             sid,
-            f"Use the {tool_name('write')} tool to create a file at {poem_path} containing a two-line "
-            f"poem about the sea. Do not run any other tool or command.",
+            _write_request(poem_path, "a two-line poem about the sea"),
         )
         # The approval a person sees must say something about what it is for.
         # Which FIELD carries it is the engine's: `raw_input` is its request
@@ -178,7 +187,10 @@ def test_tool_permission_approve_runs_the_write(e2e_client: httpx.Client) -> Non
         # declared. The deepseek-harness asks to escalate the sandbox rather
         # than to write one file: its request carries `toolName`, ids, and a
         # prose reason, and no target field anywhere. A path in that sentence
-        # would be the model's wording that run, not a contract.
+        # would be the model's wording that run, not a contract. Codex is the
+        # same: a `fileChange` approval carries the item id and an optional
+        # reason, never the path, and which item a write becomes is the
+        # model's choice.
         if contract_supported("approval_names_target"):
             assert poem_path in json.dumps(pi.get("raw_input") or {}), (
                 f"the approval does not name the file it is about: {pi.get('raw_input')}"
@@ -239,8 +251,7 @@ def test_tool_permission_deny_blocks_the_write(e2e_client: httpx.Client) -> None
         pi = _capture_write_interaction(
             e2e_client,
             sid,
-            f"Use the {tool_name('write')} tool to create a file at {deny_path} containing the single "
-            f"word BANANA. Do not run any other tool or command.",
+            _write_request(deny_path, "the single word BANANA"),
         )
         iid = str(pi["interaction_id"])
 

@@ -216,6 +216,42 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/admin/assistant-defaults": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Assistant Defaults */
+        get: operations["get_assistant_defaults_api_v1_admin_assistant_defaults_get"];
+        /** Set Assistant Defaults */
+        put: operations["set_assistant_defaults_api_v1_admin_assistant_defaults_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/assistant-defaults/extensions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Assistant Defaults Extensions */
+        get: operations["get_assistant_defaults_extensions_api_v1_admin_assistant_defaults_extensions_get"];
+        /** Set Assistant Defaults Extensions */
+        put: operations["set_assistant_defaults_extensions_api_v1_admin_assistant_defaults_extensions_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/admin/assistants/{assistant_id}/credential-vaults": {
         parameters: {
             query?: never;
@@ -245,6 +281,75 @@ export interface paths {
         get: operations["list_channel_providers_api_v1_admin_channel_providers_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/connectors": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Admin List Connectors */
+        get: operations["admin_list_connectors_api_v1_admin_connectors_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/connectors/{connector_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Admin Configure Connector */
+        put: operations["admin_configure_connector_api_v1_admin_connectors__connector_id__put"];
+        post?: never;
+        /** Admin Remove Connector */
+        delete: operations["admin_remove_connector_api_v1_admin_connectors__connector_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/connectors/{connector_id}/publish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Admin Publish Connector */
+        post: operations["admin_publish_connector_api_v1_admin_connectors__connector_id__publish_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/connectors/{connector_id}/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Admin Verify Connector */
+        post: operations["admin_verify_connector_api_v1_admin_connectors__connector_id__verify_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1084,6 +1189,41 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/agents/{agent_id}/connectors": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Agent Connectors */
+        get: operations["agent_connectors_api_v1_agents__agent_id__connectors_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/agents/{agent_id}/connectors/{connector_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Enable Agent Connector */
+        put: operations["enable_agent_connector_api_v1_agents__agent_id__connectors__connector_id__put"];
+        post?: never;
+        /** Disable Agent Connector */
+        delete: operations["disable_agent_connector_api_v1_agents__agent_id__connectors__connector_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/agents/{agent_id}/conversations": {
         parameters: {
             query?: never;
@@ -1762,6 +1902,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/assistants/primary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Ensure Primary Assistant */
+        post: operations["ensure_primary_assistant_api_v1_assistants_primary_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/assistants/{assistant_id}": {
         parameters: {
             query?: never;
@@ -1781,6 +1938,41 @@ export interface paths {
         patch: operations["update_assistant_api_v1_assistants__assistant_id__patch"];
         trace?: never;
     };
+    "/api/v1/assistants/{assistant_id}/connectors": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Assistant Connectors */
+        get: operations["assistant_connectors_api_v1_assistants__assistant_id__connectors_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/assistants/{assistant_id}/connectors/{connector_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Enable Assistant Connector */
+        put: operations["enable_assistant_connector_api_v1_assistants__assistant_id__connectors__connector_id__put"];
+        post?: never;
+        /** Disable Assistant Connector */
+        delete: operations["disable_assistant_connector_api_v1_assistants__assistant_id__connectors__connector_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/assistants/{assistant_id}/conversations": {
         parameters: {
             query?: never;
@@ -1792,6 +1984,129 @@ export interface paths {
         put?: never;
         /** Start Assistant Conversation */
         post: operations["start_assistant_conversation_api_v1_assistants__assistant_id__conversations_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/assistants/{assistant_id}/deployments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Assistant Deployments */
+        get: operations["list_assistant_deployments_api_v1_assistants__assistant_id__deployments_get"];
+        put?: never;
+        /** Create Assistant Deployment */
+        post: operations["create_assistant_deployment_api_v1_assistants__assistant_id__deployments_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/assistants/{assistant_id}/deployments/{deployment_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Update Assistant Deployment */
+        put: operations["update_assistant_deployment_api_v1_assistants__assistant_id__deployments__deployment_id__put"];
+        post?: never;
+        /** Delete Assistant Deployment */
+        delete: operations["delete_assistant_deployment_api_v1_assistants__assistant_id__deployments__deployment_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/assistants/{assistant_id}/deployments/{deployment_id}/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Assistant Deployment Runs */
+        get: operations["list_assistant_deployment_runs_api_v1_assistants__assistant_id__deployments__deployment_id__runs_get"];
+        put?: never;
+        /** Trigger Assistant Deployment Run */
+        post: operations["trigger_assistant_deployment_run_api_v1_assistants__assistant_id__deployments__deployment_id__runs_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/assistants/{assistant_id}/deployments/{deployment_id}/runs/{run_id}/replay": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Replay Assistant Deployment Run */
+        post: operations["replay_assistant_deployment_run_api_v1_assistants__assistant_id__deployments__deployment_id__runs__run_id__replay_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/assistants/{assistant_id}/extensions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Assistant Extensions */
+        get: operations["get_assistant_extensions_api_v1_assistants__assistant_id__extensions_get"];
+        /** Set Assistant Extensions */
+        put: operations["set_assistant_extensions_api_v1_assistants__assistant_id__extensions_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/assistants/{assistant_id}/main-conversation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Open Main Conversation */
+        post: operations["open_main_conversation_api_v1_assistants__assistant_id__main_conversation_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/assistants/{assistant_id}/scheduled-jobs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Assistant Scheduled Jobs */
+        get: operations["list_assistant_scheduled_jobs_api_v1_assistants__assistant_id__scheduled_jobs_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1844,6 +2159,91 @@ export interface paths {
         /** Wake Workspace */
         post: operations["wake_workspace_api_v1_assistants__assistant_id__workspace_wake_post"];
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/channel-providers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Channel Providers For Owner */
+        get: operations["list_channel_providers_for_owner_api_v1_channel_providers_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/connectors": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Connectors */
+        get: operations["list_connectors_api_v1_connectors_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/connectors/{connector_id}/assistants": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Offer Connector In Assistants */
+        post: operations["offer_connector_in_assistants_api_v1_connectors__connector_id__assistants_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/connectors/{connector_id}/authorize": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Authorize Connector */
+        post: operations["authorize_connector_api_v1_connectors__connector_id__authorize_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/connectors/{connector_id}/connection": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Disconnect Connector */
+        delete: operations["disconnect_connector_api_v1_connectors__connector_id__connection_delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -1990,6 +2390,40 @@ export interface paths {
         put?: never;
         /** Runtime State Load */
         post: operations["runtime_state_load_api_v1_sbxcap__cap_token__api_v1_runtime_state_load_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sbxcap/{cap_token}/api/v1/runtime-state/profile/load": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Runtime Profile Load */
+        post: operations["runtime_profile_load_api_v1_sbxcap__cap_token__api_v1_runtime_state_profile_load_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sbxcap/{cap_token}/api/v1/runtime-state/profile/save": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Runtime Profile Save */
+        post: operations["runtime_profile_save_api_v1_sbxcap__cap_token__api_v1_runtime_state_profile_save_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2518,6 +2952,23 @@ export interface paths {
         put?: never;
         /** Update Session Permission Mode */
         post: operations["update_session_permission_mode_api_v1_sessions__session_id__permission_mode_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{session_id}/read": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Mark Session Read */
+        post: operations["mark_session_read_api_v1_sessions__session_id__read_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3477,6 +3928,16 @@ export interface components {
             [key: string]: unknown;
         };
         /**
+         * AdoptedConnector
+         * @description An app just connected, and the caller's Assistants it was turned on in.
+         */
+        AdoptedConnector: {
+            /** Assistant Ids */
+            assistant_ids: string[];
+            /** Connector Id */
+            connector_id: string;
+        };
+        /**
          * AgentAccess
          * @description The Agent authorization settings returned by ``_agent_access_view``.
          *
@@ -3497,6 +3958,13 @@ export interface components {
             visibility: "public" | "private" | "allowlist";
         } & {
             [key: string]: unknown;
+        };
+        /** AgentConnectorState */
+        AgentConnectorState: {
+            /** Agent Id */
+            agent_id: string;
+            /** Enabled */
+            enabled: string[];
         };
         /**
          * AgentEnvironmentModels
@@ -3526,6 +3994,13 @@ export interface components {
             engine_options_schema: {
                 [key: string]: unknown;
             }[];
+            /**
+             * Extensions
+             * @default {}
+             */
+            extensions: {
+                [key: string]: unknown;
+            };
             /** Name */
             name: string;
         } & {
@@ -3760,8 +4235,8 @@ export interface components {
             model?: string | null;
             /** Name */
             name?: string | null;
-            /** Plugin Repos */
-            plugin_repos?: {
+            /** Packages */
+            packages?: {
                 [key: string]: unknown;
             }[] | null;
             /** Prepared Capacity */
@@ -3959,11 +4434,27 @@ export interface components {
             /** Message */
             message: string;
         };
+        /** ApiEnvelope[AdoptedConnector] */
+        ApiEnvelope_AdoptedConnector_: {
+            /** Code */
+            code: string;
+            data: components["schemas"]["AdoptedConnector"];
+            /** Message */
+            message: string;
+        };
         /** ApiEnvelope[AgentAccess] */
         ApiEnvelope_AgentAccess_: {
             /** Code */
             code: string;
             data: components["schemas"]["AgentAccess"];
+            /** Message */
+            message: string;
+        };
+        /** ApiEnvelope[AgentConnectorState] */
+        ApiEnvelope_AgentConnectorState_: {
+            /** Code */
+            code: string;
+            data: components["schemas"]["AgentConnectorState"];
             /** Message */
             message: string;
         };
@@ -4071,6 +4562,30 @@ export interface components {
             /** Message */
             message: string;
         };
+        /** ApiEnvelope[AssistantConnectorState] */
+        ApiEnvelope_AssistantConnectorState_: {
+            /** Code */
+            code: string;
+            data: components["schemas"]["AssistantConnectorState"];
+            /** Message */
+            message: string;
+        };
+        /** ApiEnvelope[AssistantDefaultsExtensionCatalog] */
+        ApiEnvelope_AssistantDefaultsExtensionCatalog_: {
+            /** Code */
+            code: string;
+            data: components["schemas"]["AssistantDefaultsExtensionCatalog"];
+            /** Message */
+            message: string;
+        };
+        /** ApiEnvelope[AssistantDefaults] */
+        ApiEnvelope_AssistantDefaults_: {
+            /** Code */
+            code: string;
+            data: components["schemas"]["AssistantDefaults"];
+            /** Message */
+            message: string;
+        };
         /** ApiEnvelope[AssistantDeletion] */
         ApiEnvelope_AssistantDeletion_: {
             /** Code */
@@ -4079,11 +4594,27 @@ export interface components {
             /** Message */
             message: string;
         };
+        /** ApiEnvelope[AssistantExtensionCatalog] */
+        ApiEnvelope_AssistantExtensionCatalog_: {
+            /** Code */
+            code: string;
+            data: components["schemas"]["AssistantExtensionCatalog"];
+            /** Message */
+            message: string;
+        };
         /** ApiEnvelope[AssistantListPage] */
         ApiEnvelope_AssistantListPage_: {
             /** Code */
             code: string;
             data: components["schemas"]["AssistantListPage"];
+            /** Message */
+            message: string;
+        };
+        /** ApiEnvelope[AssistantScheduledJobs] */
+        ApiEnvelope_AssistantScheduledJobs_: {
+            /** Code */
+            code: string;
+            data: components["schemas"]["AssistantScheduledJobs"];
             /** Message */
             message: string;
         };
@@ -4119,6 +4650,14 @@ export interface components {
             /** Message */
             message: string;
         };
+        /** ApiEnvelope[AuthorizeResponse] */
+        ApiEnvelope_AuthorizeResponse_: {
+            /** Code */
+            code: string;
+            data: components["schemas"]["AuthorizeResponse"];
+            /** Message */
+            message: string;
+        };
         /** ApiEnvelope[ChildRunMessagePage] */
         ApiEnvelope_ChildRunMessagePage_: {
             /** Code */
@@ -4132,6 +4671,14 @@ export interface components {
             /** Code */
             code: string;
             data: components["schemas"]["ChildRunStopResult"];
+            /** Message */
+            message: string;
+        };
+        /** ApiEnvelope[Connector] */
+        ApiEnvelope_Connector_: {
+            /** Code */
+            code: string;
+            data: components["schemas"]["Connector"];
             /** Message */
             message: string;
         };
@@ -4399,6 +4946,14 @@ export interface components {
             /** Message */
             message: string;
         };
+        /** ApiEnvelope[SessionRead] */
+        ApiEnvelope_SessionRead_: {
+            /** Code */
+            code: string;
+            data: components["schemas"]["SessionRead"];
+            /** Message */
+            message: string;
+        };
         /** ApiEnvelope[SessionRecord] */
         ApiEnvelope_SessionRecord_: {
             /** Code */
@@ -4605,6 +5160,15 @@ export interface components {
             code: string;
             /** Data */
             data: components["schemas"]["Assistant"][];
+            /** Message */
+            message: string;
+        };
+        /** ApiEnvelope[list[Connector]] */
+        ApiEnvelope_list_Connector__: {
+            /** Code */
+            code: string;
+            /** Data */
+            data: components["schemas"]["Connector"][];
             /** Message */
             message: string;
         };
@@ -4970,12 +5534,19 @@ export interface components {
             display_name?: string | null;
             /** Engine Kind */
             engine_kind?: string | null;
+            /** Engine Options */
+            engine_options?: {
+                [key: string]: unknown;
+            } | null;
             /** Environment Name */
             environment_name?: string | null;
             /** Icon */
             icon?: string | null;
-            /** Mcp Config Override */
-            mcp_config_override?: {
+            inherited?: components["schemas"]["InheritedExtensions"] | null;
+            /** Main Session Id */
+            main_session_id?: string | null;
+            /** Mcp Servers */
+            mcp_servers?: {
                 [key: string]: unknown;
             } | null;
             /** Model Config Override */
@@ -4984,22 +5555,111 @@ export interface components {
             } | null;
             /** Owner Id */
             owner_id?: string | null;
-            /** Permission Mode Default */
-            permission_mode_default?: string | null;
-            /** Plugin Repos Override */
-            plugin_repos_override?: {
+            /** Packages */
+            packages?: {
                 [key: string]: unknown;
             }[] | null;
-            /** Skill Manifest Override */
-            skill_manifest_override?: string[] | null;
+            /** Permission Mode Default */
+            permission_mode_default?: string | null;
+            /** Primary */
+            primary?: boolean | null;
+            /** Skills */
+            skills?: string[] | null;
             /** System */
             system?: string | null;
+            /** Timezone */
+            timezone?: string | null;
             /** Updated At */
             updated_at?: string | null;
             /** Workspace State */
             workspace_state?: string | null;
         } & {
             [key: string]: unknown;
+        };
+        /** AssistantConnectorState */
+        AssistantConnectorState: {
+            /** Assistant Id */
+            assistant_id: string;
+            /** Enabled */
+            enabled: string[];
+        };
+        /**
+         * AssistantDefaults
+         * @description The layer as stored, with the Environment new Assistants would use now.
+         */
+        AssistantDefaults: {
+            /** Assistant Environment Names */
+            assistant_environment_names: string[];
+            /** Credential Vault Ids */
+            credential_vault_ids?: string[] | null;
+            /** Effective Environment Name */
+            effective_environment_name?: string | null;
+            /** Engine Options */
+            engine_options?: {
+                [key: string]: unknown;
+            } | null;
+            /** Environment Name */
+            environment_name?: string | null;
+            /** Instructions */
+            instructions?: string | null;
+            /** Mcp Servers */
+            mcp_servers?: {
+                [key: string]: unknown;
+            } | null;
+            /** Model Name */
+            model_name?: string | null;
+            /** Packages */
+            packages?: {
+                [key: string]: unknown;
+            }[] | null;
+            /** Skills */
+            skills?: string[] | null;
+            /** Updated At */
+            updated_at?: string | null;
+        };
+        /**
+         * AssistantDefaultsExtensionCatalog
+         * @description The extension catalog with the deployment layer's selection marked.
+         */
+        AssistantDefaultsExtensionCatalog: {
+            /** Mcp Servers */
+            mcp_servers: components["schemas"]["AgentExtensionItem"][];
+            /** Selected Mcp Server Ids */
+            selected_mcp_server_ids: string[];
+            /** Selected Skill Ids */
+            selected_skill_ids: string[];
+            /** Skills */
+            skills: components["schemas"]["AgentExtensionItem"][];
+        } & {
+            [key: string]: unknown;
+        };
+        /**
+         * AssistantDefaultsFields
+         * @description The layer's authored fields, named as an Assistant's own are.
+         */
+        AssistantDefaultsFields: {
+            /** Credential Vault Ids */
+            credential_vault_ids?: string[] | null;
+            /** Engine Options */
+            engine_options?: {
+                [key: string]: unknown;
+            } | null;
+            /** Environment Name */
+            environment_name?: string | null;
+            /** Instructions */
+            instructions?: string | null;
+            /** Mcp Servers */
+            mcp_servers?: {
+                [key: string]: unknown;
+            } | null;
+            /** Model Name */
+            model_name?: string | null;
+            /** Packages */
+            packages?: {
+                [key: string]: unknown;
+            }[] | null;
+            /** Skills */
+            skills?: string[] | null;
         };
         /**
          * AssistantDeletion
@@ -5015,6 +5675,24 @@ export interface components {
             assistant_id?: string | null;
             /** Deleted */
             deleted?: boolean | null;
+        } & {
+            [key: string]: unknown;
+        };
+        /**
+         * AssistantExtensionCatalog
+         * @description The provider's catalog with this Assistant's selection marked, as for an Agent.
+         */
+        AssistantExtensionCatalog: {
+            /** Assistant Id */
+            assistant_id: string;
+            /** Mcp Servers */
+            mcp_servers: components["schemas"]["AgentExtensionItem"][];
+            /** Selected Mcp Server Ids */
+            selected_mcp_server_ids: string[];
+            /** Selected Skill Ids */
+            selected_skill_ids: string[];
+            /** Skills */
+            skills: components["schemas"]["AgentExtensionItem"][];
         } & {
             [key: string]: unknown;
         };
@@ -5038,6 +5716,28 @@ export interface components {
             ready?: number | null;
             /** Total */
             total?: number | null;
+        };
+        /**
+         * AssistantScheduledJobs
+         * @description What an Assistant scheduled for itself, read from its program's own store.
+         *
+         *     Each job carries the program's own field names (Hermes: ``id``, ``name``,
+         *     ``prompt``, ``schedule_display``, ``state``, ``next_run_at``,
+         *     ``last_run_at``, ``last_status``, ...). ``jobs`` is null when there is no
+         *     live list to read, and ``reason`` says why: ``workspace_not_running`` or
+         *     ``engine_keeps_no_schedule``.
+         */
+        AssistantScheduledJobs: {
+            /** Assistant Id */
+            assistant_id: string;
+            /** Jobs */
+            jobs: {
+                [key: string]: unknown;
+            }[] | null;
+            /** Reason */
+            reason: string | null;
+            /** Workspace State */
+            workspace_state: string;
         };
         /**
          * AssistantWorkspace
@@ -5111,6 +5811,11 @@ export interface components {
             sandbox_id?: string | null;
         } & {
             [key: string]: unknown;
+        };
+        /** AuthorizeResponse */
+        AuthorizeResponse: {
+            /** Authorize Url */
+            authorize_url: string;
         };
         /**
          * BackgroundTaskState
@@ -5221,6 +5926,41 @@ export interface components {
             session_id: string;
             /** Status */
             status: string;
+        };
+        /** ConfigureRequest */
+        ConfigureRequest: {
+            /** Client Id */
+            client_id?: string | null;
+            /** Client Secret */
+            client_secret?: string | null;
+        };
+        /**
+         * Connector
+         * @description One work app: whether it is set up, and the caller's connection to it.
+         */
+        Connector: {
+            /** Available */
+            available?: boolean | null;
+            /** Configured */
+            configured?: boolean | null;
+            /** Connector Id */
+            connector_id: string;
+            /** Deployed */
+            deployed?: boolean | null;
+            /** Docs Url */
+            docs_url?: string | null;
+            /** Name */
+            name: string;
+            /** Published */
+            published?: boolean | null;
+            /** Redirect Uri */
+            redirect_uri?: string | null;
+            /** Registration */
+            registration: string;
+            /** Server Id */
+            server_id?: string | null;
+            /** Status */
+            status?: string | null;
         };
         /**
          * ConversationEndResult
@@ -5463,7 +6203,7 @@ export interface components {
         };
         /**
          * DeploymentRecord
-         * @description One trigger binding on an Agent, as ``DeploymentService`` stores it.
+         * @description One trigger binding on an Agent or Assistant, as ``DeploymentService`` stores it.
          *
          *     ``secret`` is the credential the calling system signs with, returned so the
          *     configurer can register it there. The document is open — the service strips
@@ -5474,6 +6214,12 @@ export interface components {
             agent_id?: string | null;
             /** Agent Name */
             agent_name?: string | null;
+            /** Allowed Participants */
+            allowed_participants?: string[] | null;
+            /** Assistant Id */
+            assistant_id?: string | null;
+            /** Assistant Name */
+            assistant_name?: string | null;
             /** Attention Policy */
             attention_policy?: string | null;
             /** Created At */
@@ -5516,6 +6262,16 @@ export interface components {
             [key: string]: unknown;
         };
         /**
+         * EnsurePrimaryAssistantRequest
+         * @description What a first-created primary Assistant starts with; ignored when it exists.
+         */
+        EnsurePrimaryAssistantRequest: {
+            /** Display Name */
+            display_name: string;
+            /** Timezone */
+            timezone?: string | null;
+        };
+        /**
          * ExposedPortUrl
          * @description A freshly minted browser-reachable URL for one sandbox port.
          *
@@ -5551,6 +6307,29 @@ export interface components {
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /**
+         * InheritedExtensions
+         * @description What an Assistant inherits from the layers above it, by name and source.
+         *
+         *     Credential Vaults are counted, not named; nothing here can be edited
+         *     through the Assistant.
+         */
+        InheritedExtensions: {
+            /** Catalog Mcp Servers */
+            catalog_mcp_servers: number;
+            /** Credential Vaults */
+            credential_vaults: number;
+            /** Instructions */
+            instructions: boolean;
+            /** Mcp Servers */
+            mcp_servers: string[];
+            /** Packages */
+            packages: {
+                [key: string]: unknown;
+            }[];
+            /** Skills */
+            skills: string[];
         };
         /**
          * InteractionAnswerReceipt
@@ -6150,6 +6929,16 @@ export interface components {
             session_frame_seq?: number | null;
         };
         /**
+         * SessionRead
+         * @description When the owner last read a conversation.
+         */
+        SessionRead: {
+            /** Read At */
+            read_at: string;
+            /** Session Id */
+            session_id: string;
+        };
+        /**
          * SessionRecord
          * @description One session, as the read paths project it.
          *
@@ -6194,6 +6983,8 @@ export interface components {
             expires_at?: string | null;
             /** Last Error */
             last_error?: string | null;
+            /** Last Output At */
+            last_output_at?: string | null;
             /** Last Turn Command Id */
             last_turn_command_id?: string | null;
             /** Last Turn Error */
@@ -6218,6 +7009,8 @@ export interface components {
             } | null;
             /** Permission Mode */
             permission_mode?: string | null;
+            /** Read At */
+            read_at?: string | null;
             /** Recovery Policy */
             recovery_policy?: string | null;
             /** Recovery Reason */
@@ -7196,6 +7989,112 @@ export interface operations {
             };
         };
     };
+    get_assistant_defaults_api_v1_admin_assistant_defaults_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_AssistantDefaults_"];
+                };
+            };
+        };
+    };
+    set_assistant_defaults_api_v1_admin_assistant_defaults_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AssistantDefaultsFields"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_AssistantDefaults_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_assistant_defaults_extensions_api_v1_admin_assistant_defaults_extensions_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_AssistantDefaultsExtensionCatalog_"];
+                };
+            };
+        };
+    };
+    set_assistant_defaults_extensions_api_v1_admin_assistant_defaults_extensions_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetAgentExtensionsRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_AssistantDefaultsExtensionCatalog_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_assistant_credential_binding_api_v1_admin_assistants__assistant_id__credential_vaults_get: {
         parameters: {
             query?: never;
@@ -7278,6 +8177,154 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+        };
+    };
+    admin_list_connectors_api_v1_admin_connectors_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_list_Connector__"];
+                };
+            };
+        };
+    };
+    admin_configure_connector_api_v1_admin_connectors__connector_id__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                connector_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConfigureRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_Connector_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    admin_remove_connector_api_v1_admin_connectors__connector_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                connector_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    admin_publish_connector_api_v1_admin_connectors__connector_id__publish_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                connector_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_Connector_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    admin_verify_connector_api_v1_admin_connectors__connector_id__verify_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                connector_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_AuthorizeResponse_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -8675,6 +9722,101 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_AgentAccess_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    agent_connectors_api_v1_agents__agent_id__connectors_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_AgentConnectorState_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    enable_agent_connector_api_v1_agents__agent_id__connectors__connector_id__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                agent_id: string;
+                connector_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_AgentConnectorState_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    disable_agent_connector_api_v1_agents__agent_id__connectors__connector_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                agent_id: string;
+                connector_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_AgentConnectorState_"];
                 };
             };
             /** @description Validation Error */
@@ -10441,6 +11583,39 @@ export interface operations {
             };
         };
     };
+    ensure_primary_assistant_api_v1_assistants_primary_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EnsurePrimaryAssistantRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_Assistant_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_assistant_api_v1_assistants__assistant_id__get: {
         parameters: {
             query?: never;
@@ -10540,6 +11715,101 @@ export interface operations {
             };
         };
     };
+    assistant_connectors_api_v1_assistants__assistant_id__connectors_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                assistant_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_AssistantConnectorState_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    enable_assistant_connector_api_v1_assistants__assistant_id__connectors__connector_id__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                assistant_id: string;
+                connector_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_AssistantConnectorState_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    disable_assistant_connector_api_v1_assistants__assistant_id__connectors__connector_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                assistant_id: string;
+                connector_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_AssistantConnectorState_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     start_assistant_conversation_api_v1_assistants__assistant_id__conversations_post: {
         parameters: {
             query?: never;
@@ -10565,6 +11835,359 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_StartedAssistantConversation_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_assistant_deployments_api_v1_assistants__assistant_id__deployments_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                assistant_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_list_DeploymentRecord__"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_assistant_deployment_api_v1_assistants__assistant_id__deployments_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                assistant_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_DeploymentRecord_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_assistant_deployment_api_v1_assistants__assistant_id__deployments__deployment_id__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                assistant_id: string;
+                deployment_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_DeploymentRecord_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_assistant_deployment_api_v1_assistants__assistant_id__deployments__deployment_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                assistant_id: string;
+                deployment_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_DeletedDeployment_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_assistant_deployment_runs_api_v1_assistants__assistant_id__deployments__deployment_id__runs_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                assistant_id: string;
+                deployment_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    trigger_assistant_deployment_run_api_v1_assistants__assistant_id__deployments__deployment_id__runs_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                assistant_id: string;
+                deployment_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    replay_assistant_deployment_run_api_v1_assistants__assistant_id__deployments__deployment_id__runs__run_id__replay_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                assistant_id: string;
+                deployment_id: string;
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_assistant_extensions_api_v1_assistants__assistant_id__extensions_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                assistant_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_AssistantExtensionCatalog_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_assistant_extensions_api_v1_assistants__assistant_id__extensions_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                assistant_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetAgentExtensionsRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_AssistantExtensionCatalog_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    open_main_conversation_api_v1_assistants__assistant_id__main_conversation_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                assistant_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_StartedAssistantConversation_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_assistant_scheduled_jobs_api_v1_assistants__assistant_id__scheduled_jobs_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                assistant_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_AssistantScheduledJobs_"];
                 };
             };
             /** @description Validation Error */
@@ -10658,6 +12281,139 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_AssistantWorkspace_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_channel_providers_for_owner_api_v1_channel_providers_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    list_connectors_api_v1_connectors_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_list_Connector__"];
+                };
+            };
+        };
+    };
+    offer_connector_in_assistants_api_v1_connectors__connector_id__assistants_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                connector_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_AdoptedConnector_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    authorize_connector_api_v1_connectors__connector_id__authorize_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                connector_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_AuthorizeResponse_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    disconnect_connector_api_v1_connectors__connector_id__connection_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                connector_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */
@@ -10948,6 +12704,76 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_RuntimeStateLoadResult_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    runtime_profile_load_api_v1_sbxcap__cap_token__api_v1_runtime_state_profile_load_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                cap_token: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RuntimeStateLoadRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_RuntimeStateLoadResult_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    runtime_profile_save_api_v1_sbxcap__cap_token__api_v1_runtime_state_profile_save_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                cap_token: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RuntimeStateSaveRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_RuntimeStateSaveResult_"];
                 };
             };
             /** @description Validation Error */
@@ -11952,6 +13778,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_PermissionModeUpdate_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    mark_session_read_api_v1_sessions__session_id__read_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_SessionRead_"];
                 };
             };
             /** @description Validation Error */

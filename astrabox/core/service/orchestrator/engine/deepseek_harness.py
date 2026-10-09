@@ -28,6 +28,8 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import re
+import shlex
 from typing import Any
 from urllib.parse import urlparse
 
@@ -50,6 +52,10 @@ from astrabox.core.service.orchestrator.engine.capabilities import (
     CONVERSATION_PLACEMENT_PER_ACCOUNT,
     EngineRuntimeCapabilities,
     EngineWorkloadDeclaration,
+)
+from astrabox.core.service.orchestrator.engine.extensions import (
+    AGENTS_HOME_SKILLS_TARGET,
+    EngineExtensions,
 )
 from astrabox.core.service.orchestrator.engine.deepseek_harness_client import (
     DSH_PERMISSION_PRESETS,
@@ -123,7 +129,112 @@ DSH_ENGINE_OPTIONS_SCHEMA: tuple[dict[str, Any], ...] = (
             "Applied only when creating a conversation; reconnect keeps its configuration."
         ),
     },
+    {
+        "key": "profile_package",
+        "label": "Profile package.json",
+        "type": "object",
+        "protected_keys": ["dsh"],
+        "help": (
+            "Fields of the conversation's web profile package.json, written before the "
+            "harness starts and installed with `dsh plugin --profile web install`. Its "
+            'dependencies are plugin Bundles, for example {"dependencies": {"humanizer-ru": '
+            '"3.31.3"}}: npm versions, git specs or tarball URLs. The harness keeps the '
+            "Bundle list (dsh.profile.bundles) in step with what is installed."
+        ),
+    },
 )
+
+#: Installs an Agent's plugin Bundles with the harness's own plugin command,
+#: before the conversation's harness starts, which is when the harness reads
+#: its Bundles. `dsh plugin --profile web` initializes the profile from the
+#: shipped template when missing and forwards to pnpm in the profile
+#: directory; a run that adds a dependency whose manifest declares a Bundle
+#: also appends it to `dsh.profile.bundles`, and a run that removes one drops
+#: it (apps/cli reference, "dsh plugin"). Writing `dependencies` and running
+#: `install` adds nothing to that list, so the dependencies go through `add`
+#: and `remove`, and the owner's other fields are written as they are.
+_DSH_PROFILE_PACKAGE_STEP = r"""export PATH="/opt/dsh/node_modules/.bin:$PATH"
+profile="$dsh_home/profiles/web"
+dsh plugin --profile web ls >/dev/null
+plan="$(python3 - "$profile/package.json" @FIELDS@ <<'PY'
+import json, sys
+
+path, fields = sys.argv[1], json.loads(sys.argv[2])
+with open(path, encoding="utf-8") as handle:
+    manifest = json.load(handle)
+wanted = fields.pop("dependencies", None) or {}
+current = manifest.get("dependencies") or {}
+manifest.update(fields)
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(manifest, handle, indent=2)
+print(json.dumps({
+    "remove": sorted(name for name in current if name not in wanted),
+    "add": [f"{name}@{spec}" for name, spec in sorted(wanted.items()) if current.get(name) != spec],
+}))
+PY
+)"
+mapfile -t remove < <(python3 -c 'import json, sys; print("\n".join(json.loads(sys.argv[1])["remove"]))' "$plan" | sed '/^$/d')
+mapfile -t add < <(python3 -c 'import json, sys; print("\n".join(json.loads(sys.argv[1])["add"]))' "$plan" | sed '/^$/d')
+if [ "${#remove[@]}" -gt 0 ]; then
+  dsh plugin --profile web remove "${remove[@]}"
+fi
+if [ "${#add[@]}" -gt 0 ]; then
+  dsh plugin --profile web add "${add[@]}"
+fi
+"""
+
+#: The author's MCP servers as rows of the harness's own MCP client
+#: (`@deepseek-ai/dsh-mcp-client`: `serverName`, `transport` stdio or
+#: streamable-http, `command`/`args`/`env` or `url`/`headers`), inserted by
+#: the home patch layer, `$DSH_HOME/cordis.patch.yml`, which the harness
+#: composes over its Bundles and profile when it starts and below the
+#: platform's own overlay. Only the platform writes that file in a
+#: conversation's home; JSON is YAML.
+_DSH_HOME_PATCH_STEP = r"""printf '%s\n' @PATCH@ > "$dsh_home/cordis.patch.yml"
+"""
+
+_DSH_MCP_CLIENT = "@deepseek-ai/dsh-mcp-client"
+
+#: Restarts the image's resident harness so it reads what the bootstrap just
+#: installed: its Bundle set is fixed when it starts. The launcher wrapper
+#: removes the launch URL file when it starts and writes it once the harness
+#: prints its address (astrabox-dsh-web), so its reappearance is readiness.
+_DSH_RESIDENT_RESTART_SCRIPT = r"""set -euo pipefail
+launch="$HOME/.deepseek-harness/web-url"
+rm -f "$launch"
+supervisorctl restart astrabox-dsh >/dev/null
+for _ in $(seq 1 600); do
+  if [ -s "$launch" ]; then
+    exit 0
+  fi
+  sleep 0.1
+done
+echo "the resident harness did not report its address within 60s of a restart" >&2
+exit 1
+"""
+
+#: The registry pnpm resolves a version or range from when the profile names
+#: no other; the harness's CLI forwards to pnpm unchanged.
+_NPM_REGISTRY_HOST = "registry.npmjs.org"
+_URL_HOST = re.compile(r"^(?:git\+)?[a-z][a-z0-9+.-]*://(?:[^@/]+@)?([^/:?#]+)", re.IGNORECASE)
+_SCP_HOST = re.compile(r"^(?:git\+)?[^@/\s]+@([^:/\s]+):")
+_GITHUB_SHORTHAND = re.compile(r"^(?:github:)?[\w.-]+/[\w.-]+(?:#.*)?$")
+
+
+def _dependency_hosts(spec: str) -> list[str]:
+    """The hosts pnpm reaches for one dependency spec (pnpm's spec forms)."""
+
+    value = spec.strip()
+    if value.startswith(("file:", "link:", "workspace:")):
+        return []
+    match = _URL_HOST.match(value) or _SCP_HOST.match(value)
+    if match:
+        return [match.group(1).lower()]
+    if _GITHUB_SHORTHAND.match(value):
+        # pnpm fetches a GitHub dependency as a tarball from codeload.
+        return ["github.com", "codeload.github.com"]
+    return [_NPM_REGISTRY_HOST]
+
 
 #: Where an AstraBox Agent's instructions reach this engine. The harness's
 #: ``dsh-agent-instructions`` plugin reads project instructions from
@@ -139,6 +250,25 @@ DSH_AGENT_INSTRUCTIONS_FILE = "AGENTS.md"
 #: installs the relay, on opposite sides of one box.
 DSH_SESSIONS_DIR_TEMPLATE = "{home}/.dsh/sessions"
 DSH_MIRROR_SUBPATH_PREFIX = "dsh/"
+
+
+def _dsh_mcp_row(name: str, server: dict[str, Any]) -> dict[str, Any]:
+    """One author server as a `dsh-mcp-client` row (packages/mcp/mcp-client at dsh-v0.2.0-rc.2)."""
+
+    config: dict[str, Any] = {"serverName": name}
+    if server["type"] == "stdio":
+        config.update(transport="stdio", command=server["command"], args=list(server.get("args") or []))
+        if server.get("env"):
+            config["env"] = dict(server["env"])
+    elif server["type"] == "http":
+        config.update(transport="streamable-http", url=server["url"])
+        if server.get("headers"):
+            config["headers"] = dict(server["headers"])
+    else:
+        raise ValueError(
+            f"deepseek_harness takes stdio and streamable HTTP MCP servers, not {server['type']!r} ({name})"
+        )
+    return {"id": f"astrabox-mcp-{name}", "name": _DSH_MCP_CLIENT, "config": config}
 
 
 def _conversation_gateway_port(runtime_identity: dict[str, Any] | None) -> int:
@@ -521,8 +651,13 @@ class DeepSeekHarnessEngineAdapter(EngineAdapter):
             ),
             conversation_placement=CONVERSATION_PLACEMENT_PER_ACCOUNT,
             default_runtime_image=release_image(DSH_RUNTIME_IMAGE_COMPONENT),
-            engine_options_schema=DSH_ENGINE_OPTIONS_SCHEMA,
-            configuration_inputs=frozenset(),
+            # The harness's filesystem Skill provider scans
+            # $DSH_AGENTS_HOME/skills, which defaults to ~/.agents/skills.
+            extensions=EngineExtensions(
+                mcp_transports=frozenset({"stdio", "http"}),
+                skills_target=AGENTS_HOME_SKILLS_TARGET,
+                native_config=DSH_ENGINE_OPTIONS_SCHEMA,
+            ),
             # Bootstrap minimum for the pinned web profile. The live client
             # reads the complete permission preset list from the process
             # catalog, so an additive vendor preset reaches the console
@@ -822,6 +957,46 @@ class DeepSeekHarnessEngineAdapter(EngineAdapter):
                 with contextlib.suppress(BaseException):
                     await link.close()
             raise
+
+    def install_egress_hosts(self, engine_options: dict[str, Any]) -> list[str]:
+        """The hosts pnpm reaches for the profile package's dependencies."""
+
+        fields = engine_options.get("profile_package")
+        dependencies = fields.get("dependencies") if isinstance(fields, dict) else None
+        hosts: list[str] = []
+        for spec in (dependencies or {}).values() if isinstance(dependencies, dict) else ():
+            for host in _dependency_hosts(str(spec)):
+                if host not in hosts:
+                    hosts.append(host)
+        return hosts
+
+    def conversation_install_script(
+        self,
+        *,
+        packages: list[dict[str, str]],
+        engine_options: dict[str, Any],
+        mcp_servers: dict[str, dict[str, Any]],
+    ) -> str | None:
+        """Write the author's MCP rows and install the Agent's profile package fields."""
+
+        _ = packages
+        steps = ['set -euo pipefail', 'dsh_home="${DSH_HOME:-$HOME/.dsh}"', 'mkdir -p "$dsh_home"']
+        if mcp_servers:
+            rows = [_dsh_mcp_row(name, server) for name, server in mcp_servers.items()]
+            steps.append(
+                _DSH_HOME_PATCH_STEP.replace("@PATCH@", shlex.quote(json.dumps([{"insert": rows}])))
+            )
+        fields = engine_options.get("profile_package")
+        if isinstance(fields, dict) and fields:
+            steps.append(_DSH_PROFILE_PACKAGE_STEP.replace("@FIELDS@", shlex.quote(json.dumps(fields))))
+        if len(steps) == 3:
+            return None
+        return "\n".join(steps) + "\nprintf 'DSH_EXTENSIONS_READY\\n'\n"
+
+    def resident_restart_script(self) -> str | None:
+        """Restart the image's harness: it reads its Bundles only when it starts."""
+
+        return _DSH_RESIDENT_RESTART_SCRIPT
 
     def shared_conversation_service_launch(
         self, *, home: str, workspace: str, port: int

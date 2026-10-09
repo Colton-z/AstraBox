@@ -161,6 +161,16 @@ class AgentService:
         self._schedule_runtime_reconciliation(agent_id)
         return self._sanitize(updated)
 
+    async def set_connector_servers(
+        self, user: UserContext, agent_id: str, servers: dict[str, str]
+    ) -> dict[str, Any]:
+        """Record which connector hub servers the Agent offers its callers."""
+
+        self._raise_if_quiesced()
+        updated = await self._agent_config.set_agent_connector_servers(user, agent_id, servers)
+        self._schedule_runtime_reconciliation(agent_id)
+        return updated
+
     def schedule_runtime_reconciliation(self, agent_id: str) -> bool:
         """Reconcile current configuration after a write or capacity claim."""
 
@@ -684,14 +694,22 @@ class AgentService:
                             previous_pool_name,
                             backend_name=previous_pool_backend,
                         )
-                        await self._agent_repo.update_agent(
+                        # A Session start may have recorded a newer namespace
+                        # meanwhile; it stays named, and another pass retires it.
+                        cleared = await self._agent_repo.compare_and_update_agent(
                             target,
-                            {
+                            expected={
+                                key: row[key] if key in row else {"$exists": False}
+                                for key in (CLIENT_POOL_NAME_FIELD, CLIENT_POOL_BACKEND_FIELD)
+                            },
+                            updates={
                                 CLIENT_POOL_NAME_FIELD: None,
                                 CLIENT_POOL_BACKEND_FIELD: None,
                                 "_client_pool_epoch": None,
                             },
                         )
+                        if not cleared:
+                            self._reconciliation_requested.add(target)
                 else:
                     refreshed = await self._agent_config.resolve_agent_harness(target)
                     if refreshed is None:
@@ -700,47 +718,17 @@ class AgentService:
                         refreshed["runtime_generation"] = generation
                     else:
                         refreshed.runtime_generation = generation
-                    pool_plan = await ensure_agent_client_pool(
+                    # The namespace is recorded, and the one it displaces queued
+                    # for retirement, before it starts; an edit landing during
+                    # this pass leaves it named for the next pass to retire.
+                    await ensure_agent_client_pool(
                         refreshed,
                         runtime_manager=self._runtime_manager,
+                        agent_repo=self._agent_repo,
                     )
-                    current_pool_name = pool_plan.spec.pool_name if pool_plan is not None else ""
-                    current_pool_backend = pool_plan.backend_name if pool_plan is not None else ""
-                    if (
-                        previous_pool_name != current_pool_name
-                        or previous_pool_backend != current_pool_backend
-                    ):
-                        retiring_pools = list(row.get("_retiring_client_pools") or [])
-                        if previous_pool_name:
-                            retiring_pools.append(
-                                {"name": previous_pool_name, "backend": previous_pool_backend}
-                            )
-                        published = await self._agent_repo.compare_and_update_agent(
-                            target,
-                            expected={
-                                **expected,
-                                **{
-                                    key: row[key] if key in row else {"$exists": False}
-                                    for key in (
-                                        CLIENT_POOL_NAME_FIELD, CLIENT_POOL_BACKEND_FIELD,
-                                        "_retiring_client_pools",
-                                    )
-                                },
-                            },
-                            updates={
-                                CLIENT_POOL_NAME_FIELD: current_pool_name or None,
-                                CLIENT_POOL_BACKEND_FIELD: (current_pool_backend or None),
-                                "_retiring_client_pools": retiring_pools,
-                            },
-                        )
-                        if not published:
-                            raise APIError(
-                                code="AGENT_RUNTIME_GENERATION_CONFLICT",
-                                message="Agent changed while publishing prepared capacity",
-                                status_code=409,
-                            )
-                        if retiring_pools:
-                            self._schedule_pool_retirement(target)
+                    recorded = await self._agent_repo.get_agent(target)
+                    if isinstance(recorded, dict) and recorded.get("_retiring_client_pools"):
+                        self._schedule_pool_retirement(target)
                     from astrabox.core.service.orchestrator.runtime.runtime_profile import (
                         resolve_sandbox_tenancy,
                     )

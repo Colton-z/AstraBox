@@ -17,6 +17,11 @@ type Schemas = components['schemas'];
 
 export type AssistantConversationResult = Schemas['StartedAssistantConversation'];
 export type AssistantWorkspaceResult = Schemas['AssistantWorkspace'];
+export type AssistantExtensionCatalog = Schemas['AssistantExtensionCatalog'];
+export type AssistantDefaults = Schemas['AssistantDefaults'];
+export type AssistantScheduledJobs = Schemas['AssistantScheduledJobs'];
+export type AssistantDefaultsFields = Schemas['AssistantDefaultsFields'];
+export type AssistantDefaultsExtensionCatalog = Schemas['AssistantDefaultsExtensionCatalog'];
 
 export type AssistantWorkspaceState =
   | 'NOT_MATERIALIZED'
@@ -35,8 +40,19 @@ export interface AssistantRecord {
   environment_name: string;
   permission_mode_default: string;
   system?: string | null;
+  timezone?: string | null;
+  mcp_servers?: Record<string, unknown> | null;
+  skills?: string[] | null;
+  packages?: Record<string, unknown>[] | null;
+  engine_options?: Record<string, unknown> | null;
   workspace_state?: AssistantWorkspaceState | string;
   current_sandbox_id?: string | null;
+  /** The one Assistant the platform keeps for its owner. */
+  primary?: boolean | null;
+  /** Where opening the Assistant lands. */
+  main_session_id?: string | null;
+  /** What the deployment's Assistant defaults provide, read-only. */
+  inherited?: Schemas['InheritedExtensions'] | null;
   created_at?: string;
   updated_at?: string;
 }

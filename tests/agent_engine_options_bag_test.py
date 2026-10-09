@@ -1,7 +1,7 @@
 """The Agent's engine_options bag: declared by the engine, judged at write.
 
 The bag's keys mean nothing to the platform. The adapter declares the shape
-(``EngineRuntimeCapabilities.engine_options_schema``), registration refuses a
+(``EngineExtensions.native_config``), registration refuses a
 malformed declaration, the Agent write path refuses a bag the declaration does
 not cover, and the stored values travel to the adapter verbatim. Each gate is
 fed its own violation here so a green run proves the gate reads, not just that
@@ -167,7 +167,7 @@ async def test_valid_bag_is_stored_verbatim_and_reaches_sdk_kwargs() -> None:
 
 def test_adapter_declares_native_block_and_platform_boundary_only() -> None:
     register_builtin_providers()
-    declared = capabilities_for_engine_kind("claude_code").engine_options_schema
+    declared = capabilities_for_engine_kind("claude_code").extensions.native_config
     declared_keys = frozenset(str(field["key"]) for field in declared)
     assert declared_keys == CLAUDE_ENGINE_OPTION_KEYS
     assert declared_keys == {"sdk_options"}
@@ -312,7 +312,7 @@ async def test_environment_switch_revalidates_the_stored_bag() -> None:
     assert "session_kind='agent_chat'" in str(cleared.value.message)
 
 
-async def test_engine_without_plugin_support_refuses_plugin_repos_at_write() -> None:
+async def test_engine_without_plugin_support_refuses_packages_at_write() -> None:
     service, _repo = _service()
 
     with pytest.raises(APIError) as raised:
@@ -320,8 +320,9 @@ async def test_engine_without_plugin_support_refuses_plugin_repos_at_write() -> 
             _User(),
             _payload(
                 environment_name="dsh-env",
-                plugin_repos=[
+                packages=[
                     {
+                        "kind": "claude-plugin",
                         "url": "https://example.invalid/plugin.git",
                         "protocol": "https",
                     }
@@ -330,7 +331,7 @@ async def test_engine_without_plugin_support_refuses_plugin_repos_at_write() -> 
         )
 
     assert raised.value.status_code == 400
-    assert "plugin_repos" in raised.value.message
+    assert "packages" in raised.value.message
     assert "deepseek_harness" in raised.value.message
 
 
@@ -340,8 +341,9 @@ async def test_environment_switch_revalidates_stored_configuration_inputs() -> N
         "name": "plugin-probe",
         "model": "some-model",
         "environment_name": "claude-env",
-        "plugin_repos": [
+        "packages": [
             {
+                "kind": "claude-plugin",
                 "url": "https://example.invalid/plugin.git",
                 "protocol": "https",
             }
@@ -359,7 +361,7 @@ async def test_environment_switch_revalidates_stored_configuration_inputs() -> N
             {"model": "some-model", "environment_name": "dsh-env"},
         )
     assert raised.value.status_code == 400
-    assert "plugin_repos" in raised.value.message
+    assert "packages" in raised.value.message
 
     updated = await service.upsert_agent_config(
         _User(),
@@ -367,7 +369,7 @@ async def test_environment_switch_revalidates_stored_configuration_inputs() -> N
         {
             "model": "some-model",
             "environment_name": "dsh-env",
-            "plugin_repos": [],
+            "packages": [],
         },
     )
     assert updated["environment_name"] == "dsh-env"

@@ -4,7 +4,7 @@ import type { TFunction } from 'i18next';
 import { Archive, Plus } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
-import { listAssistants } from '@/assistant/api';
+import { authoredDefaults, getAssistantDefaults, listAssistants, setAssistantDefaults } from '@/assistant/api';
 import type { AssistantRecord } from '@/assistant/types';
 import { StatusPill } from '@/components/AstraConsole';
 import { Button } from '@/components/ui/button';
@@ -256,6 +256,8 @@ export default function CredentialVaultPage() {
       const next = assignment.vault_ids.filter((id) => id !== vault.vault_id);
       if (assignment.target_type === 'agent') {
         await setAgentCredentialBinding(assignment.target_id, next);
+      } else if (assignment.target_type === 'assistant_defaults') {
+        await setAssistantDefaults({ ...authoredDefaults(await getAssistantDefaults()), credential_vault_ids: next });
       } else {
         await setAssistantCredentialBinding(assignment.target_id, next);
       }
@@ -548,7 +550,9 @@ export default function CredentialVaultPage() {
                   <ItemDescription className="t-copy-sm text-xs">
                     {assignment.target_type === 'agent'
                       ? t('manage:nav.agents')
-                      : t('manage:nav.assistants')}
+                      : assignment.target_type === 'assistant_defaults'
+                        ? t('manage:nav.assistant_defaults')
+                        : t('manage:nav.assistants')}
                   </ItemDescription>
                 </ItemContent>
                 <ItemActions>

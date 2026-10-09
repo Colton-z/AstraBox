@@ -1,47 +1,25 @@
 import { describe, expect, it } from 'vitest';
-import { parseArtifactMarkers } from './marker';
+import { cardArtifacts } from './marker';
 import { computeGrants } from './grants';
 import { querySnapshot } from '../../artifact-runtime/types';
-import engineOutputs from './fixtures/artifact_tool_outputs.json';
 const marker = {
   id: `art_${'a'.repeat(24)}`,
   version: 2,
   title: 'Dashboard',
   kind: 'html',
 };
-const json = JSON.stringify({ astrabox_artifact: marker });
-describe('artifact markers', () => {
-  it.each([
-    json,
-    [{ type: 'text', text: json }],
-    { output: JSON.stringify({ content: [{ text: json }] }) },
-  ])('reads the marker from output independently of tool names', (output) =>
-    expect(parseArtifactMarkers(output)).toEqual([marker]),
-  );
-  it('rejects malformed markers and stops cyclic output', () => {
-    expect(
-      parseArtifactMarkers('{"astrabox_artifact":{"id":"wrong"}}'),
-    ).toEqual([]);
-    const cycle: Record<string, unknown> = {
-      marker: { astrabox_artifact: marker },
-    };
-    cycle.self = cycle;
-    expect(parseArtifactMarkers(cycle)).toEqual([marker]);
+describe('artifact cards', () => {
+  const card = (artifacts: unknown, kind = 'artifact') => ({
+    type: 'data-tool-card',
+    data: { toolCallId: 'call', cardId: 'crd_1', kind, artifacts },
   });
-  it.each(Object.entries(engineOutputs))('reads %s live and persisted output', (_engine, output) => {
-    const expected = [{ ...marker, version: 1, title: 'Published page' }];
-    expect(parseArtifactMarkers(output)).toEqual(expected);
-    expect(parseArtifactMarkers(typeof output === 'string' ? output : JSON.stringify(output))).toEqual(expected);
+  it('reads the artifacts a card part shows', () => {
+    expect(cardArtifacts(card([marker]))).toEqual([marker]);
   });
-  it('bounds depth, values and total JSON text', () => {
-    let nested: unknown = { astrabox_artifact: marker };
-    for (let depth = 0; depth < 13; depth++) nested = { result: nested };
-    expect(parseArtifactMarkers(nested)).toEqual([]);
-    expect(parseArtifactMarkers([...Array(4096).fill(null), { astrabox_artifact: marker }])).toEqual([]);
-    expect(parseArtifactMarkers(' '.repeat(8 * 1024 * 1024) + json)).toEqual([]);
-    expect(parseArtifactMarkers([' '.repeat(4 * 1024 * 1024), ' '.repeat(4 * 1024 * 1024), json])).toEqual([]);
-    expect(parseArtifactMarkers(`Published: ${json}`)).toEqual([]);
-    expect(parseArtifactMarkers(JSON.stringify(json))).toEqual([]);
+  it('reads nothing from another part, another card kind or a malformed entry', () => {
+    expect(cardArtifacts({ type: 'dynamic-tool', data: { kind: 'artifact', artifacts: [marker] } })).toEqual([]);
+    expect(cardArtifacts(card([marker], 'connection_request'))).toEqual([]);
+    expect(cardArtifacts(card([{ ...marker, id: 'wrong' }, { ...marker, kind: 'pdf' }, marker]))).toEqual([marker]);
   });
 });
 describe('capability grants', () => {

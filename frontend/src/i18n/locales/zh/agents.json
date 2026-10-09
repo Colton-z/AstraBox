@@ -1,5 +1,4 @@
 {
-  "load_failed": "加载失败",
   "state_active": "运行中",
   "state_provisioning": "初始化中",
   "state_hibernating": "休眠中",

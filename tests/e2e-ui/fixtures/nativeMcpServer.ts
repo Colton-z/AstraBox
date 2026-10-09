@@ -20,6 +20,7 @@ import { expect, test } from '@playwright/test';
 
 import { AstraApi, type AgentRecord } from './astraApi';
 import { documentsByField } from './dbOracle';
+import { copyEnvironment } from './environmentCopy';
 import { onPassOnly, trackSessions } from './sessionCleanup';
 import { startNativeMcpRelay, type NativeMcpRelay } from './nativeMcpRelay';
 import { aiStreamBodies } from './sseBodies';
@@ -252,16 +253,18 @@ export async function startNativeMcpServer(
 }
 
 /**
- * Create the client Agent on a test-owned copy of the deployed MCP-enabled
- * Environment, then open its conversation. Only the schema-required identity
- * fields, the version and the given configuration are sent; `engine_options`
- * is sent only when a case supplies vendor env, so a case without one adds no
- * inert knob.
+ * Create the client Agent on a test-owned copy of an Environment, then open
+ * its conversation. The default is the deployed Claude Code extension
+ * Environment; a case on another engine names that engine's Environment and
+ * model. Only the schema-required identity fields, the version and the given
+ * configuration are sent; `engine_options` is sent only when a case supplies
+ * vendor env, so a case without one adds no inert knob.
  *
  * An Agent's own MCP server joins a limited Environment's egress only when the
- * Environment names its host, and the listener's exposed address is on the
- * deployment's own network. An administrator therefore names that exact host,
- * in a copy of the deployed Environment so the shared one keeps its policy.
+ * Environment admits MCP servers and names its host, and the listener's
+ * exposed address is on the deployment's own network. An administrator
+ * therefore turns on `allow_mcp_servers` and names that exact host, in a copy
+ * of the Environment so the shared one keeps its policy.
  */
 export async function configureNativeMcpClientAgent(
   api: AstraApi,
@@ -269,38 +272,28 @@ export async function configureNativeMcpClientAgent(
   options: {
     runId: string; label: string; server: string;
     env?: Record<string, string>; headers?: Record<string, string>;
+    environment?: { name: string; engineKind: string; model: string };
   },
 ): Promise<AgentRecord> {
   expect(scene.serverUrl, 'the server must be running before the client Agent is configured').not.toEqual('');
-  const environmentName = String(process.env.ASTRABOX_E2E_PREWARM_SHARED_ENVIRONMENT || '').trim();
-  expect(environmentName, 'the MCP client requires the deployed extension Environment').not.toEqual('');
+  const environmentName = options.environment?.name
+    ?? String(process.env.ASTRABOX_E2E_PREWARM_SHARED_ENVIRONMENT || '').trim();
+  expect(environmentName, 'the MCP client requires an Environment').not.toEqual('');
   const environments = await api.data<Array<Record<string, unknown>>>('GET', '/admin/environments');
   const environment = environments.find((row) => row.name === environmentName);
   expect(environment, `MCP client Environment ${environmentName}`).toMatchObject({
-    enabled: true, engine_kind: 'claude_code',
-    networking: { type: 'limited', allow_mcp_servers: true },
+    enabled: true, engine_kind: options.environment?.engineKind ?? 'claude_code',
+    networking: { type: 'limited' },
   });
-  const networking = object(environment!.networking);
-  const schema = await api.data<{ fields?: Array<Record<string, unknown>> }>('GET', '/admin/environment-schema');
-  const fields = new Set((schema.fields ?? []).map((field) => String(field.key)));
   const clientEnvironmentName = `__e2e_mcp_${options.label}_${options.runId}`;
-  const clientEnvironment: Record<string, unknown> = {
-    ...Object.fromEntries(Object.entries(environment!).filter(([key]) => fields.has(key))),
-    name: clientEnvironmentName,
-    display_name: clientEnvironmentName,
-    enabled: true,
-    networking: {
-      ...networking,
-      allowed_hosts: [...(Array.isArray(networking.allowed_hosts) ? networking.allowed_hosts : []),
-        new URL(scene.serverUrl).hostname],
-    },
-  };
-  await api.data('PUT', `/admin/environments/${encodeURIComponent(clientEnvironmentName)}`, clientEnvironment);
+  const clientEnvironment = await copyEnvironment(api, environment!, clientEnvironmentName, {
+    hosts: [new URL(scene.serverUrl).hostname], allowMcpServers: true,
+  });
   scene.environments.push(clientEnvironment);
-  const base = await api.defaultAgent();
   const clientAgent = await api.createAgent({
     name: `__e2e_mcp_${options.label}_${options.runId}`,
-    model: await api.configuredAgentModel(base.name, environmentName),
+    model: options.environment?.model
+      ?? await api.configuredAgentModel((await api.defaultAgent()).name, environmentName),
     environment_name: clientEnvironmentName,
     prepared_capacity: 0,
   });

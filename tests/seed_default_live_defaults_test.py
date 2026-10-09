@@ -139,12 +139,13 @@ async def test_seeded_rows_do_not_copy_deployment_defaults(
     assert research["engine_options"] == {"sdk_options": {"strict_mcp_config": True}}, (
         "the example must load Plugin content without also starting its commercial MCP declarations"
     )
-    assert research["plugin_repos"] == [
+    assert research["packages"] == [
         {
+            "kind": "claude-plugin",
             "url": "https://github.com/anthropics/financial-services.git",
             "protocol": "https",
             "sha": "286f9068951335bcabd99525d5197752866ee05f",
-            "plugin_paths": [
+            "paths": [
                 "plugins/vertical-plugins/financial-analysis",
                 "plugins/vertical-plugins/equity-research",
             ],

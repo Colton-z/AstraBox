@@ -408,9 +408,9 @@ mcp_servers:
 
 配置格式遵循所选 Agent 程序的 MCP 支持。通过 AstraBox 注册表分配的远程 MCP Server 会与 Agent 自己的配置合并。
 
-#### `default_repo` / `plugin_repos`
+#### `default_repo` / `packages`
 
-`default_repo` 用于检出 Agent 的主代码仓库，`plugin_repos` 用于添加提供 Plugin 的代码仓库。
+`default_repo` 用于检出 Agent 的主代码仓库，`packages` 用于添加引擎原生扩展包；每项用 `kind` 写明环境所用引擎声明的类型，例如 Claude Code 插件仓库是 `claude-plugin`。
 
 ```yaml
 default_repo:
@@ -420,15 +420,16 @@ default_repo:
   branch: main
   depth: 1
 
-plugin_repos:
-  - url: https://github.com/example/agent-plugins.git
+packages:
+  - kind: claude-plugin
+    url: https://github.com/example/agent-plugins.git
     protocol: https
     branch: main
-    plugin_paths:
+    paths:
       - plugins/review
 ```
 
-代码仓库配置支持 `url`、`protocol`、协议要求时填写的部署密钥 Secret 名称、分支和检出深度。部署密钥名称从 AstraBox 服务进程环境解析，不读取 Web 控制台的 Vault。Plugin 仓库还可以通过 `sha` 固定 Commit，并用 `plugin_paths` 选择 Plugin 目录。
+代码仓库配置支持 `url`、`protocol`、协议要求时填写的部署密钥 Secret 名称、分支和检出深度。部署密钥名称从 AstraBox 服务进程环境解析，不读取 Web 控制台的 Vault。扩展包还可以通过 `sha` 固定 Commit，并用 `paths` 选择目录。
 
 #### `exposure_mode`
 
@@ -799,11 +800,12 @@ agents:
       deploy_key_secret_name: application-deploy-key
       branch: main
       depth: 1
-    plugin_repos:
-      - url: https://github.com/example/review-plugins.git
+    packages:
+      - kind: claude-plugin
+        url: https://github.com/example/review-plugins.git
         protocol: https
         branch: main
-        plugin_paths:
+        paths:
           - plugins/review
     skills:
       - <skill-reference>
@@ -1026,7 +1028,7 @@ astrabox schema agent --output json
 | `terminal_panel` | ❌ | 布尔值；是否显示终端面板，不控制命令执行权限。 |
 | `diff_panel` | ❌ | 布尔值；是否显示文件差异面板，不控制文件修改权限。 |
 | `default_repo` | ❌ | 主代码仓库。 |
-| `plugin_repos` | ❌ | 提供 Plugin 的代码仓库。 |
+| `packages` | ❌ | 引擎原生扩展包，每项带上引擎声明的 `kind`。 |
 | `environment_name` | ✅ | Agent 使用的 Environment。 |
 | `exposure_mode` | ❌ | 对话和 MCP 使用方式。 |
 | `idle_hibernate_seconds` | ❌ | 休眠前的空闲时间。 |

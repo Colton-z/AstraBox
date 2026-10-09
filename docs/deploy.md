@@ -287,11 +287,13 @@ Workspace file persistence is optional. The bundled backing-medium adapter is
 `ASTRABOX_STORAGE_PROVIDER=mounted_volume`. Persistent deployments set
 `ASTRABOX_SANDBOX_WORKSPACE_VOLUME` to the backing volume's name: an existing
 PersistentVolumeClaim on Kubernetes, or a named volume on Docker. Workspaces
-occupy separate directories on that backing filesystem. The platform's
-mergerfs router creates fixed views outside user sandboxes; OpenSandbox mounts those views
-through its standard PVC or named-volume interface. Binding to the selected
-new or existing workspace completes before delivery to the user. The storage
-adapter selects the backing medium; it cannot opt out of platform routing.
+occupy separate directories on that backing filesystem. With the bundled
+OpenSandbox backend, mergerfs views created outside user sandboxes carry them;
+OpenSandbox mounts those views through its standard PVC or named-volume
+interface. Binding to the selected new or existing workspace completes before
+delivery to the user. The storage adapter selects the backing medium; the
+sandbox backend decides how it is mounted, and a backend that cannot mount a
+persistent workspace is refused at startup when this volume is set.
 
 An unset or empty value leaves workspace files on the sandbox's temporary
 filesystem; replacing that sandbox can discard those files. This setting governs
@@ -416,6 +418,52 @@ authenticated HTTPS. Set `ASTRABOX_CHANNEL_GATEWAY_BASE_URL` to that endpoint
 and configure the same `ASTRABOX_CHANNEL_GATEWAY_TOKEN` on AstraBox and the
 gateway. See the [configuration reference in the repository](https://github.com/Colton-z/AstraBox/blob/main/docs/configuration.md)
 for the requirements.
+
+## Run the connector hub {#run-the-connector-hub}
+
+Assistant and Agent connectors (Gmail, Notion and the other work apps in
+[Connect work apps](assistants.md#connectors)) run through a connector hub,
+ContextForge, which the base installation does not start. From a clone, add
+its Compose overlay with the hub's secrets, and the Google overlay with the
+deployment's Google OAuth web client for Gmail, Google Calendar and Drive:
+
+```bash
+export CONTEXTFORGE_JWT_SECRET=$(openssl rand -hex 32)
+export CONTEXTFORGE_AUTH_ENCRYPTION_SECRET=$(openssl rand -hex 32)
+export CONTEXTFORGE_ADMIN_EMAIL=connectors@your-domain.example
+export CONTEXTFORGE_ADMIN_PASSWORD='<a strong password>'
+export ASTRABOX_CONTEXTFORGE_PUBLIC_URL=https://<your-astrabox-host>/connector-hub
+export GOOGLE_OAUTH_CLIENT_ID=<client ID> GOOGLE_OAUTH_CLIENT_SECRET=<client secret>
+scripts/compose.sh -f containers/compose.connectors.yaml \
+  -f containers/compose.connectors-google.yaml up -d --build
+```
+
+The first overlay starts ContextForge, built from `containers/contextforge`
+(the pinned release with the patches named there), and points the server at
+it. The second starts one google_workspace_mcp instance each for Gmail, Google
+Calendar and Google Drive; without it those three connectors are unavailable
+and the others work.
+
+- **The browser** reaches the hub only at `/connector-hub/oauth/callback` on
+  the console's origin, where each vendor returns it after a consent; register
+  that URL as the redirect URI of each vendor OAuth app. Vendors accept it only
+  over HTTPS, or at `localhost`.
+- **Sandboxes** never reach the hub. An agent calls a connector through the
+  AstraBox server's platform MCP route, which relays the request to the hub as
+  the person the conversation acts for, so neither the hub's address nor
+  anyone's token is in a sandbox and the hub needs no sandbox network.
+- **Rate limits** are off in the hub. ContextForge counts requests per
+  client, and its only client is the AstraBox server, so its limits would
+  apply to the whole deployment at once: by default 30 OAuth requests and 100
+  tool calls a minute for everyone, then a 15-minute lockout after repeated
+  overruns. A hub run without this overlay needs `RATE_LIMITING_ENABLED=false`
+  as well.
+- **The administrator email** must use a domain the hub accepts as an email
+  address, not a reserved one such as `.local`; each AstraBox user's hub
+  account is named on that domain.
+
+The hub keeps people's vendor tokens in its own encrypted database (the
+`contextforge-data` volume); back it up with the platform's data.
 
 ## Run multiple platform replicas
 

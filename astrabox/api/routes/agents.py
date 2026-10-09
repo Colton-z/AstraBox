@@ -66,7 +66,7 @@ class AgentRecord(BaseModel):
     mcp_servers: dict[str, Any] | None = None
     artifacts_enabled: bool | None = None
     default_repo: dict[str, Any] | None = None
-    plugin_repos: list[dict[str, Any]] | None = None
+    packages: list[dict[str, Any]] | None = None
     environment_name: str | None = None
     exposure_mode: str | None = None
     idle_hibernate_seconds: int | None = None
@@ -173,6 +173,9 @@ class AgentEnvironmentOption(BaseModel):
     #: platform carries the declaration for form rendering and interprets none
     #: of its keys.
     engine_options_schema: list[dict[str, Any]] = []
+    #: The engine's extension surface: author MCP transports, whether it loads
+    #: Skills, its native package kinds, and whether it sends telemetry.
+    extensions: dict[str, Any] = {}
 
 
 class AgentEnvironmentModels(BaseModel):

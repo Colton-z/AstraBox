@@ -4,7 +4,7 @@ import { cleanup, renderHook, act } from '@testing-library/react';
 import { useArtifactPanelNavigation } from './useArtifactPanelNavigation';
 import type { UIMessage } from 'ai';
 afterEach(cleanup);
-it('opens each new live marker once and leaves replayed history alone', () => {
+it('opens each new live artifact card once and leaves replayed history alone', () => {
   const marker = {
     id: `art_${'a'.repeat(24)}`,
     version: 1,
@@ -17,11 +17,9 @@ it('opens each new live marker once and leaves replayed history alone', () => {
       role: 'assistant',
       parts: [
         {
-          type: 'dynamic-tool',
-          toolCallId: 'old',
-          toolName: 'arbitrary-mcp-name',
-          state: 'output-available',
-          output: JSON.stringify({ astrabox_artifact: marker }),
+          type: 'data-tool-card',
+          id: 'tool-card:old:crd_1',
+          data: { toolCallId: 'old', cardId: 'crd_1', kind: 'artifact', artifacts: [marker] },
         },
       ],
     },

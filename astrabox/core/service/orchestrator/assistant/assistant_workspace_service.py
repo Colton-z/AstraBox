@@ -159,6 +159,31 @@ class AssistantWorkspaceService:
     async def has_assistant_workspace(self, *, assistant_id: str) -> bool:
         return await self._workspace_repo.has_assistant_workspace(assistant_id)
 
+    async def list_lease_renewal_candidates(
+        self, *, now_iso: str, renew_before_iso: str, limit: int = 50
+    ) -> list[dict[str, Any]]:
+        return await self._workspace_repo.list_lease_renewal_candidates(
+            now_iso=now_iso, renew_before_iso=renew_before_iso, limit=limit
+        )
+
+    async def list_ready_workspaces(
+        self, *, now_iso: str, after_assistant_id: str | None, limit: int
+    ) -> list[dict[str, Any]]:
+        return await self._workspace_repo.list_ready_workspaces(
+            now_iso=now_iso, after_assistant_id=after_assistant_id, limit=limit
+        )
+
+    async def record_sandbox_lease(
+        self, *, assistant_id: str, sandbox_id: str, expires_at: str | None
+    ) -> bool:
+        """Store a renewed lease, only while the workspace still holds ``sandbox_id``."""
+        return await self._workspace_repo.compare_and_update_workspace(
+            "",
+            assistant_id,
+            expected={"current_sandbox_id": sandbox_id},
+            updates={"current_sandbox_expires_at": expires_at},
+        )
+
     async def list_user_workspaces(
         self, *, user_id: str, assistant_ids: list[str]
     ) -> list[dict[str, Any]]:

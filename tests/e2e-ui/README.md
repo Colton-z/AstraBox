@@ -5,10 +5,10 @@
 维护的 runner 按冻结清单把 exclusive lane 分成普通并行组和单 worker 的重启/破坏性组；
 文件后缀本身不会让直接调用的 Playwright 自动串行。
 
-真实 Slack、飞书和钉钉账号不属于普通 CI 的可复现依赖，因此
-`real-slack-feishu-dingtalk.external.spec.ts` 只有在显式设置
-`ASTRABOX_E2E_EXTERNAL_CHANNELS=1` 时才会被收集。它没有 mock、skip 或凭据 fallback：
-每个平台都必须提供一个绝对路径、非符号链接、权限为 `0600` 的 JSON 文件：
+真实 Slack、飞书、钉钉和 Google 账号不属于普通 CI 的可复现依赖，因此
+`*.external.spec.ts` 只有在显式设置 `ASTRABOX_E2E_EXTERNAL_ACCOUNTS=1` 时才会被收集。
+它们没有 mock、skip 或凭据 fallback；每个凭据文件都必须是绝对路径、非符号链接、
+权限为 `0600` 的 JSON 文件。消息平台的文件格式如下：
 
 ```json
 {
@@ -23,7 +23,7 @@ Slack 文件使用空的 `channel_config` 以及 `token`、`botToken`；飞书�
 `ASTRABOX_E2E_DINGTALK_CHANNEL_FILE` 传入。逐平台运行时使用精确标题：
 
 ```bash
-ASTRABOX_E2E_EXTERNAL_CHANNELS=1 \
+ASTRABOX_E2E_EXTERNAL_ACCOUNTS=1 \
 ASTRABOX_E2E_SLACK_CHANNEL_FILE=/absolute/private/slack.json \
 npx playwright test specs/real-slack-feishu-dingtalk.external.spec.ts \
   --grep 'real Slack account carries one Agent turn end to end'
@@ -33,6 +33,31 @@ npx playwright test specs/real-slack-feishu-dingtalk.external.spec.ts \
 向测试机器人发送该 marker；Playwright 会继续验证持久化入站、Agent Session、助手消息、
 平台返回的出站消息 id，以及控制台/API 都没有回显机器人密钥。机器人自己发消息不算
 验收，因为渠道层会把机器人事件按防回环规则忽略。
+
+`real-google-connector.external.spec.ts` 验收 Gmail connector。部署必须带上
+connector hub 和 Google 叠加文件（`docs/deploy.md` 的「运行 connector hub」）；
+`ASTRABOX_E2E_GOOGLE_CLIENT_FILE` 指向本部署的 Google OAuth web 客户端：
+
+```json
+{"client_id": "....apps.googleusercontent.com", "client_secret": "..."}
+```
+
+该客户端的回调地址必须包含部署的 `<控制台地址>/connector-hub/oauth/callback`。
+用例按顺序运行，需要授权时输出 `EXTERNAL_CONNECTOR_CONSENT` 和一个 Google 授权链接：
+第一次以 hub 管理员身份（hub 已保存管理员授权时会跳过），第二次以套件用户身份。
+在已登录测试 Google 账号的浏览器中打开链接并允许访问，用例会继续验证：Assistant
+和提供 Gmail 的预热 Agent（会话认领预先准备好的运行时）都读到这个人的邮件；从未连接的调用者被告知 Gmail 未连接、可用 `request_connection` 请对方连接，而不是收到邮件；
+同一 Agent 的渠道会话没有 Gmail 工具；断开后 hub 不再替这个人读邮件；这个人再向 Agent 要邮件时，Agent 在对话里给出连接卡片，点「Connect」会打开 Google 授权页。期望值是直接
+向 hub 的 Gmail 服务查询得到的 Message ID，测试输出不含邮件主题或正文。整套顺序
+运行，用文件路径选例，不要用 `--grep` 只跑其中一个。
+
+`real-google-calendar-and-drive.external.spec.ts` 用同一个 Google 客户端文件验收
+Google Calendar 和 Google Drive connector；该客户端所在的 Google Cloud 项目必须已启用
+Calendar API 和 Drive API。每个应用各需一次管理员授权（hub 已保存时跳过）和一次套件用户授权，
+每次授权单独占一个用例。期望值来自 Google：用例直接经 hub 以套件用户身份在日历上建一个
+带本轮标记的事件、在 Drive 里建一个带随机代码的文件，再验证 Assistant 读到这个事件和代码；
+Assistant 新建的事件必须能被 hub 直接读到且开始时间正确。最后一条删除本轮的事件、
+把文件移入回收站并断开两个应用；中途失败时 Google 侧记录也会被删除，AstraBox 记录保留用于排查。
 
 ## 运行
 

@@ -15,6 +15,7 @@ from astrabox.persistence.repository import AgentRepository
 from astrabox.persistence.repository.assistant_catalog_repository import (
     AssistantCatalogRepository,
 )
+from astrabox.persistence.repository.assistant_defaults_repository import AssistantDefaultsRepository
 
 #: The destructive Vault actions this service guards, and how each reads inside
 #: the refusal. The caller supplies which one it is attempting so the operator
@@ -61,11 +62,13 @@ class CredentialBindingService:
         vault_service: VaultService | None = None,
         agent_repo: AgentRepository | None = None,
         assistant_repo: AssistantCatalogRepository | None = None,
+        defaults_repo: AssistantDefaultsRepository | None = None,
         schedule_runtime_reconciliation: Callable[[str], object] | None = None,
     ) -> None:
         self._vaults = vault_service or VaultService()
         self._agents = agent_repo or AgentRepository()
         self._assistants = assistant_repo or AssistantCatalogRepository()
+        self._defaults = defaults_repo or AssistantDefaultsRepository()
         self._schedule_runtime_reconciliation = schedule_runtime_reconciliation
 
     async def get_agent_binding(
@@ -166,9 +169,10 @@ class CredentialBindingService:
 
         target = str(vault_id or "").strip()
         await self._vaults.get_vault(user, target)
-        agents, assistants = await asyncio.gather(
+        agents, assistants, layers = await asyncio.gather(
             self._agents.list_agents_by_credential_vault_id(target),
             self._assistants.list_assistants_by_credential_vault_id(target),
+            self._defaults.list_by_credential_vault_id(target),
         )
         bindings = [
             {
@@ -194,7 +198,20 @@ class CredentialBindingService:
             }
             for assistant in assistants
         )
+        bindings.extend(
+            {**self._defaults_holder(layer), "vault_ids": self._ids(layer)} for layer in layers
+        )
         return bindings
+
+    @staticmethod
+    def _defaults_holder(layer: dict[str, Any]) -> dict[str, str]:
+        """A layer of the Assistant defaults, which every Assistant beneath it uses."""
+
+        return {
+            "target_type": "assistant_defaults",
+            "target_id": str(layer.get("scope") or ""),
+            "target_name": "Assistant defaults",
+        }
 
     async def ensure_vault_unbound(self, vault_id: str, *, action: str) -> None:
         """Refuse a destructive Vault action while a managed runtime uses it.
@@ -231,6 +248,10 @@ class CredentialBindingService:
             for assistant in await self._assistants.list_assistants_by_credential_vault_id(
                 target
             )
+        )
+        holders.extend(
+            self._defaults_holder(layer)
+            for layer in await self._defaults.list_by_credential_vault_id(target)
         )
         if holders:
             self._raise_in_use(holders=holders, action=action)

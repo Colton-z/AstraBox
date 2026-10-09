@@ -305,7 +305,14 @@ class PiEngineClient:
             http_transport=self._http_transport,
         )
         self._process = process
-        if self._output_checkpoint is None:
+        if self._output_checkpoint is None and self._configured_pty_session_id:
+            # A parked child is already running, and execd replays a pipe-mode
+            # session as one combined stream (components/execd/PTY.md), so its
+            # startup stderr, such as npm installing a declared package, would
+            # be read as stdout. Nothing it wrote before this conversation
+            # claimed it belongs to the conversation.
+            await process.connect(since=await process.current_output_offset())
+        elif self._output_checkpoint is None:
             await process.connect(since=0)
         else:
             await process.connect(

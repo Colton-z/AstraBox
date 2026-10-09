@@ -23,6 +23,7 @@ from ._nas_mount import mount_assistant_workspace_storage
 from ._default_repo import clone_default_repo
 from ._plugin_cache import (
     bootstrap_conversation_runtime_from_agent_cache,
+    cached_package_dirs,
     prepare_agent_runtime_plugin_cache,
 )
 
@@ -35,6 +36,7 @@ __all__ = [
     "workspace_storage_root",
     "plan_subject_storage_mounts",
     "bootstrap_conversation_runtime_from_agent_cache",
+    "cached_package_dirs",
     "clone_default_repo",
     "mount_assistant_workspace_storage",
     "prepare_agent_runtime_plugin_cache",

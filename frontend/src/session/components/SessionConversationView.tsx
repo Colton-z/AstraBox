@@ -3,12 +3,13 @@ import type { UIMessage as SDKUIMessage } from 'ai';
 import { EmptyState } from '@/components/shell';
 import { AstraMark } from '../../components/AstraConsole';
 import { VirtualizedMessageList } from './VirtualizedMessageList';
+import { AssistantWelcome } from '../../assistant/AssistantWelcome';
 
 // The scrollable message list and empty state for the main pane.
 export function SessionConversationView({
   sessionId, messages, displayedQueueLength, isStreaming, isSubmitted, pendingToolCallId,
   activeTurnId, hasPendingInteraction, pendingConversationScrollKey,
-  firstItemIndex, hasMore, loadingMore, loadMoreError, onLoadOlder,
+  firstItemIndex, hasMore, loadingMore, loadMoreError, onLoadOlder, assistantId,
 }: {
   sessionId: string;
   messages: SDKUIMessage[];
@@ -24,9 +25,12 @@ export function SessionConversationView({
   loadingMore: boolean;
   loadMoreError: string | null;
   onLoadOlder: () => Promise<void>;
+  /** Set for an Assistant's conversation, whose empty state says what it can use. */
+  assistantId?: string | null;
 }) {
   const { t } = useTranslation();
   if (messages.length === 0 && displayedQueueLength === 0 && !isStreaming && !isSubmitted) {
+    if (assistantId) return <AssistantWelcome assistantId={assistantId} />;
     return (
       <div className="relative flex-1 min-h-0" role="log">
         <EmptyState

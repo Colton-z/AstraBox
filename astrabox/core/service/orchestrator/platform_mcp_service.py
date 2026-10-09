@@ -11,7 +11,11 @@ from astrabox.core.service.orchestrator.agent_schema import agent_artifacts_enab
 from astrabox.core.service.orchestrator.runtime.mcp_servers import (
     ARTIFACTS_PLATFORM_SERVER,
     artifact_tools_enabled,
+    binding_mcp_server_definitions,
     binds_artifact_tools,
+    CONNECTIONS_PLATFORM_SERVER,
+    CONNECTOR_PLATFORM_SERVER,
+    personal_connections_enabled,
     EXPOSE_PORT_PLATFORM_SERVER,
     is_platform_mcp_server,
     mcp_server_enabled,
@@ -22,6 +26,10 @@ from astrabox.core.service.orchestrator.runtime.mcp_servers import (
 from astrabox.common.utils.user_context import UserContext
 from astrabox.core.service.artifacts.service import invalid
 from astrabox.core.service.artifacts.tools import GUIDE, artifact_tools
+from astrabox.core.service.connectors.contextforge import RelayAnswer, hub_from_env
+from astrabox.core.service.connectors.service import hub_member
+from astrabox.core.service.orchestrator.tool_cards import record_card
+from astrabox.core.service.connectors.presets import connector_preset
 
 logger = get_logger(__name__)
 
@@ -37,15 +45,20 @@ class PlatformMCPService:
         binding_repo: Any,
         expose_port_service: Any,
         artifact_service: Any = None,
+        connector_service: Any = None,
+        tool_cards: Any = None,
     ) -> None:
         self._sessions_repo = sessions_repo
         self._agent_config = agent_config
         self._binding_repo = binding_repo
         self._expose_port_service = expose_port_service
         self._artifacts = artifact_service
+        self._connectors = connector_service
+        self._tool_cards = tool_cards
         self._servers = {
             EXPOSE_PORT_PLATFORM_SERVER: (self._expose_tools, self._handle_expose_tool),
             ARTIFACTS_PLATFORM_SERVER: (artifact_tools, self._handle_artifact_tool),
+            CONNECTIONS_PLATFORM_SERVER: (_connection_tools, self._handle_connection_tool),
         }
 
     async def resolve_server(self, deployment_id: str, server_name: str) -> dict[str, Any] | None:
@@ -65,6 +78,16 @@ class PlatformMCPService:
         template = await self._resolve_template_for_mcp_binding(deployment_id)
         if not template:
             return None
+        if server_name == CONNECTIONS_PLATFORM_SERVER:
+            if not _offered_connectors(template):
+                return None
+            return {"deployment_id": str(deployment_id or "").strip(), "server_name": server_name,
+                    "platform_server": CONNECTIONS_PLATFORM_SERVER,
+                    "allowed_tools": {t["name"] for t in _connection_tools()}}
+        if str(server_name or "").strip() in _offered_connectors(template):
+            config = template_mcp_servers(getattr(template, "mcp_servers", None))[str(server_name).strip()]
+            return {"deployment_id": str(deployment_id or "").strip(), "server_name": str(server_name).strip(),
+                    "platform_server": CONNECTOR_PLATFORM_SERVER, "hub_server": str(config["hub_server"])}
         servers = template_mcp_servers(getattr(template, "mcp_servers", None))
         config = servers.get(str(server_name or "").strip())
         if not isinstance(config, dict):
@@ -198,7 +221,7 @@ class PlatformMCPService:
             raise APIError(code="INVALID_REQUEST", message="port is required: start your web server on a port of its own and pass that port", status_code=400)
         return await self._expose_port_service.expose_port(deployment_id=server["deployment_id"], port=port, title=arguments.get("title"))
 
-    async def _artifact_binding(self, deployment_id: str) -> dict[str, Any]:
+    async def _session_binding(self, deployment_id: str) -> dict[str, Any]:
         binding = await self._binding_repo.get_binding(deployment_id)
         sid = str((binding or {}).get("session_id") or (deployment_id if not binding else ""))
         if sid:
@@ -212,8 +235,165 @@ class PlatformMCPService:
             raise APIError(code="MCP_BINDING_NOT_FOUND", message="MCP binding not found", status_code=404)
         return binding
 
+    async def relay_connector(
+        self, server: dict[str, Any], message: dict[str, Any], *,
+        session_id: str | None, protocol_version: str | None,
+    ) -> RelayAnswer:
+        """Relay one MCP message to a connector's hub server.
+
+        A connector acts as the Session's person, so a tool call is sent with
+        that person's hub token. Listing tools needs no person: the catalog is
+        the same for everyone, and a prepared runtime lists it before any
+        Session claims it, as the hub's administrator. A call with no person
+        behind it, such as a prepared runtime's before its claim, is answered
+        with a tool error instead of reaching the hub.
+        """
+
+        hub = hub_from_env()
+        if hub is None:
+            raise APIError(code="CONNECTOR_HUB_NOT_CONFIGURED",
+                           message="this deployment runs no connector hub", status_code=503)
+        person = await self._connector_person(server["deployment_id"])
+        if person is None and message.get("method") == "tools/call":
+            return RelayAnswer(200, {
+                "jsonrpc": "2.0", "id": message.get("id"),
+                "result": {"isError": True, "content": [{
+                    "type": "text",
+                    "text": f"{server['server_name']} acts for the person who started this "
+                            "conversation, and this conversation has none.",
+                }]},
+            }, session_id)
+        if person is None:
+            email, admin = hub.config.admin_email, True
+        else:
+            email, admin = await hub_member(hub, person, None), False
+        answer = await hub.relay(
+            server_id=server["hub_server"], email=email, admin=admin, message=message,
+            session_id=session_id, protocol_version=protocol_version,
+        )
+        if person is not None and message.get("method") == "tools/call":
+            return await self._unconnected_call(server, person, answer)
+        return answer
+
+    async def _unconnected_call(self, server: dict[str, Any], person: str, answer: RelayAnswer) -> RelayAnswer:
+        """A failed call for a person who has not connected the app, said so.
+
+        The hub's own error sends the reader to its authorize path, which
+        neither the engine nor the person can open. The person's status, the
+        one list_connections reports, decides; the hub's text is not read.
+        """
+        result = (answer.message or {}).get("result")
+        if not isinstance(result, dict) or result.get("isError") is not True or self._connectors is None:
+            return answer
+        connector_id = server["server_name"]
+        row = next(
+            (row for row in await self._connectors.list_for_user(UserContext(person))
+             if row.get("connector_id") == connector_id),
+            None,
+        )
+        if row is None or row["status"] == "connected":
+            return answer
+        text = (
+            f"{row['name']} is not connected for the person you are working for "
+            f"(status: {row['status']}), so its tools cannot run for them. "
+            f"request_connection with connector_id {connector_id!r} shows them a card to connect it."
+        )
+        return RelayAnswer(
+            answer.status,
+            {**(answer.message or {}), "result": {"isError": True, "content": [{"type": "text", "text": text}]}},
+            answer.session_id,
+        )
+
+    async def _connector_person(self, deployment_id: str) -> str | None:
+        """The user a connector acts for behind this address, if it has one.
+
+        An Assistant's engine serves all its owner's conversations through one
+        address bound to the Assistant, and acts for that owner in each. An
+        Agent's address is bound to one Session, or to a prepared runtime that
+        a Session claims, and acts for that Session's person.
+        """
+
+        binding = await self._binding_repo.get_binding(deployment_id)
+        if isinstance(binding, dict) and binding.get("scope_kind") == "assistant_workspace":
+            return str(binding.get("user_id") or "").strip() or None
+        session_id = (binding or {}).get("session_id") or (deployment_id if not binding else None)
+        session = await self._sessions_repo.get_session(session_id) if session_id else None
+        if not isinstance(session, dict):
+            return None
+        ref = session.get("workspace_ref") or {}
+        agent_id = None if ref.get("kind") == "assistant" else (session.get("agent_id") or ref.get("agent_id"))
+        if not personal_connections_enabled(session.get("source_type"), agent_id=agent_id):
+            return None
+        return str(session.get("user_id") or "").strip() or None
+
+    async def _handle_connection_tool(self, server: dict[str, Any], name: str, args: dict[str, Any]) -> dict[str, Any]:
+        """The person's connections to the apps this Session offers.
+
+        The person is the Session's user: an Assistant's owner, or whoever
+        started the Agent conversation. Asking for a connection only shows them
+        a card; whether to wait, check again or carry on is the engine's call.
+        """
+        binding = await self._session_binding(server["deployment_id"])
+        scope = _card_scope(binding)
+        if not binding.get("user_id") or not scope:
+            raise APIError(code="MCP_BINDING_NOT_FOUND", message="MCP binding has no Session user", status_code=404)
+        template = await self._resolve_template_for_mcp_binding(server["deployment_id"])
+        offered = _offered_connectors(template)
+        if self._connectors is None:
+            raise APIError(code="CONNECTOR_HUB_NOT_CONFIGURED", message="connector service unavailable", status_code=503)
+        rows = {
+            str(row["connector_id"]): row
+            for row in await self._connectors.list_for_user(UserContext(binding["user_id"]))
+            if row.get("connector_id") in offered
+        }
+        if name == "list_connections":
+            return {"connections": [
+                {"connector_id": connector_id, "name": rows[connector_id]["name"],
+                 "status": rows[connector_id]["status"]}
+                for connector_id in offered if connector_id in rows
+            ]}
+        connector_id = str(args.get("connector_id") or "").strip()
+        row = rows.get(connector_id)
+        if row is None:
+            raise invalid(
+                f"{connector_id!r} is not an app offered in this conversation; "
+                f"offered: {', '.join(offered) or 'none'}"
+            )
+        card_id = await record_card(
+            **scope, server=CONNECTIONS_PLATFORM_SERVER,
+            tool=name, kind="connection_request",
+            data={"connectorId": connector_id, "name": row["name"]}, repository=self._tool_cards,
+        )
+        return {
+            "card": card_id,
+            "connector_id": connector_id,
+            "status": row["status"],
+            "shown": (
+                f"The person sees a card to connect {row['name']} by signing in at the vendor. "
+                "Call list_connections to see whether they have connected it."
+            ),
+        }
+
     async def _handle_artifact_tool(self, server: dict[str, Any], name: str, args: dict[str, Any]) -> dict[str, Any]:
-        binding = await self._artifact_binding(server["deployment_id"])
+        """An artifact tool's result, with a card in the conversation that showed it."""
+
+        binding = await self._session_binding(server["deployment_id"])
+        result = await self._artifact_tool(binding, name, args)
+        shown = [
+            row["astrabox_artifact"]
+            for row in (result, *(result.get("items") or []))
+            if isinstance(row, dict) and isinstance(row.get("astrabox_artifact"), dict)
+        ]
+        scope = _card_scope(binding)
+        if shown and scope:
+            card_id = await record_card(
+                **scope, server=ARTIFACTS_PLATFORM_SERVER, tool=name,
+                kind="artifact", data={"artifacts": shown}, repository=self._tool_cards,
+            )
+            result = {**result, "card": card_id}
+        return result
+
+    async def _artifact_tool(self, binding: dict[str, Any], name: str, args: dict[str, Any]) -> dict[str, Any]:
         if not binding.get("user_id"):
             raise APIError(code="MCP_BINDING_NOT_FOUND", message="MCP binding has no user", status_code=404)
         if not artifact_tools_enabled(binding.get("source_type")):
@@ -336,7 +516,10 @@ class PlatformMCPService:
 
     @staticmethod
     def _tools(server: dict[str, Any]) -> list[dict[str, Any]]:
-        tools = artifact_tools() if server.get("platform_server") == ARTIFACTS_PLATFORM_SERVER else PlatformMCPService._expose_tools()
+        tools = {
+            ARTIFACTS_PLATFORM_SERVER: artifact_tools,
+            CONNECTIONS_PLATFORM_SERVER: _connection_tools,
+        }.get(str(server.get("platform_server") or ""), PlatformMCPService._expose_tools)()
         return [t for t in tools if t["name"] in server["allowed_tools"]]
 
     @staticmethod
@@ -394,3 +577,66 @@ class PlatformMCPService:
             "id": request_id,
             "error": {"code": code, "message": message},
         }
+
+
+def _offered_connectors(template: Any) -> list[str]:
+    """The connector ids this Session's engine is given, in declaration order."""
+
+    if template is None:
+        return []
+    servers = binding_mcp_server_definitions(
+        getattr(template, "mcp_servers", None),
+        session_source_type=getattr(template, "session_source_type", None),
+        agent_id=getattr(template, "agent_id", None),
+        artifacts_enabled=getattr(template, "artifacts_enabled", True),
+    )
+    return [
+        str(name) for name, config in servers.items()
+        if platform_mcp_server_id(str(name), config) == CONNECTOR_PLATFORM_SERVER
+        and isinstance(config, dict) and config.get("hub_server") and connector_preset(str(name))
+    ]
+
+
+def _card_scope(binding: dict[str, Any]) -> dict[str, str]:
+    """Whose conversation a card from this address shows in (see tool_cards)."""
+
+    if binding.get("session_id"):
+        return {"session_id": str(binding["session_id"])}
+    if binding.get("scope_kind") == "assistant_workspace" and binding.get("assistant_id"):
+        return {"assistant_id": str(binding["assistant_id"])}
+    return {}
+
+
+def _connection_tools() -> list[dict[str, Any]]:
+    return [
+        {
+            "name": "list_connections",
+            "description": (
+                "List the work apps (connectors) offered in this conversation and whether the "
+                "person you are working for has connected each: status is connected, "
+                "needs_reauth or disconnected. An app's tools work only once that person has "
+                "connected it; before that a call fails asking them to authorize the app."
+            ),
+            "inputSchema": {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
+        },
+        {
+            "name": "request_connection",
+            "description": (
+                "Show the person you are working for a card in this conversation that lets them "
+                "connect one of the offered work apps by signing in at its vendor in their browser. "
+                "Returns at once, before they have done so; they may take a minute or decline. "
+                "Use list_connections to see whether they have connected it."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "connector_id": {
+                        "type": "string",
+                        "description": "The app's connector_id, as list_connections returns it.",
+                    },
+                },
+                "required": ["connector_id"],
+                "additionalProperties": False,
+            },
+        },
+    ]

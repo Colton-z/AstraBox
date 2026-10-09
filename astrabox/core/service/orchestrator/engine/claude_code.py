@@ -49,6 +49,7 @@ from astrabox.core.service.orchestrator.engine.capabilities import (
     EngineRuntimeCapabilities,
     EngineWorkloadDeclaration,
 )
+from astrabox.core.service.orchestrator.engine.extensions import EngineExtensions, PackageKind
 
 from astrabox.providers.sandbox_image import resolve_agent_image
 
@@ -137,15 +138,22 @@ class ClaudeCodeEngineAdapter(EngineAdapter):
             default_runtime_image=resolve_agent_image(),
             permission_modes=tuple(get_args(PermissionMode)),
             permission_mode_defaults=(("agent_chat", "bypassPermissions"),),
-            # Native JSON is passed to the SDK; only platform wiring is reserved.
-            engine_options_schema=CLAUDE_ENGINE_OPTIONS_SCHEMA,
-            configuration_inputs=frozenset(
-                # `tracing` is an Environment field, not an Agent one, but the
-                # question this set answers is the same for both: does the
-                # selected adapter read it. Claude Code does — the vendor's CLI
-                # takes an OTLP endpoint from `OTEL_*` in its environment, which
-                # this adapter writes into the box.
-                {"mcp_servers", "skills", "plugin_repos", "tracing"}
+            extensions=EngineExtensions(
+                mcp_transports=frozenset({"stdio", "http", "sse"}),
+                skills_target="{config}/skills",
+                packages=(
+                    PackageKind(
+                        name="claude-plugin",
+                        label="Claude Code plugin",
+                        target="{config}/plugins",
+                        help="A Claude Code plugin directory: Skills, commands, agents, hooks and MCP servers.",
+                    ),
+                ),
+                # Native JSON is passed to the SDK; only platform wiring is reserved.
+                native_config=CLAUDE_ENGINE_OPTIONS_SCHEMA,
+                # The vendor's CLI takes an OTLP endpoint from `OTEL_*` in its
+                # environment, which this adapter writes into the box.
+                tracing=True,
             ),
         )
 

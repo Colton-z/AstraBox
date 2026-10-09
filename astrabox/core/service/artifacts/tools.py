@@ -2,61 +2,8 @@
 
 from __future__ import annotations
 
-import json
-import re
 from typing import Any
 
-from .limits import KINDS
-
-
-def has_artifact_marker(output: Any) -> bool:
-    """Find markers within 12 levels, 4096 values and 8,388,608 JSON text characters."""
-    visited: dict[int, Any] = {}
-    remaining_values = 4096
-    remaining_text = 8 * 1024 * 1024
-
-    def read(value: Any, depth: int) -> bool:
-        nonlocal remaining_values, remaining_text
-        if depth > 12 or remaining_values <= 0:
-            return False
-        remaining_values -= 1
-        if isinstance(value, str):
-            if len(value) > remaining_text:
-                return False
-            remaining_text -= len(value)
-            if "astrabox_artifact" not in value:
-                return False
-            try:
-                parsed = json.loads(value)
-            except (ValueError, RecursionError):
-                return False
-            return isinstance(parsed, (dict, list)) and read(parsed, depth + 1)
-        if not isinstance(value, (dict, list)) or id(value) in visited:
-            return False
-        visited[id(value)] = value
-        if isinstance(value, dict):
-            marker = value.get("astrabox_artifact")
-            if isinstance(marker, dict):
-                version = marker.get("version")
-                if (
-                    isinstance(marker.get("id"), str)
-                    and re.fullmatch(r"art_[0-9a-f]{24}", marker["id"])
-                    and isinstance(version, int)
-                    and not isinstance(version, bool)
-                    and version > 0
-                    and isinstance(marker.get("title"), str)
-                    and isinstance(marker.get("kind"), str)
-                    and marker["kind"] in KINDS
-                ):
-                    return True
-        for item in value.values() if isinstance(value, dict) else value:
-            if remaining_values <= 0:
-                break
-            if read(item, depth + 1):
-                return True
-        return False
-
-    return read(output, 0)
 
 
 GUIDE = r"""# Authoring AstraBox artifacts
@@ -88,8 +35,9 @@ Titles are at most 200 characters. Updates are immutable versions (at most
 {old_string,new_string,replace_all?}: absent or ambiguous matches reject the
 whole operation. Pass base_version from get_artifact to avoid overwriting a
 concurrent publish: use its astrabox_artifact.version field. Create and update
-return only astrabox_artifact {id,version,title,kind} and url. list_artifacts
-returns items in the same form. get_artifact adds content, description, manifest
+return astrabox_artifact {id,version,title,kind}, url, and card: the id of the
+card the conversation shows the reader. list_artifacts returns items in the
+same form. get_artifact adds content, description, manifest
 and the acting viewer's opaque identity. Results never include owner identity,
 share tokens or share state. Sharing is managed through the console.
 

@@ -2260,6 +2260,51 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "Root directory of the Hermes profile the config-merge runtime materializes into.",
         "scripts/runtime/hermes_config_merge.py (image: astrabox-hermes-config-merge)",
     ),
+    (
+        "ASTRABOX_HERMES_SKILLS_CACHE",
+        "injected",
+        "",
+        "The box's Skill cache holding the Assistant's Skills, copied into the "
+        "profile's skills/astrabox category. Absent when the Assistant has no "
+        "Skills, which removes that category.",
+        "scripts/runtime/hermes_config_merge.py (image: astrabox-hermes-config-merge)",
+    ),
+    (
+        "ASTRABOX_HERMES_PLUGINS",
+        "injected",
+        "",
+        "JSON list of the Assistant's packages ({kind, key, source}): each cached "
+        "plugin directory is placed at plugins/<key>, enabled in config.yaml, and "
+        "its declared Python dependencies installed. Absent when the Assistant has "
+        "no packages, which removes the plugins the platform placed.",
+        "scripts/runtime/hermes_config_merge.py (image: astrabox-hermes-config-merge)",
+    ),
+    (
+        "HERMES_LAZY_INSTALL_TARGET",
+        "injected",
+        "",
+        "Hermes' own variable: the writable directory Hermes installs plugin "
+        "Python dependencies into and puts on its import path, outside the "
+        "root-owned virtualenv and outside the profile.",
+        "scripts/runtime/hermes_config_merge.py (image: astrabox-hermes-config-merge)",
+    ),
+    (
+        "ASTRABOX_HERMES_MANAGED_CONFIG",
+        "injected",
+        "",
+        "JSON object of the Assistant owner's engine_options.config, written as "
+        "config.yaml in Hermes' managed scope. Absent when the owner sets none, "
+        "which empties the scope.",
+        "astrabox/core/service/orchestrator/runtime/hermes-profile-setup (image: astrabox-hermes-profile-setup)",
+    ),
+    (
+        "HERMES_MANAGED_DIR",
+        "injected",
+        "/etc/astrabox/hermes",
+        "Hermes' own variable: its managed-scope directory, root-owned, whose "
+        "config.yaml wins over the profile's key by key.",
+        "astrabox/core/service/orchestrator/runtime/hermes-profile-setup (image: astrabox-hermes-profile-setup)",
+    ),
     # ---- Hermes profile setup and TUI process (sandbox-side) ----------------
     (
         "ASTRABOX_HERMES_MODEL_API_KEY",
@@ -2453,7 +2498,34 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "CONV_SKILL_CACHE_DIR",
         "injected",
         "/opt/conversation-runtime/claude-skills-cache",
-        "Prepared Agent Skill cache directory linked into the conversation config tree.",
+        "Prepared Agent Skill cache directory linked at the conversation's Skills root.",
+        "astrabox.core.service.orchestrator.runtime/provision-conversation",
+    ),
+    (
+        "CONV_ENGINE_RESTART_B64",
+        "injected",
+        "",
+        "Base64 bash script, from the engine adapter's resident_restart_script, run as "
+        "root after an engine install on a box whose engine is the image's resident "
+        "service, so that service reads the install (DeepSeek Harness Bundles).",
+        "astrabox.core.service.orchestrator.runtime/provision-conversation",
+    ),
+    (
+        "CONV_ENGINE_INSTALL_B64",
+        "injected",
+        "",
+        "Base64 bash script, from the engine adapter's conversation_install_script, that "
+        "installs the extensions the engine installs itself (Codex plugins, DeepSeek "
+        "Harness Bundles), run as the workload account before the engine starts.",
+        "astrabox.core.service.orchestrator.runtime/provision-conversation",
+    ),
+    (
+        "CONV_SKILL_TARGET",
+        "injected",
+        "",
+        "Absolute path of the conversation engine's Skills root, as its adapter "
+        "declares it (Claude Code: its configuration directory's skills; Codex, Pi "
+        "and DeepSeek Harness: ~/.agents/skills). Required when the Agent has Skills.",
         "astrabox.core.service.orchestrator.runtime/provision-conversation",
     ),
     (
@@ -2559,6 +2631,72 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "external ASTRABOX_LITELLM_BASE_URL. This transport rule is independent of "
         "whether Credential Vault is enabled.",
         "astrabox.bootstrap",
+    ),
+    (
+        "ASTRABOX_CONTEXTFORGE_API_URL",
+        "public",
+        "",
+        "Where the AstraBox server reaches the connector hub's API (ContextForge), "
+        "for example http://contextforge:4444. Unset with the other "
+        "ASTRABOX_CONTEXTFORGE_* variables, the deployment runs no hub and offers no "
+        "connectors; setting only some of them is refused on first use.",
+        "astrabox.core.service.connectors.contextforge",
+    ),
+    (
+        "ASTRABOX_CONTEXTFORGE_PUBLIC_URL",
+        "public",
+        "",
+        "The connector hub's browser-facing address: the console's origin followed "
+        "by /connector-hub, for example https://astrabox.example.com/connector-hub. "
+        "A vendor returns the browser to <this>/oauth/callback, which AstraBox hands "
+        "to the hub and which each vendor OAuth app registers as its redirect URI; "
+        "the hub then returns the browser to the console. Vendors accept only an "
+        "https address, or http at localhost.",
+        "astrabox.core.service.connectors.contextforge",
+    ),
+    (
+        "ASTRABOX_CONTEXTFORGE_JWT_SECRET",
+        "public",
+        "",
+        "The connector hub's JWT_SECRET_KEY. AstraBox signs the session tokens that "
+        "make the hub act as one of its users with it.",
+        "astrabox.core.service.connectors.contextforge",
+    ),
+    (
+        "ASTRABOX_CONTEXTFORGE_ADMIN_EMAIL",
+        "public",
+        "",
+        "The connector hub's PLATFORM_ADMIN_EMAIL. AstraBox administers the hub as "
+        "this user, and an administrator's verifying consent for a connector is "
+        "stored under it.",
+        "astrabox.core.service.connectors.contextforge",
+    ),
+    (
+        "ASTRABOX_GMAIL_MCP_URL",
+        "public",
+        "",
+        "Where the connector hub reaches this deployment's google_workspace_mcp "
+        "instance for Gmail (TOOLS=gmail, external OAuth mode), for example "
+        "http://gmail-mcp:8000/mcp. Unset leaves the Gmail connector unavailable.",
+        "astrabox.core.service.connectors.presets",
+    ),
+    (
+        "ASTRABOX_GOOGLE_CALENDAR_MCP_URL",
+        "public",
+        "",
+        "Where the connector hub reaches this deployment's google_workspace_mcp "
+        "instance for Google Calendar (TOOLS=calendar). Unset leaves the connector "
+        "unavailable.",
+        "astrabox.core.service.connectors.presets",
+    ),
+    (
+        "ASTRABOX_GOOGLE_DRIVE_MCP_URL",
+        "public",
+        "",
+        "Where the connector hub reaches this deployment's google_workspace_mcp "
+        "instance for Google Drive (TOOLS=drive). Unset leaves the connector "
+        "unavailable.",
+        "astrabox.core.service.connectors.presets",
     ),
     (
         "ASTRABOX_LITELLM_SERVER_BASE_URL",

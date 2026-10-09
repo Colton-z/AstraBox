@@ -1,7 +1,8 @@
 # Messaging channel integration
 
-> Connect an external messaging platform to an Agent by configuring platform
-> authorization, message routing, app or bot permissions, and credentials.
+> Connect an external messaging platform to an Agent or an Assistant by
+> configuring platform authorization, message routing, app or bot permissions,
+> and credentials.
 
 Open **Console → Triggers → New trigger** to see the messaging platforms
 installed in this AstraBox deployment. Each installed adapter supplies its own
@@ -24,16 +25,17 @@ AstraBox messaging triggers have two independent configuration dimensions:
 
 The credentials entered for a messaging platform authorize the app or bot
 connection. They do not authenticate a participant as an AstraBox user. An
-accepted message runs as the owner of the Agent selected on the trigger, so
-configure the bot's visibility and platform permissions for the intended
-audience.
+accepted message runs as the owner of the Agent or Assistant selected on the
+trigger, so configure the bot's visibility and platform permissions for the
+intended audience, and list who may send messages under **Allowed senders**
+when only some accounts should reach it.
 
 ## Connect a messaging platform
 
 The flow is the same for every installed messaging platform:
 
 1. **Create the trigger:** open **Console → Triggers → New trigger**, select
-   the Agent, then select the messaging platform.
+   the Agent or Assistant, then select the messaging platform.
 2. **Create the app or bot:** use the official developer console linked from
    the AstraBox form.
 3. **Configure permissions and events:** allow the app or bot to receive the
@@ -55,10 +57,26 @@ messaging platform before receiving more messages.
 
 ## Message routing
 
-### Fixed Agent
+### Fixed Agent or Assistant
 
-Every messaging trigger belongs to one Agent. All inbound messages accepted by
-that trigger run the selected Agent.
+Every messaging trigger belongs to one Agent or one Assistant. All inbound
+messages accepted by that trigger run the selected target. A trigger on an
+Assistant is managed only by the Assistant's owner and always runs as the
+owner; see [Assistants](assistants.md#triggers).
+
+### Allowed senders
+
+**Allowed senders** lists the accounts whose messages a trigger accepts, one
+per line, written as `platform:user-id` (for example `telegram:123456789`).
+An empty list accepts every account the platform delivers. A message from an
+account outside a non-empty list is ignored: it starts no work and is not
+included as context in later replies. A trigger on an Assistant must list the
+owner's account, because a bot's direct messages are open to anyone who finds
+it.
+
+Replies are not the only messages sent to the conversation. Anything the Agent
+program produces on its own in that conversation afterwards, such as a
+scheduled job's result or a finished background task, is delivered there too.
 
 ### Conversation mapping
 
@@ -69,7 +87,7 @@ After platform authorization is complete, message routing works as follows:
 3. AstraBox durably claims the platform message so duplicate delivery does not
    run the Agent twice.
 4. The stable external conversation identifier creates or reuses a Session for
-   the selected Agent.
+   the selected Agent or Assistant.
 5. The Agent handles the message, and AstraBox records reply delivery back to
    the messaging platform.
 
@@ -78,9 +96,26 @@ provided by the messaging platform. Those identifiers are separate from
 AstraBox authentication and resource ownership.
 
 :::warning
-The Agent bound to a messaging trigger cannot be changed after creation. To
-route the platform connection to another Agent, create a new trigger.
+The Agent or Assistant bound to a messaging trigger cannot be changed after
+creation. To route the platform connection elsewhere, create a new trigger.
 :::
+
+### Questions and approvals
+
+When the Agent asks a question or needs approval before it continues, the
+conversation receives the reply so far followed by the question and its
+numbered options. Participants can answer in any of these ways:
+
+- Press an option's button, on Telegram and Discord.
+- Reply to the question's message with an option number, or in their own
+  words when the question allows it.
+- Send only the option number, or several numbers separated by commas when
+  more than one option can be chosen.
+
+The Agent then continues the same task and its reply follows. A form with
+several questions asks them one at a time. Any other message means the
+participant moved on: AstraBox stops the waiting task and handles the message
+as a new request. In a group, anyone the Agent responds to can answer.
 
 ## Credential integration
 

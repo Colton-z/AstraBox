@@ -105,7 +105,8 @@ def service(repo, journal):
         sessions_repo=sessions, session_events_repo=journal, message_view=output._message_view,
         read_session_output=output.read_session_output,
         session_output_cursor=output.session_output_cursor,
-        session_detail_getter=forbidden, supersede_pending_interaction=forbidden,
+        session_detail_getter=forbidden, answer_pending_interaction=forbidden,
+        supersede_pending_interaction=forbidden,
         spawn_background_task=lambda coro, **kwargs: tasks.append(asyncio.create_task(coro)),
         channel_repo=repo,
     )

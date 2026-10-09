@@ -1,4 +1,5 @@
 import { ArtifactGallery, ArtifactPage } from './artifacts/ArtifactPages';
+import { ConnectionsPage } from './connections/ConnectionsPage';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, Navigate, Route, Routes, useNavigate, useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -7,7 +8,7 @@ import type { TFunction } from 'i18next';
 import useSWR from 'swr';
 import useSWRInfinite from 'swr/infinite';
 import { keepsLastRead } from './hooks/useKeepCurrent';
-import { Archive, Bot, Check, Hammer, LoaderCircle } from 'lucide-react';
+import { Archive, Bell, Bot, Check, Hammer, LoaderCircle } from 'lucide-react';
 
 import {
   archiveSession,
@@ -27,7 +28,6 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import {
   SidebarGroup,
@@ -43,11 +43,12 @@ import { AppShell, AppTopbar, BrandBlock, ErrorNote, PageShell, RAIL_ROW_ACTIVE,
 import { AgentHome } from './components/AgentHome';
 import { StatusPill, toneForSession } from './components/AstraConsole';
 import { SessionPage } from './session/SessionPage';
-import AssistantCards from './assistant/AssistantsPage';
+import { AssistantRail } from './assistant/AssistantRail';
+import { AssistantMainRoute } from './assistant/AssistantMainRoute';
 import { UserMenu } from './components/UserMenu';
 import { cn } from '@/lib/utils';
+import { isUnread, useNotificationPermission, useReplyNotifications } from '@/lib/replyNotifications';
 
-type MainTab = 'agents' | 'assistant';
 type ArchivePhase = 'pending' | 'success';
 
 const ARCHIVE_EXIT_ANIMATION_MS = 260;
@@ -119,13 +120,13 @@ export default function App() {
     },
     ([, cursor]) => listSessionsPage(cursor as string | null),
     // Conversations are created, run and archived by channels, schedules and
-    // other devices as well as by this tab, so the rail follows them while
-    // the tab is visible (SWR does not refresh a hidden tab).
-    { refreshInterval: RAIL_REFRESH_INTERVAL_MS },
+    // other devices as well as by this tab, so the rail follows them. It
+    // follows them in a hidden tab too: that is when a reply the owner did
+    // not wait for has to reach them as a notification.
+    { refreshInterval: RAIL_REFRESH_INTERVAL_MS, refreshWhenHidden: true },
   );
   const { data: userInfo, error: userInfoError } = useSWR<UserInfo>('user:current', getCurrentUser);
 
-  const activeTab: MainTab = location.pathname.startsWith('/assistants') ? 'assistant' : 'agents';
   const routeLoading = false;
   const [archivePhases, setArchivePhases] = useState<Record<string, ArchivePhase>>({});
   const [actionError, setActionError] = useState('');
@@ -133,7 +134,24 @@ export default function App() {
     () => sessionPages.flatMap((page) => page.sessions),
     [sessionPages],
   );
+  // An Assistant's conversations belong to its row in the Assistants
+  // section: the main one is the row itself and the earlier ones open under
+  // it, so this list holds Agent conversations only.
+  const railSessions = useMemo(
+    () => sessions.filter((s) => s.session_kind !== 'assistant_chat'),
+    [sessions],
+  );
   const hasMoreSessions = Boolean(sessionPages[sessionPages.length - 1]?.has_more);
+  const activeSessionId = location.pathname.startsWith('/sessions/')
+    ? decodeURIComponent(location.pathname.slice('/sessions/'.length).split('/')[0] ?? '')
+    : null;
+  const notifications = useNotificationPermission();
+  const openSession = useCallback((sessionId: string) => navigate(`/sessions/${sessionId}`), [navigate]);
+  useReplyNotifications(sessions, activeSessionId, {
+    title: sessionDisplayName,
+    body: t('shell:new_reply'),
+    open: openSession,
+  });
   const loadingMoreSessions = sessionsValidating && sessionPageSize > 0;
   const error = useMemo(() => {
     if (actionError) return actionError;
@@ -203,7 +221,7 @@ export default function App() {
   // that decision here rather than inside the bar is what lets AppShell treat
   // the bar as a slot instead of a special case.
   const isSession = location.pathname.startsWith('/sessions/');
-  const crumb = t(activeTab === 'assistant' ? 'shell:tab_assistant' : 'shell:tab_agents');
+  const crumb = t('shell:tab_agents');
 
   return (
     <AppShell
@@ -216,6 +234,8 @@ export default function App() {
         </>
       }
       sidebarContent={
+        <>
+        <AssistantRail sessions={sessions} activeSessionId={activeSessionId} />
         <SidebarGroup data-testid="sessions-page">
             <SidebarGroupLabel className="t-eyebrow h-7 px-2.5">
               {t('shell:sessions_group')}
@@ -225,7 +245,24 @@ export default function App() {
                   page does not have — next to a session the reader is looking
                   at. */}
               {!sessionsLoading && (
-                <SidebarMenuBadge className="tabular-nums">{sessions.length}</SidebarMenuBadge>
+                <SidebarMenuBadge className="tabular-nums">{railSessions.length}</SidebarMenuBadge>
+              )}
+              {notifications.permission === 'default' && (
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <button
+                        type="button"
+                        className="ml-auto mr-6 rounded p-0.5 text-sidebar-foreground/55 hover:text-sidebar-foreground"
+                        aria-label={t('shell:notifications_enable')}
+                        onClick={notifications.request}
+                      />
+                    }
+                  >
+                    <Bell className="size-3.5" />
+                  </TooltipTrigger>
+                  <TooltipContent>{t('shell:notifications_enable')}</TooltipContent>
+                </Tooltip>
               )}
             </SidebarGroupLabel>
             <SidebarGroupContent>
@@ -233,9 +270,10 @@ export default function App() {
                   each row's bottom edge is the next row's top edge, so two
                   filled rows merge into one shape with pinched corners. */}
               <SidebarMenu className="gap-0.5" data-testid="sessions-table">
-                {sessions.map((s) => {
+                {railSessions.map((s) => {
                   const Icon = sourceIcon(s);
                   const isActive = location.pathname === `/sessions/${s.session_id}`;
+                  const unread = !isActive && isUnread(s);
                   const archivePhase = archivePhases[s.session_id];
                   const ArchiveStateIcon = archivePhase === 'pending'
                     ? LoaderCircle
@@ -252,6 +290,7 @@ export default function App() {
                       key={s.session_id}
                       data-testid="session-row"
                       data-session-id={s.session_id}
+                      data-unread={unread || undefined}
                       className={cn(
                         'max-h-16 overflow-hidden transition-[max-height,opacity,transform] duration-200 ease-out',
                         archivePhase === 'success' && 'max-h-0 -translate-x-1 opacity-0',
@@ -287,7 +326,18 @@ export default function App() {
                           short one truncates it properly.
                         */}
                         <span className="grid min-w-0 flex-1 grid-cols-[minmax(0,1fr)] gap-1 text-left leading-tight group-data-[collapsible=icon]:hidden">
-                          <span className="truncate text-13 font-medium">{sessionDisplayName(s)}</span>
+                          <span className="flex min-w-0 items-center gap-1.5">
+                            {unread && (
+                              <span
+                                className="size-1.5 shrink-0 rounded-full bg-primary"
+                                role="img"
+                                aria-label={t('shell:unread')}
+                              />
+                            )}
+                            <span className={cn('truncate text-13', unread ? 'font-semibold' : 'font-medium')}>
+                              {sessionDisplayName(s)}
+                            </span>
+                          </span>
                           {/*
                             The status is the only part of this line without a
                             bound — the id is always 8 characters and the
@@ -299,12 +349,16 @@ export default function App() {
                               not: mono on a relative time is the "this is
                               data" reading docs/frontend-design.md §6 rules
                               out, and tabular-nums is what lines digits up. */}
+                          {/* On the selected row the id and time sit on the
+                              astra tint, where the muted grey measures 4.46:1;
+                              they take the row's astra text step, as every
+                              label on that tint does (styles.css, --astra-fg). */}
                           <TruncatingRow
                             className="gap-1.5"
                             trail={
-                              <span className="flex items-center gap-1.5">
-                                <span className="t-mono text-10 text-muted-foreground">{s.session_id.slice(0, 8)}</span>
-                                <span className="text-10 tabular-nums text-muted-foreground">{formatShortTime(s.updated_at || s.created_at, t)}</span>
+                              <span className="flex items-center gap-1.5 text-muted-foreground in-data-active:text-astra-fg">
+                                <span className="t-mono text-10">{s.session_id.slice(0, 8)}</span>
+                                <span className="text-10 tabular-nums">{formatShortTime(s.updated_at || s.created_at, t)}</span>
                               </span>
                             }
                           >
@@ -357,7 +411,7 @@ export default function App() {
                     </Button>
                   </div>
                 )}
-                {sessions.length === 0 && !sessionsError && (
+                {railSessions.length === 0 && !sessionsError && (
                   <div data-testid="sessions-empty-hero" className="px-2 py-4 text-center text-xs text-muted-foreground group-data-[collapsible=icon]:hidden">
                     {sessionsLoading ? t('common:loading') : t('shell:session_empty')}
                   </div>
@@ -365,9 +419,10 @@ export default function App() {
               </SidebarMenu>
             </SidebarGroupContent>
           </SidebarGroup>
+        </>
       }
       sidebarFooter={<UserMenu userInfo={userInfo} theme={theme} setTheme={setTheme} />}
-      topbar={isSession || location.pathname.startsWith('/artifacts') ? undefined : <AppTopbar crumbs={[{ label: crumb }]} trailLabel={t('shell:breadcrumb_navigation')} />}
+      topbar={isSession || location.pathname.startsWith('/artifacts') || location.pathname.startsWith('/connections') ? undefined : <AppTopbar crumbs={[{ label: crumb }]} trailLabel={t('shell:breadcrumb_navigation')} />}
       banner={
         error ? (
           /* The margin is this strip's own because `SidebarInset` stacks the
@@ -391,25 +446,19 @@ export default function App() {
               element={
                 routeLoading
                   ? <div className="flex h-full items-center justify-center text-muted-foreground text-sm">{t('common:loading')}</div>
-                  : <HomePage activeTab="agents" onAgentConversationCreated={onAgentConversationCreated} />
+                  : <HomePage onAgentConversationCreated={onAgentConversationCreated} />
               }
             />
             {/* `/sandbox` remains an entry alias for existing links. */}
             <Route path="/sandbox" element={<Navigate to="/agents" replace />} />
-            <Route
-              path="/assistants"
-              element={
-                routeLoading
-                  ? <div className="flex h-full items-center justify-center text-muted-foreground text-sm">{t('common:loading')}</div>
-                  : <HomePage activeTab="assistant" onAgentConversationCreated={onAgentConversationCreated} />
-              }
-            />
+            <Route path="/assistants" element={<AssistantMainRoute onOpened={refreshOverview} />} />
             <Route path="/artifacts" element={<ArtifactGallery />} />
+            <Route path="/connections" element={<ConnectionsPage />} />
             <Route path="/artifacts/:id" element={<ArtifactPage />} />
             <Route path="/sessions/:sessionId" element={<SessionPage onSessionChanged={refreshOverview} />} />
             <Route path="/v1/sessions/:sessionId" element={<Navigate to="/" replace />} />
             <Route path="/agents/:agentId" element={<Navigate to="/agents" replace />} />
-            <Route path="/assistants/:assistantId" element={<Navigate to="/assistants" replace />} />
+            <Route path="/assistants/:assistantId" element={<AssistantMainRoute onOpened={refreshOverview} />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
     </AppShell>
@@ -417,62 +466,17 @@ export default function App() {
 }
 
 function HomePage({
-  activeTab,
   onAgentConversationCreated,
 }: {
-  activeTab: MainTab;
   onAgentConversationCreated: (sessionId: string) => void;
 }) {
-  const { t } = useTranslation();
-  const navigate = useNavigate();
-
   // `wide`, not `narrow`. The narrow measure is a line length — it exists so
   // prose does not run to 130 characters. This surface is a grid of cards to
   // scan, and a reading width leaves 512px of the window unused at 1920 and
   // half of it at 2560, while the cards stay 352px wide either way.
-  //
-  // The measure belongs on PageShell so the tab strip and the cards it labels
-  // sit on the same column: capping an inner scroller instead puts them on two
-  // different left edges (280 vs 512 at 1920).
   return (
     <PageShell measure="wide">
-      <Tabs
-        value={activeTab}
-        onValueChange={(value) => {
-          if (value === 'assistant') navigate('/assistants');
-          else navigate('/agents');
-        }}
-        className="min-h-0 flex-1 gap-5"
-      >
-        {/* `h-9!` because the kit's base spells its own height as
-            `group-data-horizontal/tabs:h-8`: tailwind-merge cannot read a
-            variant-prefixed utility as conflicting with a plain one, so a bare
-            `h-9` survives in the class list and loses to it in the cascade —
-            the "class that is present and has no effect" docs/frontend-design.md
-            §8 fails on. The base is vendored and may not be edited, so the
-            override is `!` here. */}
-        <TabsList className="h-9! bg-secondary/60 p-0.5">
-          {/* The selected tab is the card surface against the strip's
-              `bg-secondary/60`, in both themes. Dark is spelled out because
-              the kit's own `dark:data-active:bg-input/30` is a different
-              variant chain: tailwind-merge cannot read it as conflicting with
-              an unprefixed `data-active:bg-card`, so it would survive and
-              repaint the selected tab. */}
-          <TabsTrigger value="agents" className="text-13 data-active:bg-card dark:data-active:bg-card">{t('shell:tab_agents')}</TabsTrigger>
-          <TabsTrigger value="assistant" className="text-13 data-active:bg-card dark:data-active:bg-card">{t('shell:tab_assistant')}</TabsTrigger>
-        </TabsList>
-        {/* The panel takes its layout only while it is the shown one. A panel
-            that has just been switched away from stays mounted until its exit
-            settles, carrying `data-hidden` and the `hidden` attribute; an
-            unconditional `flex` is an author rule that overrides the browser's
-            `[hidden] { display: none }`, so both panels would paint at once. */}
-        <TabsContent value="agents" className="min-h-0 flex-col not-data-hidden:flex">
-          <AgentHome onConversationCreated={onAgentConversationCreated} />
-        </TabsContent>
-        <TabsContent value="assistant" className="min-h-0 flex-col not-data-hidden:flex">
-          <AssistantCards onConversationCreated={onAgentConversationCreated} />
-        </TabsContent>
-      </Tabs>
+      <AgentHome onConversationCreated={onAgentConversationCreated} />
     </PageShell>
   );
 }

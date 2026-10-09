@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, NamedTuple
 
 #: Entry-point group an external package registers a storage backend under.
@@ -31,7 +32,7 @@ ENTRY_POINT_GROUP = "astrabox.providers.storage"
 
 @dataclass(frozen=True)
 class StorageMountPlan:
-    """Backing filesystem and workspace paths supplied to the platform router."""
+    """Backing filesystem and workspace paths supplied to a workspace route."""
 
     volume_name: str
     mounts: tuple[tuple[str, str], ...]
@@ -68,10 +69,11 @@ _SUBJECT_ROOTS = {"agent": "agents", "assistant": "assistants"}
 class StorageProvider(ABC):
     """One storage medium, addressed by the name a deployment configures.
 
-    Supply the backing filesystem and its workspace paths. The platform owns
-    mergerfs routing, box assignment and delivery ordering independently of
-    which storage medium is selected. Writes reach the mounted medium without
-    a per-turn copy or flush step.
+    Supply the backing filesystem and its workspace paths. How that medium
+    reaches a box is the sandbox backend's :class:`WorkspaceRoute`; the
+    platform owns box assignment and delivery ordering independently of which
+    medium is selected. Writes reach the mounted medium without a per-turn
+    copy or flush step.
     """
 
     name: str = ""
@@ -82,7 +84,7 @@ class StorageProvider(ABC):
     async def provision_mounts(
         self, assignment_id: str, mounts: tuple[tuple[str, str], ...]
     ) -> StorageMountPlan:
-        """Provide backing resources to the platform's common workspace router."""
+        """Provide backing resources to the sandbox backend's workspace route."""
         raise NotImplementedError(f"storage provider {self.name!r} cannot provision mounts")
 
     @abstractmethod
@@ -98,8 +100,9 @@ class StorageProvider(ABC):
         """The workspace's files are present at `box_path`.
 
         Called for each planned mount during workspace preparation, before
-        engine activation. The platform separately verifies its mergerfs view
-        and binds an unassigned prepared entry before delivering user input.
+        engine activation. The backend's workspace route separately verifies
+        what it mounted, and binds an unassigned prepared entry before user
+        input is delivered.
 
         `box` is the sandbox the orchestrator already holds. A provider whose
         medium the backend mounted has nothing to do with it; one that
@@ -118,6 +121,94 @@ class StorageProvider(ABC):
         A refusal means the box must not be used. An agent writing into the
         wrong directory looks exactly like an agent working.
         """
+
+class WorkspaceRoute(ABC):
+    """How one sandbox backend brings a storage medium into its boxes.
+
+    A sandbox backend offers persistent workspaces by returning one from
+    ``SandboxProvider.workspace_route()``. The platform keeps the workflow —
+    which assignment a box gets, the order of provisioning, create, receipt,
+    verification and binding, and when per-box resources may be released —
+    and asks the box's own backend for each step. A route answers only how its
+    runtime mounts: the bundled OpenSandbox backend routes through host
+    mergerfs helpers; a platform that mounts its own storage at create time
+    returns that mount as the create plan and has no per-box resources.
+
+    Every method addresses a *storage assignment*: the platform's identity
+    for one box's mounts, stable across a create that is retried.
+    """
+
+    #: The route can point an already created box at a workspace chosen after
+    #: create (a prepared box claimed by a session that already has files).
+    #: A route that cannot is never asked to: such a session gets a cold
+    #: create carrying its own mounts.
+    supports_late_binding: bool = False
+
+    def validate_configuration(self) -> None:
+        """Refuse at startup what the route needs and cannot reach."""
+
+    @abstractmethod
+    async def provision_mounts(
+        self, assignment_id: str, backing: StorageMountPlan, *, sandbox_backend: str
+    ) -> StorageMountPlan:
+        """The volume and box paths a create of this backend mounts.
+
+        Called before create. A route that creates per-box resources must
+        leave a receipt that :meth:`unattached_mounts` reports, so a create
+        that failed or never answered can still be released.
+        """
+
+    @abstractmethod
+    async def attach_sandbox(
+        self, assignment_id: str, *, sandbox_id: str, sandbox_backend: str
+    ) -> None:
+        """Record which box mounts an assignment. Idempotent; called again on replay."""
+
+    @abstractmethod
+    async def prepare(
+        self,
+        ref: WorkspaceRef,
+        *,
+        box: Any,
+        box_path: str,
+        owner: str | None = None,
+        group: str | None = None,
+    ) -> None:
+        """Prove the box sees what this route mounted at ``box_path``.
+
+        Called before engine activation, after the storage provider's own
+        check. A refusal means the box must not be used.
+        """
+
+    async def bind(
+        self, assignment_id: str, backing: StorageMountPlan, binding: str
+    ) -> None:
+        """Point a created box's mounts at ``binding``'s workspace, once, before delivery.
+
+        Required when :attr:`supports_late_binding` is set.
+        """
+        raise NotImplementedError("this workspace route cannot bind after create")
+
+    async def attached_mounts(self) -> list[tuple[str, str, str]]:
+        """This installation's (storage assignment, sandbox backend, sandbox id) receipts."""
+        return []
+
+    async def unattached_mounts(self) -> list[tuple[str, str, datetime]]:
+        """This installation's assignments no box was recorded for, with their age."""
+        return []
+
+    async def release_mounts(self, assignment_id: str) -> bool:
+        """Release an assignment's per-box resources; never the backing data.
+
+        Called only after the box is confirmed gone, or for an unattached
+        assignment past its grace period. Returns False when the runtime is
+        still letting go of the box (a backend can report a box gone while
+        its container is still shutting down and mounts the view); the
+        platform asks again on its next reconciliation. Raises when a consumer
+        that is not going away still mounts the view.
+        """
+        return True
+
 
 _PROVIDERS: dict[str, StorageProvider] = {}
 _CONFIGURED: str = ""
@@ -174,6 +265,7 @@ __all__ = [
     "StorageProvider",
     "StorageMountPlan",
     "WorkspaceRef",
+    "WorkspaceRoute",
     "register_storage",
     "set_configured_storage_provider",
     "storage_provider",

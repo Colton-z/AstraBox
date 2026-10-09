@@ -8,8 +8,7 @@
       "python": {
         "main": [
           "tests/e2e/test_durable_workspace.py::test_an_agent_conversation_keeps_its_files_after_its_box_is_destroyed",
-          "tests/e2e/test_cold_conversation_resume.py::test_cold_rebuild_restores_existing_conversation",
-          "tests/e2e/test_shared_persistent_warm_resume.py::test_shared_persistent_conversation_resumes_on_existing_sdk_pool_box"
+          "tests/e2e/test_cold_conversation_resume.py::test_cold_rebuild_restores_existing_conversation"
         ],
         "assistant": []
       },
@@ -31,8 +30,8 @@
       }
     },
     "tests": {
-      "no_volume_core": 494,
-      "persistent_files": 23
+      "no_volume_core": 536,
+      "persistent_files": 19
     }
   },
   "max_test_seconds": 180,
@@ -43,19 +42,23 @@
   ],
   "playwright": {
     "exclusive": {
-      "files": 152,
-      "parallel_files": 98,
-      "parallel_tests": 157,
+      "files": 165,
+      "parallel_files": 105,
+      "parallel_tests": 191,
       "serial_files": [
         "specs/a-prepared-seat-is-not-a-promise-the-box-can-still-keep.exclusive.spec.ts",
         "specs/admin-native-transcript-batch-export.exclusive.spec.ts",
         "specs/agent-per-session-sandbox.exclusive.spec.ts",
         "specs/agent-workspace-resume.exclusive.spec.ts",
         "specs/an-artifact-an-agent-publishes-outlives-its-sandbox.exclusive.spec.ts",
+        "specs/an-assistant-keeps-its-memory-skills-and-jobs-on-a-new-box.exclusive.spec.ts",
         "specs/an-assistant-used-today-keeps-its-box-overnight.exclusive.spec.ts",
+        "specs/an-assistant-uses-the-hermes-extensions-its-owner-configures.exclusive.spec.ts",
+        "specs/an-assistants-scheduled-reply-marks-its-conversation-unread.exclusive.spec.ts",
         "specs/an-expired-oauth-credential-is-reported-before-a-conversation-dies-on-it.exclusive.spec.ts",
         "specs/an-exposed-port-outlives-the-idle-window.exclusive.spec.ts",
-        "specs/an-idle-assistant-card-stops-reading-ready-on-an-open-page.exclusive.spec.ts",
+        "specs/an-idle-assistant-whose-box-dies-comes-back-unprompted.exclusive.spec.ts",
+        "specs/assistant-channel-cron-result-reaches-the-chat.exclusive.spec.ts",
         "specs/assistant-record-page-reaches-ready-without-a-reload.exclusive.spec.ts",
         "specs/assistant-tool-card-live-and-cold.exclusive.spec.ts",
         "specs/assistant-workspace-files-survive-park-and-wake.exclusive.spec.ts",
@@ -79,6 +82,8 @@
         "specs/dsh-channel-background-completion.exclusive.spec.ts",
         "specs/dsh-gateway-model-route.exclusive.spec.ts",
         "specs/dsh-output-control-recovery.exclusive.spec.ts",
+        "specs/dsh-sends-no-conversation-to-deepseek.exclusive.spec.ts",
+        "specs/every-user-has-an-assistant-that-inherits-the-deployments-defaults.exclusive.spec.ts",
         "specs/expired-channel-question-continues-on-thread-reply.exclusive.spec.ts",
         "specs/file-panel-uploads-file-larger-than-100mib.exclusive.spec.ts",
         "specs/idle-park-refuses-a-box-holding-a-prepared-slot.exclusive.spec.ts",
@@ -102,9 +107,9 @@
         "specs/subagent-replay-recovery.exclusive.spec.ts",
         "specs/untouched-tab-catches-up-after-backend-restart.exclusive.spec.ts"
       ],
-      "serial_tests": 95,
+      "serial_tests": 103,
       "serial_workers": 1,
-      "tests": 252,
+      "tests": 294,
       "workers": 5
     },
     "parallel": {
@@ -150,7 +155,7 @@
         "codex",
         "pi"
       ],
-      "matrix_tests": 214,
+      "matrix_tests": 210,
       "parallel_node_ids": [
         "tests/e2e/agent_instruction_install_test.py::test_authored_instructions_reach_the_first_reply[cold-conversation]",
         "tests/e2e/agent_instruction_install_test.py::test_authored_instructions_reach_the_first_reply[cold-agent]",
@@ -201,7 +206,6 @@
         "tests/e2e/test_shared_box_cohabitation.py::test_two_conversations_share_the_box_and_nothing_else",
         "tests/e2e/test_shared_box_cohabitation.py::test_evicted_last_shared_conversation_reclaims_box",
         "tests/e2e/test_shared_box_cohabitation.py::test_new_conversation_replaces_a_dead_shared_box",
-        "tests/e2e/test_shared_persistent_warm_resume.py::test_shared_persistent_conversation_resumes_on_existing_sdk_pool_box",
         "tests/e2e/test_stale_interaction_answer_lands_nowhere.py::test_replaying_the_first_answer_does_not_resolve_the_second",
         "tests/e2e/test_stream_close_admits_next_send.py::test_a_send_during_a_running_turn_queues_behind_it",
         "tests/e2e/test_stream_close_admits_next_send.py::test_the_session_is_usable_after_the_no_gap_pair",
@@ -216,11 +220,11 @@
         "tests/e2e/test_reattach.py::test_sandbox_and_session_survive_backend_restart",
         "tests/e2e/test_reattach.py::test_reattach_turn_reuses_sandbox_without_rebuild"
       ],
-      "tests": 61,
+      "tests": 60,
       "workers": 5
     },
-    "matrix_tests": 224,
-    "tests": 71
+    "matrix_tests": 220,
+    "tests": 70
   },
   "suites": {
     "exclusive": {
@@ -228,7 +232,7 @@
       "role": "e2e"
     },
     "external": {
-      "entry": "npm --prefix tests/e2e-ui run e2e -- real-slack-feishu-dingtalk",
+      "entry": "ASTRABOX_E2E_EXTERNAL_ACCOUNTS=1 npm --prefix tests/e2e-ui run e2e -- <file>.external.spec.ts",
       "role": "external"
     },
     "parallel": {

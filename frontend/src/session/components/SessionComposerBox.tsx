@@ -262,7 +262,7 @@ export function SessionComposerBox({
                 </PromptInputButton>
               )}
               {canSend && (
-                <span className="hidden text-11 text-muted-foreground/70 sm:inline">
+                <span className="hidden text-11 text-muted-foreground sm:inline">
                   {t('chat:composer.shortcut_hint')}
                 </span>
               )}

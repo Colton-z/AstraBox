@@ -1151,6 +1151,57 @@ class EngineAdapter(ABC):
 
         _ = (home, workspace, port)
         return None
+
+    def conversation_install_script(
+        self,
+        *,
+        packages: list[dict[str, str]],
+        engine_options: dict[str, Any],
+        mcp_servers: dict[str, dict[str, Any]],
+    ) -> str | None:
+        """Bash the conversation bootstrap runs to install this engine's extensions.
+
+        ``packages`` are the Agent's packages of the kinds this engine declares
+        ``installed_by_engine``, each ``{"kind", "source"}`` with ``source`` the
+        cached checkout directory; ``engine_options`` are the Agent's native
+        options, for an engine whose own installer takes them; ``mcp_servers``
+        are the author's servers (``author_mcp_servers``), for an engine whose
+        MCP configuration is a file read when it starts. The script runs
+        as the conversation's workload account with ``HOME`` set, before the
+        engine starts, and must leave exactly what they declare installed,
+        removing what it installed for an earlier configuration. ``None`` when
+        there is nothing to run.
+        """
+
+        _ = (packages, engine_options, mcp_servers)
+        return None
+
+    def resident_restart_script(self) -> str | None:
+        """Bash, run as root, that makes the image's resident service read an install.
+
+        On a box whose engine is the image's own service, started at boot
+        (the conversation tenancy), that service is already running when the
+        bootstrap runs :meth:`conversation_install_script`. The bootstrap runs
+        this right after an install there, with ``HOME`` the workload
+        account's, and it must return only once the service answers again.
+        ``None`` when the running service sees the install without a restart
+        (Codex reads plugins per thread).
+        """
+
+        return None
+
+    def install_egress_hosts(self, engine_options: dict[str, Any]) -> list[str]:
+        """Hosts this engine's own installer reaches for the Agent's native options.
+
+        The sources an author names in a native document (a DeepSeek Harness
+        Bundle's npm version, git spec or tarball URL) are the author's network
+        hosts, admitted within the same boundary as a Skill's or Plugin's Git
+        origin. Empty when the engine installs nothing from its options.
+        """
+
+        _ = engine_options
+        return []
+
     async def prepare_runtime(
         self, context: EnginePreparationContext
     ) -> dict[str, Any]:
@@ -1210,6 +1261,18 @@ class EngineAdapter(ABC):
         raise NotImplementedError(
             f"engine_kind={self.engine_kind!r} cannot quiesce and save runtime state"
         )
+
+    async def list_scheduled_jobs(
+        self, sandbox: Any, *, runtime_identity: dict[str, Any]
+    ) -> list[dict[str, Any]] | None:
+        """The jobs the program scheduled for itself, read from its own store in a running box.
+
+        ``None`` means the program keeps no schedule of its own. One that does
+        answers its records in its own vocabulary, which the platform carries
+        to the owner unchanged.
+        """
+
+        return None
 
     def process_disposal(self) -> Any | None:
         """Optional vendor process finalizer for a durable turn anchor."""

@@ -90,13 +90,14 @@ function extensionAgentConfig(name: string, model: string, environmentName: stri
     environment_name: environmentName,
     prepared_capacity: 1,
     skills: [SKILL_DESCRIPTOR],
-    plugin_repos: [
+    packages: [
       {
+        kind: 'claude-plugin',
         url: PLUGIN_REPOSITORY,
         protocol: 'https',
         branch: 'main',
         depth: 1,
-        plugin_paths: [PLUGIN_PATH],
+        paths: [PLUGIN_PATH],
       },
     ],
   };
@@ -688,7 +689,7 @@ test.describe.serial('OpenSandbox Agent prepared runtimes', () => {
       const otherConfig = extensionAgentCreateConfig(
         `__e2e_p144_interleaved_${runId}`, model, CONVERSATION_ENVIRONMENT,
       );
-      otherConfig.plugin_repos[0].depth = 2;
+      otherConfig.packages[0].depth = 2;
       const otherAgent = await api.createAgent(otherConfig);
       const otherAgentId = String(otherAgent.agent_id || '');
       expect(otherAgentId).not.toBe('');
@@ -759,7 +760,7 @@ test.describe.serial('OpenSandbox Agent prepared runtimes', () => {
       const preparationChanged = extensionAgentConfig(
         agentName, model, CONVERSATION_ENVIRONMENT,
       );
-      preparationChanged.plugin_repos[0].depth = 2;
+      preparationChanged.packages[0].depth = 2;
       const rotated = await api.updateAgent(agentId, {
         ...preparationChanged,
         version: Number(latest.version || 1),

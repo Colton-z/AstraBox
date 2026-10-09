@@ -13,6 +13,7 @@ import {
   Plug,
   ScrollText,
   ShieldCheck,
+  SlidersHorizontal,
   TriangleAlert,
   Users,
 } from 'lucide-react';
@@ -48,6 +49,7 @@ import AgentsListPage from './AgentsListPage';
 import AgentCreatePage from './AgentCreatePage';
 import DeploymentCreatePage from './DeploymentCreatePage';
 import AssistantCreatePage from './AssistantCreatePage';
+import AssistantDefaultsPage from './AssistantDefaultsPage';
 import EnvironmentCreatePage from './EnvironmentCreatePage';
 import AgentDetailPage from './AgentDetailPage';
 import DeploymentsListPage from './DeploymentsListPage';
@@ -62,6 +64,7 @@ import EnvironmentsListPage from './EnvironmentsListPage';
 import EnvironmentDetailPage from './EnvironmentDetailPage';
 import CredentialsListPage from './CredentialsListPage';
 import CredentialVaultPage from './CredentialVaultPage';
+import ConnectorsPage from './ConnectorsPage';
 import SandboxesListPage from './SandboxesListPage';
 import SandboxDetailPage from './SandboxDetailPage';
 import SystemPage from './SystemPage';
@@ -109,8 +112,10 @@ const NAV_GROUPS: { titleKey: string; items: NavItem[] }[] = [
     items: [
       { to: '/manage/agents', labelKey: 'manage:nav.agents', icon: Bot, match: '/manage/agents', count: 'agents' as const },
       { to: '/manage/assistants', labelKey: 'manage:nav.assistants', icon: Users, match: '/manage/assistants' },
+      { to: '/manage/assistant-defaults', labelKey: 'manage:nav.assistant_defaults', icon: SlidersHorizontal, match: '/manage/assistant-defaults' },
       { to: '/manage/environments', labelKey: 'manage:nav.environments', icon: Box, match: '/manage/environments', count: 'environments' as const },
       { to: '/manage/credentials', labelKey: 'manage:nav.credentials', icon: KeyRound, match: '/manage/credentials' },
+      { to: '/manage/connectors', labelKey: 'manage:nav.connectors', icon: Plug, match: '/manage/connectors' },
       { to: '/manage/deployments', labelKey: 'manage:nav.deployments', icon: Boxes, match: '/manage/deployments' },
       { to: '/manage/mcp-tokens', labelKey: 'manage:nav.mcp_tokens', icon: Plug, match: '/manage/mcp-tokens' },
     ],
@@ -328,6 +333,7 @@ export default function ManageApp() {
           <Route path="assistants" element={<AssistantsListPage />} />
           <Route path="assistants/new" element={<AssistantCreatePage />} />
           <Route path="assistants/:assistantId" element={<AssistantDetailPage />} />
+          <Route path="assistant-defaults" element={<AssistantDefaultsPage />} />
           <Route path="sessions" element={<SessionsListPage />} />
           <Route path="sessions/:sessionId" element={<SessionDetailPage />} />
           <Route path="sandboxes" element={<SandboxesListPage />} />
@@ -337,6 +343,7 @@ export default function ManageApp() {
           <Route path="environments/:name" element={<EnvironmentDetailPage />} />
           <Route path="credentials" element={<CredentialsListPage />} />
           <Route path="credentials/:vaultId" element={<CredentialVaultPage />} />
+          <Route path="connectors" element={<ConnectorsPage />} />
           <Route path="system" element={<SystemPage />} />
           <Route path="errors" element={<ErrorsListPage />} />
           <Route path="logs" element={<LogsPage />} />

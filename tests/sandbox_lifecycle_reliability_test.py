@@ -20,12 +20,14 @@ from __future__ import annotations
 
 import asyncio
 import os
+import tempfile
 import unittest
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
 from astrabox.common.utils.errors import APIError
+from astrabox.config.settings import get_settings
 from astrabox.core.model import SessionState
 from astrabox.core.service.orchestrator import runtime_manager as rm
 import astrabox.seams.sandbox as sandbox_seam
@@ -306,6 +308,16 @@ class _FakeHermesManager:
 
 
 class HermesCreateFailureNamesAllocationTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        # Provisioning writes to the platform store; the default SQLite file
+        # is shared with every other test process, which locks it under load.
+        database = os.path.join(self.enterContext(tempfile.TemporaryDirectory()), "store.sqlite")
+        self.enterContext(patch.dict(os.environ, {
+            "ASTRABOX_DB_BACKEND": "sqlite", "ASTRABOX_DB_URL": f"sqlite+aiosqlite:///{database}",
+        }))
+        get_settings.cache_clear()
+        self.addCleanup(get_settings.cache_clear)
+
     async def test_readiness_failure_after_create_keeps_platform_cleanup_name(self) -> None:
         sandbox = _FakeSandbox()
         manager = _FakeHermesManager()

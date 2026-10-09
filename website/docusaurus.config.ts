@@ -132,7 +132,15 @@ const config: Config = {
             'migrations.md',
           ],
         },
-        blog: false,
+        blog: {
+          blogTitle: 'AstraBox blog',
+          blogDescription:
+            'Engineering notes from building AstraBox, the open-source, self-hosted Agent platform.',
+          blogSidebarTitle: 'Recent posts',
+          showReadingTime: true,
+          editUrl: 'https://github.com/Colton-z/AstraBox/edit/main/website/',
+          feedOptions: {type: ['rss', 'atom']},
+        },
         theme: {
           customCss: './src/css/custom.css',
         },

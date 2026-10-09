@@ -510,15 +510,15 @@ test('authenticated Investment Research uses pinned Plugins and both real MCP da
   expect(directUrl.protocol).toBe('https:');
   expect(directUrl.hostname, 'the direct public-data provider must be KeyVex').toBe('mcp.keyvex.com');
 
-  const pluginRepos = Array.isArray(agent.plugin_repos)
-    ? agent.plugin_repos.map((item, index) => record(item, `plugin_repos[${index}]`))
+  const pluginRepos = Array.isArray(agent.packages)
+    ? agent.packages.map((item, index) => record(item, `packages[${index}]`))
     : [];
   expect(pluginRepos, 'the default Agent must have exactly the reviewed official Plugin repo')
     .toHaveLength(1);
   expect(pluginRepos[0].url).toBe(OFFICIAL_PLUGIN_REPOSITORY);
   expect(pluginRepos.map((repo) => String(repo.sha || ''))).toEqual(config.pluginRevisions);
-  const pluginPaths = Array.isArray(pluginRepos[0].plugin_paths)
-    ? pluginRepos[0].plugin_paths.map(String)
+  const pluginPaths = Array.isArray(pluginRepos[0].paths)
+    ? pluginRepos[0].paths.map(String)
     : [];
   expect(pluginPaths).toEqual(expect.arrayContaining([FINANCIAL_ANALYSIS_PATH, EQUITY_RESEARCH_PATH]));
 

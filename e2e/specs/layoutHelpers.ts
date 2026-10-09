@@ -219,6 +219,7 @@ const vaults = [
 const TRANSCRIPT = [
   {
     session_id: "s-001",
+    message_id: "m-user-1",
     turn_id: "t-1",
     role: "user",
     content: "Draft the release notes and check the changelog.",
@@ -226,6 +227,7 @@ const TRANSCRIPT = [
   },
   {
     session_id: "s-001",
+    message_id: "m-assistant-1",
     turn_id: "t-1",
     role: "assistant",
     content: "",
@@ -318,14 +320,32 @@ const ENVIRONMENT_FORM_SCHEMA = {
 };
 
 /** Resolve one `/api/v1/...` path to its fixture, or undefined when unmapped. */
-function resolve(pathname: string): unknown {
+function resolve(pathname: string, query: URLSearchParams): unknown {
   const t = pathname.replace(/\/+$/, "").split("/").filter(Boolean).slice(2);
   const at = (...parts: string[]) =>
     t.length === parts.length && parts.every((p, i) => p === "*" || t[i] === p);
 
   if (at("user", "current")) return user;
-  if (at("agents")) return agents;
-  if (at("assistants")) return assistants;
+  // `page=1` is the console tables' paged read (AgentListPage and
+  // AssistantListPage in the routes); without it the route answers the bare list.
+  const paged = query.get("page") === "1";
+  if (at("agents")) {
+    return paged
+      ? { agents, has_more: false, next_cursor: null, total: agents.length, enabled: agents.filter((a) => a.enabled).length }
+      : agents;
+  }
+  if (at("assistants")) {
+    return paged
+      ? {
+        assistants,
+        has_more: false,
+        next_cursor: null,
+        total: assistants.length,
+        ready: assistants.filter((a) => a.workspace_state === "READY").length,
+      }
+      : assistants;
+  }
+  if (at("admin", "vaults", "*", "bindings")) return [];
   if (at("admin", "vaults")) return {
     vaults,
     credential_delivery: {
@@ -344,6 +364,7 @@ function resolve(pathname: string): unknown {
     return assistants.find((a) => a.assistant_id === t[1]) ?? assistants[0];
   }
   if (at("assistants", "*", "conversations")) return { session_id: "s-001" };
+  if (at("assistants", "*", "main-conversation")) return { session_id: "s-001" };
   if (at("sessions", "*")) return sessions.find((s) => s.session_id === t[1]) ?? sessions[0];
   // The raw record read. The whole `MessagePage` (frontend/src/api.ts), not the
   // part the transcript reads.
@@ -388,7 +409,9 @@ function resolve(pathname: string): unknown {
         engine_status: "completed",
         engine_reason: null,
         closed: true,
+        active: false,
         operations: [],
+        tool_call_ids: ["tu-task-1"],
         task_type: "Explore",
         description: "Check the changelog",
         usage: { total_tokens: 18402, tool_uses: 6, duration_ms: 21300 },
@@ -515,13 +538,8 @@ function resolve(pathname: string): unknown {
       last_error: null,
     };
   }
-  // Per-agent, like the route it stands in for. The Triggers page has no route
-  // that lists every binding, so it fans out over the agents and concatenates;
-  // answering each of those calls with the whole set would hand that page one
-  // copy of every binding per agent, all sharing a key.
-  if (at("admin", "agents", "*", "deployments")) {
-    return deployments.filter((d) => d.agent_id === t[2]);
-  }
+  // The Triggers pages read every binding at once.
+  if (at("admin", "deployments")) return deployments;
   if (at("admin", "agents", "*", "credential-vaults")) return {
     target_type: "agent",
     target_id: t[2],
@@ -584,7 +602,8 @@ export async function stubApi(
   },
 ): Promise<void> {
   await page.route("**/api/**", async (route) => {
-    const pathname = new URL(route.request().url()).pathname;
+    const url = new URL(route.request().url());
+    const pathname = url.pathname;
     // Auth probing is intentionally not an API-envelope route. Returning the
     // normal {data: ...} fixture shape here makes RequireAuth read
     // `authenticated` as missing and turns every layout test into a login-page
@@ -599,7 +618,7 @@ export async function stubApi(
     }
     const raw = pathname === "/api/v1/admin/integrations" && opts?.integrations
       ? { services: opts.integrations }
-      : resolve(pathname);
+      : resolve(pathname, url.searchParams);
     const data = opts?.stress ? stress(raw) : raw;
     await route.fulfill({
       status: 200,

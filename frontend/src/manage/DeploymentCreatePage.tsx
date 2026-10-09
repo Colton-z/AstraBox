@@ -2,7 +2,14 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 
-import { createAgentDeployment, listAgents, listChannelProviders } from '@/api';
+import {
+  createAgentDeployment,
+  createAssistantDeployment,
+  listAgents,
+  listChannelProviders,
+} from '@/api';
+import { listAssistants } from '@/assistant/api';
+import type { AssistantRecord } from '@/assistant/types';
 import type { AgentConfig, ChannelProviderDescriptor } from '@/types';
 
 import {
@@ -22,12 +29,28 @@ import {
 
 const BUILTIN_SCENES = ['schedule', 'hmac', 'scheduler'] as const;
 
+/** A target select value: ``agent:<id>`` or ``assistant:<id>``. */
+function parseTarget(value: unknown): { kind: 'agent' | 'assistant'; id: string } | null {
+  const [kind, ...rest] = String(value ?? '').split(':');
+  const id = rest.join(':').trim();
+  if (!id || (kind !== 'agent' && kind !== 'assistant')) return null;
+  return { kind, id };
+}
+
+function participantList(value: unknown): string[] {
+  return String(value ?? '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
 /** A new built-in schedule, authenticated trigger, or concrete chat binding. */
 export default function DeploymentCreatePage() {
   const navigate = useNavigate();
   const { t } = useTranslation();
 
   const [agents, setAgents] = useState<AgentConfig[]>([]);
+  const [assistants, setAssistants] = useState<AssistantRecord[]>([]);
   const [channelProviders, setChannelProviders] = useState<ChannelProviderDescriptor[]>([]);
   const [draft, setDraft] = useState<Record<string, unknown> | null>(null);
   const [loading, setLoading] = useState(true);
@@ -42,14 +65,22 @@ export default function DeploymentCreatePage() {
     setLoading(true);
     setLoadError('');
     try {
-      const [agentList, providers] = await Promise.all([
+      const [agentList, assistantList, providers] = await Promise.all([
         listAgents(),
+        listAssistants(),
         listChannelProviders(),
       ]);
       setAgents(agentList);
+      setAssistants(assistantList);
       setChannelProviders(providers);
+      const firstTarget = agentList[0]
+        ? `agent:${agentList[0].agent_id}`
+        : assistantList[0]
+          ? `assistant:${assistantList[0].assistant_id}`
+          : '';
       setDraft({
-        agent_id: agentList[0]?.agent_id ?? '',
+        target: firstTarget,
+        allowed_participants: '',
         scene: BUILTIN_SCENES[0],
         name: '',
         prompt_prefix: '',
@@ -71,20 +102,30 @@ export default function DeploymentCreatePage() {
   }, [load]);
 
   const draftScene = String(draft?.scene ?? '');
+  const draftTarget = parseTarget(draft?.target);
+  const onAssistant = draftTarget?.kind === 'assistant';
   const selectedProvider = channelProviders.find((provider) => provider.scene === draftScene);
   const sections = useMemo<EditSectionSpec[]>(() => {
     const fields: EditSectionSpec['fields'] = [
       {
-        key: 'agent_id',
-        label: t('manage:deployments.field_agent'),
+        key: 'target',
+        label: t('manage:deployments.field_target'),
         type: 'select',
         required: true,
-        idTag: 'agent_id',
+        idTag: 'target',
         placeholder: t('manage:deployments.select_agent'),
-        options: agents.map((agent) => ({ value: agent.agent_id, label: agent.name })),
-        get: (value) => value.agent_id,
-        set: (value, next) => ({ ...value, agent_id: next }),
-        help: t('manage:deployments.agent_help'),
+        options: [
+          ...agents.map((agent) => ({ value: `agent:${agent.agent_id}`, label: agent.name })),
+          ...assistants.map((assistant) => ({
+            value: `assistant:${assistant.assistant_id}`,
+            label: t('manage:deployments.target_assistant_label', {
+              name: assistant.display_name || assistant.assistant_id,
+            }),
+          })),
+        ],
+        get: (value) => value.target,
+        set: (value, next) => ({ ...value, target: next }),
+        help: t('manage:deployments.target_help'),
       },
       {
         key: 'scene',
@@ -173,7 +214,24 @@ export default function DeploymentCreatePage() {
     ];
     if (selectedProvider) {
       const providerFields = [
-        channelExecutionUserField(t, selectedProvider.can_configure_execution_user === true),
+        ...(onAssistant
+          ? []
+          : [channelExecutionUserField(t, selectedProvider.can_configure_execution_user === true)]),
+        {
+          key: 'allowed_participants',
+          label: t('manage:deployments.field_allowed_participants'),
+          type: 'textarea' as const,
+          required: onAssistant,
+          idTag: 'allowed_participants',
+          rows: 2,
+          placeholder: 'telegram:123456789',
+          get: (value: Record<string, unknown>) => value.allowed_participants,
+          set: (value: Record<string, unknown>, next: unknown) => ({
+            ...value,
+            allowed_participants: next,
+          }),
+          help: t('manage:deployments.allowed_participants_help'),
+        },
         ...selectedProvider.config_fields.map((field) =>
           channelEditField(field, 'channel_config'),
         ),
@@ -203,7 +261,7 @@ export default function DeploymentCreatePage() {
       }
     }
     return output;
-  }, [agents, channelProviders, draftScene, selectedProvider, t]);
+  }, [agents, assistants, channelProviders, draftScene, onAssistant, selectedProvider, t]);
 
   if (loading) {
     return (
@@ -221,8 +279,9 @@ export default function DeploymentCreatePage() {
     );
   }
 
-  const agentId = String(draft.agent_id ?? '').trim();
+  const target = parseTarget(draft.target);
   const scene = String(draft.scene ?? '').trim();
+  const participants = participantList(draft.allowed_participants);
   const name = String(draft.name ?? '').trim();
   const prompt = String(draft.prompt_prefix ?? '').trim();
   const cron = String(draft.cron ?? '').trim();
@@ -233,8 +292,9 @@ export default function DeploymentCreatePage() {
     : undefined;
 
   let blockedReason: string | undefined;
-  if (!agents.length) blockedReason = t('manage:deployments.empty_hint_no_agents');
-  else if (!agentId) blockedReason = t('manage:deployments.err_agent_required');
+  if (!agents.length && !assistants.length)
+    blockedReason = t('manage:deployments.empty_hint_no_targets');
+  else if (!target) blockedReason = t('manage:deployments.err_agent_required');
   else if (!scene) blockedReason = t('manage:deployments.err_scene_required');
   else if (scene.startsWith('channel:') && !selectedProvider)
     blockedReason = t('manage:deployments.err_channel_provider_unavailable');
@@ -250,6 +310,8 @@ export default function DeploymentCreatePage() {
     blockedReason = t('manage:deployments.err_channel_field_required', {
       field: missingChannelField.label,
     });
+  else if (selectedProvider && target?.kind === 'assistant' && !participants.length)
+    blockedReason = t('manage:deployments.err_allowed_participants_required');
 
   return (
     <ConsoleCreatePage
@@ -276,10 +338,13 @@ export default function DeploymentCreatePage() {
       onCreate={() => {
         setSaving(true);
         setError('');
-        void createAgentDeployment(agentId, {
+        if (!target) return;
+        const payload = {
           scene,
-          execution_user_id: selectedProvider?.can_configure_execution_user
-            ? String(draft.execution_user_id ?? '').trim() : undefined,
+          execution_user_id:
+            selectedProvider?.can_configure_execution_user && target.kind === 'agent'
+              ? String(draft.execution_user_id ?? '').trim() : undefined,
+          allowed_participants: selectedProvider && participants.length ? participants : undefined,
           name: scene === 'schedule' ? name : undefined,
           prompt_prefix: prompt || undefined,
           channel_config: selectedProvider
@@ -289,7 +354,10 @@ export default function DeploymentCreatePage() {
             ? channelFieldValues(draft, 'credentials', selectedProvider.credential_fields)
             : undefined,
           schedule: scene === 'schedule' ? { cron, timezone } : undefined,
-        })
+        };
+        void (target.kind === 'assistant'
+          ? createAssistantDeployment(target.id, payload)
+          : createAgentDeployment(target.id, payload))
           .then((created) =>
             navigate(`/manage/deployments/${created.deployment_id}`, {
               state: { secret: created.secret },

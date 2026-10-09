@@ -44,6 +44,7 @@ from astrabox.seams.channel import (
     ChannelDescriptor,
     ChannelField,
     ChannelInbound,
+    ChannelInteraction,
     ChannelProvider,
     ChannelRecall,
     ChannelSourceEnvelope,
@@ -64,6 +65,15 @@ _SOURCE_HEARTBEAT_SECONDS = 10.0
 _MAX_EVENT_BYTES = 2 * 1024 * 1024
 _MESSAGE_CREATED = "message-created"
 _MESSAGE_DELETED = "message-deleted"
+_INTERACTION_BUTTON = "interaction/button"
+
+
+_BUTTON_LABEL_LIMIT = 80
+
+
+def _button_label(choice: Any) -> str:
+    label = f"{choice.number}. {choice.label}"
+    return label if len(label) <= _BUTTON_LABEL_LIMIT else label[: _BUTTON_LABEL_LIMIT - 3] + "..."
 
 
 def _manifest() -> tuple[dict[str, Any], ...]:
@@ -216,6 +226,9 @@ class GatewayChannelProvider(ChannelProvider):
     ) -> None:
         self._definition = dict(definition)
         self.name = str(definition.get("name") or "").strip()
+        # Set for adapters whose pinned source both sends action buttons and
+        # reports a press as an interaction/button event.
+        self.supports_interaction_actions = definition.get("interaction_actions") is True
         self._gateway_override = gateway
         self._descriptor = ChannelDescriptor(
             name=self.name,
@@ -473,6 +486,7 @@ class GatewayChannelProvider(ChannelProvider):
         reply_context: dict[str, Any],
         text: str,
         binding: Mapping[str, Any],
+        interaction: ChannelInteraction | None = None,
     ) -> ChannelDeliveryReceipt:
         deployment_id = str(binding.get("deployment_id") or "").strip()
         platform = str(reply_context.get("platform") or "").strip()
@@ -489,6 +503,13 @@ class GatewayChannelProvider(ChannelProvider):
                 "channel_id": channel_id,
                 "message_id": message_id,
                 "text": text,
+                "buttons": [
+                    # Discord refuses labels over 80 characters; the full
+                    # label is in the text above the buttons.
+                    {"id": choice.action, "label": _button_label(choice)}
+                    for choice in (interaction.choices if interaction is not None else ())
+                    if choice.action
+                ],
             },
         )
         return ChannelDeliveryReceipt(
@@ -537,6 +558,8 @@ class GatewayChannelProvider(ChannelProvider):
         self, payload: Mapping[str, Any], *, raw_body: bytes
     ) -> ChannelInbound:
         event_type = str(payload.get("type") or "")
+        if event_type == _INTERACTION_BUTTON and self.supports_interaction_actions:
+            return self._resolve_button(payload, raw_body=raw_body)
         if event_type not in (_MESSAGE_CREATED, _MESSAGE_DELETED):
             return ChannelInbound(
                 content="",
@@ -626,6 +649,51 @@ class GatewayChannelProvider(ChannelProvider):
             ignore_reason=ignore_reason,
             message_timestamp=timestamp,
             retain_context=event.channel.type != ChannelType.DIRECT,
+        )
+
+    @staticmethod
+    def _resolve_button(payload: Mapping[str, Any], *, raw_body: bytes) -> ChannelInbound:
+        """A press on one of the agent's question buttons: an answer, never a turn."""
+        try:
+            event = Event.parse(dict(payload))
+        except Exception as exc:
+            raise RuntimeError(f"invalid Satori button event: {exc}") from exc
+        dedup_key = _event_dedup_key(payload, raw_body)
+        if event.button is None or event.channel is None or event.user is None:
+            # A press with no conversation (an inline-mode or game callback)
+            # cannot belong to a question this platform showed.
+            return ChannelInbound(
+                content="", dedup_key=dedup_key,
+                ignore_reason=f"{_INTERACTION_BUTTON} names no button, channel, or user",
+            )
+        platform = str(event.platform or "").strip()
+        self_id = str(event.self_id or "").strip()
+        channel_id = str(event.channel.id or "").strip()
+        participant_id = str(event.user.id or "").strip()
+        action = str(event.button.id or "").strip()
+        if not all((platform, self_id, channel_id, participant_id, action)):
+            return ChannelInbound(
+                content="", dedup_key=dedup_key,
+                ignore_reason=f"{_INTERACTION_BUTTON} contains an empty identity",
+            )
+        press_id = str(getattr(event.message, "id", "") or "").strip()
+        if press_id:
+            # The platform's own id for this press (Telegram's callback query,
+            # Discord's interaction) survives an upstream redelivery that
+            # renumbers the gateway's event sequence.
+            dedup_key = f"{platform}:{self_id}:button-press:{press_id}"
+        return ChannelInbound(
+            content="",
+            action=action,
+            reply_context={
+                "platform": platform,
+                "self_id": self_id,
+                "channel_id": channel_id,
+                "message_id": "",
+            },
+            dedup_key=dedup_key,
+            conversation_key=f"{platform}:{self_id}:channel:{channel_id}",
+            participant=f"{platform}:{participant_id}",
         )
 
     @staticmethod

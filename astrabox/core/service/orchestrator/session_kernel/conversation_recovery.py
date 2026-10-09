@@ -1029,4 +1029,8 @@ def build_turn_terminal_snapshot_updates(
         # which belongs to the session lifecycle — a turn can complete with a
         # cancellation reason and no failure phase at all.
         "last_turn_terminal_reason": str(terminal_reason).strip() if terminal_reason else None,
+        # When the conversation last gained a reply, whoever started the turn:
+        # the person, or the engine on its own (a scheduled run, a heartbeat).
+        # The console compares it with the owner's ``read_at``.
+        "last_output_at": _utcnow_iso(),
     }

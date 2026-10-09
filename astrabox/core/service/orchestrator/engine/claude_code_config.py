@@ -31,10 +31,9 @@ from astrabox.core.service.orchestrator.runtime.mcp_servers import (
     runtime_mcp_servers_for_binding,
     validate_direct_mcp_servers,
 )
-from astrabox.core.service.orchestrator.runtime.plugin_repos import (
-    build_plugin_repo_plugin_options,
-    get_template_plugin_repos,
-    merge_plugin_options,
+from astrabox.core.service.orchestrator.runtime.packages import (
+    build_package_checkout_dir,
+    template_packages,
 )
 from astrabox.core.service.orchestrator.schema_validation import (
     validate_declared_config_bag,
@@ -376,44 +375,33 @@ def build_claude_options_kwargs(
     if not include_template_capabilities:
         options_kwargs.pop("plugins", None)
         options_kwargs.pop("mcp_servers", None)
-    plugin_repos = (
-        get_template_plugin_repos(template) if include_template_capabilities else []
+    plugins = (
+        [package for package in template_packages(template) if package["kind"] == CLAUDE_PLUGIN_KIND]
+        if include_template_capabilities
+        else []
     )
     generated_plugins: list[dict[str, str]] = []
-    if plugin_repos:
-        capability_plan = (identity or {}).get("capability_plan")
-        cached_plugins = (
-            capability_plan.get("claude_plugin_options")
-            if isinstance(capability_plan, dict)
-            else None
+    if plugins:
+        plugin_scope = str(session_id or "").strip() or slot_scope
+        if not plugin_scope:
+            raise APIError(
+                code="PACKAGE_INVALID",
+                message=(
+                    "a session or prepared-slot id is required to resolve "
+                    "the Agent's Claude plugins"
+                ),
+                status_code=500,
+            )
+        plugin_base_dir = (
+            f"{identity['config_dir'].rstrip('/')}/plugins" if identity else None
         )
-        if isinstance(cached_plugins, list) and cached_plugins:
-            generated_plugins = [
-                {"type": "local", "path": str(item.get("path") or "").strip()}
-                for item in cached_plugins
-                if isinstance(item, dict) and str(item.get("path") or "").strip()
-            ]
-        else:
-            plugin_scope = str(session_id or "").strip() or slot_scope
-            if not plugin_scope:
-                raise APIError(
-                    code="PLUGIN_REPO_INVALID",
-                    message=(
-                        "a session or prepared-slot id is required to resolve "
-                        "template.plugin_repos"
-                    ),
-                    status_code=500,
-                )
-            plugin_base_dir = (
-                f"{identity['config_dir'].rstrip('/')}/plugins" if identity else None
-            )
-            generated_plugins = build_plugin_repo_plugin_options(
-                plugin_scope,
-                plugin_repos,
-                base_dir=plugin_base_dir,
-            )
+        generated_plugins = _claude_plugin_options(
+            plugin_scope,
+            plugins,
+            base_dir=plugin_base_dir,
+        )
     if generated_plugins or options_kwargs.get("plugins") is not None:
-        options_kwargs["plugins"] = merge_plugin_options(
+        options_kwargs["plugins"] = _merge_plugin_options(
             options_kwargs.get("plugins"),
             generated_plugins,
             template_name=str(getattr(template, "name", "") or "?"),
@@ -454,6 +442,7 @@ def build_claude_options_kwargs(
                 proxy_base_url=proxy_base,
                 deployment_id=mcp_deployment_id,
                 session_source_type=getattr(template, "session_source_type", None),
+                agent_id=getattr(template, "agent_id", None),
                 artifacts_enabled=getattr(template, "artifacts_enabled", True),
             )
             options_kwargs["mcp_servers"] = rewritten
@@ -740,3 +729,62 @@ def _contains_shared_root_path(value: Any) -> bool:
     if isinstance(value, (list, tuple, set)):
         return any(_contains_shared_root_path(item) for item in value)
     return False
+
+
+#: The package kind this adapter declares for Claude Code plugins.
+CLAUDE_PLUGIN_KIND = "claude-plugin"
+
+
+def _claude_plugin_options(
+    session_id: str,
+    repos: list[dict[str, Any]],
+    *,
+    base_dir: str | None = None,
+) -> list[dict[str, str]]:
+    options: list[dict[str, str]] = []
+    for index, repo in enumerate(repos):
+        checkout_dir = build_package_checkout_dir(session_id, index, repo, base_dir=base_dir)
+        for plugin_path in repo.get("paths") or ["."]:
+            if plugin_path == ".":
+                path = checkout_dir
+            else:
+                path = f"{checkout_dir}/{plugin_path}"
+            options.append({"type": "local", "path": path})
+    return options
+
+
+def _merge_plugin_options(
+    existing: Any,
+    generated: list[dict[str, str]],
+    *,
+    template_name: str,
+) -> list[dict[str, str]]:
+    merged: list[dict[str, str]] = []
+    if existing is not None:
+        if not isinstance(existing, list):
+            raise APIError(
+                code="CLAUDE_OPTIONS_INVALID",
+                message=f"template {template_name!r} engine_options.plugins must be a list",
+                status_code=500,
+            )
+        for idx, plugin in enumerate(existing):
+            if not isinstance(plugin, dict):
+                raise APIError(
+                    code="CLAUDE_OPTIONS_INVALID",
+                    message=f"template {template_name!r} engine_options.plugins[{idx}] must be an object",
+                    status_code=500,
+                )
+            plugin_type = str(plugin.get("type") or "").strip()
+            path = str(plugin.get("path") or "").strip()
+            if plugin_type != "local" or not path:
+                raise APIError(
+                    code="CLAUDE_OPTIONS_INVALID",
+                    message=(
+                        f"template {template_name!r} engine_options.plugins[{idx}] "
+                        "must be a local plugin with path"
+                    ),
+                    status_code=500,
+                )
+            merged.append({"type": "local", "path": path})
+    merged.extend(generated)
+    return merged

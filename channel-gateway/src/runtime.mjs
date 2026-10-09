@@ -214,14 +214,32 @@ export class BindingRuntime {
     if (this.nextCursor <= cursor) this.nextCursor = cursor + 1
   }
 
-  async deliver({ platform, self_id: selfId, channel_id: channelId, message_id: messageId, text }) {
+  async deliver({
+    platform,
+    self_id: selfId,
+    channel_id: channelId,
+    message_id: messageId,
+    text,
+    buttons = [],
+  }) {
     try {
       const bot = this.ctx?.bots.find(
         (candidate) => candidate.platform === platform && candidate.selfId === selfId,
       )
       if (!bot) throw new Error(`connected login ${platform}/${selfId} is unavailable`)
       if (!channelId || typeof text !== 'string') throw new Error('delivery routing is incomplete')
-      const content = messageId ? [h('quote', { id: messageId }), text] : text
+      if (
+        !Array.isArray(buttons)
+        || buttons.some((button) => typeof button?.id !== 'string' || typeof button?.label !== 'string')
+      ) {
+        throw new Error('delivery buttons must each have a string id and label')
+      }
+      // Text stays an array member so the adapter never parses it as markup.
+      const content = [
+        ...(messageId ? [h('quote', { id: messageId })] : []),
+        text,
+        ...buttons.map((button) => h('button', { id: button.id, type: 'action' }, button.label)),
+      ]
       const messages = await bot.createMessage(channelId, content)
       const ids = messages.map((message) => String(message?.id || '')).filter(Boolean)
       if (!ids.length) throw new Error('adapter returned no message receipt')

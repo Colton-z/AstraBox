@@ -23,7 +23,6 @@
   "skip_to_content": "Skip to content",
   "status_ready": "Ready",
   "tab_agents": "Agents",
-  "tab_assistant": "Assistants",
   "theme": "Theme",
   "theme_dark": "Dark",
   "theme_light": "Light",
@@ -31,5 +30,13 @@
   "time_days_ago": "{{count}}d ago",
   "time_hours_ago": "{{count}}h ago",
   "time_just_now": "just now",
-  "time_minutes_ago": "{{count}}m ago"
+  "time_minutes_ago": "{{count}}m ago",
+  "new_reply": "New reply",
+  "unread": "Unread",
+  "notifications_enable": "Notify me of new replies",
+  "assistants_group": "Assistants",
+  "assistant_new": "New Assistant",
+  "assistant_default_name": "Assistant",
+  "assistant_open_failed": "Could not open the Assistant",
+  "assistant_earlier_conversations": "Earlier conversations of {{name}}"
 }

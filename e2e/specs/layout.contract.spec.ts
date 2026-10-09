@@ -37,19 +37,17 @@ test.describe("live-gate selector contract", () => {
 
   test("an Assistant conversation request exposes no Vault selection", async ({ page }) => {
     await stubApi(page);
-    await page.goto("/assistants", { waitUntil: "domcontentloaded" });
+    await page.goto("/agents", { waitUntil: "domcontentloaded" });
     await settle(page);
 
-    const readyAssistant = page.locator(
-      `[data-testid="${LIVE_TESTIDS.assistantOption}"][data-assistant-state="READY"]`,
-    ).first();
-    await expect(readyAssistant).toBeVisible();
+    const assistant = page.getByTestId(LIVE_TESTIDS.assistantRow).first();
+    await expect(assistant).toBeVisible();
 
     const requestPromise = page.waitForRequest((request) =>
       request.method() === "POST"
-      && /\/api\/v1\/assistants\/[^/]+\/conversations(?:\?|$)/.test(request.url()),
+      && /\/api\/v1\/assistants\/[^/]+\/main-conversation(?:\?|$)/.test(request.url()),
     );
-    await readyAssistant.getByRole("button").click();
+    await assistant.getByRole("link").click();
     const request = await requestPromise;
     expect(request.postData()).toBeNull();
     await expect(page).toHaveURL(/\/sessions\/s-001(?:[/?#]|$)/);
@@ -95,7 +93,7 @@ test.describe("live-gate selector contract", () => {
     // language switch below to read.
     await page.keyboard.press("Escape");
     await page.getByRole("button", { name: "Settings", exact: true }).click();
-    await page.getByRole("button", { name: "ZH", exact: true }).click();
+    await page.getByRole("combobox", { name: "Language", exact: true }).selectOption({ label: "中文" });
     await page.goto("/manage/credentials", { waitUntil: "domcontentloaded" });
     await settle(page);
     await page.getByTestId(LIVE_TESTIDS.credentialVaultRow).first().click();
@@ -108,36 +106,6 @@ test.describe("live-gate selector contract", () => {
     );
     await expect(protectedValuesZh).toHaveCount(2);
     await expect(protectedValuesZh.first()).toBeVisible();
-  });
-
-  test("the pool note explains reuse without implying tenant isolation in both languages", async ({
-    page,
-  }) => {
-    const english = "A pool reuses sandboxes across sessions in this environment to reduce start-up time. It does not isolate users or tenants.";
-    const chinese = "池中的沙箱可供本环境下的不同会话复用，用于缩短启动时间，但不能隔离不同用户或租户。";
-
-    await stubApi(page);
-    await page.goto("/manage/environments/environment-1", {
-      waitUntil: "domcontentloaded",
-    });
-    await settle(page);
-    // Once, not somewhere: the sentence belongs with the pool's counters in
-    // the body, and a second copy — in the rail's pool fact, say — is the same
-    // statement twice in one viewport (§1). The count is the assertion.
-    // `.first()` passes over a duplicate, and a bare `toBeVisible()` reports
-    // one only as a strict-mode violation with no name on what went wrong.
-    await expect(page.getByText(english, { exact: true })).toHaveCount(1);
-    await expect(page.getByText(english, { exact: true })).toBeVisible();
-
-    await page.keyboard.press("Escape");
-    await page.getByRole("button", { name: "Settings", exact: true }).click();
-    await page.getByRole("button", { name: "ZH", exact: true }).click();
-    await page.goto("/manage/environments/environment-1", {
-      waitUntil: "domcontentloaded",
-    });
-    await settle(page);
-    await expect(page.getByText(chinese, { exact: true })).toHaveCount(1);
-    await expect(page.getByText(chinese, { exact: true })).toBeVisible();
   });
 
   test("the session view renders what the live helpers assert on", async ({ page }) => {

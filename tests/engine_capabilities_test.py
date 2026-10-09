@@ -367,7 +367,7 @@ def test_configless_engine_runs_plain_sessions_and_refuses_config_extensions(
         engine_kind="declared_text",
         sandbox_tenancy="conversation",
         skills=[],
-        plugin_repos=[],
+        packages=[],
         mcp_servers={},
         default_repo=None,
     )
@@ -400,8 +400,8 @@ def test_a_config_directory_does_not_imply_support_for_vendor_extensions(
     template = SimpleNamespace(
         engine_kind="declared_assistant",
         skills=[],
-        plugin_repos=[
-            {"url": "https://example.invalid/plugin.git", "protocol": "https"}
+        packages=[
+            {"kind": "claude-plugin", "url": "https://example.invalid/plugin.git", "protocol": "https"}
         ],
         mcp_servers={},
         default_repo=None,
@@ -417,7 +417,7 @@ def test_a_config_directory_does_not_imply_support_for_vendor_extensions(
         plan_capabilities(template, identity)
 
     assert raised.value.code == "ENGINE_CAPABILITY_UNAVAILABLE"
-    assert "plugin_repos" in raised.value.message
+    assert "packages" in raised.value.message
 
 
 def test_session_resolution_requires_all_declared_engine_identities_to_agree() -> None:

@@ -1,6 +1,6 @@
 import { Link, useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { Home, LayoutTemplate, FileText } from 'lucide-react';
+import { Home, LayoutTemplate, FileText, Plug } from 'lucide-react';
 
 import {
   SidebarMenu,
@@ -30,7 +30,9 @@ export function SurfaceNav() {
       <SidebarMenuItem>
         <SidebarMenuButton
           render={<Link to="/" />}
-          isActive={!inConsole && !pathname.startsWith('/artifacts')}
+          isActive={
+            !inConsole && !pathname.startsWith('/artifacts') && !pathname.startsWith('/connections')
+          }
           tooltip={t('shell:nav_home')}
           className={RAIL_ROW_ACTIVE}
         >
@@ -47,6 +49,17 @@ export function SurfaceNav() {
         >
           <FileText />
           <span>{t('misc:artifacts.title')}</span>
+        </SidebarMenuButton>
+      </SidebarMenuItem>
+      <SidebarMenuItem>
+        <SidebarMenuButton
+          render={<Link to="/connections" />}
+          isActive={pathname.startsWith('/connections')}
+          tooltip={t('misc:connections.title')}
+          className={RAIL_ROW_ACTIVE}
+        >
+          <Plug />
+          <span>{t('misc:connections.title')}</span>
         </SidebarMenuButton>
       </SidebarMenuItem>
       <SidebarMenuItem>

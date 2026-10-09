@@ -194,6 +194,28 @@ for _code, _status, _category, _retryable, _owner in (
     ("CHANNEL_REFERENCE_OWNER_MISMATCH", 409, "state", False, "client"),
     ("CHANNEL_SESSION_OWNER_MISMATCH", 409, "state", False, "client"),
     ("NOT_A_CHANNEL", 409, "state", False, "client"),
+    ("CONNECTOR_NOT_FOUND", 404, "request", False, "client"),
+    # The connector is not registered with the hub or its tools are not
+    # published; an administrator sets it up under Connectors.
+    ("CONNECTOR_NOT_AVAILABLE", 409, "configuration", False, "platform"),
+    # The caller asked for an app they have not connected to be offered as
+    # connected; they connect it first.
+    ("CONNECTOR_NOT_CONNECTED", 409, "request", False, "client"),
+    # The deployment runs no server for a connector the vendor serves none of
+    # (Google's apps); the operator deploys it and sets its URL variable.
+    ("CONNECTOR_SERVER_NOT_DEPLOYED", 409, "configuration", False, "platform"),
+    # No connector hub, or a partly configured one (raised 500).
+    ("CONNECTOR_HUB_NOT_CONFIGURED", 409, "configuration", False, "platform"),
+    # The hub was unreachable (503) or refused a call (502); the message
+    # carries its answer.
+    ("CONNECTOR_HUB_ERROR", 502, "runtime", True, "platform"),
+    # The hub's public address is plain HTTP at a non-loopback host, which no
+    # vendor accepts as a redirect URI; serving it over HTTPS resolves it.
+    ("CONNECTOR_REQUIRES_HTTPS", 409, "configuration", False, "platform"),
+    # A vendor's MCP server or authorization server failed discovery; the
+    # raise site gives the status (400 for a bad response, 502 for an
+    # unreachable or failing server).
+    ("CONNECTOR_AUTHORIZATION_FAILED", 502, "auth", True, "platform"),
     ("DEPLOYMENT_UNAUTHORIZED", 401, "auth", False, "client"),
     ("DEPLOYMENT_MISCONFIGURED", 409, "state", False, "platform"),
     ("DEPLOYMENT_NO_OWNER", 409, "state", False, "platform"),
@@ -344,6 +366,9 @@ for _code, _status, _category, _retryable, _owner in (
     ("ARTIFACT_TITLE_LIMIT", 413, "request", False, "client"),
     ("ARTIFACT_STORE_UNAVAILABLE", 503, "persistence", False, "platform"),
     ("ENVIRONMENT_NOT_FOUND", 404, "request", False, "client"),
+    # No Environment for Assistants yet: an administrator sets one in the
+    # Assistant defaults, so the user's retry cannot change the answer.
+    ("ASSISTANT_DEFAULTS_UNAVAILABLE", 409, "configuration.environment", False, "template"),
     ("ENVIRONMENT_IN_USE", 409, "configuration.environment", False, "template"),
     ("ENVIRONMENT_DELETE_UNSUPPORTED", 503, "configuration.persistence", False, "platform"),
     # Optional engine protocols are requested by the caller. An engine that
@@ -391,6 +416,9 @@ for _code, _status, _category, _retryable, _owner in (
     # exact-id convergence fence is a transient state conflict worth retrying.
     ("ASSISTANT_WORKSPACE_NOT_FOUND", 500, "state", False, "platform"),
     ("ASSISTANT_WORKSPACE_CONVERGENCE_FAILED", 503, "state", True, "platform"),
+    # The running workspace did not answer its program's job store; asking
+    # again after the box settles can succeed.
+    ("ASSISTANT_SCHEDULED_JOBS_UNAVAILABLE", 503, "state", True, "platform"),
     # Hibernation is a storage transaction followed by a fenced sandbox
     # release. Malformed transition input is a platform invariant.
     ("ASSISTANT_WORKSPACE_HIBERNATE_CONFLICT", 409, "state", True, "platform"),
@@ -512,8 +540,8 @@ for _code, _status, _category, _retryable, _owner in (
     # A malformed plugin-repository value belongs to the Agent definition, not
     # the conversation that first tries to use it. Re-sending the same request
     # cannot change that definition, so these failures are not retryable.
-    ("PLUGIN_REPO_INVALID", 500, "runtime.plugin_repo", False, "template"),
-    ("PLUGIN_REPO_UNSUPPORTED_PROTOCOL", 500, "runtime.plugin_repo", False, "template"),
+    ("PACKAGE_INVALID", 500, "runtime.package", False, "template"),
+    ("PACKAGE_UNSUPPORTED_PROTOCOL", 500, "runtime.package", False, "template"),
     # This code is the in-box read of a plugin's MCP declaration: an unreadable
     # cache marker, an absent command runner, a scan that failed or answered
     # with something other than documents. The row beneath it is the separate

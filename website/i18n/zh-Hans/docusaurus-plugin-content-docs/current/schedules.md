@@ -1,17 +1,19 @@
 # 管理 Schedule
 
-> 按照定时计划自动运行 Agent。
+> 按照定时计划自动运行 Agent 或 Assistant。
 
-在 AstraBox 中，Schedule 是一种触发配置，它把 Agent、时间规则和提示词关联
-起来。每个到期时刻都会启动一个新的 Agent Session，无需保持已有 Session
-在线。
+在 AstraBox 中，Schedule 是一种触发配置，它把 Agent 或 Assistant、时间规则
+和提示词关联起来。每个到期时刻都会启动一个新的 Session，无需保持已有 Session
+在线。对 Assistant 而言，这个 Session 是 Assistant 共享工作区中的一次新对话，
+以归属用户身份运行。
 
 可以在 Web 控制台中创建、查询、修改、停用、立即运行、重放和删除 Schedule。
 
 ## 使用前提
 
-- 创建负责处理每次任务的 Agent。
-- 以 Agent 所有者或 AstraBox 管理员身份登录。
+- 创建负责处理每次任务的 Agent 或 Assistant。
+- 以 Agent 所有者或 AstraBox 管理员身份登录。只有 Assistant 的归属用户可以为它
+  设置定时计划。
 - AstraBox 数据库使用 PostgreSQL 或 SQLite；其他数据库后端不支持定时计划。
 
 打开**控制台 → 触发配置 → 新建触发配置**，然后选择**定时计划**。表单中包含
@@ -19,7 +21,7 @@
 
 | 字段 | 说明 |
 | --- | --- |
-| Agent | 每次触发后负责处理任务的 Agent。 |
+| Agent 或 Assistant | 每次触发后负责处理任务的 Agent 或 Assistant。 |
 | 名称 | 用于区分不同 Schedule 的简短名称。 |
 | 提示词 | 每次计划触发时，希望 Agent 完成的任务。 |
 | Cron 表达式 | 五段 Cron 表达式：分钟、小时、日期、月份和星期。 |

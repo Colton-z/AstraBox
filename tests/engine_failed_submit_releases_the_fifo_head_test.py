@@ -51,6 +51,9 @@ def _hermes() -> HermesTuiEngineClient:
     client._delivery_sequence = 0  # type: ignore[attr-defined]
     client._tui_session_id = "tui-1"  # type: ignore[attr-defined]
     client._platform_session_id = "s1"  # type: ignore[attr-defined]
+    client._relay = None  # type: ignore[attr-defined]
+    client._submission_numbers = {}  # type: ignore[attr-defined]
+    client._submitting = False  # type: ignore[attr-defined]
 
     async def _ensure_session() -> None:
         raise _Boom("open_sandbox connect: sandbox no longer exists")

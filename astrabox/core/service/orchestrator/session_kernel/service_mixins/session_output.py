@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
+from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
@@ -40,6 +41,20 @@ class SessionOutputResponse:
     text: str = ""
     complete: bool = False
     error: str | None = None
+    #: The public view of the interaction this reply stopped at. A turn that
+    #: parks on a question ends a reply there: the participant needs the text
+    #: so far and the question before the turn can go on.
+    interaction: dict[str, Any] | None = None
+
+
+def _continuation_id(turn_id: str, interaction_id: str) -> str:
+    """The reply an answer continuation writes, after the question it answers.
+
+    Named from the turn, not from the parked reply's own id: a resumed read
+    reaches the parked reply through its input receipt on one pass and through
+    the turn's ``start`` on another, and both must name the same continuation.
+    """
+    return f"{turn_id}~{interaction_id}"
 
 
 @dataclass
@@ -93,7 +108,15 @@ class _TailFrameState:
         # continuation within the same turn. Only copies from that command
         # share an identity; the Session-wide durable cursor is separate.
         self.emitted_live_keys: set[tuple[str | None, int]] = set()
-        self.durable_live_keys: set[tuple[str | None, int]] = set()
+        #: Per command, the live sequence through which this response holds
+        #: every frame, from live copies or durable rows. A durable row holds
+        #: everything up to its own live sequence: the producer writes rows in
+        #: live order, and a run of deltas becomes one row carrying the live
+        #: sequence of the run's last chunk.
+        self.delivered_live_seq: dict[str | None, int] = {}
+        #: Live events that arrived ahead of a gap in their command's live
+        #: sequence, in live order. They wait until durable rows close the gap.
+        self.held_live_events: dict[str | None, deque[tuple[int, dict[str, Any]]]] = {}
         # Bounded grace window for reconciling an ERROR terminal
         # against its durable counterpart / producer completion while the
         # producer is still alive (unset until the first such error).
@@ -105,6 +128,32 @@ class _TailFrameState:
         subsequent calls, so the window is measured from first sighting."""
         if self.error_settle_deadline is None:
             self.error_settle_deadline = time.monotonic() + max(0.0, float(window_s))
+
+    def note_durable_live_seq(self, command_id: str | None, live_seq: int) -> None:
+        """Record a durable row that holds the command's frames through ``live_seq``."""
+        if live_seq > self.delivered_live_seq.get(command_id, -1):
+            self.delivered_live_seq[command_id] = live_seq
+
+    def withdraw_live_frame(self, command_id: str | None, live_seq: int) -> None:
+        """Leave a claimed live frame to its durable copy."""
+        self.emitted_live_keys.discard((command_id, live_seq))
+        if self.delivered_live_seq.get(command_id) == live_seq:
+            self.delivered_live_seq[command_id] = live_seq - 1
+
+    def next_held_live_event(self) -> dict[str, Any] | None:
+        """Return a held live event that now directly follows the delivered frames.
+
+        Held events that a durable row has covered in the meantime are dropped.
+        """
+        for command_id, held in list(self.held_live_events.items()):
+            delivered = self.delivered_live_seq.get(command_id, -1)
+            while held and held[0][0] <= delivered:
+                held.popleft()
+            if held and held[0][0] == delivered + 1:
+                return held.popleft()[1]
+            if not held:
+                del self.held_live_events[command_id]
+        return None
 
     @property
     def error_grace_expired(self) -> bool:
@@ -143,6 +192,15 @@ class SessionOutputSubscriptionMixin:
             available_only=available_only,
         ):
             yield frame
+
+    async def observe_session_output(self, session_id: str) -> None:
+        """Keep a live reader on the engine of a Session whose output is followed.
+
+        A reader attaches when someone follows the Session. A channel
+        destination follows it continuously, so output the engine produces
+        on its own reaches that destination without a viewer or a new input.
+        """
+        await self._observe_session_output(session_id)
 
     async def _observe_session_output(self, session_id: str) -> None:
         session = await self._sessions_repo.get_session(session_id)
@@ -221,13 +279,56 @@ class SessionOutputSubscriptionMixin:
             elif kind == "start":
                 if active is not None and not active.complete:
                     raise RuntimeError("Session output started a reply before completing its predecessor")
+                metadata = payload.get("messageMetadata") or {}
+                response_id = str(payload["messageId"])
+                turn_id = str(metadata.get("turn_id") or "")
+                continues = str(metadata.get("continues_interaction") or "").strip()
+                if (
+                    not continues and active is not None and active.interaction is not None
+                    and turn_id and active.turn_id == turn_id
+                ):
+                    # The parked turn reopened without naming its question.
+                    continues = str(active.interaction.get("interaction_id") or "")
+                if continues:
+                    response_id = _continuation_id(turn_id or response_id, continues)
                 active = SessionOutputResponse(
-                    response_id=str(payload["messageId"]),
-                    turn_id=str((payload.get("messageMetadata") or {}).get("turn_id") or ""),
+                    response_id=response_id,
+                    turn_id=turn_id,
                     start_after_seq=after_seq, response_seq=cursor + 1,
                 )
                 responses.append(active)
                 separate_text_block = False
+            elif kind == "data-interaction" and active is not None and not active.complete:
+                data = payload.get("data")
+                if isinstance(data, dict):
+                    active.interaction = data
+            elif (
+                kind == "finish" and active is not None and active.interaction is not None
+                and str(payload.get("finishReason") or "") == "tool-calls"
+            ):
+                # The turn parked: the reply so far and its question are complete.
+                active.complete = True
+                committed = cursor
+            elif active is not None and active.complete and active.interaction is not None:
+                if kind not in ("text-start", "text-delta"):
+                    # A parked turn that settles without an answer (stopped,
+                    # expired, its sandbox lost) writes only its terminal; the
+                    # question was already delivered with its reply.
+                    continue
+                # Text after the question without a new ``start`` (a recovered
+                # continuation) is still the reply that follows the question.
+                parked = active
+                active = SessionOutputResponse(
+                    response_id=_continuation_id(
+                        parked.turn_id or parked.response_id,
+                        str(parked.interaction.get("interaction_id") or ""),
+                    ),
+                    turn_id=parked.turn_id,
+                    start_after_seq=after_seq, response_seq=cursor + 1,
+                )
+                responses.append(active)
+                if kind == "text-delta":
+                    active.text += str(payload.get("delta") or "")
             elif kind == "text-start" and active is not None:
                 # Web renders each text part independently. A plain-text
                 # destination needs the same boundary between paragraphs.
@@ -424,10 +525,10 @@ class SessionOutputSubscriptionMixin:
                 # history-reload command must not restart that rebuild.
                 live_seq = _coerce_int(frame.get("live_seq"))
                 if live_seq is not None:
-                    state.durable_live_keys.add((
+                    state.note_durable_live_seq(
                         str(frame.get("command_id") or "").strip() or None,
                         live_seq,
-                    ))
+                    )
                 continue
             if self._tail_payload_should_stop(state, payload):
                 saw_finish = True
@@ -512,13 +613,26 @@ class SessionOutputSubscriptionMixin:
         live_seq = _coerce_int(event.get("live_seq"))
         if live_seq is None:
             return None
-        live_key = (event_command_id, live_seq)
-        if live_key in state.durable_live_keys or live_key in state.emitted_live_keys:
-            return None
         payload = event.get("payload")
         if not isinstance(payload, dict):
             return None
-        state.emitted_live_keys.add(live_key)
+        delivered = state.delivered_live_seq.get(event_command_id, -1)
+        if live_seq <= delivered:
+            return None
+        if live_seq > delivered + 1:
+            # Earlier frames have not reached this response, for example the
+            # head of a delta run that was open when it subscribed. The
+            # producer writes that run as one row keyed by the run's last live
+            # sequence, so emitting this chunk first would make the row count
+            # as delivered while its head never arrived. The rows cover every
+            # live sequence; the main loop releases this event once they close
+            # the gap.
+            state.held_live_events.setdefault(event_command_id, deque()).append(
+                (live_seq, event)
+            )
+            return None
+        state.delivered_live_seq[event_command_id] = live_seq
+        state.emitted_live_keys.add((event_command_id, live_seq))
         return payload, live_seq, event_turn_id, event_command_id
 
     def _tail_emit_durable_cursor_for_live_frame(
@@ -597,7 +711,7 @@ class SessionOutputSubscriptionMixin:
                         live_seq,
                     ) in payloads:
                         if live_seq is not None:
-                            tail_state.durable_live_keys.add((payload_command_id, live_seq))
+                            tail_state.note_durable_live_seq(payload_command_id, live_seq)
                         await self._tail_ensure_finish_frame_visible(
                             tail_state,
                             payload=payload,
@@ -670,7 +784,10 @@ class SessionOutputSubscriptionMixin:
                             return
 
                 try:
-                    broker_event = await asyncio.wait_for(queue.get(), timeout=self._poll_interval_s)
+                    # A held live event precedes everything still queued.
+                    broker_event = tail_state.next_held_live_event()
+                    if broker_event is None:
+                        broker_event = await asyncio.wait_for(queue.get(), timeout=self._poll_interval_s)
                 except asyncio.TimeoutError:
                     producer_done = producer_task is not None and producer_task.done()
                     # An error terminal keeps the tail open past producer
@@ -698,7 +815,7 @@ class SessionOutputSubscriptionMixin:
                             live_seq,
                         ) in payloads:
                             if live_seq is not None:
-                                tail_state.durable_live_keys.add((payload_command_id, live_seq))
+                                tail_state.note_durable_live_seq(payload_command_id, live_seq)
                             await self._tail_ensure_finish_frame_visible(
                                 tail_state,
                                 payload=payload,
@@ -762,7 +879,7 @@ class SessionOutputSubscriptionMixin:
                                 live_seq,
                             ) = durable_frame
                             if live_seq is not None:
-                                tail_state.durable_live_keys.add((payload_command_id, live_seq))
+                                tail_state.note_durable_live_seq(payload_command_id, live_seq)
                             await self._tail_ensure_finish_frame_visible(
                                 tail_state,
                                 payload=payload,
@@ -832,7 +949,7 @@ class SessionOutputSubscriptionMixin:
                                 # can emit it with its exact resume coordinate.
                                 # Extraction reserved the live sequence, but no
                                 # payload was sent, so the durable copy owns it.
-                                tail_state.emitted_live_keys.discard((payload_command_id, _live_seq))
+                                tail_state.withdraw_live_frame(payload_command_id, _live_seq)
                                 continue
                             seen_terminal_payload = True
                             terminal_emitted_from_storage = False
@@ -853,7 +970,7 @@ class SessionOutputSubscriptionMixin:
                                     durable_live_seq,
                                 ) = durable_frame
                                 if durable_live_seq is not None:
-                                    tail_state.durable_live_keys.add((durable_command_id, durable_live_seq))
+                                    tail_state.note_durable_live_seq(durable_command_id, durable_live_seq)
                                 if (
                                     durable_live_seq is not None
                                     and (durable_command_id, durable_live_seq) in tail_state.emitted_live_keys
@@ -920,7 +1037,7 @@ class SessionOutputSubscriptionMixin:
                             live_seq,
                         ) = durable_frame
                         if live_seq is not None:
-                            tail_state.durable_live_keys.add((payload_command_id, live_seq))
+                            tail_state.note_durable_live_seq(payload_command_id, live_seq)
                         await self._tail_ensure_finish_frame_visible(
                             tail_state,
                             payload=payload,

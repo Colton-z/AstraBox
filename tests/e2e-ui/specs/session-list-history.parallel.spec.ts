@@ -242,7 +242,7 @@ test('session-list failure is displayed instead of being rendered as an empty si
     });
   });
 
-  for (const path of ['/agents', '/assistants', `/sessions/${created.session_id}`]) {
+  for (const path of ['/agents', `/sessions/${created.session_id}`]) {
     await test.step(`shared session-list error remains visible on ${path}`, async () => {
       await page.goto(appPath(path), { waitUntil: 'domcontentloaded' });
       await expect(page.getByText(/Request failed|请求失败/)).toBeVisible();

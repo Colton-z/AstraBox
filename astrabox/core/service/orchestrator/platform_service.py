@@ -42,6 +42,7 @@ from astrabox.persistence.repository import (
 )
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
+from astrabox.common.utils.time_utils import utcnow_iso
 from astrabox.common.utils.settings import load_astrabox_settings
 from astrabox.common.utils.user_context import UserContext
 from astrabox.core.service.orchestrator.agent_access import is_platform_admin
@@ -60,6 +61,7 @@ from astrabox.core.service.orchestrator.sandbox_lifecycle import (
     SandboxLifecycleService,
     terminal_session_updates,
 )
+from astrabox.core.service.connectors.service import ConnectorService
 from astrabox.core.service.orchestrator.platform_mcp_service import PlatformMCPService
 from astrabox.core.service.artifacts.service import ArtifactService
 from astrabox.core.service.artifacts.origin import OriginAccess
@@ -123,7 +125,7 @@ class AgentPlatformService:
         settings = load_astrabox_settings()
         self._build_core_singletons(settings)
         self._build_sub_services(agent_service_getter, assistant_lifecycle_getter)
-        self._build_admin_and_deployments()
+        self._build_admin_and_deployments(assistant_lifecycle_getter)
 
     def _construct(self, name: str, build_default: Callable[[], Any]) -> Any:
         """Build sub-service ``name`` — through its deployment override if one
@@ -285,6 +287,7 @@ class AgentPlatformService:
                 binding_repo=self._platform_mcp_binding_repo,
                 expose_port_service=self._expose_port_service,
                 artifact_service=self.artifacts,
+                connector_service=ConnectorService(),
             ),
         )
         self._session_title_service = self._construct(
@@ -333,7 +336,9 @@ class AgentPlatformService:
             ),
         )
 
-    def _build_admin_and_deployments(self) -> None:
+    def _build_admin_and_deployments(
+        self, assistant_lifecycle_getter: Callable[[], Any] | None
+    ) -> None:
         from astrabox.core.service.orchestrator.service_factories import (
             DeploymentServiceReplacement,
         )
@@ -363,11 +368,14 @@ class AgentPlatformService:
             session_events_repo=self._session_events_repo,
             message_view=self._session_message_view,
             session_detail_getter=self.get_session,
+            answer_pending_interaction=self.answer_pending_interaction,
             supersede_pending_interaction=self.supersede_pending_interaction,
             spawn_background_task=self._spawn_background_task,
             channel_credentials=self._channel_credentials,
             read_session_output=self._session_kernel.read_session_output,
             session_output_cursor=self._session_kernel.session_output_cursor,
+            assistant_service_getter=assistant_lifecycle_getter,
+            observe_session_output=self._session_kernel.observe_session_output,
         )
         self._channel_spine_reconciler = ChannelSpineReconciler(
             ingress_service=self._channel_ingress_service,
@@ -393,6 +401,7 @@ class AgentPlatformService:
                 channel_credentials=self._channel_credentials,
                 session_snapshots_repo=self._session_snapshots_repo,
                 session_events_repo=self._session_events_repo,
+                assistant_service_getter=assistant_lifecycle_getter,
             ),
         )
         if not isinstance(deployment_service, DeploymentServiceReplacement):
@@ -936,6 +945,18 @@ class AgentPlatformService:
         session = await self._session_service.must_get_owned_session(user, session_id)
         return await self._session_kernel.delete_session(user, session_id)
 
+    async def mark_session_read(self, user: UserContext, session_id: str) -> dict[str, Any]:
+        """Record that the owner has read the conversation up to now."""
+
+        await self.ensure_bootstrap()
+        await self._session_service.must_get_owned_session(user, session_id)
+        read_at = utcnow_iso()
+        # Reading is not activity: the list stays ordered by what happened.
+        await self._sessions_repo.update_session(
+            session_id, {"read_at": read_at}, touch_updated_at=False
+        )
+        return {"session_id": session_id, "read_at": read_at}
+
     async def archive_session(self, user: UserContext, session_id: str) -> dict[str, Any]:
         await self.ensure_bootstrap()
         session = await self._session_service.must_get_owned_session(user, session_id)
@@ -1246,8 +1267,22 @@ class AgentPlatformService:
         callback_base_url: str | None = None,
     ) -> dict[str, Any]:
         await self._deployment_service.assert_can_manage_agent(user, agent_id)
+        return await self._create_deployment(
+            user, payload, callback_base_url=callback_base_url, agent_id=agent_id
+        )
+
+    async def _create_deployment(
+        self,
+        user: UserContext,
+        payload: dict[str, Any],
+        *,
+        callback_base_url: str | None,
+        agent_id: str = "",
+        assistant_id: str = "",
+    ) -> dict[str, Any]:
         created = await self._deployment_service.create(
             agent_id=agent_id,
+            assistant_id=assistant_id,
             creator_user_id=user.user_id,
             scene=str(payload.get("scene") or ""),
             name=str(payload.get("name") or ""),
@@ -1258,11 +1293,89 @@ class AgentPlatformService:
             credentials=payload.get("credentials"),
             callback_base_url=callback_base_url,
             schedule=payload.get("schedule"),
+            allowed_participants=payload.get("allowed_participants"),
             **({"execution_user_id": payload["execution_user_id"], "actor": user}
                if "execution_user_id" in payload else {}),
         )
         await self._channel_source_host.reconcile()
         return created
+
+    # ── Assistant trigger bindings (owner-only) ─────────────────────────────
+    async def list_assistant_deployments(
+        self, user: UserContext, assistant_id: str
+    ) -> list[dict[str, Any]]:
+        await self._deployment_service.assert_can_manage_assistant(user, assistant_id)
+        return await self._deployment_service.list_for_assistant(assistant_id)
+
+    async def create_assistant_deployment(
+        self,
+        user: UserContext,
+        assistant_id: str,
+        payload: dict[str, Any],
+        *,
+        callback_base_url: str | None = None,
+    ) -> dict[str, Any]:
+        await self._deployment_service.assert_can_manage_assistant(user, assistant_id)
+        return await self._create_deployment(
+            user, payload, callback_base_url=callback_base_url, assistant_id=assistant_id
+        )
+
+    async def update_assistant_deployment(
+        self, user: UserContext, assistant_id: str, deployment_id: str, patch: dict[str, Any]
+    ) -> dict[str, Any]:
+        await self._deployment_service.assert_can_manage_assistant(user, assistant_id)
+        updated = await self._deployment_service.update(
+            deployment_id, assistant_id=assistant_id, patch=patch, actor=user
+        )
+        await self._channel_source_host.reconcile()
+        return updated
+
+    async def delete_assistant_deployment(
+        self, user: UserContext, assistant_id: str, deployment_id: str
+    ) -> dict[str, Any]:
+        await self._deployment_service.assert_can_manage_assistant(user, assistant_id)
+        await self._deployment_service.delete(deployment_id, assistant_id=assistant_id)
+        await self._channel_source_host.reconcile()
+        return {"deployment_id": deployment_id, "deleted": True}
+
+    async def delete_assistant_conversations(self, user: UserContext, assistant_id: str) -> None:
+        """Delete the owner's conversations with an Assistant that is being deleted.
+
+        They belong to the Assistant: the console lists them only under its
+        row, and none of them can continue once it is gone.
+        """
+        await self.ensure_bootstrap()
+        for session in await self._sessions_repo.list_assistant_conversations(user.user_id, assistant_id):
+            await self._session_kernel.delete_session(user, str(session["session_id"]))
+
+    async def delete_all_assistant_deployments(self, assistant_id: str) -> None:
+        """Remove a deleted Assistant's bindings so none keeps firing."""
+        await self._deployment_service.delete_for_assistant(assistant_id)
+        await self._channel_source_host.reconcile()
+
+    async def list_assistant_deployment_runs(
+        self, user: UserContext, assistant_id: str, deployment_id: str, *, limit: int = 50
+    ) -> list[dict[str, Any]]:
+        await self._deployment_service.assert_can_manage_assistant(user, assistant_id)
+        return await self._deployment_service.list_runs_for_deployment(
+            deployment_id, assistant_id=assistant_id, limit=limit
+        )
+
+    async def trigger_assistant_deployment_run(
+        self, user: UserContext, assistant_id: str, deployment_id: str
+    ) -> dict[str, Any]:
+        await self._deployment_service.assert_can_manage_assistant(user, assistant_id)
+        return await self._deployment_service.trigger_now(
+            deployment_id, assistant_id=assistant_id
+        )
+
+    async def replay_assistant_deployment_run(
+        self, user: UserContext, assistant_id: str, deployment_id: str, run_id: str
+    ) -> dict[str, Any]:
+        await self._deployment_service.assert_can_manage_assistant(user, assistant_id)
+        return await self._deployment_service.replay_run(
+            run_id, deployment_id=deployment_id, assistant_id=assistant_id
+        )
 
     async def list_channel_providers(self, user: UserContext) -> list[dict[str, Any]]:
         from astrabox.seams.channel import registered_channels

@@ -38,6 +38,7 @@ from astrabox.core.service.orchestrator.expiration_watcher import ExpirationWatc
 from astrabox.core.service.orchestrator.platform_service import AgentPlatformService
 from astrabox.core.service.orchestrator.runtime_manager import RemoteAgentRuntimeManager
 from astrabox.common.utils.time_utils import utcnow_iso
+from astrabox.core.service.orchestrator.runtime.storage import mounts as mounts_module
 
 
 #: An agent that RESOLVES but carries no idle window of its own, as distinct from
@@ -204,6 +205,23 @@ class _NoDeadSandboxCandidates:
         self, *, now_iso: str, limit: int
     ) -> dict[str, int]:
         return {}
+
+
+
+@pytest.fixture(autouse=True)
+def _no_workspace_mount_reconciliation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the watcher tick off the real database and sandbox backend.
+
+    These cases judge idle parking, but the same tick also reconciles
+    workspace mounts against the deployment's own storage, which a unit run
+    must not reach; a full run once hung in this file for 120 s while the
+    same case passes alone.
+    """
+
+    async def _nothing_to_reconcile() -> dict[str, int]:
+        return {}
+
+    monkeypatch.setattr(mounts_module, "reconcile_workspace_mounts", _nothing_to_reconcile)
 
 
 def _watcher(

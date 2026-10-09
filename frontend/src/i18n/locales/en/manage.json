@@ -36,7 +36,9 @@
     "group_operate": "Operate",
     "group_system": "System",
     "group_integrations": "Integrated services",
-    "mcp_tokens": "MCP clients"
+    "mcp_tokens": "MCP clients",
+    "connectors": "Connectors",
+    "assistant_defaults": "Assistant defaults"
   },
   "credentials": {
     "title": "Credentials",
@@ -263,7 +265,6 @@
     "scene_scheduler": "External scheduler (shared secret)",
     "scene_schedule": "Schedule",
     "select_agent": "Select an agent",
-    "agent_help": "The Agent that will handle conversations from this trigger.",
     "scene_help": "Choose a schedule, an authenticated request, or a concrete messaging platform.",
     "name_help": "A short name that distinguishes this schedule from other work on the same Agent.",
     "prompt_prefix_help": "Optional. Prepended to every message this trigger delivers.",
@@ -310,7 +311,15 @@
     "run_time": "Scheduled or created",
     "run_action": "Action",
     "run_now": "Run now",
-    "replay": "Replay"
+    "replay": "Replay",
+    "field_target": "Agent or Assistant",
+    "target_help": "What this trigger starts conversations on. An Assistant is yours alone: its conversations run as you, and only you manage its triggers.",
+    "target_assistant_label": "{{name}} · Assistant",
+    "field_assistant": "Assistant",
+    "empty_hint_no_targets": "Create an Agent or an Assistant first. Every trigger must start one.",
+    "field_allowed_participants": "Allowed senders",
+    "allowed_participants_help": "Messaging accounts whose messages reach this trigger, one per line, written as platform:user-id (for example telegram:123456789). Leave it empty to admit everyone. An Assistant needs your own account here.",
+    "err_allowed_participants_required": "List your own messaging account under Allowed senders: an Assistant answers only its owner."
   },
   "assistants": {
     "title": "Assistants",
@@ -361,7 +370,20 @@
     "icon_help": "Optional. The icon on the assistant card (an emoji or image URL).",
     "system_label": "System prompt",
     "system_placeholder": "You are a data analyst. Explain every number you report and say which file it came from.",
-    "system_help": "Optional. Defines the assistant's role, style, and rules. Leave it empty to keep the Agent program's own default. Changes take effect when the next conversation starts."
+    "system_help": "Optional. Defines the assistant's role, style, and rules. Leave it empty to keep the Agent program's own default. Changes take effect when the next conversation starts.",
+    "section_extensions": "Skills, plugins and configuration",
+    "skills_label": "Skills",
+    "skills_help": "Git sources of SKILL.md Skills, as repository@ref#path. They are available from the next conversation.",
+    "mcp_label": "MCP servers",
+    "mcp_help": "Server definitions by name. This program accepts these transports: {{transports}}. A change restarts the program once no reply is running.",
+    "packages_label": "Packages",
+    "packages_help": "Packages this program loads, each from a Git repository with the kind it is. A change restarts the program once no reply is running. Kinds:",
+    "native_reserved": "AstraBox sets these keys itself, so they cannot be set here: {{keys}}.",
+    "timezone_label": "Timezone",
+    "timezone_placeholder": "Select a timezone",
+    "timezone_search": "Search timezones",
+    "timezone_empty": "No matching timezone",
+    "timezone_help": "The owner's timezone. The Assistant keeps time in it, so a schedule it sets up, such as every morning at 8, runs at that local time. A change restarts the Assistant's program once no reply is running."
   },
   "sessions": {
     "description": "Conversations started from an Agent. Open a Session to review its messages, current status, sandbox, and technical events.",
@@ -526,7 +548,7 @@
         "label": "Networking",
         "type": {
           "label": "Outbound network access",
-          "help": "Unrestricted permits every outbound destination. Limited permits only the hosts below plus platform-required model, callback, tracing, and declared Plugin repository hosts.",
+          "help": "Unrestricted permits every outbound destination. Limited permits only the hosts below plus platform-required model, callback, tracing, and declared package source hosts.",
           "options": {
             "unrestricted": "Unrestricted",
             "limited": "Limited"
@@ -750,5 +772,57 @@
     "revoke": "Revoke",
     "empty_title": "No keys yet.",
     "empty_hint": "Issue one above, then paste the block it gives you into your MCP client."
+  },
+  "connectors": {
+    "card_title": "Connectors",
+    "card_intro": "Work apps this Assistant can use, each with your own sign-in at the vendor. An app you connect is turned on here unless you turn it off.",
+    "card_note": "Your sign-in stays on the server: the Assistant’s sandbox never sees the token. Turning a connector on or off restarts the Assistant’s backend once it is idle.",
+    "status_connected": "Connected",
+    "status_needs_reauth": "Sign in again",
+    "use_here": "Use in this Assistant",
+    "use_in_assistant": "Use {{name}} in this Assistant",
+    "connect": "Connect",
+    "reconnect": "Reconnect",
+    "connecting": "Opening sign-in…",
+    "disconnect": "Disconnect",
+    "admin_title": "Connectors",
+    "admin_lede": "Set each app up once. Where the vendor issues OAuth clients only to registered apps, register this deployment’s app with redirect URI {{callback}} and enter its client. Then connect your own account so the app’s tools can be listed, and publish them.",
+    "dynamic_intro": "This vendor registers the connector hub automatically.",
+    "operator_intro": "This vendor needs an OAuth app registered for this deployment.",
+    "vendor_guide": "Vendor setup guide",
+    "client_id": "Client ID",
+    "client_secret": "Client secret (leave empty for a public client)",
+    "not_set_up": "An administrator must set this app up under Connectors first.",
+    "not_deployed": "Server not deployed",
+    "not_configured": "Not set up",
+    "unpublished": "Not published",
+    "published": "Published",
+    "set_up": "Set up",
+    "verify": "Connect your account",
+    "publish": "Publish tools",
+    "remove": "Remove",
+    "agent_card_intro": "Work apps this Agent offers. Each person who starts a conversation uses their own sign-in, connected under Connections.",
+    "agent_card_note": "Conversations a channel, schedule or webhook starts use no one's connections. Changing the set prepares the Agent's runtime again.",
+    "offer_here": "Offer in this Agent",
+    "offer_in_agent": "Offer {{name}} in this Agent"
+  },
+  "assistant_defaults": {
+    "title": "Assistant defaults",
+    "lede": "What every Assistant on this deployment can use. Assistants read these when they start, so a change reaches each on its next start; owners add their own on top.",
+    "load_failed": "Could not load the Assistant defaults",
+    "section_basic": "New Assistants",
+    "environment_automatic": "Automatic: the only Environment that runs Assistants",
+    "environment_automatic_named": "Automatic: {{name}}",
+    "environment_help": "Where each user's first Assistant is created. Automatic works while exactly one enabled Environment runs Assistants.",
+    "model_label": "Model",
+    "model_help": "Used unless an Assistant names its own. Empty uses the Environment's default.",
+    "instructions_label": "Organization instructions",
+    "instructions_help": "Every Assistant receives these before its owner's own instructions.",
+    "card_note": "Assistants read these when they start; a running one picks them up on its next start.",
+    "no_environment_title": "No Environment runs Assistants",
+    "no_environment": "Users get no Assistant until an enabled Environment's program runs Assistants. Add one under Environments.",
+    "vaults_label": "Credential Vaults",
+    "vaults_help": "Bound to every Assistant, the same way an Assistant's own binding is.",
+    "vaults_none": "No Credential Vaults yet. Create one under Credentials."
   }
 }

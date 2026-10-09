@@ -33,7 +33,7 @@ The Agent executes tasks inside a Session. AstraBox keeps the Agent available, s
 | `mcp_servers` | object | No | MCP server configurations, keyed by server name. |
 | `artifacts_enabled` | boolean | No | Whether the Agent's conversations receive the built-in `artifacts` tools. Omitted on create, it is `true`; see [Artifacts](artifacts.md#create-an-artifact). |
 | `default_repo` | object | No | The source repository cloned for each new Session. |
-| `plugin_repos` | array | No | Plugin repositories and the reviewed revisions to install. |
+| `packages` | array | No | Engine-native packages and the reviewed revisions to install. Each names a `kind` the Environment's engine declares, such as `claude-plugin` for a Claude Code plugin repository. |
 | `environment_name` | string | Yes | The Environment that supplies the Agent program, sandbox, network policy, and model connection. |
 | `exposure_mode` | string | No | Where the Agent is available: `chat_only`, `mcp_only`, or `both`. |
 | `idle_hibernate_seconds` | integer | No | How long the Session runtime may remain idle before the Environment's pause or removal behavior applies. |
@@ -90,6 +90,18 @@ platform-managed rather than arbitrary JSON overrides.
 The selected Agent program supplies its own native tools, such as reading files, editing code, and running commands. AstraBox does not redefine those tools. Agent configuration adds MCP servers, Skills, and Plugins in the native formats supported by that program. In **Console > Agents**, open an Agent to select administrator-managed remote MCP servers and Skills, or add a Plugin repository directly to the Agent.
 
 For more configurations, see [MCP servers, Skills, and Plugins](adding-tools.md).
+
+### Connectors
+
+The **Connectors** card on an Agent's management page offers work apps such as
+Gmail or Notion to the Agent's callers. Each person who starts a conversation
+with the Agent uses their own sign-in, which they connect on the
+**Connections** page. When a person who has not connected the app asks for
+it, the agent is told so and can show them a card to connect it. Conversations a channel, schedule or webhook
+starts have no such person and are offered no connectors. A connector is an
+MCP server named after the app, so it cannot share a name with one of the
+Agent's own MCP servers. See [Connect work apps](assistants.md#connectors) for
+how connectors work and how an administrator sets them up.
 
 ## Managing Agents
 

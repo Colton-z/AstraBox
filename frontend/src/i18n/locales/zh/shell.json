@@ -23,7 +23,6 @@
   "skip_to_content": "跳到正文",
   "status_ready": "就绪",
   "tab_agents": "Agent",
-  "tab_assistant": "Assistant",
   "theme": "主题",
   "theme_dark": "深色",
   "theme_light": "浅色",
@@ -31,5 +30,13 @@
   "time_days_ago": "{{count}}天前",
   "time_hours_ago": "{{count}}小时前",
   "time_just_now": "刚刚",
-  "time_minutes_ago": "{{count}}分钟前"
+  "time_minutes_ago": "{{count}}分钟前",
+  "new_reply": "有新回复",
+  "unread": "未读",
+  "notifications_enable": "有新回复时通知我",
+  "assistants_group": "助手",
+  "assistant_new": "新建助手",
+  "assistant_default_name": "助手",
+  "assistant_open_failed": "无法打开助手",
+  "assistant_earlier_conversations": "{{name}} 以前的对话"
 }

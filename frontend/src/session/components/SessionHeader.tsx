@@ -7,6 +7,7 @@ import { RunId, StatusPill, type PillTone } from '../../components/AstraConsole'
 import { localizeDisplayText } from '../../utils/format';
 import type { SessionRecord } from '../../types';
 import { ShareDialog } from './ShareDialog';
+import { AssistantProfile } from '../../assistant/AssistantProfile';
 
 // Top page-chrome header: run id / model badge / title / status pill, the
 // runtime-unavailable + last-error hints beneath it, and the terminate / end
@@ -89,6 +90,9 @@ export function SessionHeader({
         </div>
       </div>
       <div className="flex items-center gap-1.5 shrink-0">
+        {isAssistantConversation && session.assistant_id && (
+          <AssistantProfile assistantId={session.assistant_id} />
+        )}
         <ShareDialog sessionId={session.session_id} />
         {/* One size for every action in this strip, taken from the band rather
             than written per button: `sm` is what the share trigger beside them

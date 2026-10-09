@@ -7,13 +7,17 @@ import { Button } from '@/components/ui/button';
 import {
   deleteAssistant,
   getAssistant,
+  getAssistantExtensions,
   hibernateAssistantWorkspace,
+  setAssistantExtensions,
   updateAssistant,
   wakeAssistantWorkspace,
 } from '@/assistant/api';
-import type { AssistantRecord } from '@/assistant/types';
+import type { AssistantExtensionCatalog, AssistantRecord } from '@/assistant/types';
 
 import { ErrorNote } from '@/components/shell';
+import { CatalogExtensionField, sameIds } from './CatalogExtensionField';
+import { ConnectorsCard } from './ConnectorsCard';
 import {
   ConsoleEditSections,
   ConsoleDangerButton,
@@ -36,12 +40,16 @@ import {
   assistantStateTone,
   assistantWakeable,
   formatDateTime,
+  loadAssistantEnvironments,
 } from './assistantConfig';
 import {
+  assistantExtensionUpdate,
   buildAssistantEditDraft,
   buildAssistantEditSections,
+  buildAssistantExtensionSection,
   type AssistantEditDraft,
 } from './assistantEditConfig';
+import type { EnvironmentConfig } from '@/types';
 import { keepsLastRead, useKeepCurrent, type ReloadContext } from '@/hooks/useKeepCurrent';
 import { useFrontendReleaseHold } from '@/hooks/useFrontendReleaseHold';
 
@@ -75,6 +83,41 @@ export default function AssistantDetailPage() {
   const [saveError, setSaveError] = useState('');
   const [invalidKeys, setInvalidKeys] = useState<Set<string>>(new Set());
   const savedTimer = useRef<number | null>(null);
+
+  // The Assistant's Environment, for what its program lets an owner add.
+  const [environments, setEnvironments] = useState<EnvironmentConfig[]>([]);
+  useEffect(() => {
+    void loadAssistantEnvironments().then(setEnvironments, () => setEnvironments([]));
+  }, []);
+  const environment = environments.find((candidate) => candidate.name === record?.environment_name);
+
+  // The deployment catalog's MCP servers and Skills, as on an Agent.
+  const [extensionCatalog, setExtensionCatalog] = useState<AssistantExtensionCatalog | null>(null);
+  const [extensionMcpIds, setExtensionMcpIds] = useState<string[]>([]);
+  const [extensionSkillIds, setExtensionSkillIds] = useState<string[]>([]);
+  const [extensionLoading, setExtensionLoading] = useState(false);
+  const [extensionError, setExtensionError] = useState('');
+  const loadExtensions = useCallback(async () => {
+    setExtensionLoading(true);
+    setExtensionError('');
+    try {
+      const catalog = await getAssistantExtensions(assistantId);
+      setExtensionCatalog(catalog);
+      setExtensionMcpIds(catalog.selected_mcp_server_ids);
+      setExtensionSkillIds(catalog.selected_skill_ids);
+    } catch (e) {
+      setExtensionError((e as Error).message);
+    } finally {
+      setExtensionLoading(false);
+    }
+  }, [assistantId]);
+  useEffect(() => {
+    void loadExtensions();
+  }, [loadExtensions]);
+  const extensionsDirty = Boolean(extensionCatalog) && (
+    !sameIds(extensionMcpIds, extensionCatalog!.selected_mcp_server_ids)
+    || !sameIds(extensionSkillIds, extensionCatalog!.selected_skill_ids)
+  );
 
   const [actionBusy, setActionBusy] = useState(false);
   // Which action is running, kept apart from `actionBusy` because the heading
@@ -131,17 +174,21 @@ export default function AssistantDetailPage() {
   }, [assistantId, record]);
 
   const hasPermissionMode = Boolean(record?.permission_mode_default);
-  const sections = useMemo(
-    () => buildAssistantEditSections(hasPermissionMode),
-    [hasPermissionMode, t],
-  );
+  const sections = useMemo(() => {
+    const extensions = buildAssistantExtensionSection(environment);
+    const base = buildAssistantEditSections(hasPermissionMode);
+    return extensions ? [...base, extensions] : base;
+  }, [hasPermissionMode, environment, t]);
   const baseline = useMemo(
     () => (record ? buildAssistantEditDraft(record) : null),
     [record],
   );
 
+  const holdsCatalog = (fields: EditFieldSpec[]) =>
+    fields.some((field) => field.key === 'mcp_servers' || field.key === 'skills');
   const isDirty = (fields: EditFieldSpec[]) =>
-    sectionIsDirty(fields, draftRecordOf(draft), draftRecordOf(baseline));
+    sectionIsDirty(fields, draftRecordOf(draft), draftRecordOf(baseline))
+    || (holdsCatalog(fields) && extensionsDirty);
   useFrontendReleaseHold(sections.some((section) => isDirty(section.fields)));
 
   const saveSection = async (index: number) => {
@@ -162,7 +209,18 @@ export default function AssistantDetailPage() {
         // A program without permission modes refuses any value, the default too.
         ...(hasPermissionMode ? { permission_mode_default: draft.permission_mode_default } : {}),
         system: draft.system.trim() || null,
+        timezone: draft.timezone.trim() || null,
+        ...assistantExtensionUpdate(environment, draft),
       });
+      if (holdsCatalog(sections[index]?.fields ?? []) && extensionsDirty) {
+        const saved = await setAssistantExtensions(record.assistant_id, {
+          mcp_server_ids: extensionMcpIds,
+          skill_ids: extensionSkillIds,
+        });
+        setExtensionCatalog(saved);
+        setExtensionMcpIds(saved.selected_mcp_server_ids);
+        setExtensionSkillIds(saved.selected_skill_ids);
+      }
       await load();
       setSavedSection(index);
       if (savedTimer.current) window.clearTimeout(savedTimer.current);
@@ -176,6 +234,10 @@ export default function AssistantDetailPage() {
 
   const revertSection = (fields: EditFieldSpec[]) => {
     if (!draft || !baseline) return;
+    if (holdsCatalog(fields) && extensionCatalog) {
+      setExtensionMcpIds(extensionCatalog.selected_mcp_server_ids);
+      setExtensionSkillIds(extensionCatalog.selected_skill_ids);
+    }
     setDraft(
       revertFields(
         fields,
@@ -307,8 +369,27 @@ export default function AssistantDetailPage() {
       }
     >
       {saveError && <ErrorNote>{saveError}</ErrorNote>}
+      {extensionError && <ErrorNote>{extensionError}</ErrorNote>}
       <ConsoleEditSections
         sections={sections}
+        renderField={(field, customField) => {
+          if (field.key !== 'mcp_servers' && field.key !== 'skills') return customField;
+          const isMcp = field.key === 'mcp_servers';
+          const kind = isMcp ? 'mcp' : 'skills';
+          return (
+            <CatalogExtensionField
+              kind={kind}
+              id={`assistant-extension-${kind}`}
+              catalog={extensionCatalog}
+              value={isMcp ? extensionMcpIds : extensionSkillIds}
+              onChange={isMcp ? setExtensionMcpIds : setExtensionSkillIds}
+              loading={extensionLoading}
+              disabled={savingSection !== null}
+            >
+              {customField}
+            </CatalogExtensionField>
+          );
+        }}
         draft={draftRecord ?? {}}
         onDraftChange={(d) => setDraft(d as unknown as AssistantEditDraft)}
         idPrefix="assistant"
@@ -333,6 +414,7 @@ export default function AssistantDetailPage() {
           onRevert: () => revertSection(section.fields),
         })}
       />
+      <ConnectorsCard kind="assistant" targetId={record.assistant_id} />
     </ConsoleRecordPage>
   );
 }

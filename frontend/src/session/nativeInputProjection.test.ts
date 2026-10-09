@@ -104,6 +104,56 @@ describe('projectNativeInputs', () => {
     ]);
   });
 
+  it('places an input taken during a running turn after the reply that came before it', () => {
+    // A Hermes conversation where the second message was sent while the first
+    // reply ran: the engine took it into the same platform turn. Each reply is
+    // opened by the `start` the server emits with `data-input-consumed`
+    // (`_ResumeCursorTracker.message_payloads`): named by the consumed frame's
+    // responseMessageId and carrying the platform turn in its metadata.
+    const turnId = '0c744864-acf0-4658-b2e8-b4158ee8d6d9';
+    const reply = (id: string): SDKUIMessage => ({
+      id,
+      role: 'assistant',
+      metadata: { part_contract: 'astrabox.parts/1', turn_id: turnId },
+      parts: [],
+    });
+    // As useSessionChat builds them from each `data-input-consumed` frame.
+    const first: NativeInputProjectionBoundary = {
+      clientMessageId: '40667a0e-62ee-4734-be78-1218d4e03e01',
+      inputId: '40667a0e-62ee-4734-be78-1218d4e03e01',
+      platformTurnId: turnId,
+      responseMessageId: 'a75bc814-d87f-56de-b76e-16226add2439',
+      content: 'first prompt',
+    };
+    const carried: NativeInputProjectionBoundary = {
+      clientMessageId: '1abf08f1-c70b-4458-971a-4d19b8388403',
+      inputId: '1abf08f1-c70b-4458-971a-4d19b8388403',
+      platformTurnId: turnId,
+      responseMessageId: '449c5ea0-64c3-5ebc-a82a-1d2d58924e4d',
+      content: 'sent while the first reply ran',
+    };
+    const order = (messages: SDKUIMessage[]) => messages.map((message) => [message.role, message.id]);
+
+    // The SDK's throttled snapshot can render the boundary before the reply it opened.
+    expect(order(projectNativeInputs(
+      [reply(first.responseMessageId)],
+      [first, carried],
+    ))).toEqual([
+      ['user', `${first.inputId}:user`],
+      ['assistant', first.responseMessageId],
+      ['user', `${carried.inputId}:user`],
+    ]);
+    expect(order(projectNativeInputs(
+      [reply(first.responseMessageId), reply(carried.responseMessageId)],
+      [first, carried],
+    ))).toEqual([
+      ['user', `${first.inputId}:user`],
+      ['assistant', first.responseMessageId],
+      ['user', `${carried.inputId}:user`],
+      ['assistant', carried.responseMessageId],
+    ]);
+  });
+
   it('uses the platform turn as the assistant anchor when the response id differs', () => {
     const projected = projectNativeInputs(
       [assistant('turn-3')],

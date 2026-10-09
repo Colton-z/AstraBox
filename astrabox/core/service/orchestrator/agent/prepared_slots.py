@@ -1653,8 +1653,8 @@ async def _compose_gateway_vault(
     from astrabox.core.service.orchestrator.runtime.mcp_servers import (
         sandbox_mcp_egress_hosts,
     )
-    from astrabox.core.service.orchestrator.runtime.plugin_repos import (
-        plugin_repo_egress_hosts,
+    from astrabox.core.service.orchestrator.runtime.packages import (
+        package_egress_hosts,
     )
 
     vault_enabled = bool(
@@ -1671,7 +1671,7 @@ async def _compose_gateway_vault(
         additional_vault_write=gateway_plan,
         required_hosts=(
             *required_network_hosts,
-            *tuple(plugin_repo_egress_hosts(template)),
+            *tuple(package_egress_hosts(template)),
         ),
         mcp_hosts=tuple(
             sandbox_mcp_egress_hosts(getattr(template, "mcp_servers", None))

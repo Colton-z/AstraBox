@@ -146,13 +146,19 @@ def _notify(method: str, params: dict[str, Any]) -> dict[str, Any]:
     return {"method": method, "params": params}
 
 
+def _thread_calls(link: ScriptedLink) -> list[tuple[str, dict[str, Any]]]:
+    """The thread calls a bind made, without the hook-trust read before them."""
+
+    return [call for call in link.calls if call[0].startswith("thread/")]
+
+
 # ── conversation identity ────────────────────────────────────────────────
 @pytest.mark.asyncio
 async def test_a_new_conversation_starts_a_thread_and_keeps_its_id() -> None:
     link = ScriptedLink()
     client = await _bound(link)
 
-    assert [name for name, _ in link.calls] == ["thread/start"]
+    assert [name for name, _ in _thread_calls(link)] == ["thread/start"]
     assert client.engine_session_key == _THREAD
 
 
@@ -163,8 +169,8 @@ async def test_a_resumed_conversation_is_rejoined_not_recreated() -> None:
     link = ScriptedLink()
     client = await _bound(link, native=_THREAD)
 
-    assert [name for name, _ in link.calls] == ["thread/resume"]
-    assert link.calls[0][1] == {"threadId": _THREAD}
+    assert [name for name, _ in _thread_calls(link)] == ["thread/resume"]
+    assert _thread_calls(link)[0][1] == {"threadId": _THREAD}
     assert client.engine_session_key == _THREAD
 
 
@@ -188,8 +194,8 @@ async def test_a_rejoin_carries_the_provider_table_but_not_the_model() -> None:
     link = ScriptedLink()
     await _bound(link, native=_THREAD, thread_config=config, model="some-model")
 
-    assert [name for name, _ in link.calls] == ["thread/resume"]
-    params = link.calls[0][1]
+    assert [name for name, _ in _thread_calls(link)] == ["thread/resume"]
+    params = _thread_calls(link)[0][1]
     assert params["threadId"] == _THREAD
     assert params["config"] == config
     assert "model" not in params
@@ -221,7 +227,7 @@ async def test_the_agents_instructions_and_gateway_ride_thread_start() -> None:
         thread_config={"model_provider": "astrabox", "approval_policy": "untrusted"},
     )
 
-    params = link.calls[0][1]
+    params = _thread_calls(link)[0][1]
     assert params["developerInstructions"] == "You are the AstraBox reviewer agent."
     assert params["model"] == "gpt-5.3-codex"
     assert params["sandbox"] == "read-only"
@@ -302,7 +308,7 @@ async def test_plan_collaboration_mode_passes_native_settings_to_codex() -> None
     )
     await client.begin_delivery(_command())
 
-    assert [name for name, _ in link.calls] == [
+    assert [name for name, _ in link.calls if name != "hooks/list"] == [
         "thread/start",
         "turn/start",
     ]

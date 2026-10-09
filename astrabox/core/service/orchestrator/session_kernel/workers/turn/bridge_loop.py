@@ -82,15 +82,22 @@ logger = get_logger(__name__)
 def _build_ack_control_frames(
     turn_id: str,
     client_message_id: str | None,
+    continues_interaction: str | None = None,
 ) -> list[dict[str, Any]]:
     platform_turn_id = str(turn_id or "").strip()
     if not platform_turn_id:
         raise RuntimeError("engine dispatch ack is missing turn_id")
+    metadata: dict[str, Any] = {"turn_id": platform_turn_id}
+    if continues_interaction:
+        # An answer continuation reopens the parked turn's message. Naming the
+        # interaction it resumes lets a reply-at-a-time reader (the channel
+        # spine) deliver it as its own reply after the question it answers.
+        metadata["continues_interaction"] = continues_interaction
     frames: list[dict[str, Any]] = [
         {
             "type": "start",
             "messageId": platform_turn_id,
-            "messageMetadata": {"turn_id": platform_turn_id},
+            "messageMetadata": metadata,
         }
     ]
     normalized_client_message_id = str(client_message_id or "").strip()
@@ -739,6 +746,11 @@ async def _run_bridge_command(
                 ack_control_frames = _build_ack_control_frames(
                     state.effective_turn_id,
                     client_message_id,
+                    continues_interaction=(
+                        str(payload.get("interaction_id") or "").strip() or None
+                        if command_type == "AnswerInteraction"
+                        else None
+                    ),
                 )
                 await bridge_frames._process_translated_frames(worker, state, _bridge_ctx, ack_control_frames)
                 await worker._project_turn_requested_with_retry(state, _bridge_ctx, )

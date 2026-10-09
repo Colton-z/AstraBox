@@ -170,8 +170,12 @@ def test_hermes_profile_setup_maps_the_visible_workspace_to_its_backing(
         "exec \"$@\"\n",
         encoding="utf-8",
     )
-    (fake_bin / "chown").chmod(0o755)
-    (fake_bin / "runuser").chmod(0o755)
+    # The managed scope is root-owned in the box; here it only has to exist.
+    (fake_bin / "install").write_text(
+        "#!/bin/sh\nfor last; do :; done\nmkdir -p \"$last\"\n", encoding="utf-8"
+    )
+    for tool in ("chown", "runuser", "install"):
+        (fake_bin / tool).chmod(0o755)
 
     profile_home = tmp_path / "profiles" / "assistant-1"
     workspace_source = profile_home / "workspace"
@@ -182,6 +186,7 @@ def test_hermes_profile_setup_maps_the_visible_workspace_to_its_backing(
         "ASTRABOX_HERMES_PROFILE_HOME": str(profile_home),
         "ASTRABOX_HERMES_WORKSPACE": str(visible_workspace),
         "HERMES_HOME": str(profile_home / ".hermes"),
+        "HERMES_MANAGED_DIR": str(tmp_path / "managed"),
     }
 
     for _ in range(2):

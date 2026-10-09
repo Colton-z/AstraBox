@@ -91,7 +91,7 @@ class EngineAdapterContractSuite:
         # Well-formed or absent: the declaration is the write path's whole
         # authority over an Agent's engine_options bag, so a malformed one
         # must fail the adapter here rather than every Agent save later.
-        validate_engine_options_schema(caps.engine_kind, caps.engine_options_schema)
+        validate_engine_options_schema(caps.engine_kind, caps.extensions.native_config)
 
     # ── required surface ─────────────────────────────────────────────────
 

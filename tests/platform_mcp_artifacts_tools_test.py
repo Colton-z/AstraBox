@@ -43,6 +43,7 @@ def mcp_service(
         agent_config=SimpleNamespace(get_agent_access_doc=AsyncMock(return_value={"agent_id": agent_id})),
         expose_port_service=None,
         artifact_service=service,
+        tool_cards=SimpleNamespace(create=AsyncMock()),
     )
 
 
@@ -87,7 +88,7 @@ async def test_tools_list_and_create_update_get_round_trip(
     aid = marker["id"]
     assert marker == {"id": aid, "version": 1, "title": "Panel", "kind": "html"}
     assert created["url"] == f"/artifacts/{aid}"
-    assert set(created) == {"astrabox_artifact", "url"}
+    assert set(created) == {"astrabox_artifact", "url", "card"}
     share = await artifact_service.enable_share(OWNER, aid)
     updated = result(
         await tool(
@@ -101,19 +102,20 @@ async def test_tools_list_and_create_update_get_round_trip(
         )
     )
     assert updated["astrabox_artifact"]["version"] == 2
-    assert set(updated) == {"astrabox_artifact", "url"}
+    assert set(updated) == {"astrabox_artifact", "url", "card"}
     fetched = result(await tool(mcp, "get_artifact", {"artifact_id": aid}))
     assert (
         fetched["content"] == "second"
         and fetched["astrabox_artifact"] == updated["astrabox_artifact"]
     )
-    assert set(fetched) == {"astrabox_artifact", "url", "content", "description", "manifest", "viewer"}
+    assert set(fetched) == {"astrabox_artifact", "url", "content", "description", "manifest", "viewer", "card"}
     assert fetched["manifest"] == {}
     assert fetched["viewer"]["level"] == "owner"
     record = await artifact_service.records.get(aid)
     assert record is not None and record["origin"]["session_id"] == "session"
     listed = result(await tool(mcp, "list_artifacts", {}))["items"]
-    assert listed == [updated]
+    # A listing's card is on the listing; each item is the artifact alone.
+    assert listed == [{key: value for key, value in updated.items() if key != "card"}]
     for output in (created, updated, fetched, listed):
         serialized = json.dumps(output)
         assert "owner_id" not in serialized and '"share"' not in serialized

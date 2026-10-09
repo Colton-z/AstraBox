@@ -16,7 +16,7 @@ _registered_on: int | None = None
 
 
 class DeploymentRecord(BaseModel):
-    """One trigger binding on an Agent, as ``DeploymentService`` stores it.
+    """One trigger binding on an Agent or Assistant, as ``DeploymentService`` stores it.
 
     ``secret`` is the credential the calling system signs with, returned so the
     configurer can register it there. The document is open — the service strips
@@ -28,6 +28,9 @@ class DeploymentRecord(BaseModel):
     deployment_id: str
     agent_id: str | None = None
     agent_name: str | None = None
+    assistant_id: str | None = None
+    assistant_name: str | None = None
+    allowed_participants: list[str] | None = None
     created_by: str | None = None
     enabled: bool | None = None
     scene: str | None = None
@@ -164,6 +167,14 @@ def register_deployment_routes(app: Any) -> None:
         result = await _service.list_channel_providers(user)
         return success_response(result)
 
+    # The provider catalog is not administrator data: an Assistant owner needs
+    # it to bind their own channel.
+    @app.get("/api/v1/channel-providers")
+    async def list_channel_providers_for_owner(request: Request):
+        user = await get_current_user_context(request)
+        result = await _service.list_channel_providers(user)
+        return success_response(result)
+
     @app.post(
         "/api/v1/admin/agents/{agent_id}/deployments",
         response_model=ApiEnvelope[DeploymentRecord],
@@ -240,5 +251,93 @@ def register_deployment_routes(app: Any) -> None:
         user = await get_current_user_context(request)
         result = await _service.replay_deployment_run(
             user, agent_id, deployment_id, run_id
+        )
+        return success_response(result)
+
+    # ── Assistant trigger bindings (owner-only, outside /admin) ──────────────
+    @app.get(
+        "/api/v1/assistants/{assistant_id}/deployments",
+        response_model=ApiEnvelope[list[DeploymentRecord]],
+        response_model_exclude_unset=True,
+    )
+    async def list_assistant_deployments(assistant_id: str, request: Request):
+        user = await get_current_user_context(request)
+        result = await _service.list_assistant_deployments(user, assistant_id)
+        return success_response(result)
+
+    @app.post(
+        "/api/v1/assistants/{assistant_id}/deployments",
+        response_model=ApiEnvelope[DeploymentRecord],
+        response_model_exclude_unset=True,
+    )
+    async def create_assistant_deployment(assistant_id: str, request: Request):
+        user = await get_current_user_context(request)
+        payload = await request.json()
+        result = await _service.create_assistant_deployment(
+            user,
+            assistant_id,
+            payload,
+            callback_base_url=str(request.base_url).rstrip("/"),
+        )
+        return success_response(result)
+
+    @app.put(
+        "/api/v1/assistants/{assistant_id}/deployments/{deployment_id}",
+        response_model=ApiEnvelope[DeploymentRecord],
+        response_model_exclude_unset=True,
+    )
+    async def update_assistant_deployment(
+        assistant_id: str, deployment_id: str, request: Request
+    ):
+        user = await get_current_user_context(request)
+        patch = await request.json()
+        result = await _service.update_assistant_deployment(
+            user, assistant_id, deployment_id, patch
+        )
+        return success_response(result)
+
+    @app.delete(
+        "/api/v1/assistants/{assistant_id}/deployments/{deployment_id}",
+        response_model=ApiEnvelope[DeletedDeployment],
+        response_model_exclude_unset=True,
+    )
+    async def delete_assistant_deployment(
+        assistant_id: str, deployment_id: str, request: Request
+    ):
+        user = await get_current_user_context(request)
+        result = await _service.delete_assistant_deployment(
+            user, assistant_id, deployment_id
+        )
+        return success_response(result)
+
+    @app.get("/api/v1/assistants/{assistant_id}/deployments/{deployment_id}/runs")
+    async def list_assistant_deployment_runs(
+        assistant_id: str, deployment_id: str, request: Request, limit: int = 50,
+    ):
+        user = await get_current_user_context(request)
+        result = await _service.list_assistant_deployment_runs(
+            user, assistant_id, deployment_id, limit=limit
+        )
+        return success_response(result)
+
+    @app.post("/api/v1/assistants/{assistant_id}/deployments/{deployment_id}/runs")
+    async def trigger_assistant_deployment_run(
+        assistant_id: str, deployment_id: str, request: Request
+    ):
+        user = await get_current_user_context(request)
+        result = await _service.trigger_assistant_deployment_run(
+            user, assistant_id, deployment_id
+        )
+        return success_response(result)
+
+    @app.post(
+        "/api/v1/assistants/{assistant_id}/deployments/{deployment_id}/runs/{run_id}/replay"
+    )
+    async def replay_assistant_deployment_run(
+        assistant_id: str, deployment_id: str, run_id: str, request: Request
+    ):
+        user = await get_current_user_context(request)
+        result = await _service.replay_assistant_deployment_run(
+            user, assistant_id, deployment_id, run_id
         )
         return success_response(result)

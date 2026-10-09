@@ -509,6 +509,7 @@ class _FakeKernel:
         self.turn_texts: dict[tuple[str, str], str] = {}
         self.session_details: dict[str, dict[str, Any]] = {}
         self.interaction_answers: list[tuple[str, str, dict[str, Any]]] = []
+        self.superseded: list[tuple[str, str]] = []
         self.timeline: list[tuple[str, str]] = []
         self.stream_calls = 0
         self.fail_next_stream = False
@@ -573,16 +574,30 @@ class _FakeKernel:
             )
         )
 
+    async def answer_pending_interaction(
+        self,
+        user: Any,
+        session_id: str,
+        interaction_id: str,
+        answer: dict[str, Any],
+    ) -> dict[str, Any]:
+        self.interaction_answers.append((session_id, interaction_id, dict(answer)))
+        self.timeline.append(("answer", interaction_id))
+        self.session_details[session_id] = {
+            "state": "BUSY",
+            "current_turn_id": "question-turn",
+            "pending_interaction": None,
+        }
+        return {"interaction_id": interaction_id, "answered": True}
+
     async def supersede_pending_interaction(
         self,
         user: Any,
         session_id: str,
         interaction_id: str,
     ) -> dict[str, Any]:
-        self.interaction_answers.append(
-            (session_id, interaction_id, {"decline": True})
-        )
-        self.timeline.append(("decline", interaction_id))
+        self.superseded.append((session_id, interaction_id))
+        self.timeline.append(("supersede", interaction_id))
         self.session_details[session_id] = {
             "state": "READY",
             "current_turn_id": None,
@@ -679,6 +694,7 @@ def _spine(
         session_output_cursor=kernel.session_output_cursor,
         message_view=kernel,
         session_detail_getter=kernel.get_session,
+        answer_pending_interaction=kernel.answer_pending_interaction,
         supersede_pending_interaction=kernel.supersede_pending_interaction,
         spawn_background_task=lambda coro, name="": spawned.append(coro),
     )
@@ -848,13 +864,13 @@ async def test_recovery_attaches_to_the_prior_dispatch_instead_of_re_running() -
     assert final["state"] == INBOUND_SETTLED
     assert final["turn_id"] == turn_id, "bound to the ORIGINAL dispatch"
     assert kernel.stream_calls == 0, "no second turn was dispatched"
-    assert kernel.interaction_answers == [], (
-        "attaching an older work item must not decline a newer interaction"
+    assert kernel.superseded == [], (
+        "attaching an older work item must not stop a newer interaction's turn"
     )
     assert provider.delivered == [({"cb": "x"}, "the reply")]
 
 
-async def test_new_channel_message_declines_open_question_before_its_turn() -> None:
+async def test_new_channel_message_stops_open_question_before_its_turn() -> None:
     provider = _RecorderChannel()
     provider.inbound = ChannelInbound(
         content="the newer message",
@@ -878,11 +894,9 @@ async def test_new_channel_message_declines_open_question_before_its_turn() -> N
 
     await _drain_spawned(spawned)
 
-    assert kernel.interaction_answers == [
-        ("sess-1", "question-1", {"decline": True})
-    ]
+    assert kernel.superseded == [("sess-1", "question-1")]
     assert kernel.timeline == [
-        ("decline", "question-1"),
+        ("supersede", "question-1"),
         ("turn", "the newer message"),
     ]
     item = await ingress._channel_repo.get_inbound(
@@ -1223,6 +1237,7 @@ def _streaming_spine(
         session_output_cursor=kernel.session_output_cursor,
         message_view=kernel,
         session_detail_getter=kernel.get_session,
+        answer_pending_interaction=kernel.answer_pending_interaction,
         supersede_pending_interaction=kernel.supersede_pending_interaction,
         spawn_background_task=lambda coro, name="": spawned.append(coro),
     )

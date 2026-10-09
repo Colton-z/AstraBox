@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+from collections.abc import Callable
 from typing import Any, Literal, Self
 
 from fastapi.responses import JSONResponse
@@ -17,6 +18,8 @@ from astrabox.core.service.orchestrator.transcript_capability import (
     verify_runtime_state_capability_token,
 )
 from astrabox.persistence.repository.runtime_state_snapshot_repository import (
+    NATIVE_SESSION_STORE,
+    PROFILE_STATE,
     RuntimeStateOwner,
     RuntimeStateSnapshotConflict,
     RuntimeStateSnapshotRepository,
@@ -73,7 +76,6 @@ def register_runtime_state_routes(app: Any) -> None:
     if _registered_on == id(app):
         return
     _registered_on = id(app)
-    repo = RuntimeStateSnapshotRepository()
     prefix = CAPABILITY_PATH_PREFIX + "/{cap_token}/api/v1/runtime-state"
 
     def authorize(owner: RuntimeStateOwner, token: str) -> JSONResponse | None:
@@ -84,11 +86,24 @@ def register_runtime_state_routes(app: Any) -> None:
             content=error_response("FORBIDDEN", "invalid runtime state capability"),
         )
 
-    @app.post(
-        prefix + "/load",
-        response_model=ApiEnvelope[RuntimeStateLoadResult],
-        response_model_exclude_unset=True,
-    )
+    # The native SessionStore at the root, the profile state beside it. One
+    # capability covers both: they are the same owner's runtime state.
+    for path, name, repo in (
+        ("", "runtime_state", RuntimeStateSnapshotRepository(NATIVE_SESSION_STORE)),
+        ("/profile", "runtime_profile", RuntimeStateSnapshotRepository(PROFILE_STATE)),
+    ):
+        _mount_archive(app, prefix + path, name, repo, authorize)
+
+
+def _mount_archive(
+    app: Any,
+    prefix: str,
+    name: str,
+    repo: RuntimeStateSnapshotRepository,
+    authorize: Callable[[RuntimeStateOwner, str], JSONResponse | None],
+) -> None:
+    """Register load and save for one kind of owner archive under ``prefix``."""
+
     async def runtime_state_load(cap_token: str, payload: RuntimeStateLoadRequest):
         owner = payload.owner.owner()
         rejected = authorize(owner, cap_token)
@@ -105,11 +120,6 @@ def register_runtime_state_routes(app: Any) -> None:
             "size": snapshot.size if snapshot is not None else 0,
         })
 
-    @app.post(
-        prefix + "/save",
-        response_model=ApiEnvelope[RuntimeStateSaveResult],
-        response_model_exclude_unset=True,
-    )
     async def runtime_state_save(cap_token: str, payload: RuntimeStateSaveRequest):
         owner = payload.owner.owner()
         rejected = authorize(owner, cap_token)
@@ -139,3 +149,16 @@ def register_runtime_state_routes(app: Any) -> None:
                 ),
             )
         return success_response({"snapshot_id": snapshot_id})
+
+    app.post(
+        prefix + "/load",
+        response_model=ApiEnvelope[RuntimeStateLoadResult],
+        response_model_exclude_unset=True,
+        name=f"{name}_load",
+    )(runtime_state_load)
+    app.post(
+        prefix + "/save",
+        response_model=ApiEnvelope[RuntimeStateSaveResult],
+        response_model_exclude_unset=True,
+        name=f"{name}_save",
+    )(runtime_state_save)

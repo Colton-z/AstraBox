@@ -1,7 +1,7 @@
 import type { UIMessage as SDKUIMessage } from 'ai';
 import type { ContentBlock } from '../types';
 import { blocksToSDKParts } from './hooks/useInitialMessages';
-import { getMessageTurnId, platformTurnMetadata } from './messageIdentity';
+import { platformTurnMetadata } from './messageIdentity';
 
 export interface NativeInputProjectionBoundary {
   clientMessageId: string;
@@ -65,17 +65,19 @@ export function projectNativeInputs(
         ? blocksToSDKParts(boundary.contentBlocks)
         : [{ type: 'text' as const, text: boundary.content }],
     } as SDKUIMessage;
+    // The row goes before the message that answers it, found by identity.
+    // Belonging to the same platform turn is not that identity: an engine that
+    // takes inputs while it runs answers each one with its own message inside
+    // the one turn, so every reply carries the turn id and the first of them
+    // would pull a later input above the reply that came before it. A reply
+    // that is not on screen yet opens after everything that is.
     const assistantAnchors = new Set([
       platformTurnId,
       normalized(boundary.responseMessageId),
     ].filter(Boolean));
-    const responseIndex = assistantAnchors.size === 0 ? -1 : projected.findIndex((message) => {
-      if (message.role !== 'assistant') return false;
-      return (
-        assistantAnchors.has(normalized(message.id))
-        || assistantAnchors.has(getMessageTurnId(message))
-      );
-    });
+    const responseIndex = assistantAnchors.size === 0 ? -1 : projected.findIndex((message) => (
+      message.role === 'assistant' && assistantAnchors.has(normalized(message.id))
+    ));
     projected = responseIndex < 0
       ? [...projected, userMessage]
       : [

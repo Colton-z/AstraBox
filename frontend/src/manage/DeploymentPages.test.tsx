@@ -102,12 +102,12 @@ vi.mock('@/api', async (importOriginal) => {
       createCalls.push({ agentId, payload });
       return { ...deployment, ...payload };
     },
-    updateAgentDeployment: async (
-      agentId: string,
+    updateDeployment: async (
+      owner: { agent_id?: string },
       deploymentId: string,
       patch: Record<string, unknown>,
     ) => {
-      updateCalls.push({ agentId, deploymentId, patch });
+      updateCalls.push({ agentId: owner.agent_id ?? '', deploymentId, patch });
       deployment = {
         ...deployment,
         ...patch,
@@ -117,7 +117,8 @@ vi.mock('@/api', async (importOriginal) => {
       };
       return deployment;
     },
-    triggerDeploymentRun: async (agentId: string, deploymentId: string) => {
+    triggerDeploymentRun: async (owner: { agent_id?: string }, deploymentId: string) => {
+      const agentId = owner.agent_id ?? '';
       triggerCalls.push({ agentId, deploymentId });
       const created: DeploymentRun = {
         run_id: 'run-manual',
@@ -130,10 +131,11 @@ vi.mock('@/api', async (importOriginal) => {
       return created;
     },
     replayDeploymentRun: async (
-      agentId: string,
+      owner: { agent_id?: string },
       deploymentId: string,
       runId: string,
     ) => {
+      const agentId = owner.agent_id ?? '';
       replayCalls.push({ agentId, deploymentId, runId });
       const created: DeploymentRun = {
         run_id: 'run-replay',
@@ -146,8 +148,13 @@ vi.mock('@/api', async (importOriginal) => {
       runs = [created, ...runs];
       return created;
     },
-    deleteAgentDeployment: async () => ({}),
+    deleteDeployment: async () => ({}),
   };
+});
+
+vi.mock('@/assistant/api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/assistant/api')>();
+  return { ...actual, listAssistants: async () => [] };
 });
 
 const { default: DeploymentCreatePage } = await import('./DeploymentCreatePage');

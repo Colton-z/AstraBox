@@ -1,0 +1,14 @@
+{
+  "title": {
+    "message": "AstraBox 博客",
+    "description": "The title for the blog used in SEO"
+  },
+  "description": {
+    "message": "AstraBox 开发过程中的工程笔记。AstraBox 是开源、自行部署的 Agent 运行平台。",
+    "description": "The description for the blog used in SEO"
+  },
+  "sidebar.title": {
+    "message": "近期文章",
+    "description": "The label for the left sidebar"
+  }
+}

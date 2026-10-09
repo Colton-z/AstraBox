@@ -125,6 +125,7 @@ export default function AssistantCreatePage() {
           environment_name: environment,
           permission_mode_default: draft.permission_mode_default || undefined,
           system: draft.system.trim() || undefined,
+          timezone: draft.timezone.trim() || undefined,
         })
           .then((created) =>
             navigate(`/manage/assistants/${encodeURIComponent(created.assistant_id)}`),

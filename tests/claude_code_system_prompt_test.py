@@ -44,7 +44,7 @@ def _template(system: str | None) -> SimpleNamespace:
         name="Claude Code",
         engine_options=None,
         system=system,
-        plugin_repos=[],
+        packages=[],
         mcp_servers={},
         skills=[],
     )

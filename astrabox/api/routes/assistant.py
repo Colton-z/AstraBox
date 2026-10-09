@@ -23,8 +23,10 @@ from astrabox.api.routes.response_envelope import ApiEnvelope
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.api_response import success_response
 from astrabox.common.utils.user_context import get_current_user_context
+from astrabox.core.service.connectors.service import AssistantConnectors, ConnectorService
 from astrabox.core.service.orchestrator.service_registry import (
     get_assistant_service,
+    get_platform_service,
 )
 
 logger = get_logger(__name__)
@@ -43,6 +45,50 @@ _registered_on: int | None = None
 # workspace that is materializing names its bootstrap session, a ready one
 # names its sandbox. Requiring a member that some posture does not carry would
 # turn that posture's successful read into a 500.
+
+
+class InheritedExtensions(BaseModel):
+    """What an Assistant inherits from the layers above it, by name and source.
+
+    Credential Vaults are counted, not named; nothing here can be edited
+    through the Assistant.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    instructions: bool
+    skills: list[str]
+    mcp_servers: list[str]
+    catalog_mcp_servers: int
+    packages: list[dict[str, Any]]
+    credential_vaults: int
+
+
+class AssistantScheduledJobs(BaseModel):
+    """What an Assistant scheduled for itself, read from its program's own store.
+
+    Each job carries the program's own field names (Hermes: ``id``, ``name``,
+    ``prompt``, ``schedule_display``, ``state``, ``next_run_at``,
+    ``last_run_at``, ``last_status``, ...). ``jobs`` is null when there is no
+    live list to read, and ``reason`` says why: ``workspace_not_running`` or
+    ``engine_keeps_no_schedule``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    assistant_id: str
+    workspace_state: str
+    jobs: list[dict[str, Any]] | None
+    reason: str | None
+
+
+class EnsurePrimaryAssistantRequest(BaseModel):
+    """What a first-created primary Assistant starts with; ignored when it exists."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    display_name: str
+    timezone: str | None = None
 
 
 class Assistant(BaseModel):
@@ -73,14 +119,25 @@ class Assistant(BaseModel):
     #: The system prompt, the same field an Agent carries; the Agent program
     #: applies it through its own mechanism (Hermes: its SOUL.md identity).
     system: str | None = None
+    #: The owner's IANA timezone, which the Agent program keeps time in.
+    timezone: str | None = None
     model_config_override: dict[str, Any] | None = None
-    mcp_config_override: dict[str, Any] | None = None
-    plugin_repos_override: list[dict[str, Any]] | None = None
-    skill_manifest_override: list[str] | None = None
+    mcp_servers: dict[str, Any] | None = None
+    packages: list[dict[str, Any]] | None = None
+    skills: list[str] | None = None
+    #: The engine's native configuration documents (Hermes: ``config``, merged
+    #: into its config.yaml), as declared by the engine.
+    engine_options: dict[str, Any] | None = None
     created_at: str | None = None
     updated_at: str | None = None
     workspace_state: str | None = None
     current_sandbox_id: str | None = None
+    #: The one Assistant the platform keeps for its owner (POST /assistants/primary).
+    primary: bool | None = None
+    #: Where opening the Assistant lands (POST /assistants/{id}/main-conversation).
+    main_session_id: str | None = None
+    #: What the deployment's and organization's Assistant defaults provide, read-only.
+    inherited: InheritedExtensions | None = None
 
 
 class AssistantListPage(BaseModel):
@@ -195,6 +252,8 @@ def register_assistant_routes(app: Any) -> None:
     _registered_on = id(app)
 
     _service = get_assistant_service()
+    _connectors = ConnectorService()
+    _assistant_connectors = AssistantConnectors(service_getter=get_assistant_service)
 
     @app.post(
         "/api/v1/assistants",
@@ -203,8 +262,34 @@ def register_assistant_routes(app: Any) -> None:
     )
     async def create_assistant(request: Request, payload: dict[str, Any] = Body(...)):
         user = await get_current_user_context(request)
+        # The apps the owner has connected are offered from the start. Read
+        # before creating, so a hub that cannot answer creates nothing.
+        connected = await _connectors.connected(user)
         result = await _service.create_assistant(user, payload)
+        if connected:
+            assistant_id = str(result["assistant_id"])
+            await _assistant_connectors.adopt(user, connected, assistant_ids=[assistant_id])
+            result = await _service.get_assistant(user, assistant_id)
         return success_response(result)
+
+    @app.post(
+        "/api/v1/assistants/primary",
+        response_model=ApiEnvelope[Assistant],
+        response_model_exclude_unset=True,
+    )
+    async def ensure_primary_assistant(request: Request, body: EnsurePrimaryAssistantRequest):
+        user = await get_current_user_context(request)
+        # Read before creating, as for any new Assistant, so a hub that cannot
+        # answer creates nothing.
+        connected = await _connectors.connected(user)
+        assistant, created = await _service.ensure_primary_assistant(
+            user, display_name=body.display_name, timezone=body.timezone
+        )
+        if created and connected:
+            assistant_id = str(assistant["assistant_id"])
+            await _assistant_connectors.adopt(user, connected, assistant_ids=[assistant_id])
+            assistant = await _service.get_assistant(user, assistant_id)
+        return success_response(assistant)
 
     @app.get(
         "/api/v1/assistants",
@@ -260,7 +345,14 @@ def register_assistant_routes(app: Any) -> None:
     )
     async def delete_assistant(assistant_id: str, request: Request):
         user = await get_current_user_context(request)
+        # Ownership is checked before anything is deleted; the conversations go
+        # first, while the Assistant they resolve through still exists.
+        await _service.get_assistant(user, assistant_id)
+        await get_platform_service().delete_assistant_conversations(user, assistant_id)
         result = await _service.delete_assistant(user, assistant_id)
+        # The Assistant is gone, so its schedules and channel bindings must stop
+        # firing; they belong to it and no other account can manage them.
+        await get_platform_service().delete_all_assistant_deployments(assistant_id)
         return success_response(result)
 
     @app.post(
@@ -292,6 +384,24 @@ def register_assistant_routes(app: Any) -> None:
         user = await get_current_user_context(request)
         result = await _service.destroy_workspace(user, assistant_id)
         return success_response(result)
+
+    @app.get(
+        "/api/v1/assistants/{assistant_id}/scheduled-jobs",
+        response_model=ApiEnvelope[AssistantScheduledJobs],
+        response_model_exclude_unset=True,
+    )
+    async def list_assistant_scheduled_jobs(assistant_id: str, request: Request):
+        user = await get_current_user_context(request)
+        return success_response(await _service.list_scheduled_jobs(user, assistant_id))
+
+    @app.post(
+        "/api/v1/assistants/{assistant_id}/main-conversation",
+        response_model=ApiEnvelope[StartedAssistantConversation],
+        response_model_exclude_unset=True,
+    )
+    async def open_main_conversation(assistant_id: str, request: Request):
+        user = await get_current_user_context(request)
+        return success_response(await _service.open_main_conversation(user, assistant_id))
 
     @app.post(
         "/api/v1/assistants/{assistant_id}/conversations",

@@ -88,7 +88,7 @@ def _template() -> SimpleNamespace:
         name="Claude Code",
         engine_options=None,
         system=None,
-        plugin_repos=[],
+        packages=[],
         mcp_servers={},
         skills=[],
     )

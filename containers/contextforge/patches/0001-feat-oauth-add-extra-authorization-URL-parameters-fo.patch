@@ -1,0 +1,179 @@
+From 6c1943024a3a37661a584a9e4729e859716fc452 Mon Sep 17 00:00:00 2001
+From: kimsehwan96 <sktpghks138@gmail.com>
+Date: Tue, 6 Oct 2026 11:42:39 -0700
+Subject: [PATCH 1/2] feat(oauth): add extra authorization URL parameters for
+ gateways
+
+Google issues a refresh token only when the authorization request has
+access_type=offline, and only on consent (prompt=consent). ContextForge
+had no way to add provider-specific parameters to the authorization URL,
+so a Google gateway never got a refresh token and users had to authorize
+again after an hour.
+
+Adds oauth_config.extra_auth_params, an object of string values appended
+to the PKCE authorization URL without replacing a parameter the gateway
+set. Reserved names (redirect_uri, state, PKCE, scope, audience,
+resource, request, request_uri, secret names) are rejected by the schema
+and skipped by the URL builder.
+
+This is the core of IBM/mcp-context-forge#7075 by kimsehwan96, limited
+to common/oauth.py, schemas.py and services/oauth_manager.py and applied
+to v1.0.11; the admin UI part of that pull request is not included.
+Carried until a release includes #7075 (issues #4044, #4115).
+
+Signed-off-by: Colton Qi <zhenchangqi@gmail.com>
+---
+ mcpgateway/common/oauth.py           | 25 +++++++++++++++++++
+ mcpgateway/schemas.py                | 37 ++++++++++++++++++++++++----
+ mcpgateway/services/oauth_manager.py | 10 ++++++++
+ 3 files changed, 67 insertions(+), 5 deletions(-)
+
+diff --git a/mcpgateway/common/oauth.py b/mcpgateway/common/oauth.py
+index 218b60bce..8fe9c292f 100644
+--- a/mcpgateway/common/oauth.py
++++ b/mcpgateway/common/oauth.py
+@@ -34,3 +34,28 @@ def is_sensitive_oauth_key(key: Any) -> bool:
+         bool: True when key maps to sensitive OAuth material.
+     """
+     return isinstance(key, str) and key.lower() in OAUTH_SENSITIVE_KEYS
++
++
++# extra_auth_params must not set these parameters. The gateway or a dedicated oauth_config
++# field sets them (PKCE included), or they override the others (RFC 9101 request objects).
++OAUTH_RESERVED_AUTHORIZATION_PARAMS: frozenset[str] = frozenset(
++    {"response_type", "client_id", "redirect_uri", "state", "scope", "code_challenge", "code_challenge_method", "code_verifier", "audience", "resource", "request", "request_uri"}
++)
++
++
++def is_reserved_authorization_param(name: Any) -> bool:
++    """Return whether ``oauth_config["extra_auth_params"]`` must not use a parameter name.
++
++    Names compare case-insensitively with ``.`` and ``-`` read as ``_``, because some
++    servers normalize names that way. Secret names also count as reserved.
++
++    Args:
++        name: Candidate authorization request parameter name.
++
++    Returns:
++        bool: True when the name is reserved or is not a string.
++    """
++    if not isinstance(name, str):
++        return True
++    canonical = name.lower().replace(".", "_").replace("-", "_")
++    return canonical in OAUTH_RESERVED_AUTHORIZATION_PARAMS or is_sensitive_oauth_key(canonical)
+diff --git a/mcpgateway/schemas.py b/mcpgateway/schemas.py
+index 023e00a21..2e623689f 100644
+--- a/mcpgateway/schemas.py
++++ b/mcpgateway/schemas.py
+@@ -38,7 +38,7 @@ from mcpgateway.common.models import Resource as MCPResource
+ from mcpgateway.common.models import ResourceContent, TextContent
+ from mcpgateway.common.models import Tool as MCPTool
+ from mcpgateway.common.models import ToolAnnotations
+-from mcpgateway.common.oauth import OAUTH_SENSITIVE_KEYS
++from mcpgateway.common.oauth import is_reserved_authorization_param, OAUTH_SENSITIVE_KEYS
+ from mcpgateway.common.validators import SecurityValidator, validate_core_url
+ from mcpgateway.config import settings
+ from mcpgateway.utils.base_models import BaseModelWithConfigDict
+@@ -127,6 +127,8 @@ _SENSITIVE_HEADER_MAPPING_PATTERNS = (
+     re.compile(r"^(?:auth|api|access|refresh|client|bearer|session|security)[-_]?(?:token|secret|key)$", re.IGNORECASE),
+ )
+ 
++_OAUTH_PARAM_NAME: Pattern[str] = re.compile(r"[A-Za-z0-9._-]+")  # RFC 6749 section 8.2 param-name
++
+ 
+ def _validate_oauth_config_urls(v: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+     """Validate URL-bearing OAuth config entries against core URL/SSRF rules.
+@@ -173,6 +175,31 @@ def _validate_oauth_config_urls(v: Optional[Dict[str, Any]]) -> Optional[Dict[st
+     return v
+ 
+ 
++def _validate_oauth_extra_auth_params(v: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
++    """Validate ``oauth_config["extra_auth_params"]``, the extra authorization URL parameters.
++
++    Args:
++        v: OAuth configuration dict or ``None``.
++
++    Returns:
++        The original dict when valid.
++
++    Raises:
++        ValueError: If an entry is not a string value under an unreserved RFC 6749 parameter name.
++    """
++    extra_auth_params = v.get("extra_auth_params") if isinstance(v, dict) else None
++    if extra_auth_params is None:
++        return v
++    if not isinstance(extra_auth_params, dict):
++        raise ValueError("oauth_config.extra_auth_params must be an object")
++    for name, value in extra_auth_params.items():
++        if not isinstance(value, str):
++            raise ValueError("oauth_config.extra_auth_params values must be strings")
++        if is_reserved_authorization_param(name) or not _OAUTH_PARAM_NAME.fullmatch(name):
++            raise ValueError(f"oauth_config.extra_auth_params cannot set {name!r:.64}")
++    return v
++
++
+ def _validate_mapping_size(v: dict | None) -> dict | None:
+     """Validate that a mapping dict does not exceed size limits.
+ 
+@@ -3373,13 +3400,13 @@ class GatewayCreate(BaseModelWithConfigDict):
+     @field_validator("oauth_config", mode="before")
+     @classmethod
+     def validate_oauth_config(cls, v: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+-        """Validate URL-bearing OAuth configuration entries and reject deprecated grants.
++        """Validate URL-bearing OAuth configuration entries and extra authorization parameters, and reject deprecated grants.
+ 
+         The OAuth 2.1 resource owner password credentials grant is rejected for
+         new MCP server registrations. Existing records keep working via
+         ``GatewayUpdate`` (backwards compatibility).
+         """
+-        v = _validate_oauth_config_urls(v)
++        v = _validate_oauth_extra_auth_params(_validate_oauth_config_urls(v))
+         if isinstance(v, dict) and v.get("grant_type") == "password":
+             raise ValueError("The OAuth 2.1 resource owner password grant is not supported for new MCP servers. Use authorization_code or client_credentials instead.")
+         return v
+@@ -3749,8 +3776,8 @@ class GatewayUpdate(BaseModelWithConfigDict):
+     @field_validator("oauth_config", mode="before")
+     @classmethod
+     def validate_oauth_config(cls, v: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+-        """Validate URL-bearing OAuth configuration entries."""
+-        return _validate_oauth_config_urls(v)
++        """Validate URL-bearing OAuth configuration entries and extra authorization parameters."""
++        return _validate_oauth_extra_auth_params(_validate_oauth_config_urls(v))
+ 
+     @field_validator("description", mode="before")
+     @classmethod
+diff --git a/mcpgateway/services/oauth_manager.py b/mcpgateway/services/oauth_manager.py
+index fc56425b0..f04660ec0 100644
+--- a/mcpgateway/services/oauth_manager.py
++++ b/mcpgateway/services/oauth_manager.py
+@@ -27,6 +27,7 @@ import orjson
+ from requests_oauthlib import OAuth2Session
+ 
+ # First-Party
++from mcpgateway.common.oauth import is_reserved_authorization_param
+ from mcpgateway.common.validators import SecurityValidator, validate_core_url
+ from mcpgateway.config import get_settings
+ from mcpgateway.services.encryption_service import decrypt_oauth_config_for_runtime, get_encryption_service
+@@ -1700,6 +1701,9 @@ class OAuthManager:
+     def _create_authorization_url_with_pkce(self, credentials: Dict[str, Any], state: str, code_challenge: str, code_challenge_method: str) -> str:
+         """Create authorization URL with PKCE parameters (RFC 7636).
+ 
++        Appends the string entries of ``credentials["extra_auth_params"]``, except
++        reserved names and parameters that the gateway already set.
++
+         Args:
+             credentials: OAuth configuration
+             state: State parameter for CSRF protection
+@@ -1736,6 +1740,12 @@ class OAuthManager:
+         if self._should_include_resource_parameter(credentials, scopes):
+             params["resource"] = resource  # urlencode with doseq=True handles lists
+ 
++        extra_auth_params = credentials.get("extra_auth_params")
++        if isinstance(extra_auth_params, dict):
++            for name, value in extra_auth_params.items():
++                if isinstance(value, str) and not is_reserved_authorization_param(name):
++                    params.setdefault(name, value)
++
+         # Build full URL (doseq=True handles list values like multiple resource params)
+         query_string = urlencode(params, doseq=True)
+         return f"{authorization_url}?{query_string}"

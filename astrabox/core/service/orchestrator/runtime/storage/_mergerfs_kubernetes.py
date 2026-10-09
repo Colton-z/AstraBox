@@ -339,13 +339,19 @@ class KubernetesMounts:
         self._ready(assignment)
         return self._exec(assignment, assignment.command("bind", binding))
 
-    def release(self, assignment_id: str) -> None:
-        """Delete exact owned view resources; never delete the backing PVC or files."""
+    def release(self, assignment_id: str) -> bool:
+        """Delete exact owned view resources; never delete the backing PVC or files.
+
+        A sandbox is reported gone as soon as its deletion is accepted, while
+        its Pod keeps the claim mounted through its termination grace period.
+        Such a view is kept and False returned, so the next reconciliation
+        releases it. A consumer that is not terminating raises.
+        """
         digest = hashlib.sha256(assignment_id.encode()).hexdigest()
         name = "astrabox-view-" + digest[:32]
         labels = {MANAGED: "mergerfs", OWNER: digest[:63]}
         consumers = [
-            pod.metadata.name
+            pod
             for pod in self.api.list_namespaced_pod(self.namespace, _request_timeout=30).items
             if any(
                 volume.persistent_volume_claim is not None
@@ -353,10 +359,13 @@ class KubernetesMounts:
                 for volume in (pod.spec.volumes or [])
             )
         ]
-        if consumers:
+        live = [pod.metadata.name for pod in consumers if pod.metadata.deletion_timestamp is None]
+        if live:
             raise RuntimeError(
-                f"workspace PVC/{name} still has sandbox Pod consumers {consumers!r}; retained"
+                f"workspace PVC/{name} still has sandbox Pod consumers {live!r}; retained"
             )
+        if consumers:
+            return False
         resources = [
             (self.api.read_namespaced_pod, self.api.delete_namespaced_pod, True),
             (self.api.read_persistent_volume, self.api.delete_persistent_volume, False),
@@ -375,6 +384,7 @@ class KubernetesMounts:
             delete(
                 *args, body={"preconditions": {"uid": resource.metadata.uid}}, _request_timeout=30
             )
+        return True
 
     def attach(self, assignment_id: str, sandbox_id: str, backend: str, installation: str) -> None:
         """Persist receipts on the view PVC so helper loss does not lose ownership."""

@@ -16,10 +16,12 @@ same product without a core-code allowlist.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from astrabox.persistence.repository.assistant_catalog_repository import (
     AssistantCatalogRepository,
@@ -38,10 +40,11 @@ from astrabox.core.service.orchestrator.engine.capabilities import (
     engine_allowed_for_session_kind,
     unsupported_engine_configuration_inputs,
 )
-from astrabox.core.service.orchestrator.runtime.plugin_repos import (
-    normalize_plugin_repos,
+from astrabox.core.service.orchestrator.runtime.packages import (
+    normalize_packages,
 )
 from astrabox.core.service.orchestrator.engine.registry import get_engine_adapter
+from astrabox.core.service.orchestrator.schema_validation import validate_declared_config_bag
 from astrabox.core.service.orchestrator.runtime.conversation_identity import (
     normalize_runtime_identity,
 )
@@ -109,6 +112,27 @@ class AssistantWorkspaceAcquisition:
 _MODEL_CONFIG_OVERRIDE_KEYS = frozenset({"model_name"})
 
 
+def _normalize_timezone(value: Any) -> str | None:
+    """An Assistant's IANA timezone, or ``None`` when it sets none."""
+
+    if value is None:
+        return None
+    name = value.strip() if isinstance(value, str) else None
+    if name is None:
+        raise APIError(code="ASSISTANT_INVALID", message="timezone must be a string or null", status_code=400)
+    if not name:
+        return None
+    try:
+        ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError) as exc:
+        raise APIError(
+            code="ASSISTANT_INVALID",
+            message=f"timezone {name!r} is not an IANA timezone such as Europe/Berlin",
+            status_code=400,
+        ) from exc
+    return name
+
+
 def _normalize_system(value: Any) -> str | None:
     """An Assistant's system prompt, or ``None`` when it sets none.
 
@@ -168,7 +192,27 @@ class AssistantService:
     def _validate_engine_configuration(
         engine_kind: str,
         values: dict[str, Any],
+        engine_options: Any = None,
     ) -> None:
+        """Refuse what the Assistant's engine would not read.
+
+        ``engine_options`` holds the engine's native configuration documents,
+        validated against what the engine declares and otherwise carried
+        verbatim, as an Agent's are.
+        """
+        if engine_options is not None and not isinstance(engine_options, dict):
+            raise APIError(
+                code="INVALID_REQUEST",
+                message="engine_options must be an object",
+                status_code=400,
+            )
+        if engine_options:
+            validate_declared_config_bag(
+                engine_options,
+                capabilities_for_engine_kind(engine_kind).extensions.native_config,
+                bag_label="engine_options",
+                owner_label=f"engine '{engine_kind}'",
+            )
         unsupported = unsupported_engine_configuration_inputs(engine_kind, values)
         if unsupported:
             raise APIError(
@@ -346,11 +390,24 @@ class AssistantService:
         return refreshed
 
     async def create_assistant(
-        self, user: UserContext, config: dict[str, Any]
+        self,
+        user: UserContext,
+        config: dict[str, Any],
+        *,
+        assistant_id: str | None = None,
+        primary: bool = False,
     ) -> dict[str, Any]:
-        assert_may_author(
-            user.roles, admin_only=load_astrabox_settings().authoring_admin_only
-        )
+        """Create an Assistant the caller owns.
+
+        ``primary`` marks the one the platform keeps for every user
+        (:meth:`ensure_primary_assistant`); it authors nothing of its own, so
+        a deployment that reserves authoring to administrators still gives
+        each user one.
+        """
+        if not primary:
+            assert_may_author(
+                user.roles, admin_only=load_astrabox_settings().authoring_admin_only
+            )
         display_name = str(config.get("display_name") or "").strip()
         environment_name = str(config.get("environment_name") or "").strip()
         if not display_name:
@@ -413,33 +470,36 @@ class AssistantService:
                 ),
                 status_code=400,
             )
-        assistant_id = f"asst_{uuid.uuid4().hex[:16]}"
+        assistant_id = assistant_id or f"asst_{uuid.uuid4().hex[:16]}"
+        await self._refuse_inherited_server_names(user, config.get("mcp_servers"), owner=display_name)
         permission_mode_default = self._resolve_permission_mode_default(
             engine_kind,
             config.get("permission_mode_default"),
             supplied="permission_mode_default" in config,
         )
-        plugin_repos_override = normalize_plugin_repos(
-            config.get("plugin_repos_override")
+        packages = normalize_packages(
+            config.get("packages")
         )
         self._validate_engine_configuration(
             engine_kind,
             {
-                "mcp_servers": config.get("mcp_config_override"),
-                "skills": config.get("skill_manifest_override"),
-                "plugin_repos": plugin_repos_override,
+                "mcp_servers": config.get("mcp_servers"),
+                "skills": config.get("skills"),
+                "packages": packages,
             },
+            config.get("engine_options"),
         )
         await validate_author_declarations(
             owner=f"Assistant {display_name!r}",
             networking=environment.get("networking"),
-            skills=config.get("skill_manifest_override"),
-            plugin_repos=plugin_repos_override,
-            mcp_servers=config.get("mcp_config_override"),
+            skills=config.get("skills"),
+            packages=packages,
+            mcp_servers=config.get("mcp_servers"),
         )
         payload = {
             "assistant_id": assistant_id,
             "owner_id": user.user_id,
+            "primary": primary,
             "display_name": display_name,
             "icon": str(config.get("icon") or "").strip() or None,
             "description": str(config.get("description") or "").strip() or None,
@@ -447,12 +507,14 @@ class AssistantService:
             "environment_name": environment_name,
             "permission_mode_default": permission_mode_default,
             "system": _normalize_system(config.get("system")),
+            "timezone": _normalize_timezone(config.get("timezone")),
             "model_config_override": _normalize_model_config_override(
                 config.get("model_config_override")
             ),
-            "mcp_config_override": config.get("mcp_config_override"),
-            "plugin_repos_override": plugin_repos_override,
-            "skill_manifest_override": config.get("skill_manifest_override"),
+            "mcp_servers": config.get("mcp_servers"),
+            "packages": packages,
+            "skills": config.get("skills"),
+            "engine_options": dict(config.get("engine_options") or {}),
         }
         created = await self._catalog_repo.create_assistant(payload)
         return self._sanitize_assistant(created)
@@ -578,7 +640,203 @@ class AssistantService:
         )
         if workspace:
             rendered["current_sandbox_id"] = workspace.get("current_sandbox_id")
+        rendered["inherited"] = await self._inherited_summary(assistant)
         return rendered
+
+    async def _inherited_summary(self, assistant: dict[str, Any]) -> dict[str, Any]:
+        """What the layers above an Assistant provide, for its owner to read.
+
+        Names and sources only: a Credential Vault the deployment binds is
+        mentioned by count, and nothing a layer stores is writable here.
+        """
+
+        from astrabox.core.service.orchestrator.assistant.assistant_layers import inherited_layers
+        from astrabox.core.service.orchestrator.mcp_assignments import normalize_assignments
+
+        layers = await inherited_layers()
+        summary: dict[str, Any] = {
+            "instructions": False,
+            "skills": [],
+            "mcp_servers": [],
+            "catalog_mcp_servers": 0,
+            "packages": [],
+            "credential_vaults": 0,
+        }
+        for _label, layer in layers:
+            summary["instructions"] = summary["instructions"] or bool(str(layer.get("instructions") or "").strip())
+            catalog = layer.get("extension_catalog") if isinstance(layer.get("extension_catalog"), dict) else {}
+            for skill in [*(layer.get("skills") or []), *(catalog.get("skills") or [])]:
+                if skill not in summary["skills"]:
+                    summary["skills"].append(skill)
+            summary["mcp_servers"].extend(
+                name for name in (layer.get("mcp_servers") or {}) if name not in summary["mcp_servers"]
+            )
+            summary["catalog_mcp_servers"] += len(normalize_assignments(layer.get("mcp_assignments")))
+            summary["packages"].extend(
+                {"kind": package.get("kind"), "url": package.get("url"), "paths": package.get("paths")}
+                for package in normalize_packages(layer.get("packages"))
+            )
+            summary["credential_vaults"] += len(layer.get("credential_vault_ids") or [])
+        return summary
+
+    async def _refuse_inherited_server_names(
+        self, user: UserContext, mcp_servers: Any, *, owner: str
+    ) -> None:
+        """Refuse an own MCP server named as one the Assistant already inherits."""
+
+        from astrabox.core.service.orchestrator.assistant.assistant_layers import inherited_layers
+
+        names = set(mcp_servers or {}) if isinstance(mcp_servers, dict) else set()
+        if not names:
+            return
+        for label, layer in await inherited_layers():
+            clash = sorted(names & set(layer.get("mcp_servers") or {}))
+            if clash:
+                raise APIError(
+                    code="INVALID_REQUEST",
+                    message=(
+                        f"Assistant {owner!r} names MCP servers {clash} that {label} already "
+                        "provide; rename them"
+                    ),
+                    status_code=400,
+                )
+
+    async def ensure_primary_assistant(
+        self, user: UserContext, *, display_name: str, timezone: str | None
+    ) -> tuple[dict[str, Any], bool]:
+        """The caller's primary Assistant, created from the deployment's defaults when absent.
+
+        Every user has one without setting anything up: it is created on first
+        use with the Environment the layers name (or the deployment's only
+        Assistant Environment), as a record only, so its workspace starts with
+        its first conversation. A user whose Assistants predate this has their
+        earliest marked primary instead. Its id is derived from the owner and
+        how many primaries they have had, deleted ones included (deletion
+        keeps the record), so two concurrent calls create one and a deleted
+        primary is followed by a new one. Answers the Assistant and whether
+        this call created it.
+        """
+
+        created = False
+        rows = await self._catalog_repo.list_owner_assistants(user.user_id)
+        primary = next((row for row in rows if row.get("primary") is True), None)
+        if primary is None and rows:
+            earliest = min(rows, key=lambda row: str(row.get("created_at") or ""))
+            await self._catalog_repo.update_assistant(str(earliest["assistant_id"]), {"primary": True})
+            primary = earliest
+        if primary is None:
+            from astrabox.core.service.orchestrator.assistant.assistant_layers import (
+                default_environment_name,
+                inherited_layers,
+            )
+            from astrabox.persistence.repository.environment_repository import EnvironmentRepository
+
+            environment_name = await default_environment_name(
+                await inherited_layers(), await EnvironmentRepository().list_all()
+            )
+            if not environment_name:
+                raise APIError(
+                    code="ASSISTANT_DEFAULTS_UNAVAILABLE",
+                    message=(
+                        "this deployment has no Environment for Assistants: an administrator "
+                        "chooses one in the Assistant defaults, or enables one that runs Assistants"
+                    ),
+                    status_code=409,
+                )
+            generation = await self._catalog_repo.count_owner_primaries(user.user_id)
+            assistant_id = "asst_" + hashlib.sha256(
+                f"primary:{user.user_id}:{generation}".encode()
+            ).hexdigest()[:16]
+            if await self._catalog_repo.get_assistant(assistant_id) is None:
+                try:
+                    await self.create_assistant(
+                        user,
+                        {
+                            "display_name": display_name,
+                            "environment_name": environment_name,
+                            "timezone": timezone,
+                        },
+                        assistant_id=assistant_id,
+                        primary=True,
+                    )
+                    created = True
+                except Exception:
+                    # A concurrent call created it first; anything else re-raises.
+                    if await self._catalog_repo.get_assistant(assistant_id) is None:
+                        raise
+            primary = {"assistant_id": assistant_id}
+        return await self.get_assistant(user, str(primary["assistant_id"])), created
+
+    async def list_scheduled_jobs(self, user: UserContext, assistant_id: str) -> dict[str, Any]:
+        """The jobs an Assistant scheduled for itself, read live from its running workspace.
+
+        The program keeps them in its own store in the box. A workspace that is
+        not running answers no list: the copy saved when it was put away is the
+        program's to restore, and its jobs run only once the box is back.
+        ``jobs`` is null with ``reason`` saying why.
+        """
+
+        assistant = await self._must_use_assistant(user, assistant_id)
+        adapter = get_engine_adapter(self._require_engine_kind(assistant))
+        workspace = await self._workspace_service.get_workspace(
+            user_id=user.user_id, assistant_id=assistant_id
+        )
+        state = str((workspace or {}).get("state") or "").strip() or "NOT_MATERIALIZED"
+        answer: dict[str, Any] = {"assistant_id": assistant_id, "workspace_state": state}
+        sandbox_id = str((workspace or {}).get("current_sandbox_id") or "").strip()
+        identity = normalize_runtime_identity((workspace or {}).get("runtime_identity"))
+        if state != "READY" or not sandbox_id or identity is None:
+            return {**answer, "jobs": None, "reason": "workspace_not_running"}
+        if self._runtime_manager is None:
+            raise APIError(
+                code="ASSISTANT_RUNTIME_MANAGER_UNAVAILABLE",
+                message="cannot read an assistant workspace without runtime manager",
+                status_code=500,
+            )
+        box = None
+        try:
+            box = await self._runtime_manager.connect_sandbox_only(sandbox_id)
+            jobs = await adapter.list_scheduled_jobs(box, runtime_identity=identity)
+        except Exception as exc:
+            raise APIError(
+                code="ASSISTANT_SCHEDULED_JOBS_UNAVAILABLE",
+                message=f"assistant={assistant_id} could not read its scheduled jobs: {exc}",
+                status_code=503,
+            ) from exc
+        finally:
+            close = getattr(box, "close", None) if box is not None else None
+            if callable(close):
+                with contextlib.suppress(Exception):
+                    await close()
+        if jobs is None:
+            return {**answer, "jobs": None, "reason": "engine_keeps_no_schedule"}
+        return {**answer, "jobs": jobs, "reason": None}
+
+    async def open_main_conversation(self, user: UserContext, assistant_id: str) -> dict[str, Any]:
+        """The Assistant's main conversation, started when it has none.
+
+        Opening an Assistant always lands here, and what it does on its own
+        (scheduled runs, proactive messages) returns here. A main conversation
+        that was ended or deleted is replaced: ending it is how its owner
+        starts afresh. The create is keyed by the conversation it replaces, so
+        two concurrent opens start one.
+        """
+
+        assistant = await self._must_use_assistant(user, assistant_id)
+        current = str(assistant.get("main_session_id") or "").strip()
+        if current:
+            session = await self._sessions_repo.get_session(current)
+            if (
+                session is not None
+                and str(session.get("user_id") or "") == user.user_id
+                and str(session.get("state") or "") not in _TERMINAL_SESSION_STATES
+            ):
+                return {**session, "session_id": current}
+        started = await self.start_conversation(
+            user, assistant_id, idempotency_key=f"assistant-main:{assistant_id}:{current or 'first'}"
+        )
+        await self._catalog_repo.update_assistant(assistant_id, {"main_session_id": started["session_id"]})
+        return started
 
     async def update_assistant(
         self,
@@ -611,14 +869,18 @@ class AssistantService:
                 "description",
                 "permission_mode_default",
                 "system",
+                "timezone",
                 "model_config_override",
-                "mcp_config_override",
-                "plugin_repos_override",
-                "skill_manifest_override",
+                "mcp_servers",
+                "packages",
+                "skills",
+                "engine_options",
             }
         }
         if "system" in sanitized_updates:
             sanitized_updates["system"] = _normalize_system(sanitized_updates["system"])
+        if "timezone" in sanitized_updates:
+            sanitized_updates["timezone"] = _normalize_timezone(sanitized_updates["timezone"])
         if "model_config_override" in sanitized_updates:
             sanitized_updates["model_config_override"] = (
                 _normalize_model_config_override(
@@ -633,25 +895,24 @@ class AssistantService:
                     supplied=True,
                 )
             )
-        if "plugin_repos_override" in sanitized_updates:
-            sanitized_updates["plugin_repos_override"] = normalize_plugin_repos(
-                sanitized_updates["plugin_repos_override"]
+        if "packages" in sanitized_updates:
+            sanitized_updates["packages"] = normalize_packages(
+                sanitized_updates["packages"]
             )
         effective = {
-            platform_name: (
-                sanitized_updates[override_name]
-                if override_name in sanitized_updates
-                else assistant.get(override_name)
-            )
-            for platform_name, override_name in (
-                ("mcp_servers", "mcp_config_override"),
-                ("skills", "skill_manifest_override"),
-                ("plugin_repos", "plugin_repos_override"),
-            )
+            name: sanitized_updates[name] if name in sanitized_updates else assistant.get(name)
+            for name in ("mcp_servers", "skills", "packages")
         }
+        if "mcp_servers" in sanitized_updates:
+            await self._refuse_inherited_server_names(
+                user,
+                sanitized_updates["mcp_servers"],
+                owner=str(assistant.get("display_name") or assistant_id),
+            )
         self._validate_engine_configuration(
             str(assistant.get("engine_kind") or "").strip(),
             effective,
+            sanitized_updates.get("engine_options", assistant.get("engine_options")),
         )
         environment_name = str(assistant.get("environment_name") or "").strip()
         environment = await self._agent_config.get_environment(environment_name)
@@ -665,7 +926,7 @@ class AssistantService:
             owner=f"Assistant {str(assistant.get('display_name') or assistant_id)!r}",
             networking=environment.get("networking"),
             skills=effective["skills"],
-            plugin_repos=effective["plugin_repos"],
+            packages=effective["packages"],
             mcp_servers=effective["mcp_servers"],
         )
         if sanitized_updates:
@@ -675,6 +936,105 @@ class AssistantService:
             await self._catalog_repo.update_assistant(assistant_id, sanitized_updates)
         refreshed = await self._catalog_repo.get_assistant(assistant_id)
         return self._sanitize_assistant(refreshed or assistant)
+
+    async def set_connector_servers(
+        self,
+        user: UserContext,
+        assistant_id: str,
+        servers: dict[str, str],
+        *,
+        connectors_off: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Record the connector hub's server URL for each connector the Assistant uses.
+
+        Only the connector service writes this field, and only with the hub's
+        own URLs; an author cannot set it through :meth:`update_assistant`. It
+        is part of the Assistant's revision, so the runtime is prepared again.
+        ``connectors_off``, when given, replaces the apps the owner turned off
+        here, which a new connection does not turn back on.
+        """
+
+        assistant = await self._must_use_assistant(user, assistant_id)
+        updates: dict[str, Any] = {
+            "connector_servers": {str(name): str(url) for name, url in servers.items()} or None
+        }
+        if connectors_off is not None:
+            updates["connectors_off"] = sorted(set(connectors_off)) or None
+        if any(assistant.get(key) != value for key, value in updates.items()):
+            await self._catalog_repo.update_assistant(
+                assistant_id, {**updates, "updated_at": utcnow_iso()}
+            )
+        refreshed = await self._catalog_repo.get_assistant(assistant_id)
+        return self._sanitize_assistant(refreshed or assistant)
+
+    async def get_extension_catalog(
+        self, user: UserContext, assistant_id: str
+    ) -> dict[str, Any]:
+        """The deployment's extension catalog with this Assistant's selection marked."""
+
+        from astrabox.core.service.orchestrator.agent_extension_service import (
+            configured_extension_provider,
+            extension_catalog_view,
+        )
+
+        assistant = await self._must_use_assistant(user, assistant_id)
+        provider = configured_extension_provider()
+        catalog = await provider.list_catalog(org_id=_assistant_org_id(user, assistant))
+        return {
+            "assistant_id": assistant_id,
+            **extension_catalog_view(assistant, catalog, provider.name),
+        }
+
+    async def set_extension_assignment(
+        self,
+        user: UserContext,
+        assistant_id: str,
+        *,
+        mcp_server_ids: list[str],
+        skill_ids: list[str],
+    ) -> dict[str, Any]:
+        """Select catalog MCP servers and Skills for the Assistant, as an Agent does.
+
+        The Assistant stores what an Agent stores: this provider's MCP
+        assignment rows and the Skill descriptors. Both are part of its
+        revision, so the runtime is prepared again.
+        """
+
+        from astrabox.core.service.orchestrator.agent_extension_service import (
+            AGENT_EXTENSION_CATALOG_FIELD,
+            compile_extension_selection,
+            configured_extension_provider,
+            extension_catalog_view,
+        )
+        from astrabox.core.service.orchestrator.mcp_assignments import (
+            AGENT_MCP_ASSIGNMENTS_FIELD,
+            replace_provider_assignments,
+        )
+
+        assistant = await self._must_use_assistant(user, assistant_id)
+        provider = configured_extension_provider()
+        catalog, snapshot, selected_mcp = await compile_extension_selection(
+            provider,
+            org_id=_assistant_org_id(user, assistant),
+            mcp_server_ids=mcp_server_ids,
+            skill_ids=skill_ids,
+        )
+        updates = {
+            AGENT_EXTENSION_CATALOG_FIELD: snapshot,
+            # Only this provider's rows change.
+            AGENT_MCP_ASSIGNMENTS_FIELD: replace_provider_assignments(
+                assistant.get(AGENT_MCP_ASSIGNMENTS_FIELD), provider.name, selected_mcp
+            ),
+        }
+        if any(assistant.get(key) != value for key, value in updates.items()):
+            await self._catalog_repo.update_assistant(
+                assistant_id, {**updates, "updated_at": utcnow_iso()}
+            )
+        refreshed = await self._catalog_repo.get_assistant(assistant_id) or assistant
+        return {
+            "assistant_id": assistant_id,
+            **extension_catalog_view(refreshed, catalog, provider.name),
+        }
 
     async def delete_assistant(
         self, user: UserContext, assistant_id: str
@@ -1746,12 +2106,42 @@ class AssistantService:
     async def destroy_workspace(
         self, user: UserContext, assistant_id: str
     ) -> dict[str, Any]:
+        """Destroy the Assistant's sandbox; its next conversation builds a fresh one.
+
+        The workspace is left RECOVERY_REQUIRED with no sandbox, which no
+        watcher wakes, so nothing starts a box until the owner returns. As in
+        :meth:`delete_assistant`, the answer claims destruction only once the
+        kill of that exact box is confirmed; otherwise the workspace keeps
+        pointing at it and the call fails retryably.
+        """
         await self._must_use_assistant(user, assistant_id)
+        workspace = await self._workspace_service.get_workspace(
+            user_id=user.user_id,
+            assistant_id=assistant_id,
+        )
+        sandbox_id = str((workspace or {}).get("current_sandbox_id") or "").strip()
         ok = await self._workspace_service.mark_recovery_required(
             user_id=user.user_id,
             assistant_id=assistant_id,
             reason="explicit destroy_workspace",
         )
+        if ok and sandbox_id:
+            released = await self._retry_recovery_destruction(
+                user_id=user.user_id,
+                assistant_id=assistant_id,
+                workspace=workspace or {},
+                sandbox_id=sandbox_id,
+            )
+            if not released:
+                raise APIError(
+                    code="ASSISTANT_SANDBOX_UNDESTROYED",
+                    message=(
+                        f"assistant={assistant_id} still has sandbox {sandbox_id}, "
+                        "whose destruction could not be confirmed; retry the destroy"
+                    ),
+                    status_code=409,
+                    data={"sandbox_id": sandbox_id, "retryable": True},
+                )
         return {"assistant_id": assistant_id, "destroyed": ok}
 
     async def start_conversation(
@@ -1831,3 +2221,15 @@ class AssistantService:
         clean.pop("credentials_updated_by", None)
         clean.pop("credentials_updated_at", None)
         return clean
+
+
+def _assistant_org_id(user: UserContext, assistant: dict[str, Any]) -> str:
+    """The tenant whose catalog applies: the Assistant's, which its owner uses."""
+
+    from astrabox.common.utils.user_context import default_org_id
+
+    return (
+        str(assistant.get("org_id") or "").strip()
+        or str(getattr(user, "org_id", None) or "").strip()
+        or default_org_id()
+    )

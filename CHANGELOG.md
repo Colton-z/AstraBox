@@ -5,6 +5,222 @@ All notable changes to AstraBox are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.5] - 2026-10-09
+
+This release gives every user an Assistant without setting one up, connects
+Assistants and Agents to work apps through a connector hub, runs the scheduled
+jobs an Assistant creates and delivers their results to its conversations and
+messaging channels, and lets every engine load its own native extensions.
+Re-run the installer to upgrade; existing secrets and conversation data are
+retained.
+
+**Upgrading:** an Agent's `plugin_repos` and `plugin_paths` are now `packages`
+(each entry with `"kind": "claude-plugin"`) and `paths`, and an Assistant's
+`mcp_config_override`, `skill_manifest_override` and `plugin_repos_override`
+are now `mcp_servers`, `skills` and `packages`. Values stored under the old
+names are not carried over: after upgrading, add an Agent's Claude Code plugins
+again under **Packages**, and an Assistant's MCP servers, Skills and packages
+on its record page. Connectors run only with the connector hub, which the
+installer does not start: from a clone, add `containers/compose.connectors.yaml`
+(and `containers/compose.connectors-google.yaml` for Google apps) as
+[Run the connector hub](docs/deploy.md#run-the-connector-hub) describes.
+
+### Added
+
+- Every user has an Assistant without setting one up. The first visit creates
+  a primary Assistant from the deployment's Assistant defaults
+  (`POST /api/v1/assistants/primary`), and the rail lists the user's
+  Assistants above Sessions. Opening one lands in its main conversation
+  (`POST /api/v1/assistants/{id}/main-conversation`), where its scheduled jobs
+  report back and whose unread mark the row carries; an empty one lists what
+  the Assistant can use, and its header opens a profile for name, timezone,
+  instructions, connected apps and the jobs it scheduled for itself
+  (`GET /api/v1/assistants/{id}/scheduled-jobs`, read from the program's own
+  store in the running workspace). An Assistant's earlier conversations open
+  under its row, and Sessions lists Agent conversations only. The Home page's
+  Assistant tab is removed.
+- Assistant defaults: administrators set, in the console or at
+  `/api/v1/admin/assistant-defaults` and its `/extensions`, the Environment new
+  Assistants use, the model, organization instructions, and the Skills, MCP
+  servers (own or from the extension catalog), packages, Agent-program
+  configuration and Credential Vaults every Assistant inherits. An Environment
+  the defaults name cannot be deleted. A deployment with one Environment that
+  runs Assistants needs no defaults at all.
+- Assistant triggers: messaging channels, schedules, and webhooks can target an
+  Assistant, managed by its owner through `/api/v1/assistants/{id}/deployments`
+  and the trigger form. Channel triggers gain an `allowed_participants` list,
+  required on an Assistant.
+- Connectors: people connect Gmail, Google Calendar and Drive, Notion, Linear,
+  Jira and Confluence, GitHub, and Slack, and turn them on per Assistant or,
+  for an Agent's managers, per Agent. A ContextForge connector hub
+  (`containers/contextforge`, the v1.0.11 release with two patches that add
+  Google offline access and per-user disconnect) holds and refreshes each
+  person's tokens and forwards calls to the vendor. Connectors are platform
+  MCP servers: the platform relays each call to the hub as the person the
+  conversation acts for (an Assistant's owner, an Agent conversation's user),
+  so no hub credential enters the sandbox. When an app is not connected, the
+  agent is told so and can ask the person to connect it with a card in the
+  conversation. An app a person connects is turned on in each of their
+  Assistants, and a new Assistant starts with its owner's connected apps;
+  turning one off on an Assistant keeps it off there. Google's apps run on the deployment's own
+  google_workspace_mcp instances, because Google's MCP servers are a
+  developer preview limited to your own organization. Administrators set each
+  app up under **Connectors**; see `ASTRABOX_CONTEXTFORGE_*` and the
+  `ASTRABOX_*_MCP_URL` variables.
+- Unread replies: a conversation records when it last gained a reply
+  (`last_output_at`) and when its owner read it (`read_at`,
+  `POST /api/v1/sessions/{id}/read`). The console shows unread conversations
+  in its list and, once the owner turns notifications on, shows a browser
+  notification for each new reply, including one an Assistant sends on its
+  own from a scheduled job or heartbeat, which also moves the conversation to
+  the top of the list.
+- Codex Agents take Codex plugins (`packages` of kind `codex-plugin`),
+  including Claude Code, Cursor and Agent Plugins v1.0 plugin directories,
+  installed by Codex from a local marketplace before each conversation starts.
+- Assistants select MCP servers and Skills from the administrator-managed
+  catalog, as Agents do, on their record page or through
+  `/api/v1/assistants/{assistant_id}/extensions`.
+- MCP servers an Agent's author declares now work on Codex, Pi and DeepSeek
+  Harness too (stdio and streamable HTTP), each rendered into the program's
+  own MCP configuration.
+- DeepSeek Harness Agents take plugin Bundles as their web profile's
+  `package.json` dependencies (`engine_options.profile_package`), installed
+  with `dsh plugin` before each conversation starts.
+- Agents on Codex, Pi and DeepSeek Harness take Skills, placed in
+  `~/.agents/skills`, the Skills root all three scan. Where each engine
+  discovers Skills is now its adapter's declaration rather than the Claude
+  Code configuration directory.
+- Every Assistant has AstraBox's `astrabox-proactive` Skill, shipped in the
+  Hermes image, which teaches it to offer scheduled briefings and quiet
+  monitors when it notices recurring work, and to set them up with the
+  user's connected apps once they agree.
+- An Assistant has a timezone, its owner's, which the console fills in from
+  the browser. Hermes names it in every system prompt and reads the schedules
+  of the jobs it creates in it, so a job set for 8 in the morning runs at the
+  owner's 8.
+- Assistants take Skills, Hermes plugins (`hermes-plugin`), Agent Plugins
+  packages (`agent-plugin`) and Hermes `config.yaml` keys
+  (`engine_options.config`, applied through Hermes' managed scope), edited on
+  the Assistant's record page. Each engine declares what it accepts, and a save
+  that names something the Environment's engine does not load is refused.
+- Hermes scheduled jobs created by an Assistant now run, through Hermes'
+  gateway scheduler in the image, and each run is reported back into the
+  conversation that created the job, including its messaging chat.
+- Output Hermes produces without a new message (`/loop` and `/heartbeat`
+  ticks, finished background work) is published into the conversation and
+  delivered to attached channels.
+- Messaging channels show the question or approval an Agent is waiting on,
+  after the reply written so far, with numbered options and buttons on
+  Telegram and Discord. Participants answer by pressing a button, replying
+  to the question, or sending the option number; the Agent continues the same
+  task. Forms with several questions are asked one at a time.
+- Channel provider seam: `ChannelInteraction` on `deliver_outbound` and
+  `ChannelEvent` for providers that declare `supports_interaction_actions`, and
+  `ChannelInbound.action` for a pressed button. `generic_json` replies carry a
+  `message_id` and a structured `question`, and accept `reply_to` and `action`.
+- Sandbox provider seam: `SandboxProvider.workspace_route()` returns the
+  backend's `WorkspaceRoute` (`astrabox.seams.storage`), so a third-party
+  sandbox backend can offer persistent workspaces through its own mounts. A
+  route that cannot re-point a created sandbox declares
+  `supports_late_binding = False`; Sessions that already have files then start
+  on a new sandbox instead of a prepared one.
+
+### Changed
+
+- `plugin_repos` is now `packages`: each entry names its `kind`
+  (`claude-plugin` for Claude Code) beside its Git source, and `plugin_paths`
+  is `paths`. The Assistant fields `mcp_config_override`,
+  `skill_manifest_override` and `plugin_repos_override` are now
+  `mcp_servers`, `skills` and `packages`, as on an Agent. The error codes
+  `PLUGIN_REPO_INVALID` and `PLUGIN_REPO_UNSUPPORTED_PROTOCOL` are now
+  `PACKAGE_INVALID` and `PACKAGE_UNSUPPORTED_PROTOCOL`.
+- An Assistant conversation is compressed while it is quiet, once its context
+  is 40% full, instead of inside a reply the user waits for.
+- An Assistant's Hermes profile state (memory, the skills it created or
+  installed, scheduled jobs and its other per-profile stores) is saved in the
+  platform database beside its conversation store and restored into a new
+  box, so pausing or losing the sandbox no longer needs a persistent
+  workspace volume to keep them.
+- READY Assistant workspaces keep their sandbox lease renewed, and channel
+  delivery keeps an engine reader attached, so an idle Assistant keeps running
+  scheduled work and delivering it.
+- A channel message that does not answer a waiting question now stops the
+  waiting task before it runs. Previously a form was declined and the Agent
+  continued on its own before reading the new message.
+- Startup refuses `ASTRABOX_SANDBOX_WORKSPACE_VOLUME` when the default sandbox
+  backend has no workspace route, instead of failing at the first conversation.
+
+### Removed
+
+- `SandboxProvider.created_sandboxes_self_expire`: no code read it.
+
+### Fixed
+
+- Editing an Agent while its prepared capacity was being rebuilt (for example,
+  changing its Environment and then its prompt) no longer leaves a prepared
+  sandbox running with nothing to retire it. Each client-pool namespace is now
+  recorded on the Agent before it starts, so the next reconciliation retires it.
+- A Codex, Pi, DeepSeek Harness or Hermes turn that fails mid-way, for
+  example when its sandbox is stopped, no longer stays in the recovery scan,
+  which re-queued it every ten seconds for as long as the server ran.
+- `DELETE /api/v1/assistants/{id}/workspace` destroys the Assistant's sandbox
+  before answering `destroyed: true`. It only changed the workspace's state,
+  leaving the box running and free to be rebuilt without a request.
+- An Assistant named like an Agent no longer puts its owner's conversations
+  in that Agent's managers' session list.
+- Deleting an Assistant deletes its conversations. They stayed behind and
+  read as ready although none of them could continue without it.
+- A page reloaded while a reply was streaming text shows that text. The
+  session stream counted the reply's stored text as delivered once the page
+  had received its last chunk live, so everything before that chunk was lost
+  until the next reload.
+- A message sent while a reply is running appears after that reply. The
+  console placed it above the first reply of the turn until the page was
+  reloaded.
+- A prepared Pi conversation starts when its Agent declares a Pi package:
+  the conversation no longer replays what the parked process wrote before
+  it was claimed, where execd mixes the process's stderr, such as npm
+  installing the package, into the JSON it reads.
+- A Codex plugin's hooks run: Codex skips a hook until its hash is recorded
+  as trusted, and the platform now records it for the plugins an Agent
+  declares, as Codex's own review would.
+- A Hermes plugin that declares Python dependencies starts under Limited
+  networking: PyPI (`pypi.org`, `files.pythonhosted.org`), where Hermes'
+  installer fetches them, is admitted for an Assistant with a Hermes plugin.
+- A catalog-assigned MCP server works in an Environment that leaves
+  `allow_mcp_servers` off: that setting admits MCP URLs declared on the Agent
+  itself, and the deployment's extension gateway is now admitted as a platform
+  destination.
+- An Agent on Codex, Pi or DeepSeek Harness with a connector turned on no
+  longer fails to start: the runtime planning counted the connector, a
+  platform MCP server those engines reach through the platform, as MCP
+  configuration they do not accept.
+- DeepSeek Harness boxes no longer send conversations to DeepSeek: the
+  harness's session-log upload and its OpenTelemetry feedback export, both on
+  by default upstream, are turned off with the vendor's own switches.
+- A Hermes scheduled run that answers `[SILENT]` is kept in the job's output
+  and no longer delivered to the conversation or its channels.
+- Listing connectors no longer fails when the connector hub's per-client rate
+  limits trip; the bundled hub runs with them off, because every request
+  reaches it from the AstraBox server and all of a deployment's people would
+  share one client's allowance.
+- A platform tool card, such as a connection request, stays in the
+  conversation after its turn ends and appears in Assistant conversations.
+- A Hermes reply started by the engine itself no longer ends the next user
+  turn early with its own text.
+- Recovering a Hermes turn after the server reconnects no longer discards the
+  turn's own remaining output.
+- A channel conversation no longer stops responding when the Agent waits on an
+  approval or a decision: every later message was refused until it was dropped.
+- Pi and Codex forms waiting in a channel conversation can be superseded by a
+  new message.
+- With a persistent workspace volume on Kubernetes, deleting a sandbox no
+  longer logs `workspace view release failed` on every reconciliation while
+  its Pod terminates; the view is released once the Pod is gone, and an error
+  is logged only for a Pod that still mounts the view and is not terminating.
+  `WorkspaceRoute.release_mounts` returns False for that wait.
+
+
 ## [0.1.4] - 2026-10-07
 
 This release lets each Agent keep as many prepared runtimes as the conversations

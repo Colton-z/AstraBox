@@ -23,8 +23,8 @@ export const LIVE_TESTIDS = {
   sessionsPage: "sessions-page",
   /** An agent card on `/agents`; its only button starts a session. */
   agentOption: "agent-option",
-  /** An Assistant card on `/assistants`. */
-  assistantOption: "assistant-option",
+  /** An Assistant in the rail; its link opens the Assistant's main conversation. */
+  assistantRow: "assistant-row",
   /** Administrator-only credential management. */
   credentialVaultPage: "credential-vault-page",
   credentialVaultCreate: "credential-vault-create",

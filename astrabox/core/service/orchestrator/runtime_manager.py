@@ -913,6 +913,10 @@ class RemoteAgentRuntimeManager:
                 error_text=f"lifecycle probe timed out after {deadline:g}s",
             )
 
+    def live_runtimes(self) -> list[SessionRuntime]:
+        """The runtimes this process holds now, for periodic upkeep."""
+        return list(self._runtimes.values())
+
     async def renew_runtime(self, session_id: str, ttl_seconds: float) -> datetime | None:
         rt = self._runtimes.get(session_id)
         sandbox_id = str(getattr(rt, "sandbox_id", "") or "").strip() if rt else ""

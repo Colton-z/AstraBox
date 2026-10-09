@@ -50,6 +50,7 @@ from astrabox.core.service.orchestrator.engine.capabilities import (
     EngineRuntimeCapabilities,
     EngineWorkloadDeclaration,
 )
+from astrabox.core.service.orchestrator.engine.extensions import EngineExtensions, PackageKind
 from astrabox.core.service.orchestrator.engine.provisioning import (
     EngineSandboxRequest,
     ModelCredentialRequest,
@@ -62,6 +63,7 @@ from astrabox.core.service.orchestrator.engine.hermes_client import (
     HermesTuiEngineClient,
     decode_turn_anchor,
 )
+from astrabox.core.service.orchestrator.engine.hermes_cron import CronRunOutput
 from astrabox.core.service.orchestrator.engine.hermes_gateway import (
     HermesGatewayHandle,
     gateway_handle_for_sandbox,
@@ -76,8 +78,13 @@ from astrabox.core.service.orchestrator.runtime.models import SessionRuntime
 from astrabox.core.service.orchestrator.runtime.sandbox_script_writer import (
     install_verified_text_script,
 )
+from astrabox.core.service.orchestrator.runtime.storage import (
+    cached_package_dirs,
+    prepare_agent_runtime_plugin_cache,
+)
 from astrabox.core.service.orchestrator.runtime.sandbox_client import (
     extract_sandbox_id,
+    get_underlying_sandbox,
 )
 from astrabox.seams.model import ResolvedModelAccess
 from astrabox.core.service.orchestrator.runtime.mcp_servers import (
@@ -85,6 +92,8 @@ from astrabox.core.service.orchestrator.runtime.mcp_servers import (
     binding_mcp_server_definitions,
 )
 from astrabox.core.service.orchestrator.runtime.conversation_identity import (
+    AGENT_RUNTIME_SKILL_CACHE_DIR,
+    prepare_agent_runtime_skill_cache,
     normalize_runtime_identity,
     plan_assistant_profile_identity,
     run_sandbox_command,
@@ -131,6 +140,22 @@ _HERMES_CONFIG_DEFAULTS_ENV = "ASTRABOX_HERMES_CONFIG_DEFAULTS"
 # replacing its built-in "You are Hermes Agent" text and keeping the rest of its
 # prompt; absent, the merge hands SOUL.md back to Hermes' own default.
 _HERMES_SOUL_B64_ENV = "ASTRABOX_HERMES_SOUL_B64"
+# Present exactly when the Assistant has Skills: the runtime Skill cache the
+# merge copies into the profile's ``skills/astrabox`` category. Hermes indexes
+# Skills when it builds a session, so they need no restart.
+_HERMES_SKILLS_CACHE_ENV = "ASTRABOX_HERMES_SKILLS_CACHE"
+# Present exactly when the Assistant has packages: JSON ``[{"kind", "key",
+# "source"}]``, each a cached plugin directory the merge places at
+# ``plugins/<key>``, enables and installs the Python dependencies of.
+_HERMES_PLUGINS_ENV = "ASTRABOX_HERMES_PLUGINS"
+# Hermes' managed scope (``hermes_cli/managed_scope.py``): a config.yaml that
+# wins over the profile's, key by key. The owner's ``engine_options.config``
+# is written there, root-owned and outside the profile, so the agent cannot
+# change it; the profile setup writes it from ``_HERMES_MANAGED_CONFIG_ENV``
+# and removes it when that is absent.
+_HERMES_MANAGED_DIR = "/etc/astrabox/hermes"
+_HERMES_IMAGE_SKILLS_DIR = "/opt/astrabox/hermes/skills"
+_HERMES_MANAGED_CONFIG_ENV = "ASTRABOX_HERMES_MANAGED_CONFIG"
 # What the merge prints last when it finished: it wrote config.yaml, or had
 # nothing to write.
 _HERMES_CONFIG_MERGE_MARKERS = ("ASTRABOX_HERMES_CONFIG_READY", "ASTRABOX_HERMES_CONFIG_NOOP")
@@ -144,14 +169,35 @@ _HERMES_CONFIG_MERGE_MARKERS = ("ASTRABOX_HERMES_CONFIG_READY", "ASTRABOX_HERMES
 # changed model at its next turn start (``_sync_agent_model_with_config``);
 # neither touches a turn in progress.
 _HERMES_PER_SESSION_ENVS = frozenset(
-    {_HERMES_CONFIG_OVERWRITE_ENV, _HERMES_CONFIG_DEFAULTS_ENV, _HERMES_SOUL_B64_ENV}
+    {
+        _HERMES_CONFIG_OVERWRITE_ENV,
+        _HERMES_CONFIG_DEFAULTS_ENV,
+        _HERMES_SOUL_B64_ENV,
+        _HERMES_SKILLS_CACHE_ENV,
+    }
 )
 # The part of config.yaml Hermes reads only when the process starts: MCP
 # servers are discovered once into a process-wide registry, and a session's
 # agent snapshots its tools from it. The vendor's live alternative,
 # ``reload.mcp``, tears that registry down under every session and fails
-# their in-flight MCP calls, so it is no gentler than a restart.
-_HERMES_PROCESS_CONFIG_KEYS = ("mcp_servers",)
+# their in-flight MCP calls, so it is no gentler than a restart. The timezone
+# is resolved once per process too (``hermes_time._timezone_entry``), and the
+# scheduler reads schedules in it.
+_HERMES_PROCESS_CONFIG_KEYS = ("mcp_servers", "timezone")
+
+#: The config.yaml keys the platform writes or reconciles. The owner's
+#: managed configuration wins over the profile, so it may not name them.
+_HERMES_PROTECTED_CONFIG_KEYS = (
+    "model",
+    "providers",
+    "custom_providers",
+    "mcp_servers",
+    "terminal",
+    "timezone",
+    "skills",
+    "plugins.enabled",
+    "plugins.disabled",
+)
 
 #: Beside the profile env file: the digest of the process configuration the
 #: running backend was started from (:func:`_hermes_process_digest`).
@@ -263,6 +309,12 @@ class HermesEngineAdapter(EngineAdapter):
     def engine_client_type(self) -> type[EngineClient]:
         return HermesEngineClient
 
+    def supports_unowned_output_attach(self) -> bool:
+        # Hermes starts runs on its own inside a live session (``/loop`` and
+        # ``/heartbeat`` ticks, finished background work, queued follow-ups);
+        # the client's resident relay publishes them.
+        return True
+
     @property
     def capabilities(self) -> EngineRuntimeCapabilities:
         # Hermes runs one long-lived per-(user, assistant) gateway workspace
@@ -293,11 +345,7 @@ class HermesEngineAdapter(EngineAdapter):
             ),
             conversation_placement=CONVERSATION_PLACEMENT_PER_ACCOUNT,
             default_runtime_image=release_image(HERMES_RUNTIME_IMAGE_COMPONENT),
-            # Hermes renders platform MCP bindings into its native config.
-            # It discovers skills in its own profile (``$HERMES_HOME/skills``),
-            # which the platform does not populate, and it has no Claude
-            # plugin format.
-            configuration_inputs=frozenset({"mcp_servers"}),
+            extensions=HERMES_EXTENSIONS,
         )
 
     def sandbox_request(
@@ -355,7 +403,9 @@ class HermesEngineAdapter(EngineAdapter):
                     status_code=500,
                 )
             spawn_fingerprint = None
-            if context.attach_mode != "lightweight":
+            # An output observer only reads a running backend; preparing the
+            # profile could restart it under the conversations it serves.
+            if context.attach_mode not in {"lightweight", "observe"}:
 
                 async def _wait_until_backend_idle() -> None:
                     await wait_until_backend_idle(
@@ -386,6 +436,8 @@ class HermesEngineAdapter(EngineAdapter):
                 resume_session_key=context.resume_session_key,
                 profile_ref=profile_ref,
                 spawn_fingerprint=spawn_fingerprint,
+                resident_output_sink=context.resident_output_sink,
+                event_sink=context.event_sink,
             )
             engine_manifest = await initialize_engine_client(
                 engine_client,
@@ -432,6 +484,8 @@ class HermesEngineAdapter(EngineAdapter):
         resume_session_key: str | None = None,
         profile_ref: dict[str, str] | None = None,
         spawn_fingerprint: str | None = None,
+        resident_output_sink: Any = None,
+        event_sink: Any = None,
     ) -> EngineClient:
         """Resolve the profile's resident gateway and open one session on it.
 
@@ -451,6 +505,9 @@ class HermesEngineAdapter(EngineAdapter):
             gateway=gateway,
             platform_session_id=session_id,
             resume_session_key=resume_session_key,
+            resident_output_sink=resident_output_sink,
+            event_sink=event_sink,
+            read_cron_run_output=_cron_run_output_reader(sandbox, identity),
         )
 
     async def _resident_backend(
@@ -516,6 +573,8 @@ class HermesEngineAdapter(EngineAdapter):
         phase = "hermes_stop_state_mirror"
         try:
             for program, phase in (
+                # The scheduler writes the same native state the save reads.
+                (_HERMES_SCHEDULER_PROGRAM, "hermes_stop_scheduler"),
                 ("astrabox-hermes-state-mirror", "hermes_stop_state_mirror"),
                 (_HERMES_BACKEND_PROGRAM, "hermes_stop_backend"),
             ):
@@ -580,6 +639,43 @@ class HermesEngineAdapter(EngineAdapter):
                 data={"phase": phase},
             ) from exc
 
+    async def list_scheduled_jobs(
+        self, sandbox: Any, *, runtime_identity: dict[str, Any]
+    ) -> list[dict[str, Any]] | None:
+        """The profile's cron jobs, from Hermes' own store (``cron.jobs.list_jobs``).
+
+        Runs as the profile's owner with its environment, as the state save
+        does, so Hermes resolves the profile's ``HERMES_HOME`` and nothing in
+        the store is touched by another account. Each job keeps Hermes' field
+        names; only the ones an owner reads are carried.
+        """
+
+        run_fn = getattr(getattr(sandbox, "commands", None), "run", None)
+        if run_fn is None:
+            raise RuntimeError("sandbox cannot run commands")
+        profile_env = posixpath.join(runtime_identity["config_dir"], _HERMES_PROFILE_ENV_FILENAME)
+        command = shlex.join([
+            "runuser", "-u", runtime_identity["linux_user"], "--", "env",
+            f"HOME={runtime_identity['home_dir']}",
+            "bash", "--noprofile", "--norc", "-c",
+            'set -euo pipefail; source "$1"; exec "$HERMES_VENV/bin/python" -c "$2"',
+            "astrabox-hermes-cron-list", profile_env, _CRON_JOBS_LISTER,
+        ])
+        result = await run_sandbox_command(run_fn, command)
+        output = _hermes_command_output(result)
+        # The command channel replays stderr into the same stream, so Hermes'
+        # own log lines can land next to the answer; it is found by its marker
+        # and read as one JSON value from there.
+        start = output.rfind(_CRON_JOBS_MARKER)
+        if getattr(result, "error", None) or getattr(result, "exit_code", 0) not in (0, None) or start < 0:
+            raise RuntimeError("Hermes did not list its cron jobs: " + output.strip()[-400:])
+        jobs, _end = json.JSONDecoder().raw_decode(output, start + len(_CRON_JOBS_MARKER))
+        return [
+            {field: job.get(field) for field in _CRON_JOB_FIELDS}
+            for job in jobs
+            if isinstance(job, dict)
+        ]
+
     def process_disposal(self) -> Any:
         return _HERMES_PROCESS_DISPOSAL
 
@@ -588,6 +684,60 @@ class HermesEngineAdapter(EngineAdapter):
 # Per-(user, assistant) profile homes live under it; used as the container cwd when
 # the workspace plan carries none.
 _HERMES_WORKSPACE_ROOT = "/home/conversations"
+
+
+#: What an Assistant may add to Hermes at the pinned commit
+#: (``docs/maintainers/engine-extension-contract.md``). Skills and plugins are
+#: placed under an ``astrabox`` category the platform owns entirely, so nothing
+#: the agent or its owner created in the profile is touched, and a plugin's key
+#: is ``astrabox/<directory>`` (``hermes_cli/plugins_discovery.py``). Hermes
+#: discovers plugins once per process and reads its configuration documents at
+#: start, so a change to either restarts the backend once nothing is running;
+#: Skills are read when a conversation starts.
+#:
+#: Gateway event hooks (``$HERMES_HOME/hooks``) are not offered: they fire for
+#: sessions of Hermes' messaging gateway, which here runs only the scheduler.
+#: A plugin's hooks run in every agent loop.
+HERMES_EXTENSIONS = EngineExtensions(
+    mcp_transports=frozenset({"stdio", "http", "sse"}),
+    skills_target="{config}/skills/astrabox",
+    packages=(
+        PackageKind(
+            name="hermes-plugin",
+            label="Hermes plugin",
+            target="{config}/plugins/astrabox",
+            takes_effect="restart",
+            installed_by_engine=True,
+            # Hermes' installer (tools/lazy_deps.py) resolves with uv against
+            # the default index: the simple API on pypi.org, files from
+            # files.pythonhosted.org.
+            installer_hosts=("pypi.org", "files.pythonhosted.org"),
+            help="A Hermes plugin directory with plugin.yaml: tools, hooks, slash commands, "
+            "Skills or system prompt sections. Its declared Python dependencies are installed "
+            "from PyPI when it is placed.",
+        ),
+        PackageKind(
+            name="agent-plugin",
+            label="Agent Plugins package",
+            target="{config}/plugins/astrabox",
+            takes_effect="restart",
+            installed_by_engine=True,
+            help="An Agent Plugins v1.0 package: plugin.json with Skills and an mcp.json.",
+        ),
+    ),
+    native_config=(
+        {
+            "key": "config",
+            "type": "object",
+            "label": "Hermes config.yaml",
+            "help": "Hermes configuration the agent cannot change, applied through Hermes' "
+            "managed scope over the profile's config.yaml: nested keys merge, lists and values "
+            "replace. Takes effect when the backend restarts. Skills settings are not read "
+            "from the managed scope; Skills come from the Skills field.",
+            "protected_keys": list(_HERMES_PROTECTED_CONFIG_KEYS),
+        },
+    ),
+)
 
 
 def _resolve_hermes_profile_ref(
@@ -715,6 +865,7 @@ async def _prepare_hermes_profile(
         env[_HERMES_SOUL_B64_ENV] = base64.b64encode(
             soul_content.encode("utf-8")
         ).decode("ascii")
+    env.update(await _prepare_hermes_extensions(sandbox, template, normalized))
     env.update(
         {
             "ASTRABOX_HERMES_PROFILE_LINUX_USER": normalized["linux_user"],
@@ -835,6 +986,93 @@ async def _prepare_hermes_profile(
         error_message="failed to record the Hermes backend's process configuration",
     )
     return process_digest
+
+
+async def _prepare_hermes_extensions(
+    sandbox: Any, template: Any, normalized: dict[str, Any]
+) -> dict[str, str]:
+    """Fetch the Assistant's Skills and packages; return the profile env naming them.
+
+    The sources are cloned into the box's runtime caches as an Agent's are,
+    and the in-image merge places them in the profile
+    (``scripts/runtime/hermes_config_merge.py``). The owner's native
+    configuration is carried to the profile setup, which writes it to Hermes'
+    managed scope.
+    """
+
+    skills = [
+        str(item).strip()
+        for item in (getattr(template, "skills", None) or [])
+        if str(item or "").strip()
+    ]
+    await asyncio.gather(
+        prepare_agent_runtime_skill_cache(get_underlying_sandbox(sandbox), skills),
+        prepare_agent_runtime_plugin_cache(
+            sandbox, template, get_underlying_sandbox_fn=get_underlying_sandbox
+        ),
+    )
+    env = {
+        "HERMES_MANAGED_DIR": _HERMES_MANAGED_DIR,
+        # Hermes installs a plugin's Python dependencies here rather than into
+        # its root-owned virtualenv (``tools/lazy_deps.py``), and puts it on
+        # the import path when it starts. Outside the profile: it is rebuilt
+        # from the plugins' declarations, not kept with the profile.
+        "HERMES_LAZY_INSTALL_TARGET": posixpath.join(
+            normalized["home_dir"], ".cache", "astrabox-hermes-plugin-packages"
+        ),
+    }
+    if skills:
+        env[_HERMES_SKILLS_CACHE_ENV] = AGENT_RUNTIME_SKILL_CACHE_DIR
+    plugins = _hermes_plugin_placements(template)
+    if plugins:
+        env[_HERMES_PLUGINS_ENV] = json.dumps(plugins, ensure_ascii=False, sort_keys=True)
+    managed = dict(getattr(template, "engine_options", None) or {}).get("config")
+    if managed:
+        env[_HERMES_MANAGED_CONFIG_ENV] = json.dumps(managed, ensure_ascii=False, sort_keys=True)
+    return env
+
+
+_HERMES_PLUGIN_DIRECTORY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+def _hermes_plugin_placements(template: Any) -> list[dict[str, str]]:
+    """Where each cached package directory goes: ``plugins/astrabox/<directory>``.
+
+    The directory keeps its own name — the repository's for a package at its
+    root — which is how Hermes keys a plugin in a category
+    (``astrabox/<directory>``), so two packages may not share one.
+    """
+
+    placements: list[dict[str, str]] = []
+    seen: dict[str, str] = {}
+    for package, path, source in cached_package_dirs(template):
+        kind = str(package.get("kind") or "")
+        if HERMES_EXTENSIONS.package_kind(kind) is None:
+            raise APIError(
+                code="PACKAGE_INVALID",
+                message=f"Hermes does not load packages of kind {kind!r}",
+                status_code=400,
+            )
+        named = str(package.get("url") or "") if path == "." else path
+        directory = posixpath.basename(named.rstrip("/")).removesuffix(".git")
+        if _HERMES_PLUGIN_DIRECTORY.fullmatch(directory) is None:
+            raise APIError(
+                code="PACKAGE_INVALID",
+                message=f"package directory {directory!r} is not a Hermes plugin name",
+                status_code=400,
+            )
+        if directory in seen:
+            raise APIError(
+                code="PACKAGE_INVALID",
+                message=(
+                    f"packages {seen[directory]!r} and {package.get('url')!r} both provide a "
+                    f"plugin directory named {directory!r}; Hermes keys plugins by directory"
+                ),
+                status_code=400,
+            )
+        seen[directory] = str(package.get("url") or "")
+        placements.append({"kind": kind, "key": f"astrabox/{directory}", "source": source})
+    return placements
 
 
 def _hermes_process_digest(env: dict[str, str], overwrite_blob: dict[str, Any]) -> str:
@@ -973,6 +1211,9 @@ def _build_hermes_profile_env_exports(env: dict[str, str]) -> str:
 #: The supervised program `astrabox-hermes-serve` runs, named in
 #: `containers/sandbox-hermes/supervisord.hermes.conf`.
 _HERMES_BACKEND_PROGRAM = "astrabox-hermes"
+#: Hermes' gateway with no messaging platform: it runs the profile's cron jobs
+#: and reads the same environment and MCP configuration as the backend.
+_HERMES_SCHEDULER_PROGRAM = "astrabox-hermes-scheduler"
 
 
 async def _hermes_process_standing(
@@ -1080,7 +1321,12 @@ async def _restart_hermes_backend(run_fn: Any) -> None:
 
     result = await run_fn(
         "bash -lc "
-        + shlex.quote("set -euo pipefail; exec supervisorctl restart " + _HERMES_BACKEND_PROGRAM)
+        + shlex.quote(
+            "set -euo pipefail; exec supervisorctl restart "
+            + _HERMES_BACKEND_PROGRAM
+            + " "
+            + _HERMES_SCHEDULER_PROGRAM
+        )
     )
     error = getattr(result, "error", None)
     output = _hermes_command_output(result)
@@ -1117,6 +1363,74 @@ async def _install_hermes_profile_env_file(
         error_code="HERMES_PROFILE_ENV_INSTALL_FAILED",
         error_message="failed to install Hermes profile env file",
     )
+
+
+_CRON_JOB_ID = re.compile(r"[A-Za-z0-9_.-]+")
+
+#: Run in the box with Hermes' Python: the newest saved run of one job, and
+#: whether its response is the quiet marker by Hermes' own autonomous-lane rule
+#: (``[SILENT]`` and the variants ``gateway/response_filters.py`` accepts at the
+#: pinned commit), the rule Hermes' scheduler applies before it delivers.
+_CRON_RUN_READER = r"""
+import json, pathlib, sys
+from gateway.response_filters import is_autonomous_silence_response
+runs = sorted(pathlib.Path(sys.argv[1]).glob("*.md"), key=lambda path: path.stat().st_mtime)
+if runs:
+    text = runs[-1].read_text(errors="replace")[:65536]
+    response = text.split("## Response", 1)[1] if "## Response" in text else ""
+    print(json.dumps({"output": text, "silent": is_autonomous_silence_response(response)}))
+"""
+
+
+#: Lists the profile's jobs through Hermes' own store API, disabled ones included.
+_CRON_JOBS_MARKER = "ASTRABOX_HERMES_CRON_JOBS "
+_CRON_JOBS_LISTER = r"""
+import json, sys
+from cron.jobs import list_jobs
+jobs = json.dumps(list_jobs(include_disabled=True), default=str)
+sys.stdout.write("\nASTRABOX_HERMES_CRON_JOBS " + jobs + "\n")
+sys.stdout.flush()
+"""
+#: The fields of a Hermes job record (``cron/jobs.py`` ``create_job``) an owner reads.
+_CRON_JOB_FIELDS = (
+    "id", "name", "prompt", "schedule_display", "state", "enabled",
+    "next_run_at", "last_run_at", "last_status", "last_error", "created_at", "repeat",
+)
+
+
+def _cron_run_output_reader(
+    sandbox: Any, identity: dict[str, Any] | None
+) -> Callable[[str], Awaitable[CronRunOutput | None]] | None:
+    """Read the newest result Hermes saved for one cron job, inside the box.
+
+    Hermes writes each run to ``$HERMES_HOME/cron/output/<job_id>/<time>.md``
+    (``cron/jobs.py`` at the pinned commit) and serves no endpoint for it.
+    """
+
+    run_fn = getattr(getattr(sandbox, "commands", None), "run", None)
+    if run_fn is None or not identity:
+        return None
+    root = posixpath.join(normalize_runtime_identity(identity)["config_dir"], "cron", "output")
+
+    async def read(job_id: str) -> CronRunOutput | None:
+        if not _CRON_JOB_ID.fullmatch(job_id) or job_id in {".", ".."}:
+            return None
+        result = await run_sandbox_command(
+            run_fn,
+            shlex.join([
+                "bash", "-c", 'exec "$HERMES_VENV/bin/python" -c "$1" "$2"',
+                "hermes-cron-output", _CRON_RUN_READER, posixpath.join(root, job_id),
+            ]),
+        )
+        if getattr(result, "error", None) or getattr(result, "exit_code", 0) not in (0, None):
+            return None
+        printed = [line for line in _hermes_command_output(result).splitlines() if line.startswith("{")]
+        if not printed:
+            return None
+        run = json.loads(printed[-1])
+        return CronRunOutput(output=str(run["output"]), silent=run["silent"] is True)
+
+    return read
 
 
 def _hermes_command_output(result: Any) -> str:
@@ -1218,9 +1532,22 @@ def _build_hermes_config_overwrite(
             }
         ],
         "auxiliary": {"title_generation": {"enabled": False}},
+        # The owner's timezone, which Hermes names in every system prompt and
+        # reads cron schedules in. Empty is Hermes' own "unset": the
+        # server's local time.
+        "timezone": str(getattr(template, "timezone", None) or ""),
+        # The Skills AstraBox ships in the image (containers/sandbox-hermes/
+        # skills), which teach the Assistant to offer scheduled briefings
+        # and monitors. Hermes reads this key from the profile's config.yaml.
+        "skills": {"external_dirs": [_HERMES_IMAGE_SKILLS_DIR]},
     }
     artifacts_enabled = getattr(template, "artifacts_enabled", True)
-    if binding_mcp_server_definitions(getattr(template, "mcp_servers", None), session_source_type=getattr(template, "session_source_type", None), artifacts_enabled=artifacts_enabled):
+    if binding_mcp_server_definitions(
+        getattr(template, "mcp_servers", None),
+        session_source_type=getattr(template, "session_source_type", None),
+        agent_id=getattr(template, "agent_id", None),
+        artifacts_enabled=artifacts_enabled,
+    ):
         mcp_servers = runtime_mcp_servers_for_binding(
             getattr(template, "mcp_servers", None),
             proxy_base_url=str(
@@ -1228,6 +1555,7 @@ def _build_hermes_config_overwrite(
             ),
             deployment_id=str(mcp_deployment_id or "").strip(),
             session_source_type=getattr(template, "session_source_type", None),
+            agent_id=getattr(template, "agent_id", None),
             artifacts_enabled=artifacts_enabled,
         )
         if mcp_servers:
@@ -1245,7 +1573,20 @@ def _build_hermes_config_defaults() -> dict[str, Any]:
         "terminal": {"backend": "local"},
         "approvals": {"mode": "off", "cron_mode": "approve"},
         "security": {"tirith_enabled": False},
+        # Hermes tells the agent a job created from this kind of session is
+        # "local-only" and never reported back (tools/cronjob_job_args.py),
+        # which is untrue here: AstraBox reports each run into the
+        # conversation that created the job (engine/hermes_cron.py).
+        "agent": {"system_prompt": _HERMES_CRON_DELIVERY_NOTE},
     }
+
+
+_HERMES_CRON_DELIVERY_NOTE = (
+    "Scheduled jobs you create with cronjob_manage report each run back into the "
+    "conversation that created them, so the user receives the result wherever they "
+    "talk to you. Disregard any notice that such a job is local-only or will not be "
+    "delivered."
+)
 
 
 def _build_hermes_soul_content(template: Any) -> str:

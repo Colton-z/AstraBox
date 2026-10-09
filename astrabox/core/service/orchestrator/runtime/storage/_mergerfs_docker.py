@@ -171,8 +171,12 @@ class DockerMounts:
         """Change the supplier's directory mapping while retaining the same mount."""
         return self._exec(self._helper(assignment), assignment.command("bind", binding))
 
-    def release(self, assignment_id: str) -> None:
-        """Remove only the view and helper; backing-volume data is never deleted."""
+    def release(self, assignment_id: str) -> bool:
+        """Remove only the view and helper; backing-volume data is never deleted.
+
+        Always True when it returns: Docker refuses to remove a volume any
+        container still references, so a view in use raises instead.
+        """
         digest = hashlib.sha256(assignment_id.encode()).hexdigest()
         name = "astrabox-view-" + digest[:32]
         labels = {MANAGED: "mergerfs", OWNER: digest[:63]}
@@ -190,6 +194,7 @@ class DockerMounts:
         if receipt is not None:
             verify_labels(receipt.attrs.get("Labels"), labels, name + "-receipt")
             receipt.remove(force=False)
+        return True
 
     def attach(self, assignment_id: str, sandbox_id: str, backend: str, installation: str) -> None:
         """A separate Docker volume retains the immutable receipt after helper loss."""

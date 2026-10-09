@@ -1,4 +1,4 @@
-"""Provider-neutral Agent extension assignment routes."""
+"""Provider-neutral extension assignment routes for Agents and Assistants."""
 
 from __future__ import annotations
 
@@ -53,8 +53,20 @@ class AgentExtensionCatalog(BaseModel):
     selected_skill_ids: list[str]
 
 
+class AssistantExtensionCatalog(BaseModel):
+    """The provider's catalog with this Assistant's selection marked, as for an Agent."""
+
+    model_config = ConfigDict(extra="allow")
+
+    assistant_id: str
+    mcp_servers: list[AgentExtensionItem]
+    skills: list[AgentExtensionItem]
+    selected_mcp_server_ids: list[str]
+    selected_skill_ids: list[str]
+
+
 def register_extension_routes(app: Any) -> None:
-    """Register the Agent-scoped catalog read and assignment endpoints."""
+    """Register the Agent- and Assistant-scoped catalog read and assignment endpoints."""
 
     global _registered_on
     if _registered_on == id(app):
@@ -86,6 +98,42 @@ def register_extension_routes(app: Any) -> None:
             await service.set_assignment(
                 user,
                 agent_id,
+                mcp_server_ids=body.mcp_server_ids,
+                skill_ids=body.skill_ids,
+            )
+        )
+
+
+    @app.get(
+        "/api/v1/assistants/{assistant_id}/extensions",
+        response_model=ApiEnvelope[AssistantExtensionCatalog],
+        response_model_exclude_unset=True,
+    )
+    async def get_assistant_extensions(assistant_id: str, request: Request):
+        from astrabox.core.service.orchestrator.service_registry import get_assistant_service
+
+        user = await get_current_user_context(request)
+        return success_response(
+            await get_assistant_service().get_extension_catalog(user, assistant_id)
+        )
+
+    @app.put(
+        "/api/v1/assistants/{assistant_id}/extensions",
+        response_model=ApiEnvelope[AssistantExtensionCatalog],
+        response_model_exclude_unset=True,
+    )
+    async def set_assistant_extensions(
+        assistant_id: str,
+        request: Request,
+        body: SetAgentExtensionsRequest,
+    ):
+        from astrabox.core.service.orchestrator.service_registry import get_assistant_service
+
+        user = await get_current_user_context(request)
+        return success_response(
+            await get_assistant_service().set_extension_assignment(
+                user,
+                assistant_id,
                 mcp_server_ids=body.mcp_server_ids,
                 skill_ids=body.skill_ids,
             )

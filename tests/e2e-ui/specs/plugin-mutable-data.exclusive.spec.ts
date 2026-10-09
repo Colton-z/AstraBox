@@ -222,7 +222,7 @@ function probePluginData(
     'config = os.environ["ASTRABOX_PROBE_CONFIG"].rstrip("/")',
     'account = os.environ["ASTRABOX_PROBE_ACCOUNT"]',
     'checkout = os.environ["ASTRABOX_PROBE_CHECKOUT"]',
-    'plugin_paths = [',
+    'paths = [',
     '    item.strip("/")',
     '    for item in json.loads(os.environ["ASTRABOX_PROBE_PLUGIN_PATHS"])',
     ']',
@@ -272,7 +272,7 @@ function probePluginData(
     'plugin_configs = []',
     'config_paths = sorted({',
     '    os.path.join(checkout, plugin_path, ".mcp.json")',
-    '    for plugin_path in plugin_paths',
+    '    for plugin_path in paths',
     '})',
     'for config_path in config_paths:',
     '    raw = json.loads(open(config_path, encoding="utf-8").read())',
@@ -401,22 +401,24 @@ test('a plugin conversation owns its mutable plugin data and registers every dec
     model,
     environment_name: environmentName,
     prepared_capacity: 0,
-    plugin_repos: [
+    packages: [
       {
+        kind: 'claude-plugin',
         url: PLUGIN_REPOSITORY,
         protocol: 'https',
         branch: 'main',
         depth: 1,
         sha: revision,
-        plugin_paths: [PLUGIN_PATH],
+        paths: [PLUGIN_PATH],
       },
       {
+        kind: 'claude-plugin',
         url: STATS_REPOSITORY,
         protocol: 'https',
         branch: 'main',
         depth: 1,
         sha: STATS_REVISION,
-        plugin_paths: ['.'],
+        paths: ['.'],
       },
     ],
   });
@@ -576,14 +578,20 @@ test('a plugin conversation owns its mutable plugin data and registers every dec
     type: 'e2e_plugin_mcp_init',
     description: JSON.stringify({ initNames, declaredServers }),
   });
-  // Compared whole, plugin qualifier included: this Agent declares no
-  // `mcp_servers` of its own and `claude_code_config` sources that option from
-  // the Agent alone, so the plugin's declarations are the entire expected
-  // inventory, and two plugins declaring the same server name stay distinct.
+  // The plugin-qualified part is compared whole, qualifier included, so two
+  // plugins declaring the same server name stay distinct. The rest is the
+  // platform's own servers (such as `artifacts`), which every conversation
+  // carries and this Agent does not declare; none of them may be a plugin
+  // server registered without its qualifier.
   expect(
-    initNames,
+    initNames.filter((name) => name.startsWith('plugin:')),
     `Claude's init must register every declared server under its plugin-qualified name: ${probeText}`,
   ).toEqual(declaredServers);
+  const pluginServerNames = new Set(probe.plugin_configs.flatMap((config) => config.server_names));
+  expect(
+    initNames.filter((name) => pluginServerNames.has(name)),
+    'no plugin server may also be registered under its bare name',
+  ).toEqual([]);
 
   expect(
     pluginDataPermissionFailures(sessionId),

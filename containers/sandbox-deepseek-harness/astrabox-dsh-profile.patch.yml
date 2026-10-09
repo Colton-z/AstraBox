@@ -30,6 +30,16 @@
 - id: attachment-local
   disabled: true
 
+# The harness ships DeepSeek session-log upload on: every request to the
+# official DeepSeek API, gateways included, also carries the conversation's
+# not-yet-accepted log. A platform running other people's conversations does
+# not hand them to a model vendor by default. `enabled: false` is the vendor's
+# own opt-out (the dsh-session-log-deepseek package README); the separate
+# OpenTelemetry feedback upload is off through DSH_TELEMETRY_MODE in the image.
+- id: session-log-deepseek
+  config:
+    enabled: false
+
 - insert:
     - id: astrabox-attachments
       name: /opt/dsh/attachments.mjs

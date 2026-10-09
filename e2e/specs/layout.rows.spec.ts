@@ -54,7 +54,6 @@ test("sidebar rows behave the same whatever the status says", async ({ page }) =
 
 for (const surface of [
   { path: "/agents", name: "agent cards" },
-  { path: "/assistants", name: "assistant cards" },
 ]) {
   test(`${surface.name} keep their badge inside the card under long text`, async ({ page }) => {
     await stubApi(page, { stress: true });

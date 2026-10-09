@@ -196,13 +196,18 @@ identity_ms="$(elapsed_since "$stage_start")"
 stage_start="$(now_ms)"
 if [ -n "${CONV_SKILL_MANIFEST_B64:-}" ]; then
   skill_cache="${CONV_SKILL_CACHE_DIR:-/opt/conversation-runtime/claude-skills-cache}"
-  target="$config/skills"
+  # The engine's own Skills root, as its adapter declares it. Its parent is
+  # the workload's (for Codex, Pi and DeepSeek Harness, ~/.agents, where the
+  # agent keeps its own Agent files); only the link is the platform's.
+  # Its own name: the helpers below assign the global `target`.
+  skills_target="$(require_env CONV_SKILL_TARGET)"
+  create_workload_dir "$(dirname "$skills_target")"
   desired_manifest="$(printf '%s' "$CONV_SKILL_MANIFEST_B64" | base64 -d)"
   test -d "$skill_cache"
   test -f "$skill_cache/.skill-manifest"
   actual_manifest="$(cat "$skill_cache/.skill-manifest")"
   test "$actual_manifest" = "$desired_manifest"
-  replace_skills_target_with_symlink "$target" "$skill_cache"
+  replace_skills_target_with_symlink "$skills_target" "$skill_cache"
 else
   :
 fi
@@ -235,6 +240,32 @@ if [ -n "${CONV_PLUGIN_LINKS_B64:-}" ]; then
       test -d "$plugin_dir"
     done
   done <<< "$payload"
+fi
+if [ -n "${CONV_ENGINE_INSTALL_B64:-}" ]; then
+  # Extensions the engine installs itself
+  # (EngineAdapter.conversation_install_script), as the workload account,
+  # before the engine starts: an engine reads its installed plugins when its
+  # process starts.
+  engine_install="$tmpdir/.astrabox-engine-install.sh"
+  printf '%s' "$CONV_ENGINE_INSTALL_B64" | base64 -d > "$engine_install"
+  chown "$user:$user" "$engine_install"
+  if ! install_output="$(runuser -u "$user" -- env HOME="$home" bash "$engine_install" 2>&1)"; then
+    printf 'CONVERSATION_BOOTSTRAP_ENGINE_INSTALL_FAILED output=%s\n' "$install_output" >&2
+    exit 50
+  fi
+  rm -f "$engine_install"
+  if [ -n "${CONV_ENGINE_RESTART_B64:-}" ]; then
+    # The engine is the image's resident service, already running; it reads
+    # what was just installed only once restarted
+    # (EngineAdapter.resident_restart_script).
+    engine_restart="$tmpdir/.astrabox-engine-restart.sh"
+    printf '%s' "$CONV_ENGINE_RESTART_B64" | base64 -d > "$engine_restart"
+    if ! restart_output="$(env HOME="$home" bash "$engine_restart" 2>&1)"; then
+      printf 'CONVERSATION_BOOTSTRAP_ENGINE_RESTART_FAILED output=%s\n' "$restart_output" >&2
+      exit 51
+    fi
+    rm -f "$engine_restart"
+  fi
 fi
 plugins_ms="$(elapsed_since "$stage_start")"
 

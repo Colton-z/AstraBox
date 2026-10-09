@@ -22,6 +22,8 @@ Codex turn with a 404 that looks like a model problem.
 
 from __future__ import annotations
 
+import shlex
+
 import contextlib
 import hashlib
 import json
@@ -50,7 +52,13 @@ from astrabox.core.service.orchestrator.engine.capabilities import (
     EngineRuntimeCapabilities,
     EngineWorkloadDeclaration,
 )
+from astrabox.core.service.orchestrator.engine.extensions import (
+    AGENTS_HOME_SKILLS_TARGET,
+    EngineExtensions,
+    PackageKind,
+)
 from astrabox.core.service.orchestrator.engine.codex_client import (
+    CODEX_PLUGIN_MARKETPLACE,
     CODEX_SANDBOX_MODES,
     ENGINE_KIND,
     CodexEngineClient,
@@ -183,6 +191,65 @@ CODEX_ENGINE_OPTIONS_SCHEMA: tuple[dict[str, Any], ...] = (
 )
 
 
+#: A Codex plugin package. Codex 0.160 loads plugins with a Codex, Claude
+#: Code or Cursor `plugin.json`, or an Agent Plugins v1.0 one; it installs
+#: each from a marketplace the platform writes (see
+#: :meth:`CodexEngineAdapter.conversation_install_script`).
+CODEX_PLUGIN_KIND = PackageKind(
+    name="codex-plugin",
+    label="Codex plugin",
+    target="{home}/.astrabox-codex-plugins/plugins",
+    installed_by_engine=True,
+    help="A plugin directory with a .codex-plugin, .claude-plugin or .cursor-plugin "
+    "plugin.json, or an Agent Plugins v1.0 plugin.json. Codex installs it and loads "
+    "its Skills, MCP servers and hooks from the next conversation.",
+)
+_CODEX_PLUGIN_INSTALL_SCRIPT = r"""set -euo pipefail
+export CODEX_HOME="$HOME/.codex"
+codex=/opt/codex/node_modules/.bin/codex
+marketplace="$HOME/.astrabox-codex-plugins"
+rm -rf "$marketplace"
+mkdir -p "$CODEX_HOME" "$marketplace/.agents/plugins" "$marketplace/plugins"
+names="$(python3 - "$marketplace" @SOURCES@ <<'PY'
+import json, os, sys
+
+root, sources = sys.argv[1], json.loads(sys.argv[2])
+manifests = (".codex-plugin/plugin.json", ".claude-plugin/plugin.json", ".cursor-plugin/plugin.json", "plugin.json")
+entries = []
+for source in sources:
+    manifest = next((os.path.join(source, m) for m in manifests if os.path.isfile(os.path.join(source, m))), None)
+    if manifest is None:
+        sys.exit(f"CODEX_PLUGIN_MANIFEST_MISSING source={source}")
+    with open(manifest, encoding="utf-8") as handle:
+        name = str(json.load(handle).get("name") or "").strip()
+    if not name or "/" in name or name.startswith("."):
+        sys.exit(f"CODEX_PLUGIN_NAME_INVALID source={source} name={name!r}")
+    if any(entry["name"] == name for entry in entries):
+        sys.exit(f"CODEX_PLUGIN_NAME_DUPLICATE name={name}")
+    os.symlink(source, os.path.join(root, "plugins", name))
+    entries.append({"name": name, "source": {"source": "local", "path": f"./plugins/{name}"}})
+with open(os.path.join(root, ".agents/plugins/marketplace.json"), "w", encoding="utf-8") as handle:
+    json.dump({"name": "@MARKETPLACE@", "plugins": entries}, handle)
+print("\n".join(entry["name"] for entry in entries))
+PY
+)"
+"$codex" plugin marketplace add "$marketplace" >/dev/null
+for name in $names; do
+  "$codex" plugin add "$name@@MARKETPLACE@" >/dev/null
+done
+"$codex" plugin list --json | python3 -c '
+import json, sys
+wanted = set(sys.argv[1].split())
+for plugin in json.load(sys.stdin).get("installed", []):
+    if plugin.get("marketplaceName") == "@MARKETPLACE@" and plugin.get("name") not in wanted:
+        print(plugin["pluginId"])
+' "$names" | while read -r stale; do
+  "$codex" plugin remove "$stale" >/dev/null
+done
+printf 'CODEX_PLUGINS_READY %s\n' "$(echo $names)"
+"""
+
+
 def _engine_option(template: Any, key: str) -> dict[str, Any]:
     bag = getattr(template, "engine_options", None)
     if not isinstance(bag, dict):
@@ -208,19 +275,49 @@ def _engine_option(template: Any, key: str) -> dict[str, Any]:
 
 
 def _thread_config(template: Any, *, deployment_settings: Any, deployment_id: str) -> dict[str, Any]:
-    """Codex 0.160.0's untagged URL transport, on start and resume alike."""
-    from astrabox.core.service.orchestrator.engine.platform_mcp import platform_mcp_servers
+    """The thread's config overrides, on start and resume alike.
 
-    servers = platform_mcp_servers(
+    MCP servers use Codex 0.160.0's untagged transports
+    (codex-rs/config/src/mcp_types.rs): stdio `command`/`args`/`env`, and
+    streamable HTTP `url`/`http_headers`. A platform server is required, so a
+    thread does not start without the route it was given; an author server
+    keeps Codex's default and reports its own startup failure.
+    """
+    from astrabox.core.service.orchestrator.engine.platform_mcp import platform_mcp_servers
+    from astrabox.core.service.orchestrator.runtime.mcp_servers import author_mcp_servers
+
+    platform = platform_mcp_servers(
         template, deployment_settings=deployment_settings, deployment_id=deployment_id,
     )
+    authors = author_mcp_servers(getattr(template, "mcp_servers", None))
     return {
         **_engine_option(template, "config"),
         "mcp_servers": {
-            name: {"url": server["url"], "required": True}
-            for name, server in servers.items()
+            **{name: _codex_mcp_server(name, server, platform=False) for name, server in authors.items()},
+            **{name: _codex_mcp_server(name, server, platform=True) for name, server in platform.items()},
         },
     }
+
+
+def _codex_mcp_server(name: str, server: dict[str, Any], *, platform: bool) -> dict[str, Any]:
+    transport = server.get("type")
+    if transport == "stdio":
+        stdio: dict[str, Any] = {"command": server["command"], "args": list(server.get("args") or [])}
+        if server.get("env"):
+            stdio["env"] = dict(server["env"])
+        return stdio
+    if transport == "http":
+        http: dict[str, Any] = {"url": server["url"]}
+        if server.get("headers"):
+            http["http_headers"] = dict(server["headers"])
+        if platform:
+            http["required"] = True
+        return http
+    raise APIError(
+        code="ENGINE_CAPABILITY_UNAVAILABLE",
+        message=f"Codex takes stdio and streamable HTTP MCP servers, not {transport!r} ({name})",
+        status_code=409,
+    )
 
 
 def _model_catalog(template: Any) -> str | None:
@@ -597,7 +694,43 @@ class CodexEngineAdapter(EngineAdapter):
                 root_template=CODEX_SESSIONS_DIR_TEMPLATE,
                 namespace=CODEX_MIRROR_SUBPATH_PREFIX,
             ),
-            engine_options_schema=CODEX_ENGINE_OPTIONS_SCHEMA,
+            # Codex discovers user Skills in $HOME/.agents/skills (its
+            # `$CODEX_HOME/skills` root is marked deprecated at 0.160.0).
+            extensions=EngineExtensions(
+                mcp_transports=frozenset({"stdio", "http"}),
+                skills_target=AGENTS_HOME_SKILLS_TARGET,
+                packages=(CODEX_PLUGIN_KIND,),
+                native_config=CODEX_ENGINE_OPTIONS_SCHEMA,
+            ),
+        )
+
+    def conversation_install_script(
+        self,
+        *,
+        packages: list[dict[str, str]],
+        engine_options: dict[str, Any],
+        mcp_servers: dict[str, dict[str, Any]],
+    ) -> str | None:
+        """Install the Agent's Codex plugins from a local marketplace.
+
+        Codex installs a plugin only from a marketplace (`codex plugin add
+        NAME@MARKETPLACE`, which copies it into $CODEX_HOME/plugins/cache and
+        enables it in config.toml), and reads its installed plugins when the
+        app-server starts, so this runs before the conversation's server.
+        The marketplace is a directory the platform writes in the
+        conversation's home: each cached checkout linked under the name its
+        manifest declares, which Codex requires the marketplace entry to
+        match, and local sources `./`-relative inside it, which Codex also
+        requires (core-plugins/src/marketplace.rs at the pinned release).
+        Plugins installed from it for an earlier configuration are removed.
+        """
+
+        sources = [package["source"] for package in packages if package.get("kind") == CODEX_PLUGIN_KIND.name]
+        if not sources:
+            return None
+        return (
+            _CODEX_PLUGIN_INSTALL_SCRIPT.replace("@MARKETPLACE@", CODEX_PLUGIN_MARKETPLACE)
+            .replace("@SOURCES@", shlex.quote(json.dumps(sources)))
         )
 
     def shared_conversation_service_launch(self, *, home: str, workspace: str, port: int) -> str:

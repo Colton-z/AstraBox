@@ -215,6 +215,10 @@ class ChannelInbound:
     retain_context: bool = False
     #: A recall records external state; it never submits a turn.
     recall: ChannelRecall | None = None
+    #: The :attr:`ChannelChoice.action` of a button the participant pressed.
+    #: Core resolves it to the question it belongs to: the inbound answers
+    #: that question and never starts a turn, so ``content`` is ignored.
+    action: str | None = None
 
 
 #: Version stamped on every :class:`ChannelEvent` — the stable, versioned
@@ -227,6 +231,54 @@ EVENT_TURN_STARTED = "turn_started"
 EVENT_PROGRESS = "progress"
 EVENT_SETTLED = "settled"
 EVENT_FAILED = "failed"
+
+
+#: Version stamped on every :class:`ChannelInteraction`, the projection of a
+#: question an agent's turn is waiting on. Same forward-contract rule as
+#: :data:`CHANNEL_EVENT_VERSION`.
+CHANNEL_INTERACTION_VERSION = 1
+
+
+@dataclass(frozen=True)
+class ChannelChoice:
+    """One answer the participant can pick for the question shown."""
+
+    #: What a text reply names. Choices are numbered from 1 in declared order.
+    number: int
+    label: str
+    description: str = ""
+    #: Opaque id a button for this choice carries back as
+    #: :attr:`ChannelInbound.action`. Empty when the choice is answered by
+    #: text only (every choice of a multi-select question).
+    action: str = ""
+
+
+@dataclass(frozen=True)
+class ChannelInteraction:
+    """The question an agent's turn is waiting on, as one message shows it.
+
+    A form with several questions is shown one question at a time; ``position``
+    says which. ``text`` is the complete plain-text rendering, including how
+    to answer: a provider sends it as is, and one that renders buttons adds a
+    button for each choice that has an ``action``. Answers by text go back as
+    ordinary inbound messages: core decides whether a message answers the
+    question, so a provider never parses one.
+    """
+
+    interaction_id: str
+    #: ``form``, ``decision`` or ``tool_approval``.
+    presentation: str
+    title: str
+    detail: str
+    choices: tuple[ChannelChoice, ...]
+    multi_select: bool
+    #: A reply to the question's message may answer it in the participant's
+    #: own words.
+    free_text: bool
+    #: (question number, question count), both from 1.
+    position: tuple[int, int]
+    text: str
+    version: int = CHANNEL_INTERACTION_VERSION
 
 
 @dataclass
@@ -250,6 +302,10 @@ class ChannelEvent:
     error: str | None = None
     version: int = CHANNEL_EVENT_VERSION
     response_id: str = ""
+    #: On ``settled``: the question the turn is now waiting on, already
+    #: rendered into ``text``. Set only for a provider that declares
+    #: ``supports_interaction_actions``.
+    interaction: ChannelInteraction | None = None
 
 
 @dataclass
@@ -329,6 +385,12 @@ class ChannelProvider(ABC):
     #: (:meth:`open_source`) yielding typed envelopes; the spine ingests and
     #: acks each one after the durable claim.
     supports_source: bool = False
+
+    #: Optional capability: :meth:`deliver_outbound` accepts ``interaction`` and
+    #: renders a button for each :class:`ChannelChoice` with an ``action``; a
+    #: press arrives as :attr:`ChannelInbound.action`. Without it the question
+    #: still arrives, as text, and is answered by replying.
+    supports_interaction_actions: bool = False
 
     #: Whether Deployment CRUD issues the ordinary trigger shared secret.
     #: Broker-backed providers authenticate upstream with their write-only
@@ -431,6 +493,7 @@ class ChannelProvider(ABC):
         reply_context: dict[str, Any],
         text: str,
         binding: Mapping[str, Any],
+        interaction: ChannelInteraction | None = None,
     ) -> "ChannelDeliveryReceipt | None":
         """Send one completed main-conversation response to its destination.
 
@@ -443,8 +506,13 @@ class ChannelProvider(ABC):
         ``binding`` is reloaded for every durable delivery attempt. Providers
         may read its credential but must never copy that credential into
         ``reply_context`` (which is persisted in the outbox).
+
+        ``interaction`` is passed only to a provider that declares
+        ``supports_interaction_actions``, when the message carries a question;
+        ``text`` already contains it. A question is answered by replying to its
+        message, so a provider that can return the message's alias should.
         """
-        _ = (reply_context, text, binding)
+        _ = (reply_context, text, binding, interaction)
         return None
 
     async def open_delivery(
@@ -490,7 +558,9 @@ def _validate_channel_capabilities(provider: ChannelProvider, name: str) -> None
     its flag — a provider that half-implements streaming or sourcing would
     otherwise fail on the first real message.
     """
-    for flag_name in ("supports_streaming_delivery", "supports_source"):
+    for flag_name in (
+        "supports_streaming_delivery", "supports_source", "supports_interaction_actions",
+    ):
         flag = getattr(provider, flag_name, False)
         if not isinstance(flag, bool):
             raise RuntimeError(
@@ -605,6 +675,13 @@ def _validate_channel_capabilities(provider: ChannelProvider, name: str) -> None
     if "binding" not in inspect.signature(delivery).parameters:
         raise RuntimeError(
             f"channel provider {name!r}: deliver_outbound must accept a binding"
+        )
+    if provider.supports_interaction_actions and (
+        "interaction" not in inspect.signature(delivery).parameters
+    ):
+        raise RuntimeError(
+            f"channel provider {name!r}: supports_interaction_actions requires "
+            "deliver_outbound to accept an interaction"
         )
     if not inspect.iscoroutinefunction(type(provider).validate_configuration):
         raise RuntimeError(

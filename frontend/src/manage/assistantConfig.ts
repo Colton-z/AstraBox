@@ -118,6 +118,16 @@ export interface AssistantDraft {
   environment_name: string;
   permission_mode_default: string;
   system: string;
+  timezone: string;
+}
+
+/** The timezone this browser reports, the owner's unless they choose another. */
+export function browserTimezone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+  } catch {
+    return '';
+  }
 }
 
 export function buildAssistantDraft(): AssistantDraft {
@@ -129,6 +139,7 @@ export function buildAssistantDraft(): AssistantDraft {
     // Chosen with the Environment: only its program knows which modes exist.
     permission_mode_default: '',
     system: '',
+    timezone: browserTimezone(),
   };
 }
 

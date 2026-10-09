@@ -28,6 +28,7 @@ from astrabox.core.service.orchestrator.engine.frame_scope import (
     engine_frame_scope,
     engine_frame_turn_id,
 )
+from astrabox.core.service.orchestrator.tool_cards import card_parts
 from astrabox.core.service.orchestrator.tool_result_semantics import (
     AI_SDK_TOOL_OUTPUT_FRAME_TYPES,
     tool_result_block_from_ai_sdk_frame,
@@ -208,8 +209,15 @@ async def _process_translated_frames(worker: Any, state: _BridgeRunState, ctx: A
     if not frames:
         return
 
-    durable_ready_frames: list[dict[str, Any]] = []
+    # A platform tool's result can name a card it recorded for this Session;
+    # its part follows the result, so live delivery and replay both carry it.
+    with_cards: list[dict[str, Any]] = []
     for raw_frame in frames:
+        with_cards.append(raw_frame)
+        with_cards.extend(await card_parts(ctx.session_id, raw_frame))
+
+    durable_ready_frames: list[dict[str, Any]] = []
+    for raw_frame in with_cards:
         frame_doc = dict(raw_frame)
         frame_cursor_seq = _coerce_int(frame_doc.pop("__remote_cursor_seq", None))
         frame_mirror_seq = _coerce_int(frame_doc.pop("__remote_mirror_seq", None))

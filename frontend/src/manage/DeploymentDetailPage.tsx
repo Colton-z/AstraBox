@@ -4,13 +4,13 @@ import { useTranslation } from 'react-i18next';
 
 import { Button } from '@/components/ui/button';
 import {
-  deleteAgentDeployment,
+  deleteDeployment,
   listChannelProviders,
   listDeployments,
   listDeploymentRuns,
   replayDeploymentRun,
   triggerDeploymentRun,
-  updateAgentDeployment,
+  updateDeployment,
 } from '@/api';
 import type {
   AgentDeployment,
@@ -65,6 +65,15 @@ const RUN_TRIGGER_LABEL_KEYS: Readonly<Record<string, string>> = {
 };
 
 /** One authenticated external binding or built-in schedule and its Runs. */
+/** The edited sender list, or undefined when it matches what is stored. */
+function changedParticipants(draft: unknown, stored: string[] | undefined): string[] | undefined {
+  const next = String(draft ?? '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  return JSON.stringify(next) === JSON.stringify(stored ?? []) ? undefined : next;
+}
+
 export default function DeploymentDetailPage() {
   const { deploymentId = '' } = useParams();
   const navigate = useNavigate();
@@ -111,7 +120,7 @@ export default function DeploymentDetailPage() {
       if (found) {
         if (found.scene === 'schedule') {
           try {
-            setRuns(await listDeploymentRuns(found.agent_id, found.deployment_id));
+            setRuns(await listDeploymentRuns(found, found.deployment_id));
             setRunsError('');
             runsLoaded.current = true;
           } catch (e) {
@@ -131,10 +140,13 @@ export default function DeploymentDetailPage() {
         });
         setChannelDraft({
           execution_user_id: found.execution_user_id ?? '',
+          allowed_participants: (found.allowed_participants ?? []).join('\n'),
           channel_config: { ...(found.channel_config ?? {}) },
           credentials: {},
         });
-        setAgentName(found.agent_name || found.agent_id);
+        setAgentName(
+          found.assistant_name || found.assistant_id || found.agent_name || found.agent_id || '',
+        );
         setError('');
         return;
       }
@@ -158,7 +170,7 @@ export default function DeploymentDetailPage() {
   const reloadRuns = useCallback(async (context?: ReloadContext) => {
     if (!deployment || deployment.scene !== 'schedule') return;
     try {
-      setRuns(await listDeploymentRuns(deployment.agent_id, deployment.deployment_id));
+      setRuns(await listDeploymentRuns(deployment, deployment.deployment_id));
       setRunsError('');
       runsLoaded.current = true;
     } catch (pollError) {
@@ -174,6 +186,7 @@ export default function DeploymentDetailPage() {
     || scheduleDraft.timezone !== (deployment?.schedule?.timezone ?? '')
     || JSON.stringify(channelDraft) !== JSON.stringify({
       execution_user_id: deployment?.execution_user_id ?? '',
+      allowed_participants: (deployment?.allowed_participants ?? []).join('\n'),
       channel_config: { ...(deployment?.channel_config ?? {}) },
       credentials: {},
     })
@@ -280,7 +293,24 @@ export default function DeploymentDetailPage() {
             provider: channelProvider.label,
           }),
           fields: [
-            channelExecutionUserField(t, channelProvider.can_configure_execution_user === true),
+            ...(deployment.assistant_id
+              ? []
+              : [channelExecutionUserField(t, channelProvider.can_configure_execution_user === true)]),
+            {
+              key: 'allowed_participants',
+              label: t('manage:deployments.field_allowed_participants'),
+              type: 'textarea' as const,
+              required: Boolean(deployment.assistant_id),
+              idTag: 'allowed_participants',
+              rows: 2,
+              placeholder: 'telegram:123456789',
+              get: (value: Record<string, unknown>) => value.allowed_participants,
+              set: (value: Record<string, unknown>, next: unknown) => ({
+                ...value,
+                allowed_participants: next,
+              }),
+              help: t('manage:deployments.allowed_participants_help'),
+            },
             ...channelProvider.config_fields.map((field) =>
               channelEditField(field, 'channel_config'),
             ),
@@ -315,11 +345,12 @@ export default function DeploymentDetailPage() {
     : undefined;
   const channelBaseline = {
     execution_user_id: deployment.execution_user_id ?? '',
+    allowed_participants: (deployment.allowed_participants ?? []).join('\n'),
     channel_config: { ...(deployment.channel_config ?? {}) },
     credentials: {},
   };
   const refreshRuns = async () => {
-    setRuns(await listDeploymentRuns(deployment.agent_id, deployment.deployment_id));
+    setRuns(await listDeploymentRuns(deployment, deployment.deployment_id));
     setRunsError('');
   };
   const runColumns: ConsoleColumn<DeploymentRun>[] = [
@@ -395,7 +426,7 @@ export default function DeploymentDetailPage() {
             event.stopPropagation();
             void run(async () => {
               await replayDeploymentRun(
-                deployment.agent_id,
+                deployment,
                 deployment.deployment_id,
                 item.run_id,
               );
@@ -433,7 +464,7 @@ export default function DeploymentDetailPage() {
               onClick={() =>
                 void run(async () => {
                   await triggerDeploymentRun(
-                    deployment.agent_id,
+                    deployment,
                     deployment.deployment_id,
                   );
                   await refreshRuns();
@@ -448,7 +479,7 @@ export default function DeploymentDetailPage() {
             disabled={busy}
             onClick={() =>
               void run(async () => {
-                await updateAgentDeployment(deployment.agent_id, deployment.deployment_id, {
+                await updateDeployment(deployment, deployment.deployment_id, {
                   enabled: !enabled,
                 });
                 await load();
@@ -469,7 +500,7 @@ export default function DeploymentDetailPage() {
               action: t('common:confirm_delete'),
               onConfirm: () =>
                 void run(async () => {
-                  await deleteAgentDeployment(deployment.agent_id, deployment.deployment_id);
+                  await deleteDeployment(deployment, deployment.deployment_id);
                   navigate('/manage/deployments');
                 }),
             }}
@@ -480,7 +511,14 @@ export default function DeploymentDetailPage() {
       }
       rail={
         <ConsoleFactRail>
-          <ConsoleFact label={t('manage:deployments.field_agent')} value={agentName || '—'} />
+          <ConsoleFact
+            label={t(
+              deployment.assistant_id
+                ? 'manage:deployments.field_assistant'
+                : 'manage:deployments.field_agent',
+            )}
+            value={agentName || '—'}
+          />
           <ConsoleFact
             label={t('manage:deployments.field_deployment_id')}
             value={<span className="font-mono">{deployment.deployment_id}</span>}
@@ -546,8 +584,8 @@ export default function DeploymentDetailPage() {
                 ) {
                   update.schedule = { cron, timezone };
                 }
-                await updateAgentDeployment(
-                  deployment.agent_id,
+                await updateDeployment(
+                  deployment,
                   deployment.deployment_id,
                   update,
                 );
@@ -674,12 +712,17 @@ export default function DeploymentDetailPage() {
             onSave: () =>
               void run(async () => {
                 if (!channelProvider) return;
-                await updateAgentDeployment(
-                  deployment.agent_id,
+                await updateDeployment(
+                  deployment,
                   deployment.deployment_id,
                   {
-                    execution_user_id: channelProvider.can_configure_execution_user
-                      ? String(channelDraft.execution_user_id ?? '').trim() : undefined,
+                    execution_user_id:
+                      channelProvider.can_configure_execution_user && !deployment.assistant_id
+                        ? String(channelDraft.execution_user_id ?? '').trim() : undefined,
+                    allowed_participants: changedParticipants(
+                      channelDraft.allowed_participants,
+                      deployment.allowed_participants,
+                    ),
                     channel_config: channelFieldValues(
                       channelDraft,
                       'channel_config',

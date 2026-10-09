@@ -1,18 +1,20 @@
 # Manage schedules
 
-> Run an Agent automatically on a recurring schedule.
+> Run an Agent or an Assistant automatically on a recurring schedule.
 
-In AstraBox, a Schedule is a trigger configuration that connects an Agent to a
-calendar and a prompt. Each due time starts a fresh Agent Session, so no
-existing Session needs to remain online.
+In AstraBox, a Schedule is a trigger configuration that connects an Agent or an
+Assistant to a calendar and a prompt. Each due time starts a fresh Session, so
+no existing Session needs to remain online. On an Assistant, that Session is a
+new conversation in the Assistant's shared workspace, run as its owner.
 
 Use the web console to create, list, update, disable, run, replay, and delete
 Schedules.
 
 ## Prerequisites
 
-- Create the Agent that should handle each invocation.
-- Sign in as the Agent owner or an AstraBox administrator.
+- Create the Agent or Assistant that should handle each invocation.
+- Sign in as the Agent's owner or an AstraBox administrator. Only an
+  Assistant's owner can schedule it.
 - The AstraBox installation must use PostgreSQL or SQLite. Schedules are
   unavailable with other database backends.
 
@@ -21,7 +23,7 @@ contains the complete Schedule definition:
 
 | Field | Description |
 | --- | --- |
-| Agent | The Agent that handles every invocation. |
+| Agent or Assistant | The Agent or Assistant that handles every invocation. |
 | Name | A short name that distinguishes this Schedule. |
 | Prompt | What the Agent should do each time the Schedule fires. |
 | Cron expression | A five-field cron expression: minute, hour, day of month, month, and day of week. |

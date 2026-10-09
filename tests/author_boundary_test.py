@@ -113,10 +113,10 @@ async def _refused(call: Any) -> APIError:
 @pytest.mark.parametrize(
     "fields",
     [
-        {"plugin_repos": [{"url": "https://172.17.0.1/x.git", "protocol": "https"}]},
+        {"packages": [{"kind": "claude-plugin", "url": "https://172.17.0.1/x.git", "protocol": "https"}]},
         {"skills": ["https://169.254.169.254/latest.git#skill"]},
         {"mcp_servers": {"probe": {"type": "http", "url": "http://127.0.0.1.nip.io/mcp"}}},
-        {"plugin_repos": [{"url": "git@10.0.0.5:org/plugins.git", "deploy_key_secret_name": ""}]},
+        {"packages": [{"kind": "claude-plugin", "url": "git@10.0.0.5:org/plugins.git", "deploy_key_secret_name": ""}]},
         {"mcp_servers": {"probe": {"type": "http", "url": "http://[::ffff:172.17.0.1]/mcp"}}},
     ],
 )
@@ -141,7 +141,7 @@ async def test_a_name_that_resolves_to_a_private_address_is_refused(
     error = await _refused(
         service.create_agent_config(
             _user(),
-            _agent(plugin_repos=[{"url": "https://git.attacker.example/x.git", "protocol": "https"}]),
+            _agent(packages=[{"kind": "claude-plugin", "url": "https://git.attacker.example/x.git", "protocol": "https"}]),
         )
     )
 
@@ -174,7 +174,7 @@ async def test_a_public_git_host_is_still_an_authors_to_choose(
     await service.create_agent_config(
         _user(),
         _agent(
-            plugin_repos=[{"url": "https://github.com/anthropics/plugins.git", "protocol": "https"}],
+            packages=[{"kind": "claude-plugin", "url": "https://github.com/anthropics/plugins.git", "protocol": "https"}],
             skills=["https://github.com/anthropics/skills.git@main#skills/review"],
         ),
     )
@@ -197,7 +197,7 @@ async def test_what_the_environment_names_is_available_to_its_agents(
     await service.create_agent_config(
         _user(),
         _agent(
-            plugin_repos=[{"url": "https://git.corp.example/p.git", "protocol": "https"}],
+            packages=[{"kind": "claude-plugin", "url": "https://git.corp.example/p.git", "protocol": "https"}],
             skills=["https://10.9.8.7/skills.git#review"],
         ),
     )
@@ -211,7 +211,7 @@ async def test_an_unrestricted_environment_is_not_widened_by_an_author(
     service, repo = _agent_service(limited={"type": "unrestricted"})
 
     await service.create_agent_config(
-        _user(), _agent(plugin_repos=[{"url": "https://10.0.0.5/x.git", "protocol": "https"}])
+        _user(), _agent(packages=[{"kind": "claude-plugin", "url": "https://10.0.0.5/x.git", "protocol": "https"}])
     )
 
     assert len(repo.created) == 1
@@ -225,7 +225,7 @@ async def test_moving_an_agent_to_a_limited_environment_rechecks_its_hosts(
         _user(),
         _agent(
             environment_name="open",
-            plugin_repos=[{"url": "https://10.0.0.5/x.git", "protocol": "https"}],
+            packages=[{"kind": "claude-plugin", "url": "https://10.0.0.5/x.git", "protocol": "https"}],
         ),
     )
 
@@ -246,7 +246,7 @@ def test_a_stored_definition_cannot_widen_the_policy_at_startup() -> None:
     view = AgentView(
         name="stored",
         networking=_LIMITED,
-        plugin_repos=[{"url": "https://172.17.0.1/x.git", "protocol": "https"}],
+        packages=[{"kind": "claude-plugin", "url": "https://172.17.0.1/x.git", "protocol": "https"}],
     )
 
     with pytest.raises(APIError) as raised:
@@ -445,7 +445,7 @@ async def test_a_declared_https_repository_never_carries_the_deployment_token(
         deploy_key_secret_name=None,
         identity=None,
         error_code="AGENT_RUNTIME_PLUGIN_CACHE_FAILED",
-        label="plugin_repos[0]",
+        label="packages[0]",
     )
 
     assert not any("ghp_deployment_token" in call for call in commands.calls)
@@ -635,7 +635,7 @@ async def test_an_assistant_meets_the_same_rule(
             {
                 "display_name": "Jarvis",
                 "environment_name": "env-1",
-                "mcp_config_override": {"probe": server},
+                "mcp_servers": {"probe": server},
             },
         )
     )

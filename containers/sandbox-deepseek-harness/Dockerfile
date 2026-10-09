@@ -29,6 +29,8 @@ FROM ${SANDBOX_EXECD_IMAGE} AS execd
 FROM ${SANDBOX_BASE_IMAGE}
 
 # The package manifest and lockfile are the build-time contract with the vendor.
+# They also pin pnpm, which `dsh plugin` forwards to for installing an Agent's
+# plugin Bundles (the version the harness's own repository pins).
 # The umbrella package and its release-family subpackages use semver ranges, so
 # pinning only the umbrella package can install a mixed release. `npm ci` makes
 # every image resolve the exact reviewed graph instead of the registry state on
@@ -85,6 +87,8 @@ RUN set -eux; \
     installed_version="$(node -p \
       "require('${DSH_PREFIX}/node_modules/@deepseek-ai/dsh/package.json').version")"; \
     test "${installed_version}" = "${expected_version}"; \
+    test "$("${DSH_PREFIX}/node_modules/.bin/pnpm" --version)" = \
+      "$(node -p "require('${DSH_PREFIX}/package.json').dependencies.pnpm")"; \
     npm cache clean --force
 
 # The vendor's web profile must compose in THIS image, not just on a developer
@@ -118,6 +122,10 @@ COPY --chmod=u=rwX,go=rX astrabox/core/service/orchestrator/runtime/astrabox-tra
 ENV ASTRABOX_TRANSCRIPT_MIRROR_ROOT=/home/agent/.dsh/sessions \
     ASTRABOX_TRANSCRIPT_MIRROR_GLOB=*.jsonl \
     ASTRABOX_TRANSCRIPT_MIRROR_NAMESPACE=dsh/
+# The harness uploads conversations to DeepSeek's OpenTelemetry collector when
+# a user leaves feedback, for every provider, by default (FEEDBACK_ONLY). Off,
+# like its session-log upload in profile.patch.yml.
+ENV DSH_TELEMETRY_MODE=DISABLED
 COPY --chmod=u=rwX,go=rX containers/sandbox-deepseek-harness/astrabox-dsh-forward ${DSH_PREFIX}/forward.sh
 # The shared-box tenancy's per-conversation stack (harness + mirror +
 # forwarder), triggered by the platform inside a conversation's isolated

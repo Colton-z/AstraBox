@@ -68,7 +68,7 @@ from astrabox.core.service.orchestrator.runtime.mcp_servers import (
     is_platform_mcp_server,
     binding_mcp_server_definitions,
 )
-from astrabox.core.service.orchestrator.runtime.plugin_repos import plugin_repo_egress_hosts
+from astrabox.core.service.orchestrator.runtime.packages import package_egress_hosts
 from astrabox.core.service.orchestrator.runtime.sandbox_client import (
     extract_sandbox_id,
     get_underlying_sandbox,
@@ -186,7 +186,7 @@ def sandbox_request(
             request_methods=("GET", "POST"),
         ),
         env=_anthropic_container_env(model_config),
-        required_network_hosts=tuple(plugin_repo_egress_hosts(template)),
+        required_network_hosts=tuple(package_egress_hosts(template)),
         wait_for_inbox_service_port=IN_BOX_SIDECAR_PORT,
     )
 
@@ -615,6 +615,7 @@ def _template_platform_mcp_servers(template: Any) -> list[str]:
         for name, config in binding_mcp_server_definitions(
             getattr(template, "mcp_servers", None),
             session_source_type=getattr(template, "session_source_type", None),
+            agent_id=getattr(template, "agent_id", None),
             artifacts_enabled=getattr(template, "artifacts_enabled", True),
         ).items()
         if isinstance(config, dict) and is_platform_mcp_server(config)

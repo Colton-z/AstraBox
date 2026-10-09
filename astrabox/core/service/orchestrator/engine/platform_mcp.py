@@ -30,6 +30,7 @@ def platform_mcp_servers(
         proxy_base_url=str(getattr(deployment_settings, "mcp_proxy_base_url", "") or ""),
         deployment_id=deployment_id,
         session_source_type=getattr(template, "session_source_type", None),
+        agent_id=getattr(template, "agent_id", None),
         artifacts_enabled=getattr(template, "artifacts_enabled", True),
     )
 

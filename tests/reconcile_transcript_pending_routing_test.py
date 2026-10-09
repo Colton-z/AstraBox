@@ -28,7 +28,11 @@ def _build_worker(*, recover_fn: Any, wakeup_fn: Any) -> ReconcileWorker:
     interaction_repo = AsyncMock()
     interaction_repo.get_active_interaction.return_value = None
     sessions_repo = AsyncMock()
-    sessions_repo.get_session.return_value = {"session_id": _SID}
+    sessions_repo.get_session.return_value = {
+        "session_id": _SID,
+        "session_kind": "agent_chat",
+        "engine_kind": "claude_code",
+    }
     return ReconcileWorker(
         session_snapshots_repo=AsyncMock(),
         sessions_repo=sessions_repo,
@@ -71,6 +75,28 @@ class TranscriptPendingRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(summary["transcript_pending_routed"], 1)
         wakeup.assert_called_once_with(_SID)
         recover.assert_not_awaited()
+
+    async def test_a_resident_engines_pending_row_leaves_the_candidate_set(self) -> None:
+        # The coordinator recovers only from a mirrored transcript and returns
+        # without a write for Pi, so a Pi row woken there was selected again on
+        # every scan. Its turn is already FAILED and names no current turn,
+        # which anchor recovery's own gate settles in one scan.
+        recover = AsyncMock()
+        wakeup = Mock()
+        worker = _build_worker(recover_fn=recover, wakeup_fn=wakeup)
+        worker._sessions_repo.get_session = AsyncMock(
+            return_value={"session_id": _SID, "session_kind": "agent_chat", "engine_kind": "pi"}
+        )
+        worker._session_snapshots_repo.force_update_fields = AsyncMock(return_value=True)
+
+        summary = await self._scan(worker, _transcript_pending_snapshot())
+
+        self.assertEqual(summary["transcript_pending_routed"], 0)
+        self.assertEqual(summary["settled_unrecoverable"], 1)
+        wakeup.assert_not_called()
+        recover.assert_not_awaited()
+        updates = worker._session_snapshots_repo.force_update_fields.await_args.args[1]
+        self.assertIsNone(updates["turn_recovery_phase"])
 
     async def test_a_deleted_sessions_orphan_leaves_the_candidate_set_failed(self) -> None:
         # The session row is invisible while its snapshot remains DELETED +

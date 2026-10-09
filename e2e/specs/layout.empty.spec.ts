@@ -5,12 +5,10 @@ import { settle } from "./layoutHelpers";
  * EMPTY-STATE GATE — "there is nothing here" is a state of the page, not a card
  * in a grid of one.
  *
- * Both pickers rendered their empty message as a card inside the same grid the
+ * The picker rendered its empty message as a card inside the same grid the
  * items would have used, so it kept the grid's height and left the rest of the
  * page as bare background — measured at 1440, the card ended around y=290 with
- * roughly 590px of nothing under it. The assistants side also inherited a
- * single grid column, so its message read as one lonely card rather than as an
- * empty page.
+ * roughly 590px of nothing under it.
  *
  * The assertion is proportional, not a pixel: whatever the viewport, the empty
  * state reaches the bottom of the scrollable well apart from the page's own
@@ -20,13 +18,11 @@ import { settle } from "./layoutHelpers";
 const EMPTY: Record<string, unknown> = {
   "/user/current": { user_id: "u-1", display_name: "Operator" },
   "/agents": [],
-  "/assistants": [],
   "/sessions": { sessions: [], has_more: false, next_cursor: null },
 };
 
 for (const surface of [
   { path: "/agents", name: "the agent picker" },
-  { path: "/assistants", name: "the assistant picker" },
 ]) {
   test(`${surface.name} fills the page when it has nothing to show`, async ({ page }) => {
     await page.route("**/api/**", (route) => {
@@ -55,7 +51,9 @@ for (const surface of [
     await page.waitForTimeout(600);
 
     const box = await page.evaluate(() => {
-      const card = document.querySelector(".border-dashed");
+      // The frame the empty state stands on, which is what fills the page; the
+      // shared empty state inside it keeps its own height on purpose.
+      const card = document.querySelector('[data-testid="agents-empty"]');
       const well = document.querySelector('[data-slot="page-scroll"]');
       if (!card || !well) return null;
       const c = card.getBoundingClientRect();

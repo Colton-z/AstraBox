@@ -2,8 +2,8 @@
 
 The `aws_efs` storage provider connects an operator-owned EFS filesystem through
 the official AWS EFS CSI driver. It does not create or delete cloud filesystems,
-mount targets or access points. The platform's common mergerfs router still
-owns workspace assignment before sandbox delivery; engines do not select the
+mount targets or access points. The OpenSandbox backend's mergerfs route still
+carries workspace assignment before sandbox delivery; engines do not select the
 storage or implement EFS-specific recovery.
 
 This provider currently requires Kubernetes and a statically provisioned,

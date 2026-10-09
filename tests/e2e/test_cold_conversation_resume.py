@@ -31,9 +31,9 @@ pytestmark = pytest.mark.e2e
 def test_cold_rebuild_restores_existing_conversation(e2e_client: httpx.Client) -> None:
     profile = current_profile()
     bootstrap()
-    supports_skills = "skills" in capabilities_for_engine_kind(
+    supports_skills = capabilities_for_engine_kind(
         profile["engine_kind"]
-    ).configuration_inputs
+    ).extensions.skills_target is not None
     source = data(e2e_client.get(f"/api/v1/agents/{profile['agent_id']}"))
     agent = data(e2e_client.post("/api/v1/agents", json={
         "name": f"cold-resume-{uuid.uuid4().hex[:10]}",

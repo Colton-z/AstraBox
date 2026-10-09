@@ -94,6 +94,13 @@ E2E_HTTPS_GATEWAY_CADDYFILE="${TESTBED_REPO_ROOT}/tests/e2e-ui/fixtures/secure-t
 # attached tgz (the all-in-one `helm/opensandbox/0.2.0` tag ships no assets).
 CHART_URL="https://github.com/alibaba/OpenSandbox/releases/download/helm/opensandbox-controller/${OSB_CONTROLLER_VERSION}/opensandbox-controller-${OSB_CONTROLLER_VERSION}.tgz"
 CHART_SHA256="0e37b51da3f4e36a1d71c8bebbb41a58ba7f0aaf6d47916513fb2beb2d7a8925"
+# The chart's default controller image lives in a registry in mainland China,
+# which hosts elsewhere reach only intermittently: a pull that times out leaves
+# the controller in ImagePullBackOff and the install waiting it out. Docker Hub
+# publishes the same image under the same manifest digest, so the controller
+# comes from there, pinned by that digest.
+CONTROLLER_IMAGE_REPOSITORY="docker.io/opensandbox/controller"
+CONTROLLER_IMAGE_TAG="v${OSB_CONTROLLER_VERSION}@sha256:a9a5f73c1785ebd955336ffa313973a35c1a1b662cb7afc4ea82d92021b3532a"
 CHART_CACHE_PATH="${OSB_CONTROLLER_CHART_CACHE:-/opt/astrabox-worker-cache/opensandbox-controller-${OSB_CONTROLLER_VERSION}.tgz}"
 
 # Cluster-scoped, so they survive a namespace delete and must be removed by name.
@@ -292,6 +299,8 @@ install_controller() {
   log "installing/upgrading release ${OSB_RELEASE} in ${OSB_NAMESPACE}"
   if ! output="$(helm upgrade --install "$OSB_RELEASE" "$tgz" \
       --namespace "$OSB_NAMESPACE" --create-namespace \
+      --set-string "controller.image.repository=${CONTROLLER_IMAGE_REPOSITORY}" \
+      --set-string "controller.image.tag=${CONTROLLER_IMAGE_TAG}" \
       --set-string "controller.snapshot.registry=${snapshot_registry}" \
       --set controller.snapshot.registryInsecure=true \
       --set-string "controller.snapshot.imageCommitterImage=${SNAPSHOT_COMMITTER_IMAGE}" \

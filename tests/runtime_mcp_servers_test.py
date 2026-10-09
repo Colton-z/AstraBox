@@ -157,6 +157,34 @@ def test_channel_session_never_synthesizes_or_aliases_artifacts(base) -> None:
     assert servers == {"remote": {"type": "http", "url": "https://remote.example/mcp"}}
 
 
+def test_a_channel_conversation_withholds_an_agents_connectors_but_not_an_assistants() -> None:
+    """An Agent's connectors act as the caller; an Assistant's as its owner.
+
+    They are withheld where the engine is configured, not from the resolved
+    view, so the Agent's runtime generation, computed from the view, is the
+    same for a channel conversation as for its other Sessions. The connections
+    tools come with the connectors they describe.
+    """
+    declared = {
+        "gmail": {"platform_server": "connector", "hub_server": "s1"},
+        "remote": {"type": "http", "url": "https://remote.example/mcp"},
+    }
+
+    def engine_servers(**session) -> set[str]:
+        return set(runtime_mcp_servers_for_binding(
+            declared, proxy_base_url="http://platform.test", deployment_id="session-1",
+            artifacts_enabled=True, **session,
+        ))
+
+    assert engine_servers(session_source_type="channel", agent_id="agent-1") == {"remote"}
+    assert engine_servers(session_source_type="console", agent_id="agent-1") == {
+        "gmail", "connections", "artifacts", "remote",
+    }
+    assert engine_servers(session_source_type="channel", agent_id=None) == {"gmail", "connections", "remote"}
+    # The relay is the platform's own route; the sandbox dials no hub.
+    assert sandbox_mcp_egress_hosts(declared) == ["remote.example"]
+
+
 @pytest.mark.parametrize(
     ("source_type", "agent_switch", "bound"),
     [

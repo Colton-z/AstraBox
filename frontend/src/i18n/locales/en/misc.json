@@ -1,18 +1,4 @@
 {
-  "assistant": {
-    "loading": "Loading Assistants…",
-    "pick_title": "Choose an Assistant",
-    "pick_subtitle": "Each Assistant is a private, long-lived workspace for one user. Its files remain available across conversations.",
-    "creating": "Starting conversation…",
-    "start_conversation": "Start conversation",
-    "cards_empty": "No Assistants are available. Create one in the management console.",
-    "state_ready": "Ready",
-    "state_materializing": "Starting",
-    "state_hibernating": "Paused",
-    "state_recovery_required": "Needs attention",
-    "state_not_materialized": "Not started",
-    "state_unknown": "Unknown"
-  },
   "diff": {
     "unavailable": "Write completed. The engine did not provide a before-and-after diff.",
     "empty_title": "No file changes yet.",
@@ -320,8 +306,8 @@
         "label": "Diff panel",
         "help": "Show file changes in this Agent's conversations. This controls the panel's visibility, not the Agent's ability to edit files."
       },
-      "plugin_repos": {
-        "label": "Plugin repositories"
+      "packages": {
+        "label": "Packages"
       },
       "environment_name": {
         "label": "Runtime environment",
@@ -409,5 +395,18 @@
     "capability_permissions": "Permissions",
     "assistant_identity_missing": "Artifacts cannot be listed because this conversation did not provide its Assistant identity.",
     "keep_expiry": "Keep the current expiry"
+  },
+  "connections": {
+    "title": "Connections",
+    "intro": "Your own sign-ins to work apps. An Assistant you own uses them, and so does an Agent that offers the app, in conversations you start with it.",
+    "connected_now": "{{name}} is connected",
+    "none": "No work apps are set up on this deployment yet.",
+    "card_title": "Connect {{name}}",
+    "card_waiting": "Sign in at {{name}} in a new tab so the agent can use it.",
+    "card_shared": "The agent asked to connect {{name}}.",
+    "card_unavailable": "{{name}} is not available on this deployment.",
+    "popup_blocked": "The browser blocked the sign-in tab; allow pop-ups for this site.",
+    "adopted_one": "{{name}} is now on in {{count}} of your Assistants.",
+    "adopted_other": "{{name}} is now on in {{count}} of your Assistants."
   }
 }

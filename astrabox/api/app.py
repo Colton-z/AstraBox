@@ -232,12 +232,13 @@ async def _seed_default_agent_if_empty() -> None:
                 # it contains. The explicit KeyVex server is an additional Agent
                 # capability, not a replacement or a restriction on the Plugin.
                 "engine_options": investment_engine_options,
-                "plugin_repos": [
+                "packages": [
                     {
+                        "kind": "claude-plugin",
                         "url": _FINANCIAL_SERVICES_REPOSITORY,
                         "protocol": "https",
                         "sha": _FINANCIAL_SERVICES_REVISION,
-                        "plugin_paths": [
+                        "paths": [
                             _FINANCIAL_ANALYSIS_PLUGIN_PATH,
                             _EQUITY_RESEARCH_PLUGIN_PATH,
                         ],
@@ -495,7 +496,9 @@ def _register_feature_routes(app: FastAPI) -> None:
     from astrabox.api.routes.vaults import register_vault_routes
     from astrabox.api.routes.mcp_servers import register_mcp_server_routes
     from astrabox.api.routes.extensions import register_extension_routes
+    from astrabox.api.routes.assistant_defaults import register_assistant_defaults_routes
     from astrabox.api.routes.deployments import register_deployment_routes
+    from astrabox.api.routes.connectors import register_connector_routes
     from astrabox.api.routes.share import register_share_routes
     from astrabox.api.routes.artifacts import register_artifact_routes
 
@@ -519,7 +522,9 @@ def _register_feature_routes(app: FastAPI) -> None:
     register_vault_routes(app)
     register_mcp_server_routes(app)
     register_extension_routes(app)
+    register_assistant_defaults_routes(app)
     register_deployment_routes(app)
+    register_connector_routes(app)
     register_share_routes(app)
     register_artifact_routes(app)
 

@@ -1,4 +1,4 @@
-"""Platform workspace routing over the medium supplied by the storage seam."""
+"""OpenSandbox's workspace route: host mergerfs views over the storage seam's medium."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from astrabox.core.service.orchestrator.runtime.storage._command_result import (
     _extract_command_output_text,
 )
 from astrabox.seams.sandbox import SANDBOX_INSTALLATION_METADATA_KEY, sandbox_installation_id
-from astrabox.seams.storage import StorageMountPlan, WorkspaceRef
+from astrabox.seams.storage import StorageMountPlan, WorkspaceRef, WorkspaceRoute
 
 OWNER = "astrabox.storage-assignment"
 INPUT = "astrabox.storage-input"
@@ -172,8 +172,16 @@ def existing_lifecycle_service_url() -> str:
     return configured
 
 
-class MergerfsWorkspaceRouter:
-    """A common platform route; it does not select or implement a storage medium."""
+class MergerfsWorkspaceRouter(WorkspaceRoute):
+    """The bundled OpenSandbox runtime's route; it does not select a storage medium.
+
+    A privileged helper beside the runtime (a Docker container or a Kubernetes
+    Pod) mounts the medium and exposes a one-branch mergerfs view as the volume
+    a box mounts. Re-pointing that branch is what lets a box created before its
+    session be bound to a session that already has files.
+    """
+
+    supports_late_binding = True
 
     def validate_configuration(self) -> None:
         """Require routing infrastructure whenever persistent workspaces are enabled."""
@@ -252,9 +260,9 @@ class MergerfsWorkspaceRouter:
         with self._driver() as driver:
             verify_status(driver.bind(assignment, binding), assignment, binding)
 
-    async def release_mounts(self, assignment_id: str) -> None:
+    async def release_mounts(self, assignment_id: str) -> bool:
         """Release helper resources only after the caller confirms sandbox destruction."""
-        await asyncio.to_thread(self._release, assignment_id)
+        return await asyncio.to_thread(self._release, assignment_id)
 
     async def attach_sandbox(
         self, assignment_id: str, *, sandbox_id: str, sandbox_backend: str
@@ -293,11 +301,12 @@ class MergerfsWorkspaceRouter:
             result: list[tuple[str, str, datetime]] = driver.unattached(installation)
             return result
 
-    def _release(self, assignment_id: str) -> None:
+    def _release(self, assignment_id: str) -> bool:
         # Cleanup cannot depend on mutable Agent mount settings. Only assignment
         # ownership is checked, and backing data is never a deletion target.
         with self._driver() as driver:
-            driver.release(assignment_id)
+            released: bool = driver.release(assignment_id)
+            return released
 
     async def prepare(
         self,

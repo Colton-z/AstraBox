@@ -260,6 +260,8 @@ export interface TurnResult {
   frameTypes: string[];
   /** errorText of the first `error` frame, if any. */
   errorText: string | null;
+  /** `toolName` of each `tool-input-start` frame, in arrival order. */
+  toolNames: string[];
   /**
    * Wall-clock ms for the whole turn (request → stream closed). NOTE:
    * APIRequestContext buffers the SSE body, so per-frame timing is not
@@ -548,6 +550,11 @@ export class AstraApi {
     return this.data<SessionCreated>('POST', `/assistants/${assistantId}/conversations`);
   }
 
+  /** The conversation opening the Assistant lands in, started when it has none. */
+  openMainConversation(assistantId: string): Promise<SessionCreated> {
+    return this.data<SessionCreated>('POST', `/assistants/${assistantId}/main-conversation`);
+  }
+
   /**
    * Poll wake until the workspace is READY, and return the state that said so.
    *
@@ -741,7 +748,9 @@ export class AstraApi {
       throw new Error(`ai-stream -> ${response.status()}: ${(await response.text()).slice(0, 500)}`);
     }
     const body = await response.text();
-    const result: TurnResult = { text: '', frameTypes: [], errorText: null, totalMs: Date.now() - started };
+    const result: TurnResult = {
+      text: '', frameTypes: [], errorText: null, toolNames: [], totalMs: Date.now() - started,
+    };
     for (const rawLine of body.split('\n')) {
       const line = rawLine.trim();
       if (!line.startsWith('data:')) continue;
@@ -757,6 +766,8 @@ export class AstraApi {
       result.frameTypes.push(type);
       if (type === 'text-delta' && typeof frame.delta === 'string') {
         result.text += frame.delta;
+      } else if (type === 'tool-input-start') {
+        result.toolNames.push(String(frame.toolName ?? ''));
       } else if (type === 'error') {
         result.errorText = String(frame.errorText ?? 'unknown error');
       }

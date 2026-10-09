@@ -95,6 +95,12 @@ class HermesGatewaySubscription:
         )
         self._last_offset = int(after_offset)
 
+    @property
+    def last_offset(self) -> int:
+        """The output offset of the last event this subscription accepted."""
+
+        return self._last_offset
+
     def _offer(self, item: HermesTuiWireEvent | BaseException) -> None:
         if isinstance(item, HermesTuiWireEvent):
             if item.output_offset <= self._last_offset:

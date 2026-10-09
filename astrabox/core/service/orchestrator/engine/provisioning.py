@@ -78,8 +78,8 @@ from astrabox.core.service.orchestrator.runtime.mcp_servers import (
     artifact_tools_enabled,
     sandbox_mcp_egress_hosts,
 )
-from astrabox.core.service.orchestrator.runtime.plugin_repos import (
-    plugin_repo_egress_hosts,
+from astrabox.core.service.orchestrator.runtime.packages import (
+    package_egress_hosts,
 )
 from astrabox.providers.sandbox_image import SANDBOX_SELF_DESCRIPTION
 from astrabox.seams.egress_credentials import (
@@ -567,13 +567,16 @@ def _session_log_declaration(template: Any) -> Any:
     return getattr(get_engine_adapter(kind).capabilities, "session_log", None)
 
 
-async def workspace_is_ready(box: Any, planned: tuple[tuple[str, str], ...], *, ref: Any) -> None:
-    """Verify the storage medium and platform view for each planned mount.
+async def workspace_is_ready(
+    box: Any, planned: tuple[tuple[str, str], ...], *, ref: Any, backend: Any,
+) -> None:
+    """Verify the storage medium and the backend's route for each planned mount.
 
     Called during workspace preparation before engine activation. The storage
-    provider verifies its medium, then the platform router checks the mergerfs
-    view. An empty plan needs no persistent storage. A nonempty plan requires
-    an owning subject, and any failed check prevents use of that workspace.
+    provider verifies its medium, then the box's backend verifies what its
+    workspace route mounted. An empty plan needs no persistent storage. A
+    nonempty plan requires an owning subject, and any failed check prevents
+    use of that workspace.
     """
 
     if not planned:
@@ -583,8 +586,9 @@ async def workspace_is_ready(box: Any, planned: tuple[tuple[str, str], ...], *, 
     from astrabox.seams.storage import storage_provider
 
     provider = storage_provider()
-    from astrabox.core.service.orchestrator.runtime.storage.mergerfs import workspace_router
+    from astrabox.core.service.orchestrator.runtime.storage.mounts import workspace_route_for
 
+    workspace_router = workspace_route_for(backend)
     for box_path, _subpath in planned:
         await provider.prepare(ref, box=box, box_path=box_path)
         await workspace_router.prepare(ref, box=box, box_path=box_path)
@@ -1153,7 +1157,9 @@ async def create_shared_agent_sandbox(
     try:
         if on_created is not None:
             await on_created(candidate_id)
-        await workspace_is_ready(candidate, planned_mounts, ref=workspace_ref)
+        await workspace_is_ready(
+            candidate, planned_mounts, ref=workspace_ref, backend=backend_adapter,
+        )
     except BaseException:
         destruction = await backend_adapter.confirm_destroyed(candidate_id)
         if not destruction.confirmed:
@@ -1929,6 +1935,7 @@ async def claim_prepared_engine_sandbox(
             assistant_id=str(getattr(workspace_plan, "assistant_id", "") or ""),
             session_id=session_id,
         ),
+        backend=backend_adapter,
     )
     if session_log is not None:
         home_dir = str(identity.get("home_dir") or "").strip().rstrip("/")
@@ -2063,6 +2070,13 @@ async def _claim_conversation_pool_box(
             workspace_id=existing_workspace_id or workspace_id,
         )
 
+    if existing_workspace_id and str(load_astrabox_settings().sandbox_workspace_volume or "").strip():
+        route = backend_adapter.workspace_route()
+        if route is None or not route.supports_late_binding:
+            # A prepared box mounts the workspace it was created with. This
+            # Session already owns another, and this backend cannot re-point
+            # a created box, so it gets a cold create carrying its own mounts.
+            return None
     acquired = await acquire_agent_client_pool(
         template,
         runtime_manager=manager,
@@ -2237,7 +2251,7 @@ async def provision_engine_sandbox(
         additional_vault_write=mcp_vault_write,
         required_hosts=(
             *tuple(request.required_network_hosts),
-            *plugin_repo_egress_hosts(template),
+            *package_egress_hosts(template),
         ),
         mcp_hosts=mcp_hosts,
         slot_id=(
@@ -2440,6 +2454,7 @@ async def provision_engine_sandbox(
             assistant_id=str(getattr(workspace_plan, "assistant_id", "") or ""),
             session_id=session_id,
         ),
+        backend=backend_adapter,
     )
 
     if progress_callback is not None:
@@ -2597,7 +2612,7 @@ async def provision_engine_slot_sandbox(
         additional_vault_write=mcp_vault_write,
         required_hosts=(
             *tuple(request.required_network_hosts),
-            *plugin_repo_egress_hosts(template),
+            *package_egress_hosts(template),
         ),
         mcp_hosts=tuple(sandbox_mcp_egress_hosts(getattr(template, "mcp_servers", None))),
         slot_id=target_slot,
@@ -2698,6 +2713,7 @@ async def provision_engine_slot_sandbox(
                 assistant_id=None,
                 session_id=target_slot,
             ),
+            backend=backend_adapter,
         )
     except BaseException:
         from astrabox.core.service.orchestrator.agent.prepared_boxes import (

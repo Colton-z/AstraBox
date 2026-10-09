@@ -567,7 +567,7 @@ def _gateway_template() -> Any:
         model_config={"endpoint_provider": "test"},
         networking={"type": "unrestricted"},
         mcp_servers={},
-        plugin_repos=[],
+        packages=[],
         credential_vault_ids=[],
     )
 

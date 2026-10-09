@@ -33,14 +33,14 @@ const workers = process.env.ASTRABOX_E2E_WORKERS
   ? Math.max(1, Number.parseInt(process.env.ASTRABOX_E2E_WORKERS, 10))
   : 1;
 const browserServerEndpoint = (process.env.ASTRABOX_E2E_BROWSER_WS_ENDPOINT || '').trim();
-const externalChannelsEnabled = process.env.ASTRABOX_E2E_EXTERNAL_CHANNELS === '1';
+const externalAccountsEnabled = process.env.ASTRABOX_E2E_EXTERNAL_ACCOUNTS === '1';
 export default defineConfig({
   globalSetup: path.join(__dirname, 'global-setup.ts'),
   testDir: path.join(__dirname, 'specs'),
-  // Real Slack, Feishu, and DingTalk accounts are an explicit acceptance
-  // target. Ordinary collection must never fail because those private bot
-  // credentials are absent; the external spec itself has no skips or mocks.
-  testIgnore: externalChannelsEnabled ? [] : ['**/*.external.spec.ts'],
+  // Real Slack, Feishu, DingTalk and Google accounts are an explicit
+  // acceptance target. Ordinary collection must never fail because those
+  // private credentials are absent; the external specs have no skips or mocks.
+  testIgnore: externalAccountsEnabled ? [] : ['**/*.external.spec.ts'],
   fullyParallel: true,
   timeout: MAX_E2E_TEST_MS,
   expect: {

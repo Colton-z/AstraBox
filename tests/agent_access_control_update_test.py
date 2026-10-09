@@ -101,7 +101,7 @@ _EDITABLE_REQUEST_FIELDS = frozenset(
         "skills",
         "mcp_servers",
         "default_repo",
-        "plugin_repos",
+        "packages",
         "environment_name",
         "exposure_mode",
         "idle_hibernate_seconds",
@@ -130,11 +130,12 @@ _ALL_EDITABLE_FIELDS = {
         "branch": "main",
         "depth": 1,
     },
-    "plugin_repos": [
+    "packages": [
         {
+            "kind": "claude-plugin",
             "url": "https://example.test/plugins.git",
             "protocol": "https",
-            "plugin_paths": ["plugins/audit"],
+            "paths": ["plugins/audit"],
         }
     ],
     "environment_name": "claude-code",
@@ -233,9 +234,9 @@ async def test_create_rejects_the_update_only_version_field() -> None:
             "default_repo.unexpected",
         ),
         (
-            "plugin_repos",
+            "packages",
             [{"url": "https://example.test/plugins.git", "unexpected": True}],
-            "plugin_repos[0].unexpected",
+            "packages[0].unexpected",
         ),
     ],
 )

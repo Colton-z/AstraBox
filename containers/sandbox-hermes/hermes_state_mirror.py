@@ -1,4 +1,8 @@
-"""Publish complete Hermes SessionDB snapshots with the image's mirror driver."""
+"""Publish complete Hermes SessionDB snapshots with the image's mirror driver.
+
+The profile state beside SessionDB (``hermes_profile_state``) is published to
+its own archive the same way, checked less often because it changes rarely.
+"""
 
 from __future__ import annotations
 
@@ -9,14 +13,19 @@ from pathlib import Path
 import runpy
 import sys
 import tempfile
+import time
 from typing import Any
 
 from hermes_native_store import snapshot
+import hermes_profile_state
 from hermes_state_bootstrap import RECEIPT_NAME, atomic_json, marker, read_json, target_for
-from hermes_state_transport import save_snapshot
+from hermes_state_transport import PROFILE, save_snapshot
 
 PENDING_NAME = "astrabox-runtime-state-pending.db"
+PROFILE_PENDING_NAME = "astrabox-profile-state-pending.tar.gz"
 LOCK_NAME = "astrabox-runtime-state.lock"
+#: How often the profile state is checked for changes, in seconds.
+PROFILE_CHECK_SECONDS = 5.0
 
 
 def receipt_ready(env_path: Path) -> bool:
@@ -45,6 +54,8 @@ class StateMirror:
         if os.geteuid() == 0 or self.home.stat().st_uid != os.geteuid():
             raise RuntimeError("Hermes state mirror must run as the profile owner")
         self._last_stamp: tuple[Any, ...] | None = None
+        self._last_profile_stamp: tuple[Any, ...] | None = None
+        self._next_profile_check = 0.0
 
     def _sync_home(self) -> None:
         descriptor = os.open(self.home, os.O_RDONLY | os.O_DIRECTORY)
@@ -119,14 +130,63 @@ class StateMirror:
             self._last_stamp = stamp
             return sent + 1, snapshot_id
 
+    def _commit_profile(self, target: dict[str, Any], receipt: dict[str, Any]) -> None:
+        pending = self.home / PROFILE_PENDING_NAME
+        if pending.is_symlink() or not pending.is_file():
+            raise RuntimeError("Hermes pending profile archive is not a regular file")
+        receipt["profile_snapshot_id"] = save_snapshot(
+            target, pending.read_bytes(), receipt["profile_snapshot_id"], PROFILE
+        )
+        atomic_json(self.home / RECEIPT_NAME, receipt, mode=0o600)
+        self._sync_home()
+        pending.unlink()
+        self._sync_home()
+
+    def _save_profile(self, *, force: bool) -> int:
+        descriptor = os.open(self.home / LOCK_NAME, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(descriptor, "rb") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            if not receipt_ready(self.env_path):
+                raise RuntimeError("Hermes state mirror has no current-box restore receipt")
+            _, target = target_for(self.env_path)
+            receipt = read_json(self.home / RECEIPT_NAME)
+            if "profile_snapshot_id" not in receipt:
+                raise RuntimeError("Hermes restore receipt has no profile predecessor")
+            sent = 0
+            pending = self.home / PROFILE_PENDING_NAME
+            if pending.exists() or pending.is_symlink():
+                self._commit_profile(target, receipt)
+                self._last_profile_stamp = None
+                sent += 1
+            stamp = hermes_profile_state.stamp(self.home)
+            if not force and stamp == self._last_profile_stamp:
+                return sent
+            with tempfile.NamedTemporaryFile(
+                prefix=".astrabox-profile-", dir=self.home, delete=False
+            ) as stream:
+                stream.write(hermes_profile_state.pack(self.home))
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(stream.name, pending)
+            self._sync_home()
+            self._commit_profile(target, receipt)
+            # A write during packing must remain visible to the next check.
+            self._last_profile_stamp = stamp
+            return sent + 1
+
     def pump(self) -> int:
-        return self._save(force=False)[0]
+        sent = self._save(force=False)[0]
+        if time.monotonic() >= self._next_profile_check:
+            self._next_profile_check = time.monotonic() + PROFILE_CHECK_SECONDS
+            sent += self._save_profile(force=False)
+        return sent
 
     def save(self) -> str:
-        """Acknowledge pending bytes, then force a fresh native snapshot."""
+        """Acknowledge pending bytes, then force fresh native and profile snapshots."""
         _, snapshot_id = self._save(force=True)
         if snapshot_id is None:
             raise RuntimeError("Hermes state save returned no snapshot identity")
+        self._save_profile(force=True)
         return snapshot_id
 
 

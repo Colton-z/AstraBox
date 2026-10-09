@@ -201,6 +201,66 @@ class AssistantWorkspaceRepository:
             _list,
         )
 
+    async def list_ready_workspaces(
+        self, *, now_iso: str, after_assistant_id: str | None = None, limit: int = 50
+    ) -> list[dict[str, Any]]:
+        """One page of READY workspaces whose box lease is still live.
+
+        These are exactly the bindings :meth:`list_dead_binding_probe_candidates`
+        leaves out, so the two never probe the same box in one tick.
+        """
+        page_limit = max(1, min(int(limit or 50), 500))
+        query: dict[str, Any] = {
+            "deleted": {"$ne": True},
+            "state": "READY",
+            "current_sandbox_id": {"$gt": ""},
+            "current_sandbox_expires_at": {"$gt": now_iso},
+        }
+        after = str(after_assistant_id or "").strip()
+        if after:
+            query["assistant_id"] = {"$gt": after}
+        collection = await get_async_collection(self._collection_name)
+
+        async def _list() -> list[dict[str, Any]]:
+            cursor = collection.find(query).sort("assistant_id", 1).limit(page_limit)
+            return [doc async for doc in cursor]
+
+        return await run_mongo_with_retry("assistant_workspace.list_ready_workspaces", _list)
+
+    async def list_lease_renewal_candidates(
+        self,
+        *,
+        now_iso: str,
+        renew_before_iso: str,
+        after_assistant_id: str | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """One page of READY workspaces whose live lease ends before ``renew_before_iso``.
+
+        A lease already past ``now_iso`` is the dead-binding sweep's, not a
+        renewal's: the box may be gone.
+        """
+        page_limit = max(1, min(int(limit or 50), 500))
+        query: dict[str, Any] = {
+            "deleted": {"$ne": True},
+            "state": "READY",
+            "current_sandbox_id": {"$gt": ""},
+            "current_sandbox_expires_at": {"$gt": now_iso, "$lte": renew_before_iso},
+        }
+        after = str(after_assistant_id or "").strip()
+        if after:
+            query["assistant_id"] = {"$gt": after}
+        collection = await get_async_collection(self._collection_name)
+
+        async def _list() -> list[dict[str, Any]]:
+            cursor = collection.find(query).sort("assistant_id", 1).limit(page_limit)
+            return [doc async for doc in cursor]
+
+        return await run_mongo_with_retry(
+            "assistant_workspace.list_lease_renewal_candidates",
+            _list,
+        )
+
     async def update_workspace(
         self, user_id: str, assistant_id: str, updates: dict[str, Any]
     ) -> bool:

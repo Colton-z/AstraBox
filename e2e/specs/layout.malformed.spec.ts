@@ -12,7 +12,6 @@ import { settle } from "./layoutHelpers";
  */
 for (const surface of [
   { path: "/manage/sessions", name: "a console list" },
-  { path: "/assistants", name: "the assistant picker" },
 ]) {
   test(`${surface.name} reports a malformed response instead of going blank`, async ({
     page,

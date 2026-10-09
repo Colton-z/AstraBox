@@ -84,7 +84,7 @@ def _template(**overrides: Any) -> SimpleNamespace:
         "runtime_template_name": "astrabox/sandbox-claude-code:test",
         "networking": {"type": "limited", "allow_mcp_servers": True},
         "skills": [],
-        "plugin_repos": [],
+        "packages": [],
         "mcp_servers": {},
         "model_config": {
             "base_url": "https://model.test",
@@ -583,6 +583,11 @@ class _PlatformProvider:
     name = "open_sandbox"
     supports_client_pool = True
 
+    def workspace_route(self) -> Any:
+        from astrabox.core.service.orchestrator.runtime.storage.mergerfs import workspace_router
+
+        return workspace_router
+
     def __init__(self) -> None:
         self.created_specs: list[Any] = []
         self.events: list[str] = []
@@ -733,6 +738,7 @@ def _real_credential_plan() -> SandboxEgressCredentialPlan:
 
 @pytest.fixture
 def _storage_routes(monkeypatch: pytest.MonkeyPatch) -> None:
+    from astrabox.core.service.orchestrator.runtime.storage import mergerfs
     from astrabox.core.service.orchestrator.runtime.storage import mounts as storage_mounts
 
     async def backing(_assignment: str, mounts: Any) -> StorageMountPlan:
@@ -747,8 +753,8 @@ def _storage_routes(monkeypatch: pytest.MonkeyPatch) -> None:
         storage_mounts, "storage_provider",
         lambda: SimpleNamespace(provision_mounts=backing),
     )
-    monkeypatch.setattr(storage_mounts.workspace_router, "provision_mounts", routed)
-    monkeypatch.setattr(storage_mounts.workspace_router, "attach_sandbox", AsyncMock())
+    monkeypatch.setattr(mergerfs.workspace_router, "provision_mounts", routed)
+    monkeypatch.setattr(mergerfs.workspace_router, "attach_sandbox", AsyncMock())
 
 
 async def test_platform_creator_mounts_storage_and_applies_the_complete_credential_plan(
@@ -801,8 +807,9 @@ async def test_platform_creator_mounts_storage_and_applies_the_complete_credenti
     )
 
     template = _template(
-        plugin_repos=[
+        packages=[
             {
+                "kind": "claude-plugin",
                 "url": "https://github.com/anthropics/financial-services.git",
                 "protocol": "https",
             }

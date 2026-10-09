@@ -48,9 +48,9 @@ from astrabox.core.service.orchestrator.runtime.mcp_servers import (
     sandbox_mcp_egress_hosts,
     template_mcp_servers,
 )
-from astrabox.core.service.orchestrator.runtime.plugin_repos import (
-    normalize_plugin_repos,
-    plugin_repo_egress_hosts,
+from astrabox.core.service.orchestrator.runtime.packages import (
+    normalize_packages,
+    package_egress_hosts,
 )
 from astrabox.seams.sandbox import SANDBOX_NETWORK_LIMITED
 
@@ -90,10 +90,15 @@ def refuse_reserved_mcp_fields(servers: Any, *, owner: str) -> None:
 def author_egress_hosts(
     *,
     skills: Any,
-    plugin_repos: Any,
+    packages: Any,
     mcp_servers: Any,
+    engine_hosts: Iterable[str] = (),
 ) -> list[str]:
-    """The network hosts an author's own Skills, Plugins and MCP servers add."""
+    """The network hosts an author's own Skills, Plugins and MCP servers add.
+
+    ``engine_hosts`` are those the engine's own installer reaches for the
+    author's native options (``EngineAdapter.install_egress_hosts``).
+    """
     from astrabox.core.service.orchestrator.runtime.conversation_identity import (
         skill_repo_egress_hosts,
     )
@@ -105,8 +110,9 @@ def author_egress_hosts(
     hosts: list[str] = []
     for host in (
         *skill_repo_egress_hosts(skill_items),
-        *plugin_repo_egress_hosts({"plugin_repos": plugin_repos}),
+        *package_egress_hosts({"packages": packages}),
         *sandbox_mcp_egress_hosts(mcp_servers),
+        *(str(host).strip().lower() for host in engine_hosts if str(host or "").strip()),
     ):
         if host not in hosts:
             hosts.append(host)
@@ -231,17 +237,17 @@ def require_allowed_deploy_key(secret_name: str, *, label: str) -> None:
 
 
 def _deploy_key_names(
-    *, default_repo: Any, plugin_repos: Any
+    *, default_repo: Any, packages: Any
 ) -> list[tuple[str, str]]:
     names: list[tuple[str, str]] = []
     if isinstance(default_repo, Mapping):
         name = str(default_repo.get("deploy_key_secret_name") or "").strip()
         if name:
             names.append(("default_repo", name))
-    for index, repo in enumerate(normalize_plugin_repos(plugin_repos)):
+    for index, repo in enumerate(normalize_packages(packages)):
         name = str(repo.get("deploy_key_secret_name") or "").strip()
         if name:
-            names.append((f"plugin_repos[{index}]", name))
+            names.append((f"packages[{index}]", name))
     return names
 
 
@@ -250,7 +256,7 @@ async def validate_author_declarations(
     owner: str,
     networking: Any,
     skills: Any,
-    plugin_repos: Any,
+    packages: Any,
     mcp_servers: Any,
     default_repo: Any = None,
 ) -> None:
@@ -261,7 +267,7 @@ async def validate_author_declarations(
     """
     refuse_reserved_mcp_fields(mcp_servers, owner=owner)
     for label, name in _deploy_key_names(
-        default_repo=default_repo, plugin_repos=plugin_repos
+        default_repo=default_repo, packages=packages
     ):
         require_allowed_deploy_key(name, label=label)
     try:
@@ -275,7 +281,7 @@ async def validate_author_declarations(
     await refuse_unadmitted_author_hosts(
         spec,
         author_egress_hosts(
-            skills=skills, plugin_repos=plugin_repos, mcp_servers=mcp_servers
+            skills=skills, packages=packages, mcp_servers=mcp_servers
         ),
     )
 

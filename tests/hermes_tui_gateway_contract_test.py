@@ -7,6 +7,7 @@ the outbound Credential Vault path.
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -14,6 +15,7 @@ import httpx
 import pytest
 
 from astrabox.core.service.orchestrator.engine.base import (
+    EngineConversationBinding,
     EngineInputCommand,
     EngineOutputCheckpoint,
     EngineStreamDetached,
@@ -53,14 +55,54 @@ def test_turn_anchor_carries_what_outlives_an_attachment() -> None:
     }
 
 
+class _FakeSubscription:
+    """One session's live event stream: what was pushed, then nothing until more is."""
+
+    def __init__(self, tui_session_id: str, after_offset: int = 0) -> None:
+        self.tui_session_id = tui_session_id
+        self.last_offset = after_offset
+        self._queue: asyncio.Queue[HermesTuiWireEvent] = asyncio.Queue()
+
+    def push(self, *events: HermesTuiWireEvent) -> None:
+        for event in events:
+            self._queue.put_nowait(event)
+
+    async def next_event(self) -> HermesTuiWireEvent:
+        wire = await self._queue.get()
+        self.last_offset = wire.output_offset
+        return wire
+
+
+def _run(tui_session_id: str, text: str, *, start: int) -> list[HermesTuiWireEvent]:
+    """The records Hermes emits for one accepted ``prompt.submit``."""
+
+    return [
+        HermesTuiWireEvent(
+            event={"type": "message.start", "session_id": tui_session_id}, output_offset=start
+        ),
+        HermesTuiWireEvent(
+            event={"type": "message.delta", "session_id": tui_session_id, "payload": {"text": text}},
+            output_offset=start + 1,
+        ),
+        HermesTuiWireEvent(
+            event={
+                "type": "message.complete",
+                "session_id": tui_session_id,
+                "payload": {"status": "complete"},
+            },
+            output_offset=start + 2,
+        ),
+    ]
+
+
 def _fake_gateway(request: AsyncMock) -> SimpleNamespace:
     """The narrow gateway port a session-scoped client consumes."""
 
     return SimpleNamespace(
         is_live=True,
         request=request,
-        subscribe=lambda tui_session_id, after_offset=0: SimpleNamespace(
-            tui_session_id=tui_session_id
+        subscribe=lambda tui_session_id, after_offset=0: _FakeSubscription(
+            tui_session_id, after_offset
         ),
         unsubscribe=lambda _subscription: None,
     )
@@ -324,32 +366,12 @@ async def test_a_second_message_is_accepted_after_a_consumer_stops_at_the_result
     `pi_client` had the same defect on the same shape of loop.
     """
 
-    events = iter(
-        [
-            HermesTuiWireEvent(
-                event={
-                    "type": "message.delta",
-                    "session_id": "tui-1",
-                    "payload": {"text": "first reply"},
-                },
-                output_offset=1,
-            ),
-            HermesTuiWireEvent(
-                event={
-                    "type": "message.complete",
-                    "session_id": "tui-1",
-                    "payload": {"status": "complete"},
-                },
-                output_offset=2,
-            ),
-        ]
-    )
+    subscription = _FakeSubscription("tui-1")
 
     async def request(method: str, params: dict[str, str]) -> dict[str, bool]:
+        if method == "prompt.submit":
+            subscription.push(*_run("tui-1", "first reply", start=1))
         return {"accepted": True}
-
-    async def next_event() -> HermesTuiWireEvent:
-        return next(events)
 
     client = HermesTuiEngineClient(
         gateway=_fake_gateway(AsyncMock(side_effect=request)),
@@ -357,10 +379,8 @@ async def test_a_second_message_is_accepted_after_a_consumer_stops_at_the_result
     )
     client._tui_session_id = "tui-1"
     client._engine_session_key = "engine-session-1"
-    client._subscription = SimpleNamespace(
-        tui_session_id="tui-1",
-        next_event=AsyncMock(side_effect=next_event),
-    )
+    client._subscription = subscription
+    await client._start_relay(subscription)
 
     first = EngineInputCommand(
         command_id="command-1",
@@ -405,21 +425,21 @@ def _recovering_client(live_sessions: list[dict[str, str]]) -> tuple[HermesTuiEn
 
     gateway = _fake_gateway(AsyncMock(side_effect=request))
 
-    def subscribe(tui_session_id: str, after_offset: int = 0) -> SimpleNamespace:
+    def subscribe(tui_session_id: str, after_offset: int = 0) -> _FakeSubscription:
         subscribed.append(tui_session_id)
-        return SimpleNamespace(
-            tui_session_id=tui_session_id,
-            next_event=AsyncMock(
-                return_value=HermesTuiWireEvent(
-                    event={
-                        "type": "message.complete",
-                        "session_id": tui_session_id,
-                        "payload": {"status": "complete"},
-                    },
-                    output_offset=after_offset + 1,
-                )
-            ),
+        subscription = _FakeSubscription(tui_session_id, after_offset)
+        # The rest of a run that began before the reattach: no start record.
+        subscription.push(
+            HermesTuiWireEvent(
+                event={
+                    "type": "message.complete",
+                    "session_id": tui_session_id,
+                    "payload": {"status": "complete"},
+                },
+                output_offset=after_offset + 1,
+            )
         )
+        return subscription
 
     gateway.subscribe = subscribe
     client = HermesTuiEngineClient(
@@ -428,6 +448,99 @@ def _recovering_client(live_sessions: list[dict[str, str]]) -> tuple[HermesTuiEn
         resume_session_key="engine-session-1",
     )
     return client, subscribed
+
+
+def _usage(percent: int) -> dict[str, object]:
+    """``session.usage`` as Hermes emits it (``tui_gateway/server.py`` ``_get_usage``)."""
+
+    return {
+        "type": "session.usage",
+        "session_id": "tui1",
+        "payload": {"usage": {"context_used": percent * 1000, "context_max": 100_000, "context_percent": percent}},
+    }
+
+
+_COMPLETE = {"type": "message.complete", "session_id": "tui1", "payload": {"status": "complete"}}
+
+
+def _compacting_client(monkeypatch: pytest.MonkeyPatch) -> HermesTuiEngineClient:
+    from astrabox.core.service.orchestrator.engine import hermes_client
+
+    monkeypatch.setattr(hermes_client, "_IDLE_COMPACT_QUIET_SECONDS", 0.0)
+    gateway = _fake_gateway(AsyncMock(return_value={"status": "compressed"}))
+    client = HermesTuiEngineClient(
+        gateway=gateway, platform_session_id="session-1", resume_session_key="engine-session-1"
+    )
+    client._tui_session_id = "tui1"
+    return client
+
+
+@pytest.mark.asyncio
+async def test_a_reply_that_leaves_the_context_40_percent_full_is_compressed_once_quiet(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _compacting_client(monkeypatch)
+
+    client._observe_context(_usage(45))
+    client._observe_context(_COMPLETE)
+    assert client._compaction is not None
+    await client._compaction
+
+    client._gateway.request.assert_awaited_once()
+    assert client._gateway.request.await_args.args == ("session.compress", {"session_id": "tui1"})
+
+
+@pytest.mark.asyncio
+async def test_no_compression_below_the_threshold_or_while_the_next_turn_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _compacting_client(monkeypatch)
+
+    client._observe_context(_usage(39))
+    client._observe_context(_COMPLETE)
+    assert client._compaction is None
+
+    # Usage crossed the threshold, but a message arrived before the quiet
+    # period ended: the turn compresses itself if it must, not this task.
+    client._observe_context(_usage(45))
+    client._observe_context(_COMPLETE)
+    client._submitting = True
+    assert client._compaction is not None
+    await client._compaction
+    client._gateway.request.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_compressed_conversation_resumes_under_the_key_the_platform_holds() -> None:
+    """Resume answers with the compression child; the conversation keeps its key.
+
+    Hermes ends a session when it compresses it and continues in a child, and
+    ``session.resume`` reports the child it followed the lineage to. Adopting
+    that child id made every compressed conversation refuse its next message
+    after a backend or host restart, as a different native conversation.
+    """
+
+    async def request(method: str, params: dict[str, str]) -> dict[str, object]:
+        assert method == "session.resume"
+        return {"session_id": "fresh001", "resumed": "20261006_compressed_child"}
+
+    gateway = _fake_gateway(AsyncMock(side_effect=request))
+    client = HermesTuiEngineClient(
+        gateway=gateway,
+        platform_session_id="session-1",
+        resume_session_key="engine-session-1",
+    )
+
+    await client.bind_conversation(
+        EngineConversationBinding(
+            platform_session_id="session-1", engine_session_key="engine-session-1"
+        )
+    )
+
+    assert client.engine_session_key == "engine-session-1"
+    gateway.request.assert_awaited_once_with(
+        "session.resume", {"session_id": "engine-session-1", "cols": 120}
+    )
 
 
 @pytest.mark.asyncio
@@ -493,49 +606,14 @@ async def test_a_recovered_turn_on_a_session_the_backend_holds_keeps_reading() -
 @pytest.mark.asyncio
 async def test_hermes_consumes_platform_inputs_in_fifo_order() -> None:
     calls: list[tuple[str, str]] = []
-    events = iter(
-        [
-            HermesTuiWireEvent(
-                event={
-                    "type": "message.delta",
-                    "session_id": "tui-1",
-                    "payload": {"text": "first reply"},
-                },
-                output_offset=1,
-            ),
-            HermesTuiWireEvent(
-                event={
-                    "type": "message.complete",
-                    "session_id": "tui-1",
-                    "payload": {"status": "complete"},
-                },
-                output_offset=2,
-            ),
-            HermesTuiWireEvent(
-                event={
-                    "type": "message.delta",
-                    "session_id": "tui-1",
-                    "payload": {"text": "second reply"},
-                },
-                output_offset=3,
-            ),
-            HermesTuiWireEvent(
-                event={
-                    "type": "message.complete",
-                    "session_id": "tui-1",
-                    "payload": {"status": "complete"},
-                },
-                output_offset=4,
-            ),
-        ]
-    )
+    subscription = _FakeSubscription("tui-1")
+    replies = iter([("first reply", 1), ("second reply", 4)])
 
     async def request(method: str, params: dict[str, str]) -> dict[str, bool]:
         calls.append((method, params["text"]))
+        text, start = next(replies)
+        subscription.push(*_run("tui-1", text, start=start))
         return {"accepted": True}
-
-    async def next_event() -> HermesTuiWireEvent:
-        return next(events)
 
     client = HermesTuiEngineClient(
         gateway=_fake_gateway(AsyncMock(side_effect=request)),
@@ -543,10 +621,8 @@ async def test_hermes_consumes_platform_inputs_in_fifo_order() -> None:
     )
     client._tui_session_id = "tui-1"
     client._engine_session_key = "engine-session-1"
-    client._subscription = SimpleNamespace(
-        tui_session_id="tui-1",
-        next_event=AsyncMock(side_effect=next_event),
-    )
+    client._subscription = subscription
+    await client._start_relay(subscription)
     first = EngineInputCommand(
         command_id="command-1",
         session_id="session-1",

@@ -113,12 +113,13 @@ const AGENT_JSON_EXAMPLES: Record<string, unknown> = {
     branch: 'main',
     depth: 1,
   },
-  plugin_repos: [{
+  packages: [{
+    kind: 'claude-plugin',
     url: 'https://github.com/anthropics/claude-plugins-official.git',
     protocol: 'https',
     branch: 'main',
     depth: 1,
-    plugin_paths: ['plugins/frontend-design'],
+    paths: ['plugins/frontend-design'],
   }],
 };
 

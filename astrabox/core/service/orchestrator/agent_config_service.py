@@ -57,12 +57,14 @@ from astrabox.core.service.orchestrator.engine.capabilities import (
 from astrabox.core.service.orchestrator.engine.registry import (
     EngineKindNotRegistered,
 )
+from astrabox.core.service.orchestrator.engine.extensions import extensions_projection
 from astrabox.core.service.orchestrator.mcp_assignments import (
     AGENT_MCP_ASSIGNMENTS_FIELD,
     normalize_assignments,
 )
-from astrabox.core.service.orchestrator.runtime.plugin_repos import normalize_plugin_repos
+from astrabox.core.service.orchestrator.runtime.packages import normalize_packages
 from astrabox.core.service.orchestrator.sandbox_names import read_undestroyed
+from astrabox.core.service.orchestrator.runtime.mcp_servers import CONNECTOR_PLATFORM_SERVER
 from astrabox.seams.extensions import extension_provider_for_name
 
 # The masked stand-in for a set ``provider_access.api_key`` in client-facing
@@ -82,7 +84,7 @@ _VERSIONED_HARNESS_FIELDS = (
     "mcp_assignments",
     "artifacts_enabled",
     "extension_catalog",
-    "plugin_repos",
+    "packages",
     "default_repo",
     "engine_options",
     "environment_name",
@@ -256,12 +258,28 @@ class AgentConfigService:
         view = await self.resolve_agent_harness(
             agent_id, require_enabled_environment=require_enabled_environment
         )
-        return replace(view, session_source_type=session.get("source_type")) if view else None
+        if view is None:
+            return None
+        # The engine withholds what a channel conversation may not use
+        # (runtime.mcp_servers.binding_mcp_server_definitions); the view stays
+        # the Agent's, which its runtime generation is computed from.
+        return replace(view, session_source_type=session.get("source_type"))
 
     async def _resolve_assistant_harness(
         self, assistant_id: str, *, require_enabled_environment: bool = True
     ) -> AgentView | None:
-        """Build an Assistant Session's runtime view from its Environment and overrides."""
+        """Build an Assistant Session's runtime view from its layers, Environment and own fields.
+
+        The layers above the Assistant (assistant_layers) come first and its
+        own fields stack on top; see that module for how each field combines.
+        """
+        from astrabox.core.service.orchestrator.assistant.assistant_layers import (
+            inherited_layers,
+            joined_instructions,
+            merged_engine_options,
+            narrowest,
+        )
+
         assistant = await self._assistant_repo.get_assistant(assistant_id)
         if assistant is None:
             return None
@@ -269,36 +287,82 @@ class AgentConfigService:
         env = await self._require_environment(
             env_name, ref=f"assistant '{assistant_id}'", require_enabled=require_enabled_environment
         )
+        layers = await inherited_layers()
         model_override = assistant.get("model_config_override") or {}
-        model = str(model_override.get("model_name") or "").strip() or None
-        mcp_servers = self._normalize_mcp_servers(assistant.get("mcp_config_override"))
-        refuse_reserved_mcp_fields(mcp_servers, owner=f"assistant '{assistant_id}'")
+        model = (
+            str(model_override.get("model_name") or "").strip()
+            or narrowest(layers, "model_name")
+            or None
+        )
+        own_mcp_servers = self._normalize_mcp_servers(assistant.get("mcp_servers"))
+        assistant_ref = f"assistant '{assistant_id}'"
+        refuse_reserved_mcp_fields(own_mcp_servers, owner=assistant_ref)
+        sources: list[tuple[str, dict[str, Any]]] = []
+        for label, layer in layers:
+            layer_servers = self._normalize_mcp_servers(layer.get("mcp_servers")) or {}
+            refuse_reserved_mcp_fields(layer_servers, owner=label)
+            sources.append((label, layer_servers))
+            sources.extend(await self._resolve_assigned_mcp_servers(layer))
+        mcp_servers = self._merge_mcp_servers(
+            [
+                *sources,
+                ("the Assistant's own MCP servers", own_mcp_servers or {}),
+                *await self._resolve_assigned_mcp_servers(assistant),
+                ("its connectors", self._connector_servers(assistant)),
+            ],
+            ref=assistant_ref,
+        ) or None
+        records = [layer for _label, layer in layers] + [assistant]
+        catalog_skills = self._dedupe_strings([
+            skill
+            for record in records
+            for skill in self._normalize_skills(
+                (record.get("extension_catalog") if isinstance(record.get("extension_catalog"), dict) else {})
+                .get("skills")
+            )
+        ])
         view = AgentView(
             agent_id=None,
             name=str(assistant.get("display_name") or assistant_id),
             model=model,
             model_config=self._synthesize_model_config(model, env),
-            system=str(assistant.get("system") or "").strip() or None,
+            system=joined_instructions(layers, assistant.get("system")),
+            timezone=str(assistant.get("timezone") or "").strip() or None,
             mcp_servers=mcp_servers,
-            skills=self._normalize_skills(assistant.get("skill_manifest_override")),
-            plugin_repos=normalize_plugin_repos(assistant.get("plugin_repos_override")),
-            credential_vault_ids=self._normalize_credential_vault_ids(
-                assistant.get("credential_vault_ids")
+            skills=self._dedupe_strings(
+                [
+                    *(skill for record in records for skill in self._normalize_skills(record.get("skills"))),
+                    *catalog_skills,
+                ]
+            ),
+            catalog_skills=tuple(catalog_skills),
+            packages=[
+                package for record in records for package in normalize_packages(record.get("packages"))
+            ],
+            engine_options=merged_engine_options(layers, assistant.get("engine_options")),
+            credential_vault_ids=self._dedupe_strings(
+                [
+                    vault_id
+                    for record in records
+                    for vault_id in self._normalize_credential_vault_ids(record.get("credential_vault_ids"))
+                ]
             ),
             environment_name=env_name,
-            assistant_revision=self._assistant_revision(assistant, env),
+            assistant_revision=self._assistant_revision(assistant, env, layers=[layer for _label, layer in layers]),
         )
         self._overlay_environment_runtime(view, env)
         return view
 
     @staticmethod
-    def _assistant_revision(assistant: dict[str, Any], env: dict[str, Any]) -> str:
+    def _assistant_revision(
+        assistant: dict[str, Any], env: dict[str, Any], *, layers: list[dict[str, Any]] | None = None
+    ) -> str:
         """The identity of what an Assistant's runtime is prepared from.
 
-        Every stored field of the Assistant except its bookkeeping, plus the
-        Environment's revision. It says only that the definition moved; which
-        change matters to the Agent program's profile is the adapter's call
-        when it prepares that profile again.
+        Every stored field of the Assistant except its bookkeeping, the
+        layers it inherits, and the Environment's revision. It says only that
+        the definition moved; which change matters to the Agent program's
+        profile is the adapter's call when it prepares that profile again.
         """
 
         definition = {
@@ -309,6 +373,10 @@ class AgentConfigService:
         payload = json.dumps(
             {
                 "assistant": definition,
+                "layers": [
+                    {key: value for key, value in layer.items() if key != "_id"}
+                    for layer in layers or []
+                ],
                 "environment_updated_at": str(env.get("updated_at") or ""),
             },
             sort_keys=True,
@@ -346,6 +414,7 @@ class AgentConfigService:
             [
                 ("the Agent's own mcp_servers", own_mcp_servers),
                 *await self._resolve_assigned_mcp_servers(item),
+                ("its connectors", self._connector_servers(item)),
             ],
             ref=agent_ref,
         )
@@ -368,7 +437,7 @@ class AgentConfigService:
             skills=resolved_skills,
             engine_options=item.get("engine_options"),
             default_repo=self._normalize_default_repo(item.get("default_repo")),
-            plugin_repos=normalize_plugin_repos(item.get("plugin_repos")),
+            packages=normalize_packages(item.get("packages")),
             catalog_skills=tuple(catalog_skills),
             credential_vault_ids=self._normalize_credential_vault_ids(
                 item.get("credential_vault_ids")
@@ -659,7 +728,7 @@ class AgentConfigService:
         """Write-side gate for the Agent's Environment and engine inputs.
 
         The bag's keys mean nothing to the platform; the environment's engine
-        declares what it accepts (``EngineRuntimeCapabilities.engine_options_schema``)
+        declares what it accepts (``EngineExtensions.native_config``)
         and carries accepted values verbatim. Platform configuration fields are
         also checked against the adapter's declared consumers so a saved value
         cannot become an inert knob. Every Agent write checks the Environment
@@ -687,7 +756,7 @@ class AgentConfigService:
         if bag:
             validate_declared_config_bag(
                 bag,
-                capabilities.engine_options_schema,
+                capabilities.extensions.native_config,
                 bag_label="engine_options",
                 owner_label=f"engine '{engine_kind}'",
             )
@@ -715,23 +784,23 @@ class AgentConfigService:
         if not name:
             raise APIError(code="INVALID_REQUEST", message="name is required", status_code=400)
         editable = validate_agent_payload({**payload, "name": name})
-        plugin_repos = editable.get("plugin_repos")
-        if plugin_repos is not None:
-            editable["plugin_repos"] = normalize_plugin_repos(plugin_repos)
+        packages = editable.get("packages")
+        if packages is not None:
+            editable["packages"] = normalize_packages(packages)
         env = await self._validate_engine_configuration(
             environment_name=str(editable.get("environment_name") or ""),
             engine_options=editable.get("engine_options"),
             configuration_inputs={
                 "mcp_servers": editable.get("mcp_servers"),
                 "skills": editable.get("skills"),
-                "plugin_repos": editable.get("plugin_repos"),
+                "packages": editable.get("packages"),
             },
         )
         await validate_author_declarations(
             owner=f"Agent {name!r}",
             networking=env.get("networking"),
             skills=editable.get("skills"),
-            plugin_repos=editable.get("plugin_repos"),
+            packages=editable.get("packages"),
             mcp_servers=editable.get("mcp_servers"),
             default_repo=editable.get("default_repo"),
         )
@@ -760,6 +829,49 @@ class AgentConfigService:
         }
         stored = await self._agent_repo.create_agent(doc)
         return self.sanitize_agent_doc(stored)
+
+    async def set_agent_connector_servers(
+        self, user: UserContext, agent_id: str, servers: dict[str, str]
+    ) -> dict[str, Any]:
+        """Record the connector hub's server URL for each connector the Agent offers.
+
+        Only the connector service writes this field, with the hub's own URLs.
+        A change is a new Agent version, as any change to what its runtime
+        resolves is, so prepared runtimes are replaced.
+        """
+
+        target = str(agent_id or "").strip()
+        existing = await self._agent_repo.get_agent(target)
+        if existing is None:
+            raise APIError(code="AGENT_NOT_FOUND", message="agent not found", status_code=404)
+        if not can_manage_agent(existing, user.user_id, user.roles):
+            raise APIError(
+                code="FORBIDDEN",
+                message="only the creator or an admin may edit this agent",
+                status_code=403,
+            )
+        value = {str(name): str(url) for name, url in servers.items()} or None
+        if existing.get("connector_servers") == value:
+            return self.sanitize_agent_doc(existing)
+        stored_version = self._coerce_positive_int(existing.get("version")) or 1
+        applied = await self._agent_repo.compare_and_update_agent(
+            target,
+            expected={"version": stored_version},
+            updates={
+                "connector_servers": value,
+                "version": stored_version + 1,
+                "updated_at": utcnow_iso(),
+                "updated_by": user.user_id,
+            },
+        )
+        if not applied:
+            raise APIError(
+                code="AGENT_VERSION_CONFLICT",
+                message="agent was modified concurrently; retry with the latest version",
+                status_code=409,
+            )
+        refreshed = await self._agent_repo.get_agent(target)
+        return self.sanitize_agent_doc(refreshed or existing)
 
     async def upsert_agent_config(
         self,
@@ -810,20 +922,20 @@ class AgentConfigService:
             if "engine_options" in updates
             else existing.get("engine_options")
         )
-        if "plugin_repos" in updates:
-            updates["plugin_repos"] = normalize_plugin_repos(
-                updates["plugin_repos"]
+        if "packages" in updates:
+            updates["packages"] = normalize_packages(
+                updates["packages"]
             )
         effective = {
             field: updates[field] if field in updates else existing.get(field)
-            for field in ("mcp_servers", "skills", "plugin_repos", "default_repo")
+            for field in ("mcp_servers", "skills", "packages", "default_repo")
         }
         env = await self._validate_engine_configuration(
             environment_name=effective_environment,
             engine_options=effective_bag,
             configuration_inputs={
                 field: effective[field]
-                for field in ("mcp_servers", "skills", "plugin_repos")
+                for field in ("mcp_servers", "skills", "packages")
             },
         )
         if "prepared_capacity" in updates:
@@ -836,7 +948,7 @@ class AgentConfigService:
             owner=f"Agent {name!r}",
             networking=env.get("networking"),
             skills=effective["skills"],
-            plugin_repos=effective["plugin_repos"],
+            packages=effective["packages"],
             mcp_servers=effective["mcp_servers"],
             default_repo=effective["default_repo"],
         )
@@ -953,6 +1065,12 @@ class AgentConfigService:
         # The modes a form may offer for this Environment's program, in the
         # program's own vocabulary; empty means the program has none to choose.
         rendered["permission_modes"] = list(capabilities.permission_modes)
+        # What the program lets an Agent or Assistant add to it, so a form
+        # renders only the extension fields this Environment's program reads.
+        rendered["engine_options_schema"] = [
+            dict(field) for field in capabilities.extensions.native_config
+        ]
+        rendered["extensions"] = extensions_projection(capabilities.extensions)
         return rendered
 
     async def list_agent_environment_options(self) -> list[dict[str, Any]]:
@@ -991,8 +1109,13 @@ class AgentConfigService:
                         dict(field)
                         for field in capabilities_for_engine_kind(
                             engine_kind
-                        ).engine_options_schema
+                        ).extensions.native_config
                     ],
+                    # What else the engine accepts, so the form shows only
+                    # the extension fields this Environment's engine reads.
+                    "extensions": extensions_projection(
+                        capabilities_for_engine_kind(engine_kind).extensions
+                    ),
                 }
             )
         return sorted(options, key=lambda item: (str(item["display_name"]).lower(), item["name"]))
@@ -1180,6 +1303,20 @@ class AgentConfigService:
                 }
                 for assistant in assistants
             )
+            from astrabox.persistence.repository.assistant_defaults_repository import (
+                AssistantDefaultsRepository,
+            )
+
+            holders.extend(
+                {
+                    "target_type": "assistant_defaults",
+                    "target_id": str(layer["scope"]),
+                    "target_name": "Assistant defaults",
+                }
+                for layer in await AssistantDefaultsRepository().list_by_environment(
+                    target, transaction=transaction
+                )
+            )
             if holders:
                 shown = ", ".join(
                     f"{holder['target_type']} '{holder['target_name']}'" for holder in holders[:5]
@@ -1189,8 +1326,9 @@ class AgentConfigService:
                     code="ENVIRONMENT_IN_USE",
                     message=(
                         f"Environment is still used by {shown}{suffix}. "
-                        "Move or delete these Agents and Assistants, and finish any pending "
-                        "sandbox cleanup, before deleting the Environment."
+                        "Move or delete these Agents and Assistants, point the Assistant "
+                        "defaults elsewhere, and finish any pending sandbox cleanup, before "
+                        "deleting the Environment."
                     ),
                     status_code=409,
                     data={"holders": holders},
@@ -1272,6 +1410,19 @@ class AgentConfigService:
             if servers:
                 resolved.append((f"the '{provider_name}' catalog", servers))
         return resolved
+
+    @staticmethod
+    def _connector_servers(record: dict[str, Any]) -> dict[str, Any]:
+        """The connectors an Agent or Assistant offers, as platform MCP servers.
+
+        The connector service records each connector's virtual server in the
+        hub; the platform's MCP route relays to it as the Session's person.
+        """
+
+        return {
+            str(connector_id): {"platform_server": CONNECTOR_PLATFORM_SERVER, "hub_server": str(server_id)}
+            for connector_id, server_id in (record.get("connector_servers") or {}).items()
+        }
 
     @staticmethod
     def _merge_mcp_servers(

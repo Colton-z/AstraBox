@@ -73,6 +73,8 @@ class ExpirationWatcher:
         # Where the idle sweep resumes. A conversation that is not idle yet, or
         # whose environment does not park, stays a candidate.
         self._idle_cursor = KeysetCursor("session_id")
+        # Where the Assistant liveness pass resumes among READY workspaces.
+        self._assistant_liveness_cursor = KeysetCursor("assistant_id")
 
     # ── Lifecycle ───────────────────────────────────────────────────────
 
@@ -209,6 +211,30 @@ class ExpirationWatcher:
         if self._closed:
             return summary
         try:
+            summary.update(await self._refresh_assistant_egress_credentials())
+        except Exception:
+            if self._closed:
+                raise
+            logger.exception("expiration_watcher: assistant credential refresh failed")
+        if self._closed:
+            return summary
+        try:
+            summary.update(await self._keep_assistant_workspaces_leased())
+        except Exception:
+            if self._closed:
+                raise
+            logger.exception("expiration_watcher: assistant lease renewal failed")
+        if self._closed:
+            return summary
+        try:
+            summary.update(await self._heal_assistant_workspaces())
+        except Exception:
+            if self._closed:
+                raise
+            logger.exception("expiration_watcher: assistant liveness pass failed")
+        if self._closed:
+            return summary
+        try:
             from astrabox.core.service.orchestrator.agent.prepared_capacity import (
                 release_abandoned_unit_bindings,
             )
@@ -234,6 +260,82 @@ class ExpirationWatcher:
             if self._closed:
                 raise
             logger.exception("expiration_watcher: idle sweep failed")
+        return summary
+
+    async def _refresh_assistant_egress_credentials(self) -> dict[str, int]:
+        """Refresh the egress credentials of every Assistant runtime this process holds.
+
+        Credentials are written to a box's egress sidecar when a turn starts.
+        An Assistant also calls its connectors from scheduled jobs between
+        turns, and a connector's access token often lives an hour, so each
+        tick re-resolves them; a token close to expiry is refreshed by the
+        connector service before it is written.
+        """
+        refreshed = 0
+        failed = 0
+        for runtime in self._platform._runtime_manager.live_runtimes():
+            refresh = getattr(runtime, "prepare_engine_input", None)
+            if getattr(runtime, "engine_kind", None) != "assistant" or refresh is None:
+                continue
+            try:
+                await refresh()
+                refreshed += 1
+            except Exception as exc:  # noqa: BLE001 — the next tick or turn retries
+                failed += 1
+                logger.warning(
+                    "expiration_watcher: assistant credential refresh failed session=%s: %s",
+                    getattr(runtime, "session_id", ""),
+                    exc,
+                )
+        if not refreshed and not failed:
+            return {}
+        return {"assistant_credentials_refreshed": refreshed, "assistant_credential_refresh_failed": failed}
+
+    async def _keep_assistant_workspaces_leased(self) -> dict[str, int]:
+        """Renew every READY Assistant workspace whose lease is half spent.
+
+        An Assistant is always available: its box keeps running scheduled
+        jobs and answering its channels between messages. Activity renews a
+        lease only inside its last hour, and only on the replica holding the
+        conversation's runtime, so a workspace whose owner talks to it daily
+        would still reach the end of its lease. Renewing at half the horizon
+        leaves days of margin for a missed tick or a provider outage.
+        """
+        settings = self._settings()
+        horizon = int(getattr(settings, "agent_sandbox_renew_ttl_seconds", 0) or 0)
+        if horizon <= 0:
+            return {}
+        now = datetime.now(timezone.utc)
+        workspaces = self._platform._assistant_workspace_service
+        candidates = await workspaces.list_lease_renewal_candidates(
+            now_iso=now.isoformat(),
+            renew_before_iso=(now + timedelta(seconds=horizon / 2)).isoformat(),
+            limit=_DEAD_BINDING_SCAN_LIMIT,
+        )
+        if not candidates:
+            return {}
+        summary = {"assistant_leases_renewed": 0, "assistant_lease_renew_failed": 0}
+        runtime_manager = self._platform._runtime_manager
+        for workspace in candidates:
+            sandbox_id = str(workspace.get("current_sandbox_id") or "")
+            assistant_id = str(workspace.get("assistant_id") or "")
+            try:
+                expires = await runtime_manager.renew_sandbox_by_id(sandbox_id, horizon)
+                await workspaces.record_sandbox_lease(
+                    assistant_id=assistant_id,
+                    sandbox_id=sandbox_id,
+                    expires_at=expires.isoformat() if expires is not None else None,
+                )
+                summary["assistant_leases_renewed"] += 1
+            except Exception as exc:  # noqa: BLE001 — the next tick retries
+                summary["assistant_lease_renew_failed"] += 1
+                logger.warning(
+                    "expiration_watcher: assistant lease renewal failed "
+                    "assistant=%s sandbox=%s: %s",
+                    assistant_id,
+                    sandbox_id,
+                    exc,
+                )
         return summary
 
     async def _sweep_dead_bindings(self) -> dict[str, int]:
@@ -300,7 +402,93 @@ class ExpirationWatcher:
                     "expiration_watcher: convergence failed sandbox=%s",
                     sandbox_id,
                 )
+                continue
+            await self._wake_assistants(convergence.converged_assistant_workspaces)
         return summary
+
+    async def _heal_assistant_workspaces(self) -> dict[str, int]:
+        """Rebuild an Assistant workspace whose box died while nobody was using it.
+
+        An Assistant runs its scheduled jobs and answers its channels between
+        messages, so a box removed outside AstraBox's own lifecycle (a deleted
+        Pod, a lost node) cannot wait for its owner to open it. The dead-binding
+        sweep probes only bindings whose lease has lapsed, and an Assistant's
+        lease is kept renewed, so each tick probes one page of the READY
+        workspaces whose lease is live here. A box the provider confirms gone is converged like any dead
+        binding and the workspace is woken as its owner, which restores
+        Hermes' saved state into a new box. No turn is replayed: a reply in
+        progress when the box died has already failed with its history kept.
+        """
+        workspaces = self._platform._assistant_workspace_service
+        now_iso = utcnow_iso()
+        rows = await self._assistant_liveness_cursor.page(
+            lambda after, size: workspaces.list_ready_workspaces(
+                now_iso=now_iso, after_assistant_id=after, limit=size
+            ),
+            limit=_DEAD_BINDING_SCAN_LIMIT,
+        )
+        if not rows:
+            return {}
+        runtime_manager = self._platform._runtime_manager
+        lifecycle = self._platform._sandbox_lifecycle_service
+        summary = {"assistant_boxes_probed": 0, "assistant_boxes_dead": 0}
+        for row in rows:
+            sandbox_id = str(row.get("current_sandbox_id") or "")
+            try:
+                probe = await runtime_manager.get_sandbox_lifecycle_probe(sandbox_id)
+            except Exception as exc:  # noqa: BLE001 — probe is evidence, not an answer
+                logger.warning(
+                    "expiration_watcher: assistant box probe errored sandbox=%s: %s",
+                    sandbox_id,
+                    exc,
+                )
+                continue
+            summary["assistant_boxes_probed"] += 1
+            if not runtime_manager._is_terminal_sandbox_lifecycle_probe(probe):
+                continue
+            summary["assistant_boxes_dead"] += 1
+            convergence = await lifecycle.converge_dead_sandbox_owners(
+                sandbox_id,
+                last_error="sandbox terminated",
+                reason="assistant_liveness:"
+                + str(getattr(probe, "probe_status", "") or "").strip(),
+            )
+            await self._wake_assistants(convergence.converged_assistant_workspaces)
+        return summary
+
+    async def _wake_assistants(self, assistant_ids: tuple[str, ...]) -> None:
+        """Wake each converged Assistant workspace through its owner's wake path."""
+
+        if not assistant_ids:
+            return
+        from astrabox.common.utils.user_context import UserContext
+        from astrabox.core.service.orchestrator.service_registry import (
+            get_assistant_service,
+        )
+        from astrabox.persistence.repository.assistant_catalog_repository import (
+            AssistantCatalogRepository,
+        )
+
+        catalog = AssistantCatalogRepository()
+        service = get_assistant_service()
+        for assistant_id in assistant_ids:
+            try:
+                assistant = await catalog.get_assistant(assistant_id)
+                owner_id = str((assistant or {}).get("owner_id") or "")
+                if not owner_id:
+                    continue
+                await service.wake_workspace(UserContext(user_id=owner_id), assistant_id)
+                logger.info(
+                    "expiration_watcher: woke assistant workspace after its box died "
+                    "assistant=%s",
+                    assistant_id,
+                )
+            except Exception as exc:  # noqa: BLE001 — the owner's next action also wakes it
+                logger.warning(
+                    "expiration_watcher: assistant workspace wake failed assistant=%s: %s",
+                    assistant_id,
+                    exc,
+                )
 
     # ── Idle reclamation ────────────────────────────────────────────────
 

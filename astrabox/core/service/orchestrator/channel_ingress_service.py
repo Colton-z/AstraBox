@@ -42,8 +42,21 @@ from astrabox.core.service.orchestrator.channel_credentials import (
     ChannelCredentialService,
 )
 from astrabox.core.service.orchestrator.channel_context import channel_turn_content
-from astrabox.core.service.orchestrator.engine.interaction_contract import (
-    PRESENTATION_FORM,
+from astrabox.core.service.orchestrator.channel_interactions import (
+    QuestionAnswer,
+    Refusal,
+    answer_action,
+    answered_summary,
+    channel_interaction,
+    engine_answer,
+    interaction_ref,
+    parse_action,
+    question_count,
+    read_reply,
+)
+from astrabox.core.service.orchestrator.conversation_targets import (
+    ConversationTarget,
+    ConversationTargets,
 )
 from astrabox.persistence.repository.channel_repository import (
     CLAIM_OUTCOME_CLAIMED,
@@ -52,6 +65,9 @@ from astrabox.persistence.repository.channel_repository import (
     INBOUND_DEAD,
     INBOUND_RECEIVED,
     INBOUND_SETTLED,
+    INTERACTION_ANSWERED,
+    INTERACTION_CLOSED,
+    INTERACTION_OPEN,
     ChannelRepository,
     new_owner_token,
 )
@@ -63,6 +79,7 @@ from astrabox.seams.channel import (
     ChannelDeliveryReceipt,
     ChannelEvent,
     ChannelInbound,
+    ChannelInteraction,
     channel_scene_name,
     get_channel,
 )
@@ -91,6 +108,12 @@ _OUTBOX_RETRY_BACKOFF_SECONDS = (5.0, 30.0, 120.0)
 #: turn that never terminates before the outbox retry policy takes over.
 _STREAMING_POLL_SECONDS = 1.0
 _STREAMING_MAX_SECONDS = 1800.0
+
+#: An answer refused with one of these found no wait left to answer: the
+#: engine runtime is absent, its sandbox is gone, or the wait expired.
+_ANSWER_GONE_CODES = frozenset(
+    {"ENGINE_RUNTIME_UNAVAILABLE", "INTERACTION_EXPIRED", "SANDBOX_GONE"}
+)
 
 #: Reply-chain resolution window: an inbound referencing a platform alias that
 #: is still being delivered (alias write racing) gets this many short waits
@@ -148,27 +171,35 @@ class ChannelIngressService:
         session_events_repo: Any,
         message_view: Any,
         session_detail_getter: Any,
+        answer_pending_interaction: Any,
         supersede_pending_interaction: Any,
         spawn_background_task: Any,
         channel_repo: ChannelRepository | None = None,
         channel_credentials: ChannelCredentialService | None = None,
         read_session_output: Any,
         session_output_cursor: Any,
+        assistant_service_getter: Any = None,
+        observe_session_output: Any = None,
     ) -> None:
         self._deployment_repo = deployment_repo
-        self._agent_repo = agent_repo
-        self._agent_service_getter = agent_service_getter
+        self._targets = ConversationTargets(
+            agent_repo=agent_repo,
+            agent_service_getter=agent_service_getter,
+            assistant_service_getter=assistant_service_getter,
+        )
         self._stream_message_events_ds = stream_message_events_ds
         self._resume_command_stream = resume_command_stream
         self._sessions_repo = sessions_repo
         self._session_events_repo = session_events_repo
         self._message_view = message_view
         self._session_detail_getter = session_detail_getter
+        self._answer_pending_interaction = answer_pending_interaction
         self._supersede_pending_interaction = supersede_pending_interaction
         self._spawn_background_task = spawn_background_task
         self._channel_repo = channel_repo or ChannelRepository()
         self._channel_credentials = channel_credentials or ChannelCredentialService()
         self._read_session_output = read_session_output
+        self._observe_session_output = observe_session_output
         self._session_output_cursor = session_output_cursor
         self._output_subscription_cursor = ""
         self._delivering: set[str] = set()
@@ -240,14 +271,13 @@ class ChannelIngressService:
                 session_id=str((linked or {}).get("session_id") or "") or None,
                 ack_extra=dict(inbound.ack_extra),
             )
-        agent_id = str(binding.get("agent_id") or "").strip()
-        agent = await self._agent_repo.get_agent(agent_id)
-        if not agent:
+        target = await self._targets.resolve(binding)
+        if target is None:
             raise APIError(
                 code="NOT_FOUND", message="bound agent not found", status_code=404
             )
         execution_user_id = str(binding.get("execution_user_id") or "").strip()
-        creator_user_id = execution_user_id or str(agent.get("user_id") or "").strip()
+        creator_user_id = execution_user_id or target.owner_user_id
         if not creator_user_id:
             raise APIError(
                 code="DEPLOYMENT_NO_OWNER",
@@ -263,6 +293,10 @@ class ChannelIngressService:
             raise RuntimeError("retained channel message lacks ordering identity")
         payload = {
             "content": content,
+            # What the participant typed, before any binding prompt prefix: a
+            # reply to a question is read from this.
+            "reply_text": inbound.content,
+            "action": inbound.action,
             "conversation_key": inbound.conversation_key,
             "reply_context": dict(inbound.reply_context or {}) or None,
             "attention": inbound.attention.to_dict() if inbound.attention else None,
@@ -279,8 +313,8 @@ class ChannelIngressService:
             deployment_id=deployment_id,
             dedup_key=inbound.dedup_key,
             channel_name=channel_name,
-            agent_id=agent_id,
             payload=payload,
+            **target.fields,
         )
         if outcome != CLAIM_OUTCOME_CLAIMED:
             logger.info(
@@ -296,13 +330,36 @@ class ChannelIngressService:
 
         # Attention policy (core-owned, deterministic): an ignore is a durable
         # terminal classification, not a dropped message.
-        ignore_reason = self._attention_ignore_reason(binding, inbound)
+        refused = self._participant_refusal(binding, inbound)
+        ignore_reason = refused or self._attention_ignore_reason(binding, inbound)
         if ignore_reason is not None:
             await self._channel_repo.mark_inbound_ignored(
                 item_id=str(item["_id"]),
                 owner_token=str(item["owner_token"]),
                 generation=int(item["generation"]),
                 reason=ignore_reason,
+                exclude_from_context=refused is not None,
+            )
+            return ChannelIngressReceipt(
+                status=CLAIM_OUTCOME_IGNORED,
+                item_id=str(item["_id"]),
+                ack_extra=dict(inbound.ack_extra),
+            )
+
+        pressed = parse_action(str(inbound.action or ""))
+        if inbound.action and (
+            pressed is None
+            or await self._channel_repo.get_channel_interaction(
+                deployment_id=deployment_id, ref=pressed.ref,
+            ) is None
+        ):
+            # A press on a button this platform never showed has no question
+            # to answer and must not start a conversation.
+            await self._channel_repo.mark_inbound_ignored(
+                item_id=str(item["_id"]),
+                owner_token=str(item["owner_token"]),
+                generation=int(item["generation"]),
+                reason="unknown_interaction_action",
             )
             return ChannelIngressReceipt(
                 status=CLAIM_OUTCOME_IGNORED,
@@ -334,8 +391,8 @@ class ChannelIngressService:
             name=f"channel-drive-{item['_id']}",
         )
         logger.warning(
-            "channel inbound accepted: binding=%s agent=%s session=%s item=%s",
-            deployment_id, agent_id, session_id, item["_id"],
+            "channel inbound accepted: binding=%s %s=%s session=%s item=%s",
+            deployment_id, target.kind, target.target_id, session_id, item["_id"],
         )
         return ChannelIngressReceipt(
             status="accepted",
@@ -352,6 +409,20 @@ class ChannelIngressService:
         return content
 
     @staticmethod
+    def _participant_refusal(
+        binding: dict[str, Any], inbound: ChannelInbound
+    ) -> str | None:
+        """Refuse senders outside the binding's ``allowed_participants``.
+
+        An empty list admits every sender. A refused message never reaches the
+        target and never joins a later turn's retained context.
+        """
+        allowed = binding.get("allowed_participants") or []
+        if not allowed or str(inbound.participant or "") in allowed:
+            return None
+        return "participant is not allowed by this binding"
+
+    @staticmethod
     def _attention_ignore_reason(
         binding: dict[str, Any], inbound: ChannelInbound
     ) -> str | None:
@@ -365,6 +436,9 @@ class ChannelIngressService:
         provider_reason = str(inbound.ignore_reason or "").strip()
         if provider_reason:
             return provider_reason
+        if inbound.action:
+            # A button exists only on the agent's own message.
+            return None
         policy = str(binding.get("attention_policy") or ATTENTION_POLICY_ALL).strip().lower()
         if policy != ATTENTION_POLICY_MENTIONS:
             return None
@@ -389,12 +463,24 @@ class ChannelIngressService:
             return bound
         payload = dict(item.get("payload") or {})
         user = UserContext(user_id=str(payload.get("creator_user_id") or ""))
-        agent_service = self._agent_service_getter()
-        agent_id = str(item.get("agent_id") or "")
+        target = await self._targets.resolve(item)
+        if target is None:
+            raise APIError(
+                code="NOT_FOUND", message="bound agent not found", status_code=404
+            )
         deployment_id = str(item.get("deployment_id") or "")
         conversation_key = str(payload.get("conversation_key") or "")
         execution_user_id = str(payload.get("execution_user_id") or "")
         referenced_session = ""
+        pressed = parse_action(str(payload.get("action") or ""))
+        if pressed is not None:
+            # A button press belongs to the conversation that showed it.
+            record = await self._channel_repo.get_channel_interaction(
+                deployment_id=deployment_id, ref=pressed.ref,
+            )
+            if record is not None:
+                referenced_session = str(record.get("session_id") or "")
+                conversation_key = conversation_key or str(record.get("conversation_key") or "")
         if str(payload.get("reference") or ""):
             if conversation_key:
                 # An explicit channel key already selects the conversation;
@@ -420,9 +506,8 @@ class ChannelIngressService:
         if conversation_key:
             session_id = await self._resolve_conversation_session(
                 user=user,
-                agent_service=agent_service,
+                target=target,
                 deployment_id=deployment_id,
-                agent_id=agent_id,
                 conversation_key=conversation_key,
                 execution_user_id=execution_user_id,
             )
@@ -431,7 +516,7 @@ class ChannelIngressService:
             session_id = referenced_session
         else:
             started = await self._start_channel_conversation(
-                agent_service, user, agent_id, execution_user_id,
+                target, user, execution_user_id,
             )
             session_id = str(started.get("session_id") or "")
         if session_id:
@@ -538,10 +623,19 @@ class ChannelIngressService:
                 ):
                     return
                 user = UserContext(user_id=str(payload.get("creator_user_id") or ""))
-                await self._decline_superseded_channel_question(
-                    user=user,
-                    session_id=session_id,
-                )
+                if await self._settle_pending_interaction(
+                    item, user=user, session_id=session_id,
+                ):
+                    # The message answered a question: no turn is started for it.
+                    if payload.get("retain_context"):
+                        await self._channel_repo.exclude_inbound_from_context(item)
+                    await self._channel_repo.settle_inbound(
+                        item_id=item_id,
+                        owner_token=owner,
+                        generation=generation,
+                        session_id=session_id,
+                    )
+                    return
                 # The last fence before appending a command: a renew that
                 # misses means the claim was stolen mid-wait — the new owner
                 # drives this item, and appending here would run a second turn
@@ -641,36 +735,391 @@ class ChannelIngressService:
                         execution_user_id=str(payload.get("execution_user_id") or ""),
                     )
 
-    async def _decline_superseded_channel_question(
+    async def _settle_pending_interaction(
+        self,
+        item: dict[str, Any],
+        *,
+        user: UserContext,
+        session_id: str,
+    ) -> bool:
+        """Answer the question this conversation shows, or stop the turn waiting on it.
+
+        Returns True when the message was an answer, or an attempt at one that
+        was refused with an explanation: it is settled here and never becomes
+        a turn. Otherwise a turn still parked on an interaction is stopped
+        (``supersede_pending_interaction``) and the message goes on as the
+        next input. Crash recovery checks the durable dispatch command before
+        this runs, so re-driving an older item cannot stop a turn a newer
+        message started.
+        """
+        payload = dict(item.get("payload") or {})
+        deployment_id = str(item.get("deployment_id") or "")
+        session = await self._session_detail_getter(user, session_id)
+        pending = session.get("pending_interaction")
+        pending = pending if isinstance(pending, dict) else None
+        if item.get("answer_ref"):
+            record = await self._channel_repo.get_channel_interaction(
+                deployment_id=deployment_id, ref=str(item["answer_ref"]),
+            )
+            if record is not None and await self._resume_answer(
+                item, user=user, record=record, pending=pending,
+            ):
+                return True
+            if record is not None and (
+                record.get("state") != INTERACTION_OPEN
+                or pending is None
+                or str(pending.get("interaction_id") or "") != str(record.get("interaction_id") or "")
+            ):
+                # This message was read as an answer to a question that has
+                # since closed; it must not answer, or stop, whatever is
+                # pending now.
+                await self._notify(item, "This question is no longer open. Send a new message to continue.")
+                return True
+        if payload.get("action"):
+            target = parse_action(str(payload["action"]))
+            if target is None:
+                raise RuntimeError("channel action was not minted by this platform")
+            record = await self._channel_repo.get_channel_interaction(
+                deployment_id=deployment_id, ref=target.ref,
+            )
+            if record is None or not await self._question_is_open(item, record, session_id, pending):
+                return True
+            assert pending is not None
+            if target.question_index != int(record.get("question_index") or 0):
+                await self._notify(item, "That question was already answered.")
+                return True
+            return await self._take_answer(
+                item, user=user, record=record, pending=pending,
+                outcome=answer_action(pending, target=target), confirm=True,
+            )
+        if await self._answers_a_closed_question(item, pending):
+            return True
+        if pending is None:
+            return False
+        interaction_id = str(pending.get("interaction_id") or "")
+        ref = interaction_ref(deployment_id, session_id, interaction_id)
+        record = await self._channel_repo.get_channel_interaction(
+            deployment_id=deployment_id, ref=ref,
+        )
+        if record is not None and record.get("state") == INTERACTION_OPEN:
+            question_index = int(record.get("question_index") or 0)
+            quoted = False
+            reference = str(payload.get("reference") or "")
+            if reference:
+                alias = await self._channel_repo.resolve_alias(
+                    deployment_id=deployment_id, alias=reference,
+                )
+                if alias is not None and alias.get("interaction_ref") == ref:
+                    if int(alias.get("question_index") or 0) != question_index:
+                        await self._notify(
+                            item, "That question was already answered; reply to the latest one.",
+                        )
+                        return True
+                    quoted = True
+            outcome = read_reply(
+                pending,
+                question_index=question_index,
+                text=str(payload.get("reply_text") or ""),
+                quoted=quoted,
+            )
+            if outcome is not None:
+                return await self._take_answer(
+                    item, user=user, record=record, pending=pending,
+                    outcome=outcome, confirm=False,
+                )
+        await self._supersede_parked_turn(
+            user=user, session_id=session_id, interaction_id=interaction_id,
+        )
+        if record is not None:
+            await self._channel_repo.settle_channel_interaction(
+                deployment_id=deployment_id, ref=ref, state=INTERACTION_CLOSED,
+                participant=payload.get("participant"),
+            )
+        return False
+
+    async def _answers_a_closed_question(
+        self, item: dict[str, Any], pending: dict[str, Any] | None,
+    ) -> bool:
+        """Refuse an answer that quotes a question which has closed.
+
+        Quoting an old question with one of its option numbers or labels is an
+        answer to that question, and running it as a new message would let the
+        Agent act on a choice nobody can still make. Free text quoting it is an
+        ordinary message.
+        """
+        payload = dict(item.get("payload") or {})
+        reference = str(payload.get("reference") or "")
+        if not reference:
+            return False
+        deployment_id = str(item.get("deployment_id") or "")
+        alias = await self._channel_repo.resolve_alias(deployment_id=deployment_id, alias=reference)
+        if alias is None or not alias.get("interaction_ref"):
+            return False
+        record = await self._channel_repo.get_channel_interaction(
+            deployment_id=deployment_id, ref=str(alias["interaction_ref"]),
+        )
+        if record is None or not isinstance(record.get("view"), dict):
+            return False
+        if (
+            record.get("state") == INTERACTION_OPEN
+            and pending is not None
+            and str(pending.get("interaction_id") or "") == str(record.get("interaction_id") or "")
+        ):
+            return False
+        if read_reply(
+            record["view"],
+            question_index=int(alias.get("question_index") or 0),
+            text=str(payload.get("reply_text") or ""),
+            quoted=False,
+        ) is None:
+            return False
+        await self._notify(item, "This question is no longer open. Send a new message to continue.")
+        return True
+
+    async def _question_is_open(
+        self,
+        item: dict[str, Any],
+        record: dict[str, Any],
+        session_id: str,
+        pending: dict[str, Any] | None,
+    ) -> bool:
+        """Whether a pressed button's question can still be answered; explain if not."""
+        if record.get("state") == INTERACTION_ANSWERED:
+            await self._notify(item, "This question was already answered.")
+            return False
+        if str(record.get("session_id") or "") != session_id:
+            # A button reached another conversation (a forwarded message, or
+            # a replaced Session); the question it names is not this one's.
+            await self._notify(item, "This question is no longer open.")
+            return False
+        if (
+            record.get("state") != INTERACTION_OPEN
+            or pending is None
+            or str(pending.get("interaction_id") or "") != str(record.get("interaction_id") or "")
+        ):
+            await self._channel_repo.settle_channel_interaction(
+                deployment_id=str(record["deployment_id"]), ref=str(record["ref"]),
+                state=INTERACTION_CLOSED,
+            )
+            await self._notify(item, "This question is no longer open.")
+            return False
+        return True
+
+    async def _resume_answer(
+        self,
+        item: dict[str, Any],
+        *,
+        user: UserContext,
+        record: dict[str, Any],
+        pending: dict[str, Any] | None,
+    ) -> bool:
+        """Finish an answer a previous drive of this item began; False if it began nothing."""
+        payload = dict(item.get("payload") or {})
+        if record.get("answering_item") == str(item["_id"]):
+            return await self._finish_answer(
+                item, user=user, record=record, pending=pending,
+                confirm=bool(payload.get("action")), redrive=True,
+            )
+        marked = int(item.get("answer_question_index") or 0)
+        current = int(record.get("question_index") or 0)
+        if current <= marked:
+            return False
+        # The step was kept; its follow-up question may not have been sent.
+        if (
+            record.get("state") == INTERACTION_OPEN
+            and pending is not None
+            and str(pending.get("interaction_id") or "") == str(record.get("interaction_id") or "")
+            and current < question_count(pending)
+        ):
+            await self._show_question(item, record, pending, current)
+        return True
+
+    async def _take_answer(
+        self,
+        item: dict[str, Any],
+        *,
+        user: UserContext,
+        record: dict[str, Any],
+        pending: dict[str, Any],
+        outcome: QuestionAnswer | Refusal,
+        confirm: bool,
+    ) -> bool:
+        """Keep one question's answer; once every question has one, answer the engine."""
+        if isinstance(outcome, Refusal):
+            await self._notify(item, outcome.message)
+            return True
+        deployment_id = str(record["deployment_id"])
+        ref = str(record["ref"])
+        participant = dict(item.get("payload") or {}).get("participant")
+        question_index = int(record.get("question_index") or 0)
+        if not await self._channel_repo.mark_inbound_answer(
+            item_id=str(item["_id"]),
+            owner_token=str(item["owner_token"]),
+            generation=int(item["generation"]),
+            interaction_ref=ref,
+            question_index=question_index,
+        ):
+            return True  # Lost ownership; the successor re-drives this item.
+        kept = {"row": outcome.row, "choice": outcome.choice, "participant": participant}
+        if question_index + 1 < question_count(pending):
+            if not await self._channel_repo.record_channel_answer(
+                deployment_id=deployment_id, ref=ref, question_index=question_index,
+                answers=[*(record.get("answers") or []), kept],
+            ):
+                await self._notify(item, "That question was already answered.")
+                return True
+            await self._show_question(item, record, pending, question_index + 1)
+            return True
+        if not await self._channel_repo.stage_channel_answer(
+            deployment_id=deployment_id, ref=ref, item_id=str(item["_id"]),
+            question_index=question_index, answer=kept,
+        ):
+            await self._notify(item, "That question was already answered.")
+            return True
+        staged = await self._channel_repo.get_channel_interaction(
+            deployment_id=deployment_id, ref=ref,
+        )
+        if staged is None:
+            raise RuntimeError(f"channel interaction {ref} vanished after its answer was staged")
+        return await self._finish_answer(
+            item, user=user, record=staged, pending=pending, confirm=confirm, redrive=False,
+        )
+
+    async def _finish_answer(
+        self,
+        item: dict[str, Any],
+        *,
+        user: UserContext,
+        record: dict[str, Any],
+        pending: dict[str, Any] | None,
+        confirm: bool,
+        redrive: bool,
+    ) -> bool:
+        """Give the engine the staged answer, unless it already has it.
+
+        A re-drive may follow a worker that died after the engine accepted the
+        answer: the Session then has no pending interaction, or the engine
+        refuses a second copy, and both are read as that acceptance. A re-drive
+        cannot tell it apart from the question closing before the first
+        attempt reached the engine; that needs a second fault in the same
+        window, and the Session's own interaction record stays authoritative.
+        """
+        deployment_id = str(record["deployment_id"])
+        ref = str(record["ref"])
+        participant = dict(item.get("payload") or {}).get("participant")
+        answers = [
+            QuestionAnswer(row=dict(kept.get("row") or {}), choice=kept.get("choice"))
+            for kept in [*(record.get("answers") or []), record.get("staged_answer") or {}]
+        ]
+        interaction_id = str(record.get("interaction_id") or "")
+        if pending is not None and str(pending.get("interaction_id") or "") == interaction_id:
+            try:
+                await self._answer_pending_interaction(
+                    user, str(record["session_id"]), interaction_id,
+                    engine_answer(pending, answers),
+                )
+            except APIError as exc:
+                gone = exc.code in _ANSWER_GONE_CODES
+                if not gone and exc.code == "INVALID_REQUEST":
+                    # The Session itself says whether the question is still
+                    # waiting; a refusal for any other reason is a defect.
+                    current = (
+                        await self._session_detail_getter(user, str(record["session_id"]))
+                    ).get("pending_interaction")
+                    gone = (
+                        not isinstance(current, dict)
+                        or str(current.get("interaction_id") or "") != interaction_id
+                    )
+                if not gone:
+                    raise
+                if not redrive:
+                    await self._channel_repo.settle_channel_interaction(
+                        deployment_id=deployment_id, ref=ref, state=INTERACTION_CLOSED,
+                        participant=participant,
+                    )
+                    await self._notify(
+                        item, "This question is no longer open. Send a new message to continue.",
+                    )
+                    return True
+        await self._channel_repo.settle_channel_interaction(
+            deployment_id=deployment_id, ref=ref, state=INTERACTION_ANSWERED,
+            participant=participant,
+        )
+        if confirm and pending is not None:
+            await self._notify(item, answered_summary(pending, answers))
+        return True
+
+    async def _show_question(
+        self,
+        item: dict[str, Any],
+        record: dict[str, Any],
+        pending: dict[str, Any],
+        question_index: int,
+    ) -> None:
+        """Send the next question of a form and make its message a reply target."""
+        channel_name = str(record.get("channel_name") or "")
+        provider = get_channel(channel_name)
+        shown = channel_interaction(
+            pending, question_index=question_index, ref=str(record["ref"]),
+            actions=provider.supports_interaction_actions,
+        )
+        receipt = await provider.deliver_outbound(
+            reply_context=dict(record.get("reply_context") or {}),
+            text=shown.text,
+            binding=await self._delivery_binding(record),
+            **self._interaction_argument(provider, shown),
+        )
+        if isinstance(receipt, ChannelDeliveryReceipt) and receipt.message_ids:
+            await self._channel_repo.record_question_aliases(
+                deployment_id=str(record["deployment_id"]),
+                aliases=[str(alias) for alias in receipt.message_ids],
+                conversation_key=record.get("conversation_key"),
+                session_id=str(record["session_id"]),
+                interaction_ref=str(record["ref"]),
+                question_index=question_index,
+            )
+
+    async def _notify(self, item: dict[str, Any], text: str) -> None:
+        """Tell the participant why their answer was not used, or what was answered."""
+        payload = dict(item.get("payload") or {})
+        reply_context = payload.get("reply_context")
+        if not isinstance(reply_context, dict) or not reply_context:
+            logger.info(
+                "channel answer notice has no destination: item=%s notice=%s",
+                item.get("_id"), text,
+            )
+            return
+        await get_channel(str(item["channel_name"])).deliver_outbound(
+            reply_context=dict(reply_context),
+            text=text,
+            binding=await self._delivery_binding(item),
+        )
+
+    @staticmethod
+    def _interaction_argument(
+        provider: Any, shown: ChannelInteraction | None
+    ) -> dict[str, Any]:
+        """``interaction=`` only for a provider that declared it can take one."""
+        if shown is None or not provider.supports_interaction_actions:
+            return {}
+        return {"interaction": shown}
+
+    async def _supersede_parked_turn(
         self,
         *,
         user: UserContext,
         session_id: str,
+        interaction_id: str,
     ) -> None:
-        """Close an unanswered form interaction before the next message.
+        """Stop the turn parked on an interaction and wait until it has settled.
 
-        A channel participant cannot answer the browser form card. Their next
-        independent message supersedes it, but remains a new turn: it must
-        not be reinterpreted as the form answer. The platform interaction API
-        owns both endings — declined through a live engine, or abandoned once
-        that engine is gone — and this spine only sequences one of them before
-        dispatching the new command.
+        The platform interaction API owns both endings — stopped through a live
+        engine, or abandoned once that engine is gone — and this spine only
+        sequences one of them before dispatching the new command.
         """
-        session = await self._session_detail_getter(user, session_id)
-        pending = session.get("pending_interaction")
-        if not isinstance(pending, dict):
-            return
-        if str(pending.get("presentation") or "").strip() != PRESENTATION_FORM:
-            return
-        interaction_id = str(pending.get("interaction_id") or "").strip()
         if not interaction_id:
-            raise RuntimeError("pending form interaction has no interaction_id")
-
-        await self._supersede_pending_interaction(
-            user,
-            session_id,
-            interaction_id,
-        )
+            raise RuntimeError("pending interaction has no interaction_id")
+        await self._supersede_pending_interaction(user, session_id, interaction_id)
         deadline_polls = max(
             1, int(_SESSION_READY_TIMEOUT_SECONDS / _SESSION_READY_POLL_SECONDS)
         )
@@ -694,12 +1143,12 @@ class ChannelIngressService:
                 return
             if state in ("TERMINATED", "DELETED", "RECOVERY_REQUIRED"):
                 raise RuntimeError(
-                    f"session {session_id} became {state} while declining its "
-                    "superseded channel question"
+                    f"session {session_id} became {state} while stopping the turn "
+                    "its superseded channel question parked"
                 )
             await asyncio.sleep(_SESSION_READY_POLL_SECONDS)
         raise RuntimeError(
-            f"session {session_id} did not finish its superseded channel question "
+            f"session {session_id} did not settle its superseded channel question "
             f"in {_SESSION_READY_TIMEOUT_SECONDS}s"
         )
 
@@ -757,15 +1206,14 @@ class ChannelIngressService:
                 await agen.aclose()
         return ok
 
-    @staticmethod
     async def _start_channel_conversation(
-        agent_service: Any, user: UserContext, agent_id: str, execution_user_id: str,
+        self, target: ConversationTarget, user: UserContext, execution_user_id: str,
     ) -> dict[str, Any]:
-        if execution_user_id:
-            if execution_user_id != user.user_id:
-                raise RuntimeError("channel execution identity differs from its admitted account")
-            return await agent_service.start_integration_conversation(user, agent_id)
-        return await agent_service.start_conversation(user, agent_id, source_type="channel")
+        if execution_user_id and execution_user_id != user.user_id:
+            raise RuntimeError("channel execution identity differs from its admitted account")
+        return await self._targets.start_conversation(
+            target, user, source_type="channel", execution_account=bool(execution_user_id),
+        )
 
     async def _acquire_conversation_lock_blocking(
         self, deployment_id: str, conversation_key: str, owner: str, *,
@@ -793,9 +1241,8 @@ class ChannelIngressService:
         self,
         *,
         user: UserContext,
-        agent_service: Any,
+        target: ConversationTarget,
         deployment_id: str,
-        agent_id: str,
         conversation_key: str,
         execution_user_id: str = "",
     ) -> str:
@@ -821,14 +1268,14 @@ class ChannelIngressService:
             # Mapped session is gone: start a replacement and CAS-swap the
             # mapping; a racing replacement's winner is read back and used.
             started = await self._start_channel_conversation(
-                agent_service, user, agent_id, execution_user_id,
+                target, user, execution_user_id,
             )
             new_session_id = str(started.get("session_id") or "")
             swapped = await self._channel_repo.upsert_conversation(
                 deployment_id=deployment_id,
                 conversation_key=conversation_key,
                 session_id=new_session_id,
-                agent_id=agent_id,
+                **target.fields,
                 execution_user_id=execution_user_id,
                 replaces_session_id=mapped_session_id,
             )
@@ -848,14 +1295,14 @@ class ChannelIngressService:
             return new_session_id
 
         started = await self._start_channel_conversation(
-            agent_service, user, agent_id, execution_user_id,
+            target, user, execution_user_id,
         )
         new_session_id = str(started.get("session_id") or "")
         existing = await self._channel_repo.upsert_conversation(
             deployment_id=deployment_id,
             conversation_key=conversation_key,
             session_id=new_session_id,
-            agent_id=agent_id,
+            **target.fields,
             execution_user_id=execution_user_id,
         )
         winner = str((existing or {}).get("session_id") or new_session_id)
@@ -918,12 +1365,15 @@ class ChannelIngressService:
         generation: int,
         known_aliases: list[str],
         receipt: ChannelDeliveryReceipt | None,
+        interaction: ChannelInteraction | None = None,
     ) -> list[str]:
         """Merge + persist receipt aliases ahead of any completion write."""
         if receipt is None or not receipt.message_ids:
             return known_aliases
         merged = list(dict.fromkeys([*known_aliases, *[str(a) for a in receipt.message_ids]]))
-        if merged != known_aliases:
+        # A streamed reply's question arrives on an update of a message its
+        # earlier progress already recorded; it still needs its reply target.
+        if merged != known_aliases or interaction is not None:
             await self._channel_repo.record_delivery_aliases(
                 str(entry["_id"]),
                 owner=owner,
@@ -932,8 +1382,56 @@ class ChannelIngressService:
                 deployment_id=str(entry.get("deployment_id") or "") or None,
                 conversation_key=str(entry.get("conversation_key") or "") or None,
                 session_id=str(entry.get("session_id") or "") or None,
+                interaction_ref=(
+                    interaction_ref(
+                        str(entry.get("deployment_id") or ""),
+                        str(entry.get("session_id") or ""),
+                        interaction.interaction_id,
+                    )
+                    if interaction is not None
+                    else None
+                ),
             )
         return merged
+
+    async def _reply_with_question(
+        self, entry: dict[str, Any], response: Any, provider: Any,
+    ) -> tuple[str, ChannelInteraction | None]:
+        """The reply's text and, when its turn is waiting on a question, that question.
+
+        The question is shown only while the turn still waits on it: one
+        already answered in the console, or stopped by a newer message before
+        this delivery ran, would only invite an answer nobody can use.
+        """
+        view = response.interaction
+        if view is None:
+            return response.text, None
+        deployment_id = str(entry.get("deployment_id") or "")
+        session_id = str(entry.get("session_id") or "")
+        interaction_id = str(view.get("interaction_id") or "")
+        session = await self._sessions_repo.get_session(session_id)
+        detail = await self._session_detail_getter(
+            UserContext(user_id=str((session or {}).get("user_id") or "")), session_id,
+        )
+        pending = detail.get("pending_interaction")
+        if not isinstance(pending, dict) or str(pending.get("interaction_id") or "") != interaction_id:
+            return response.text, None
+        ref = interaction_ref(deployment_id, session_id, interaction_id)
+        await self._channel_repo.open_channel_interaction(
+            deployment_id=deployment_id,
+            ref=ref,
+            session_id=session_id,
+            interaction_id=interaction_id,
+            conversation_key=str(entry.get("conversation_key") or "") or None,
+            channel_name=str(entry.get("channel_name") or ""),
+            reply_context=dict(entry.get("reply_context") or {}),
+            view=view,
+        )
+        shown = channel_interaction(
+            view, question_index=0, ref=ref, actions=provider.supports_interaction_actions,
+        )
+        text = response.text.strip()
+        return (f"{text}\n\n{shown.text}" if text else shown.text), shown
 
     async def _deliver_simple(
         self, entry: dict[str, Any], *, owner: str, generation: int
@@ -947,7 +1445,9 @@ class ChannelIngressService:
         response = await self._read_outbox_response(entry)
         if not response.complete:
             raise RuntimeError("simple delivery requires a completed Session response")
-        text = response.text.strip()
+        provider = get_channel(channel_name)
+        text, shown = await self._reply_with_question(entry, response, provider)
+        text = text.strip()
         if not text:
             logger.warning(
                 "channel %s outbox %s: bound turn %s has no assistant text",
@@ -966,10 +1466,11 @@ class ChannelIngressService:
         attempts = len(_OUTBOX_RETRY_BACKOFF_SECONDS) + 1
         for attempt in range(1, attempts + 1):
             try:
-                receipt = await get_channel(channel_name).deliver_outbound(
+                receipt = await provider.deliver_outbound(
                     reply_context=dict(entry.get("reply_context") or {}),
                     text=text,
                     binding=await self._delivery_binding(entry),
+                    **self._interaction_argument(provider, shown),
                 )
                 known_aliases = await self._persist_receipt(
                     entry,
@@ -977,6 +1478,7 @@ class ChannelIngressService:
                     generation=generation,
                     known_aliases=known_aliases,
                     receipt=receipt if isinstance(receipt, ChannelDeliveryReceipt) else None,
+                    interaction=shown,
                 )
                 await self._channel_repo.mark_outbox_delivered(
                     outbox_id, owner=owner, generation=generation
@@ -1093,18 +1595,25 @@ class ChannelIngressService:
                         frame_seq=response.response_seq,
                     )
                 if response.complete and response.error is None:
-                    final_text = response.text
+                    provider = get_channel(channel_name)
+                    final_text, shown = await self._reply_with_question(
+                        entry, response, provider,
+                    )
                     seq += 1
                     receipt = await handle.emit(
                         ChannelEvent(
                             type=EVENT_SETTLED, seq=seq, text=final_text,
                             command_id=command_id, turn_id=turn_id,
                             response_id=str(entry["response_id"]),
+                            interaction=(
+                                shown if provider.supports_interaction_actions else None
+                            ),
                         )
                     )
                     known_aliases = await self._persist_receipt(
                         entry, owner=owner, generation=generation,
                         known_aliases=known_aliases, receipt=receipt,
+                        interaction=shown,
                     )
                     await self._channel_repo.mark_outbox_delivered(
                         outbox_id, owner=owner, generation=generation
@@ -1176,14 +1685,23 @@ class ChannelIngressService:
         if session is None:
             await self._channel_repo.remove_output_subscription(str(subscription["_id"]))
             return 0
+        if self._observe_session_output is not None:
+            # A destination follows the Session continuously, so it keeps the
+            # engine's reader attached: a scheduled run or a background
+            # completion is delivered without a new message or a viewer.
+            await self._observe_session_output(session_id)
         cursor = int(subscription["after_seq"])
         batch = await self._read_session_output(session_id, after_seq=cursor)
         count = 0
         for response in batch.responses:
             if not response.complete and not subscription["streaming"]:
                 continue
-            # Text-only destinations have nothing to send for a tool-only reply.
-            if response.complete and not response.text.strip() and not subscription["streaming"]:
+            # Text-only destinations have nothing to send for a tool-only reply,
+            # unless the reply stopped at a question.
+            if (
+                response.complete and not response.text.strip()
+                and response.interaction is None and not subscription["streaming"]
+            ):
                 continue
             await self._channel_repo.create_outbox_entry(
                 deployment_id=str(subscription["deployment_id"]),

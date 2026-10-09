@@ -67,6 +67,11 @@ RUN --mount=type=bind,from=hermes-source,source=/hermes-source.tar.gz,target=/tm
     hermes import --help; \
     "${HERMES_VENV}/bin/python" -c 'import tui_gateway.entry'
 
+# astrabox-hermes-config-merge installs plugin dependencies with Hermes' own
+# installer, and the profile setup writes the owner's configuration to its
+# managed scope; a Hermes that moved either fails here, not in a box.
+RUN "${HERMES_VENV}/bin/python" -c 'from hermes_cli.plugin_python_deps import install_for_plugin_dir; from hermes_cli.managed_scope import get_managed_dir'
+
 # Optionally pre-bake a memory-provider client (see HERMES_MEMORY_PROVIDER_PIP).
 # Empty → plugin-neutral image: Hermes runs with no external memory provider, and
 # providers in hermes lazy_deps install on demand at first use given sandbox egress.
@@ -118,7 +123,11 @@ RUN set -eux; \
 # outward itself, and the relay why a byte-for-byte TCP proxy is not enough.
 COPY --chmod=u=rwX,go=rX containers/sandbox-hermes/astrabox-hermes-serve /usr/local/bin/astrabox-hermes-serve
 COPY --chmod=u=rwX,go=rX containers/sandbox-hermes/astrabox-hermes-forward /usr/local/bin/astrabox-hermes-forward
-COPY --chmod=u=rwX,go=rX containers/sandbox-hermes/hermes_native_store.py containers/sandbox-hermes/hermes_state_transport.py containers/sandbox-hermes/hermes_state_bootstrap.py containers/sandbox-hermes/hermes_state_mirror.py containers/sandbox-hermes/hermes_host_relay.py /opt/astrabox/hermes/
+# Skills AstraBox ships with every Assistant. Hermes reads them through
+# `skills.external_dirs`, which the profile merge sets: listed and loadable like
+# its own, and read-only to Hermes' curator, which never rewrites external dirs.
+COPY --chmod=u=rwX,go=rX containers/sandbox-hermes/skills/ /opt/astrabox/hermes/skills/
+COPY --chmod=u=rwX,go=rX containers/sandbox-hermes/hermes_native_store.py containers/sandbox-hermes/hermes_profile_state.py containers/sandbox-hermes/hermes_state_transport.py containers/sandbox-hermes/hermes_state_bootstrap.py containers/sandbox-hermes/hermes_state_mirror.py containers/sandbox-hermes/hermes_host_relay.py /opt/astrabox/hermes/
 COPY --chmod=u=rwX,go=rX astrabox/core/service/orchestrator/runtime/astrabox-transcript-mirror /usr/local/bin/astrabox-transcript-mirror
 COPY --chmod=u=rwX,go=rX containers/sandbox-hermes/supervisord.hermes.conf /opt/gem/supervisord/supervisord.hermes.conf
 RUN set -eux; \
@@ -129,7 +138,7 @@ RUN set -eux; \
     bash -n /usr/local/bin/astrabox-hermes-forward; \
     "${HERMES_VENV}/bin/python" -c 'import ast, pathlib; [ast.parse(p.read_text()) for p in pathlib.Path("/opt/astrabox/hermes").glob("*.py")]'; \
     "${HERMES_VENV}/bin/python" -c 'import ast, pathlib; ast.parse(pathlib.Path("/usr/local/bin/astrabox-transcript-mirror").read_text())'; \
-    PYTHONPATH=/opt/astrabox/hermes "${HERMES_VENV}/bin/python" -c 'import hermes_native_store, hermes_state_transport, hermes_state_bootstrap, hermes_state_mirror, hermes_host_relay'; \
+    PYTHONPATH=/opt/astrabox/hermes "${HERMES_VENV}/bin/python" -c 'import hermes_native_store, hermes_profile_state, hermes_state_transport, hermes_state_bootstrap, hermes_state_mirror, hermes_host_relay'; \
     supervisord --version
 
 # Bootstrap only the base sandbox services; the backend above is supervised.
