@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from astrabox.core.service.orchestrator.runtime.storage import mergerfs
+from astrabox.providers.open_sandbox.workspace_route import mergerfs
 from astrabox.deploy import sandbox_server
 from astrabox.seams.storage import WorkspaceRef
 

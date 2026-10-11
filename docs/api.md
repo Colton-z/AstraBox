@@ -18,7 +18,11 @@ surface of the deployed release.</Note>
 | Self-hosted production | `https://astrabox.example.com/api/v1` |
 | Local development | `http://127.0.0.1:8088/api/v1` |
 
-Replace `astrabox.example.com` with the public origin of your deployment.
+Replace `astrabox.example.com` with the public origin of your deployment. A
+deployment published under a path puts that path before `/api/v1`, such as
+`https://example.com/astrabox/api/v1`, and serves `/docs` and `/openapi.json`
+below it as well; see
+[Publish AstraBox under a path](deploy.md#publish-under-a-path).
 
 ## Versioning
 

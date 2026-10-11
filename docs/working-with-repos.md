@@ -146,7 +146,7 @@ services:
 Every Agent author on the deployment may use a listed key, so list only keys
 whose repository access you would give each of them.
 
-Some sandbox backends allow HTTP/HTTPS egress but not SSH. For those backends, AstraBox translates an SSH clone to HTTPS and uses the deployment secret named by `ASTRABOX_GIT_HTTPS_TOKEN_SECRET_NAME`, only for the Git host in `ASTRABOX_GIT_HTTPS_TOKEN_HOST`; a repository on any other host is refused. The two settings are set together, and AstraBox refuses to start with them on a backend that clones over SSH, where no clone would use the token.
+Some sandbox backends allow HTTP/HTTPS egress but not SSH. For those backends, AstraBox translates an SSH clone to HTTPS and uses the deployment secret named by `ASTRABOX_GIT_HTTPS_TOKEN_SECRET_NAME`, only for the Git host in `ASTRABOX_GIT_HTTPS_TOKEN_HOST`; a repository on any other host is refused. The two settings are set together, and AstraBox refuses to start with them when every enabled sandbox backend clones over SSH, where no clone would use the token.
 
 ### Recommended permissions
 

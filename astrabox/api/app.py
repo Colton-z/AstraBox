@@ -24,6 +24,7 @@ from __future__ import annotations
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request, Response
 
@@ -77,6 +78,34 @@ _INVESTMENT_RESEARCH_SYSTEM_PROMPT = (
 )
 
 
+async def _warn_about_environments_on_disabled_backends() -> None:
+    """Name each enabled Environment whose sandbox backend this deployment does not enable.
+
+    Startup proceeds: an operator may stop running a backend while keeping the
+    records that name it. A Session that resolves such an Environment fails
+    with ``SANDBOX_BACKEND_DISABLED`` when it needs a sandbox; this names the
+    Environments before anyone meets that.
+    """
+    from astrabox.persistence.repository import EnvironmentRepository
+    from astrabox.seams.sandbox import enabled_sandbox_names
+
+    enabled = enabled_sandbox_names()
+    for environment in await EnvironmentRepository().list_all():
+        if environment.get("enabled") is False:
+            continue
+        backend = str(environment.get("sandbox_backend") or "").strip().lower()
+        if backend and backend not in enabled:
+            logger.warning(
+                "Environment %r selects sandbox backend %r, which this deployment "
+                "does not enable (enabled: %s); its Sessions fail with "
+                "SANDBOX_BACKEND_DISABLED until the backend is added to "
+                "ASTRABOX_SANDBOX_BACKENDS or the Environment selects another",
+                environment.get("name"),
+                backend,
+                enabled,
+            )
+
+
 async def _seed_default_agent_if_empty() -> None:
     """Seed the built-in ``claude-code`` environment + a usable default Agent when
     the ``agents`` store is empty.
@@ -96,7 +125,6 @@ async def _seed_default_agent_if_empty() -> None:
     """
     import uuid
 
-    from astrabox.common.utils.settings import load_astrabox_settings
     from astrabox.core.service.orchestrator.agent_schema import (
         default_prepared_capacity,
     )
@@ -164,7 +192,7 @@ async def _seed_default_agent_if_empty() -> None:
     deployment_model = _seed_default_model()
     # The seed writes the repository directly, so it applies the same
     # create-time default as AgentConfigService.create_agent_config.
-    seeded_capacity = default_prepared_capacity(load_astrabox_settings())
+    seeded_capacity = default_prepared_capacity(backend_name)
     investment_engine_options = {"sdk_options": {"strict_mcp_config": True}}
     from astrabox.core.service.orchestrator.engine.claude_code_options import (
         CLAUDE_ENGINE_OPTIONS_SCHEMA,
@@ -321,9 +349,11 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     3. ``load_entry_point_providers()`` — enumerate the ``astrabox.providers.*``
        entry-point groups so installed third-party provider distributions
        activate without any in-tree import naming them.
-    4. ``set_default_sandbox_backend(...)`` — publish the deployment-configured
-       default backend (settings) to the seam; the only place a default backend
-       name enters the dispatch path.
+    4. ``set_default_sandbox_backend(...)`` and ``set_enabled_sandbox_backends(...)``
+       — publish the deployment-configured default backend and enabled backend
+       set (settings) to the seam; the only place backend names enter the
+       dispatch path. The scheduler provider is selected and checked against
+       the repository backend in the same composition step.
     5. ``backend.create_all()`` — migration-free persistence schema bring-up for
        the active backend (``CREATE TABLE IF NOT EXISTS`` + WAL for SQLite; a no-op
        for Mongo). This is the canonical schema-bring-up seam.
@@ -336,13 +366,23 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
        database holds (creating it on a new database), which every sandbox
        create stamps and the ownerless reap matches, so a database that cannot
        answer fails startup instead of a first create.
+       ``warn_about_catalog_selections_without_a_catalog()`` then names each
+       record that still holds an extension-catalog selection while the
+       deployment runs no catalog.
+       ``_warn_about_environments_on_disabled_backends()`` then names each
+       enabled Environment that selects a sandbox backend outside the enabled
+       set.
+       ``configure_sandbox_quotas()`` then resolves and logs each enabled
+       backend's sandbox quota, refusing one on a backend that cannot list
+       its sandboxes, and ``reconcile_at_startup()`` folds each backend's
+       inventory into its quota ledger.
     7. ``_seed_default_agent_if_empty()`` — seed the built-in ``claude-code``
        environment + a default Agent so the first turn has something to run.
     8. ``_install_e2e_fault_hooks_if_armed()`` — E2E-only; a no-op unless
        ``ASTRABOX_E2E_FAULTS`` is set.
-    9. ``start_deployment_run_runtime()`` — launch the embedded durable
-       schedule/Run engine and reconcile configured scheduled Deployments
-       before any background repository readers can hold a PostgreSQL snapshot.
+    9. ``start_deployment_scheduler()`` — start the selected scheduler
+       provider and reconcile configured scheduled Deployments before any
+       background repository readers can hold a PostgreSQL snapshot.
     10. ``run_lifecycle_startup()`` — start the recovery control plane (reconcile
        worker, expiration watcher) so a restarted idle instance
        converges without traffic; logged-not-fatal on failure (the lazy
@@ -361,8 +401,15 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # --- Startup composition, persistence, and default resources --------------
     from astrabox.persistence.repository import backend as _dal_backend
     from astrabox.persistence.migrations import run_pending_migrations
-    from astrabox.seams.sandbox import sandbox_installation_id
+    from astrabox.seams.sandbox import enabled_sandbox_providers, sandbox_installation_id
+    from astrabox.core.service.orchestrator.runtime.sandbox_quota import (
+        configure_sandbox_quotas,
+        reconcile_at_startup,
+    )
     from astrabox.bootstrap import bootstrap
+    from astrabox.core.service.orchestrator.agent_extension_service import (
+        warn_about_catalog_selections_without_a_catalog,
+    )
     from astrabox.core.service.orchestrator.transcript_capability import (
         validate_signing_key_config,
     )
@@ -378,21 +425,25 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     await _dal_backend.create_all()
     await run_pending_migrations()
     await sandbox_installation_id()
+    await warn_about_catalog_selections_without_a_catalog()
+    await _warn_about_environments_on_disabled_backends()
+    await configure_sandbox_quotas(dict(enabled_sandbox_providers()))
+    await reconcile_at_startup(dict(enabled_sandbox_providers()))
     await _seed_default_agent_if_empty()
     _install_e2e_fault_hooks_if_armed()
 
-    # DBOS is an embedded execution engine, not a separate service. Launch it
-    # on this running loop before starting background repository readers. Its
-    # PostgreSQL bootstrap uses concurrent indexes, which must not be made to
-    # wait on a loop-owned reader whose transaction cannot close while this
-    # synchronous launch is running. Then reconcile Deployment config into its
-    # schedule projection before accepting traffic.
-    from astrabox.core.service.orchestrator.deployment_run_runtime import (
-        start_deployment_run_runtime,
-        stop_deployment_run_runtime,
+    # Start the selected scheduler provider on this running loop before any
+    # background repository reader: the built-in DBOS provider migrates its
+    # PostgreSQL schema with concurrent indexes, which must not wait on a
+    # loop-owned reader whose transaction cannot close during its synchronous
+    # launch. Then reconcile the stored schedules into the provider before
+    # accepting traffic.
+    from astrabox.core.service.orchestrator.deployment_scheduling import (
+        start_deployment_scheduler,
+        stop_deployment_scheduler,
     )
 
-    await start_deployment_run_runtime()
+    await start_deployment_scheduler()
 
     # Recovery control plane at boot, not on the first API request: a restarted
     # idle instance must converge stuck sessions / reap expired sandboxes
@@ -448,12 +499,12 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
                 pass
 
         try:
-            # Stop DBOS while Session services are still live. Its bounded
-            # workflow drain cannot call into an already-quiesced platform.
-            await stop_deployment_run_runtime()
+            # Stop the scheduler while Session services are still live. Its
+            # bounded drain cannot call into an already-quiesced platform.
+            await stop_deployment_scheduler()
         except Exception:  # noqa: BLE001 — shutdown must continue
             logger.warning(
-                "Deployment Run runtime shutdown failed (non-fatal)", exc_info=True
+                "Deployment scheduler shutdown failed (non-fatal)", exc_info=True
             )
 
         try:
@@ -572,6 +623,18 @@ def create_app() -> FastAPI:
 
     configured_management_links()
 
+    # Every browser-facing URL the server composes carries the public path
+    # prefix, so an invalid value stops the server here instead of producing
+    # addresses that lead nowhere.
+    from astrabox.core.service.connectors.contextforge import (
+        require_public_url_at_hub_path,
+    )
+    from astrabox.deploy.public_path import public_path_prefix
+
+    prefix = public_path_prefix()
+    require_public_url_at_hub_path()
+    console_dist = _resolve_frontend_dist()
+
     # Access-log hygiene: the sandbox transcript capability token rides in the
     # URL path, and uvicorn's access log would otherwise print it verbatim.
     # Idempotent, covers every launch path that builds the app via this factory.
@@ -587,7 +650,14 @@ def create_app() -> FastAPI:
             "sandboxes and streams responses over the AI SDK Data Stream Protocol (SSE)."
         ),
         lifespan=_lifespan,
+        # The reference pages are registered below the public path prefix by
+        # _register_api_docs, and the document names the prefix as its server
+        # so "Try it out" calls the API where clients reach it.
+        docs_url=None,
+        redoc_url=None,
+        servers=[{"url": prefix}] if prefix else None,
     )
+    _register_api_docs(app, prefix)
 
     # Extension middlewares are added first, which puts them innermost under
     # Starlette's LIFO add_middleware: every extension runs behind the
@@ -632,6 +702,15 @@ def create_app() -> FastAPI:
         # it. Scoped to the one path that consumes them.
         capability_bearer_paths={"/api/v1/mcp": (_MCP_CLIENT_KEY_PREFIX,)},
     )
+
+    # Requests must arrive with the public path prefix removed: by the reverse
+    # proxy, or by an ASGI host whose mount path equals the setting. Inside the
+    # Host gate, so an off-allowlist request learns nothing about the prefix,
+    # and outside identity, so a misrouted request is refused before any
+    # resolver work.
+    from astrabox.web.public_path_middleware import PublicPathMiddleware
+
+    app.add_middleware(PublicPathMiddleware, console_dist=console_dist)
 
     # DNS-rebinding guard for the browser-facing surface: reject any request whose
     # Host header is not on the allowlist (ASTRABOX_ALLOWED_HOSTS; default
@@ -762,13 +841,56 @@ def create_app() -> FastAPI:
     include_extension_routers(app)
 
     # ── Console SPA (served last so it only catches unmatched paths) ──────────
-    _mount_frontend(app)
+    if console_dist is not None:
+        _mount_frontend(app, console_dist)
 
     return app
 
 
-def _mount_frontend(app: FastAPI) -> None:
-    """Serve the built console SPA so ``:8000`` opens the UI, not raw JSON.
+def _register_api_docs(app: FastAPI, prefix: str) -> None:
+    """Serve the interactive API reference at ``/docs`` and ``/redoc``.
+
+    These are FastAPI's own pages, built by the same functions with the same
+    settings. FastAPI points them at ``root_path`` followed by
+    ``/openapi.json``, and ``root_path`` is empty behind a reverse proxy that
+    removed the public path prefix, so its pages would fetch the document from
+    the root of the host. These point at the prefixed document instead, which
+    is the same address under an ASGI mount, where the prefix is the root
+    path.
+    """
+    from fastapi.openapi.docs import (
+        get_redoc_html,
+        get_swagger_ui_html,
+        get_swagger_ui_oauth2_redirect_html,
+    )
+    from fastapi.responses import HTMLResponse
+
+    openapi_url = prefix + str(app.openapi_url)
+    oauth2_redirect_url = str(app.swagger_ui_oauth2_redirect_url)
+
+    async def swagger_ui_html(request: Request) -> HTMLResponse:
+        return get_swagger_ui_html(
+            openapi_url=openapi_url,
+            title=f"{app.title} - Swagger UI",
+            oauth2_redirect_url=prefix + oauth2_redirect_url,
+            init_oauth=app.swagger_ui_init_oauth,
+            swagger_ui_parameters=app.swagger_ui_parameters,
+        )
+
+    async def swagger_ui_redirect(request: Request) -> HTMLResponse:
+        return get_swagger_ui_oauth2_redirect_html()
+
+    async def redoc_html(request: Request) -> HTMLResponse:
+        return get_redoc_html(openapi_url=openapi_url, title=f"{app.title} - ReDoc")
+
+    # Plain Starlette routes, registered as FastAPI registers its own pages.
+    app.add_route("/docs", swagger_ui_html, include_in_schema=False)
+    app.add_route(oauth2_redirect_url, swagger_ui_redirect, include_in_schema=False)
+    app.add_route("/redoc", redoc_html, include_in_schema=False)
+
+
+def _resolve_frontend_dist() -> Path | None:
+    """Return the built console SPA directory, or ``None`` for an API-only server.
 
     Resolution order for the built SPA:
 
@@ -782,23 +904,7 @@ def _mount_frontend(app: FastAPI) -> None:
     a wheel install without the packaged SPA and a source checkout that has
     not built the console both land here, and a silent API-only boot reads as
     "the UI is broken" to a first-run user.
-
-    A single catch-all GET, registered after every API router, serves a real
-    file from the dist when one matches (hashed assets get an immutable cache
-    header) and otherwise falls back to ``index.html`` so the main SPA's
-    client-side routes (``/manage/*`` …) deep-link correctly. It never shadows
-    the ``/api`` / ``/healthz`` surfaces.
     """
-    import os
-    from pathlib import Path
-
-    from fastapi.responses import FileResponse, Response
-
-    from astrabox.api.frontend_cache import (
-        asset_cache_control_for_name,
-        frontend_html_response,
-    )
-
     packaged_dist = Path(__file__).resolve().parents[1] / "_frontend_dist"
     repo_dist = Path(__file__).resolve().parents[2] / "frontend" / "dist"
     env_dist = os.environ.get("ASTRABOX_FRONTEND_DIST")
@@ -818,7 +924,28 @@ def _mount_frontend(app: FastAPI) -> None:
             "`make dev` for the Vite console.",
             ", ".join(str(c) for c in candidates),
         )
-        return
+    return dist
+
+
+def _mount_frontend(app: FastAPI, dist: Path) -> None:
+    """Serve the built console SPA in *dist* so ``:8000`` opens the UI, not raw JSON.
+
+    A single catch-all GET, registered after every API router, serves a real
+    file from the dist when one matches (hashed assets get an immutable cache
+    header) and otherwise falls back to ``index.html`` so the main SPA's
+    client-side routes (``/manage/*`` …) deep-link correctly. ``index.html``
+    itself, at any route or by name, is rendered for the public path prefix
+    (:func:`~astrabox.api.frontend_cache.console_shell_response`). It never
+    shadows the ``/api`` / ``/healthz`` surfaces.
+    """
+    from fastapi.responses import FileResponse, Response
+
+    from astrabox.api.frontend_cache import (
+        asset_cache_control_for_name,
+        console_shell_response,
+    )
+    from astrabox.deploy.public_path import public_path_prefix
+
     index_html = dist / "index.html"
 
     @app.get("/{full_path:path}", include_in_schema=False)
@@ -829,13 +956,17 @@ def _mount_frontend(app: FastAPI) -> None:
             return Response(status_code=404)
         if full_path:
             candidate = (dist / full_path).resolve()
-            if candidate.is_file() and candidate.is_relative_to(dist):
+            if (
+                candidate != index_html
+                and candidate.is_file()
+                and candidate.is_relative_to(dist)
+            ):
                 response = FileResponse(candidate)
                 response.headers.setdefault(
                     "Cache-Control", asset_cache_control_for_name(candidate.name)
                 )
                 return response
         # SPA fallback: client-side routing resolves inside index.html.
-        return frontend_html_response(index_html)
+        return console_shell_response(index_html, public_path_prefix())
 
     logger.info("console SPA mounted from %s", dist)

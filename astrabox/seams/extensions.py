@@ -6,8 +6,21 @@ owns Agent authorization and persists only the provider-neutral selection
 returned by this contract; the credential reaches the wire through the
 sandbox's egress vault, so no selection ever carries a secret.
 
+A deployment selects the provider whose catalog the console offers with
+``ASTRABOX_EXTENSION_PROVIDER`` (:func:`selected_extension_provider`). The value
+:data:`EXTENSION_PROVIDER_NONE` runs no catalog at all: Agents and Assistants
+then use only the MCP servers, Skills and packages written on them, and a
+catalog selection stored earlier is refused when it is used rather than left
+out.
+
+Every provider declares :class:`ExtensionProviderFeatures`: the name the
+console gives its catalog, and whether it opens a management console of its own
+for an Agent (:meth:`ExtensionProvider.open_management_console`). The console
+renders both from the declaration, so no provider's name or console is assumed.
+
 This module is import-light so an external provider distribution can implement
-the contract without importing AstraBox's API or service layers.
+the contract without importing AstraBox's API or service layers;
+``UserContext`` is referenced only under ``TYPE_CHECKING``.
 """
 
 from __future__ import annotations
@@ -15,7 +28,10 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any, Literal
+
+if TYPE_CHECKING:  # pragma: no cover - typing-only import, no runtime dependency
+    from astrabox.common.utils.user_context import UserContext
 
 
 @dataclass(frozen=True)
@@ -88,6 +104,53 @@ class ExtensionRuntimeSelection:
     skill_descriptors: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class ExtensionProviderFeatures:
+    """What a provider tells the console about its catalog.
+
+    ``display_name`` names the catalog wherever the console shows its entries or
+    a way into it ("MCP servers from LiteLLM"); it is shown as written, in every
+    language. ``management_console`` says the provider opens a management
+    console of its own for one Agent through
+    :meth:`ExtensionProvider.open_management_console`; the console offers that
+    entry only when it is true.
+    """
+
+    display_name: str
+    management_console: bool = False
+
+
+@dataclass(frozen=True)
+class ManagementConsoleCookie:
+    """A cookie the browser carries into a provider's management console.
+
+    Set HttpOnly and SameSite=Lax, and Secure when the request came over HTTPS.
+    """
+
+    name: str
+    value: str = field(repr=False)
+    max_age: int
+    path: str = "/"
+
+
+@dataclass(frozen=True)
+class ManagementConsoleSession:
+    """Where a browser opens one Agent's management console, and for how long.
+
+    ``open_url`` is a same-origin path, opened in a tab of its own.
+    ``cookies`` are set on the response that hands ``open_url`` out; the body
+    carries no credential.
+    """
+
+    open_url: str
+    expires_in: int
+    cookies: tuple[ManagementConsoleCookie, ...] = ()
+
+
+#: The kind of entry a management console is opened for.
+ManagementConsoleSection = Literal["mcp", "skills"]
+
+
 class ExtensionProvider(ABC):
     """External catalog, runtime materialization, and gateway credential.
 
@@ -100,6 +163,9 @@ class ExtensionProvider(ABC):
     """
 
     name: str
+    #: What the console shows for this provider's catalog. Required:
+    #: :func:`register_extension_provider` refuses a provider without it.
+    features: ExtensionProviderFeatures
     is_default: bool = False
 
     @abstractmethod
@@ -159,18 +225,69 @@ class ExtensionProvider(ABC):
 
         return None
 
+    async def open_management_console(
+        self,
+        *,
+        user: UserContext,
+        agent_id: str,
+        section: ManagementConsoleSection,
+    ) -> ManagementConsoleSession:
+        """Open this provider's management console for one Agent.
+
+        Called only for the selected provider, only when its features declare
+        ``management_console``, and only after ``user`` has been authorized to
+        manage ``agent_id``. ``section`` is the kind of entry the person asked
+        to manage. The console the session opens must apply the same Agent
+        authorization to every request it serves; a hidden link is not a check.
+        """
+
+        _ = (user, agent_id, section)
+        raise NotImplementedError(
+            f"extension provider {self.name!r} has no management console"
+        )
+
+
+#: The ``ASTRABOX_EXTENSION_PROVIDER`` value that runs no extension catalog.
+EXTENSION_PROVIDER_NONE = "none"
 
 _PROVIDERS: dict[str, ExtensionProvider] = {}
 _DEFAULT_PROVIDER: str | None = None
 
 
 def register_extension_provider(provider: ExtensionProvider) -> None:
-    """Register one extension provider; one provider may declare the default."""
+    """Register one extension provider; one provider may declare the default.
+
+    Refuses a provider whose :class:`ExtensionProviderFeatures` are missing or
+    name no catalog, and one that declares a management console without
+    implementing :meth:`ExtensionProvider.open_management_console`, so the
+    console never offers what the provider cannot open.
+    """
 
     global _DEFAULT_PROVIDER
     name = str(getattr(provider, "name", "") or "").strip().lower()
     if not name:
         raise RuntimeError("extension provider must have a non-empty name")
+    if name == EXTENSION_PROVIDER_NONE:
+        raise RuntimeError(
+            f"extension provider name {EXTENSION_PROVIDER_NONE!r} is reserved: "
+            "ASTRABOX_EXTENSION_PROVIDER uses it to run no extension catalog"
+        )
+    features = getattr(provider, "features", None)
+    if not isinstance(features, ExtensionProviderFeatures):
+        raise RuntimeError(
+            f"extension provider {name!r} must declare features as "
+            "ExtensionProviderFeatures"
+        )
+    if not str(features.display_name or "").strip():
+        raise RuntimeError(f"extension provider {name!r} must declare a display_name")
+    opens = getattr(type(provider), "open_management_console", None)
+    if features.management_console and (
+        opens is None or opens is ExtensionProvider.open_management_console
+    ):
+        raise RuntimeError(
+            f"extension provider {name!r} declares a management console but does "
+            "not implement open_management_console"
+        )
     _PROVIDERS[name] = provider
     if bool(getattr(provider, "is_default", False)):
         if _DEFAULT_PROVIDER not in {None, name}:
@@ -213,15 +330,36 @@ def registered_extension_provider_names() -> list[str]:
     return sorted(_PROVIDERS)
 
 
+def selected_extension_provider(setting: str | None) -> ExtensionProvider | None:
+    """The provider an ``ASTRABOX_EXTENSION_PROVIDER`` value selects.
+
+    ``None`` for :data:`EXTENSION_PROVIDER_NONE`: the deployment runs no
+    extension catalog. An empty value selects the declared default, as
+    :func:`extension_provider_for_name` does. Raises ``RuntimeError`` for a
+    name no installed provider registers, which bootstrap reports at startup.
+    """
+
+    wanted = str(setting or "").strip().lower()
+    if wanted == EXTENSION_PROVIDER_NONE:
+        return None
+    return extension_provider_for_name(wanted)
+
+
 __all__ = [
+    "EXTENSION_PROVIDER_NONE",
     "ExtensionCatalog",
     "ExtensionCatalogItem",
     "ExtensionProvider",
+    "ExtensionProviderFeatures",
     "ExtensionRuntimeSelection",
     "MCPGatewayCredential",
+    "ManagementConsoleCookie",
+    "ManagementConsoleSection",
+    "ManagementConsoleSession",
     "RuntimeMCPServer",
     "default_extension_provider_name",
     "extension_provider_for_name",
     "register_extension_provider",
     "registered_extension_provider_names",
+    "selected_extension_provider",
 ]

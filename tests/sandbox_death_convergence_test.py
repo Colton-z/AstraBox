@@ -298,13 +298,13 @@ class _FakeRuntimeManager:
     async def reconcile_startup_allocations(self, **_kwargs: Any) -> dict[str, int]:
         return {}
 
-    async def retire_sandboxes_with_stale_network_wiring(self) -> dict[str, int]:
+    async def retire_sandboxes_with_stale_network_wiring(self, **_kwargs: Any) -> dict[str, int]:
         return {}
 
     async def reap_abandoned_agent_boxes(self) -> dict[str, int]:
         return {}
 
-    async def reap_ownerless_sandboxes(self) -> dict[str, int]:
+    async def reap_ownerless_sandboxes(self, **_kwargs: Any) -> dict[str, int]:
         return {}
 
     async def keep_prewarmed_agents_ready(self) -> dict[str, int]:
@@ -845,6 +845,10 @@ class ScanOnceTests(unittest.IsolatedAsyncioTestCase):
         watcher, _sessions_repo, runtime_manager = self._watcher([])
         with (
             patch(
+                "astrabox.core.service.orchestrator.runtime.sandbox_quota.reconcile_sandbox_quota",
+                new=AsyncMock(return_value={}),
+            ),
+            patch(
                 "astrabox.core.service.orchestrator.runtime.storage.mounts.reconcile_workspace_mounts",
                 new=AsyncMock(return_value={}),
             ),
@@ -892,6 +896,10 @@ class WatcherShutdownTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(watcher, "_sweep_dead_bindings", new=_dead_sweep),
             patch.object(watcher, "_sweep_idle_bindings", new=idle_sweep),
+            patch(
+                "astrabox.core.service.orchestrator.runtime.sandbox_quota.reconcile_sandbox_quota",
+                new=AsyncMock(return_value={}),
+            ),
             patch(
                 "astrabox.core.service.orchestrator.runtime.storage.mounts.reconcile_workspace_mounts",
                 new=AsyncMock(return_value={}),

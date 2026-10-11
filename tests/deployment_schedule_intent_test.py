@@ -1,4 +1,6 @@
-"""Scheduled Deployments delegate durability while Session remains authority."""
+"""Scheduled Deployments delegate durability to the scheduler provider while
+the repository stays the desired state and the Session stays the authority on
+whether a Run's turn is running."""
 
 from __future__ import annotations
 
@@ -9,13 +11,38 @@ from unittest.mock import ANY, AsyncMock
 import pytest
 
 from astrabox.common.utils.errors import APIError
+from astrabox.core.service.orchestrator.deployment_scheduling import schedule_definition
 from astrabox.core.service.orchestrator.deployment_service import DeploymentService
+from astrabox.seams.scheduler import InvalidSchedule, RunInvocation, RunRecord
+
+
+def _record(
+    run_id: str,
+    state: str,
+    *,
+    trigger: str = "schedule",
+    session_id: str | None = None,
+    turn_id: str | None = None,
+) -> RunRecord:
+    return RunRecord(
+        invocation=RunInvocation(
+            run_id=run_id,
+            deployment_id="deployment-1",
+            trigger=trigger,  # type: ignore[arg-type]
+            payload={"agent_id": "agent-1", "input_text": "Prepare the report"},
+        ),
+        state=state,  # type: ignore[arg-type]
+        created_at=datetime(2026, 8, 13, tzinfo=timezone.utc),
+        session_id=session_id,
+        turn_id=turn_id,
+        failed=state == "FAILED",
+    )
 
 
 def _service(
     *,
     deployment_repo: AsyncMock | None = None,
-    run_runtime: AsyncMock | None = None,
+    scheduler: AsyncMock | None = None,
     agent_repo: AsyncMock | None = None,
     sessions_repo: AsyncMock | None = None,
     snapshots_repo: AsyncMock | None = None,
@@ -27,7 +54,7 @@ def _service(
     selected_agent_service = agent_service or AsyncMock()
     return DeploymentService(
         deployment_repo=deployment_repo or AsyncMock(),
-        run_runtime=run_runtime or AsyncMock(),
+        scheduler=scheduler or AsyncMock(),
         agent_repo=agent_repo or AsyncMock(),
         agent_service_getter=lambda: selected_agent_service,
         stream_message_events_ds=stream or AsyncMock(),
@@ -45,7 +72,7 @@ async def test_schedule_creation_persists_desired_state_then_projects_it() -> No
     repository = AsyncMock()
     repository.upsert.side_effect = lambda _deployment_id, doc: dict(doc)
     runtime = AsyncMock()
-    service = _service(deployment_repo=repository, run_runtime=runtime)
+    service = _service(deployment_repo=repository, scheduler=runtime)
 
     created = await service.create(
         agent_id="agent-1",
@@ -68,17 +95,22 @@ async def test_schedule_creation_persists_desired_state_then_projects_it() -> No
     assert "secret" not in created
     stored = repository.upsert.await_args.args[1]
     projected = runtime.apply.await_args.args[0]
-    assert stored == projected
+    assert projected == schedule_definition(stored)
+    assert projected.cron == "0 9 * * *"
+    assert projected.timezone == "America/Los_Angeles"
+    assert projected.enabled is True
+    assert projected.payload == {
+        "agent_id": "agent-1",
+        "input_text": "Prepare the daily report",
+    }
 
 
 async def test_schedule_creation_removes_desired_state_when_projection_rejects() -> None:
     repository = AsyncMock()
     repository.upsert.side_effect = lambda _deployment_id, doc: dict(doc)
     runtime = AsyncMock()
-    runtime.apply.side_effect = APIError(
-        code="INVALID_SCHEDULE", message="invalid schedule", status_code=400
-    )
-    service = _service(deployment_repo=repository, run_runtime=runtime)
+    runtime.apply.side_effect = InvalidSchedule("the engine rejected the expression")
+    service = _service(deployment_repo=repository, scheduler=runtime)
 
     with pytest.raises(APIError) as raised:
         await service.create(
@@ -105,6 +137,7 @@ async def test_schedule_creation_removes_desired_state_when_projection_rejects()
         ("prompt_prefix", "  ", "prompt_prefix is required"),
         ("schedule", {"cron": "* * * *", "timezone": "UTC"}, "five fields"),
         ("schedule", {"cron": "* * * * *", "timezone": ""}, "timezone"),
+        ("schedule", {"cron": "* * * * *", "timezone": "Mars/Olympus"}, "IANA"),
     ],
 )
 async def test_schedule_structure_fails_before_any_write(
@@ -112,7 +145,7 @@ async def test_schedule_structure_fails_before_any_write(
 ) -> None:
     repository = AsyncMock()
     runtime = AsyncMock()
-    service = _service(deployment_repo=repository, run_runtime=runtime)
+    service = _service(deployment_repo=repository, scheduler=runtime)
     kwargs: dict[str, Any] = {
         "agent_id": "agent-1",
         "creator_user_id": "owner-1",
@@ -146,7 +179,7 @@ async def test_schedule_update_is_validated_by_runtime_before_product_write() ->
         lambda _deployment_id, _agent_id, updates, *, assistant_id="": {**existing, **updates}
     )
     runtime = AsyncMock()
-    service = _service(deployment_repo=repository, run_runtime=runtime)
+    service = _service(deployment_repo=repository, scheduler=runtime)
 
     updated = await service.update(
         "deployment-1",
@@ -159,10 +192,8 @@ async def test_schedule_update_is_validated_by_runtime_before_product_write() ->
     )
 
     candidate = runtime.apply.await_args.args[0]
-    assert candidate["schedule"] == {
-        "cron": "30 8 * * 1-5",
-        "timezone": "UTC",
-    }
+    assert (candidate.cron, candidate.timezone) == ("30 8 * * 1-5", "UTC")
+    assert candidate.payload["input_text"] == "New prompt"
     assert updated["name"] == "Weekday report"
     repository.update_for_deployment.assert_awaited_once()
 
@@ -181,7 +212,7 @@ async def test_schedule_update_restores_projection_when_product_write_fails() ->
     repository.get_for_deployment.return_value = existing
     repository.update_for_deployment.side_effect = RuntimeError("write failed")
     runtime = AsyncMock()
-    service = _service(deployment_repo=repository, run_runtime=runtime)
+    service = _service(deployment_repo=repository, scheduler=runtime)
 
     with pytest.raises(RuntimeError, match="write failed"):
         await service.update(
@@ -192,8 +223,8 @@ async def test_schedule_update_restores_projection_when_product_write_fails() ->
 
     assert runtime.apply.await_count == 2
     candidate, restored = [call.args[0] for call in runtime.apply.await_args_list]
-    assert candidate["prompt_prefix"] == "New prompt"
-    assert restored == existing
+    assert candidate.payload["input_text"] == "New prompt"
+    assert restored == schedule_definition(existing)
 
 
 async def test_schedule_update_removes_projection_after_delete_race() -> None:
@@ -210,7 +241,7 @@ async def test_schedule_update_removes_projection_after_delete_race() -> None:
     repository.get_for_deployment.return_value = existing
     repository.update_for_deployment.return_value = None
     runtime = AsyncMock()
-    service = _service(deployment_repo=repository, run_runtime=runtime)
+    service = _service(deployment_repo=repository, scheduler=runtime)
 
     with pytest.raises(APIError) as raised:
         await service.update(
@@ -224,7 +255,7 @@ async def test_schedule_update_removes_projection_after_delete_race() -> None:
     runtime.delete.assert_awaited_once_with("deployment-1")
 
 
-async def test_run_state_is_projected_from_dbos_and_the_bound_session_turn() -> None:
+async def test_run_state_is_projected_from_dispatch_state_and_the_bound_session_turn() -> None:
     deployment = {
         "deployment_id": "deployment-1",
         "agent_id": "agent-1",
@@ -234,40 +265,11 @@ async def test_run_state_is_projected_from_dbos_and_the_bound_session_turn() -> 
     repository.get_for_deployment.return_value = deployment
     runtime = AsyncMock()
     runtime.list_runs.return_value = [
-        {
-            "workflow_id": "run-complete",
-            "status": "SUCCESS",
-            "attributes": {
-                "deployment_id": "deployment-1",
-                "agent_id": "agent-1",
-                "session_id": "session-1",
-                "turn_id": "turn-1",
-                "trigger": "schedule",
-            },
-        },
-        {
-            "workflow_id": "run-waiting",
-            # The orchestration workflow settles after Session admission; the
-            # bound Session remains authoritative while its turn is active.
-            "status": "SUCCESS",
-            "completed_at": 1_786_596_000_000,
-            "attributes": {
-                "deployment_id": "deployment-1",
-                "agent_id": "agent-1",
-                "session_id": "session-2",
-                "trigger": "manual",
-            },
-        },
-        {
-            "workflow_id": "run-error",
-            "status": "ERROR",
-            "error": "execution failed",
-            "attributes": {
-                "deployment_id": "deployment-1",
-                "agent_id": "agent-1",
-                "trigger": "replay",
-            },
-        },
+        _record("run-complete", "DISPATCHED", session_id="session-1", turn_id="turn-1"),
+        # The provider settles its dispatch once the Session admits the turn;
+        # the bound Session stays authoritative while that turn is active.
+        _record("run-waiting", "DISPATCHED", trigger="manual", session_id="session-2"),
+        _record("run-error", "FAILED", trigger="replay"),
     ]
     snapshots = AsyncMock()
     snapshots.get_snapshots_batch.return_value = {
@@ -279,7 +281,7 @@ async def test_run_state_is_projected_from_dbos_and_the_bound_session_turn() -> 
     }
     service = _service(
         deployment_repo=repository,
-        run_runtime=runtime,
+        scheduler=runtime,
         snapshots_repo=snapshots,
     )
 
@@ -295,10 +297,11 @@ async def test_run_state_is_projected_from_dbos_and_the_bound_session_turn() -> 
     assert runs[2]["error"] == "Deployment Run execution failed"
     assert runs[1]["turn_id"] == "turn-2"
     assert "settled_at" not in runs[1]
-    assert all("workflow_id" not in run for run in runs)
+    assert [run["run_id"] for run in runs] == ["run-complete", "run-waiting", "run-error"]
+    assert runs[0]["agent_id"] == "agent-1"
 
 
-async def test_run_now_response_uses_session_state_after_workflow_admission() -> None:
+async def test_run_now_response_uses_session_state_after_admission() -> None:
     deployment = {
         "deployment_id": "deployment-1",
         "agent_id": "agent-1",
@@ -307,17 +310,9 @@ async def test_run_now_response_uses_session_state_after_workflow_admission() ->
     repository = AsyncMock()
     repository.get_for_deployment.return_value = deployment
     runtime = AsyncMock()
-    runtime.run_now.return_value = {
-        "workflow_id": "run-1",
-        "status": "SUCCESS",
-        "attributes": {
-            "deployment_id": "deployment-1",
-            "agent_id": "agent-1",
-            "session_id": "session-1",
-            "turn_id": "turn-1",
-            "trigger": "manual",
-        },
-    }
+    runtime.enqueue.return_value = _record(
+        "run-1", "DISPATCHED", trigger="manual", session_id="session-1", turn_id="turn-1"
+    )
     snapshots = AsyncMock()
     snapshots.get_snapshot.return_value = {
         "current_turn_id": "turn-1",
@@ -325,7 +320,7 @@ async def test_run_now_response_uses_session_state_after_workflow_admission() ->
     }
     service = _service(
         deployment_repo=repository,
-        run_runtime=runtime,
+        scheduler=runtime,
         snapshots_repo=snapshots,
     )
 
@@ -333,6 +328,8 @@ async def test_run_now_response_uses_session_state_after_workflow_admission() ->
 
     assert run["status"] == "RUNNING"
     snapshots.get_snapshot.assert_awaited_once_with("session-1")
+    enqueued = runtime.enqueue.await_args.kwargs
+    assert (enqueued["deployment_id"], enqueued["trigger"]) == ("deployment-1", "manual")
 
 
 async def test_run_uses_one_identity_for_session_and_turn_idempotency() -> None:

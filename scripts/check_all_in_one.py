@@ -61,11 +61,30 @@ PASS_THROUGH = frozenset(
         "LANGFUSE_SECRET_KEY",
         "LANGFUSE_HOST",
         "LITELLM_MASTER_KEY",
+        # The embedded gateway serves the litellm catalog; none and an
+        # installed provider's name take effect as in Compose.
+        "ASTRABOX_EXTENSION_PROVIDER",
         "ASTRABOX_TITLE_MODEL_ENABLED",
         "ASTRABOX_SPEECH_INPUT_MODELS",
         "ASTRABOX_TITLE_MODEL_NAME",
         "ASTRABOX_TITLE_MODEL_REQUEST_TIMEOUT_SECONDS",
         "ASTRABOX_ALLOWED_HOSTS",
+        # A server setting: the all-in-one serves its console and API the same
+        # way, so a reverse proxy can publish it below a path.
+        "ASTRABOX_PUBLIC_PATH_PREFIX",
+        # The all-in-one creates its boxes with the same envelopes.
+        "ASTRABOX_SANDBOX_CPU_LIMIT",
+        "ASTRABOX_SANDBOX_MEMORY_LIMIT",
+        "ASTRABOX_SANDBOX_CPU_REQUEST",
+        "ASTRABOX_SANDBOX_MEMORY_REQUEST",
+        "ASTRABOX_SHARED_SANDBOX_CPU_LIMIT",
+        "ASTRABOX_SHARED_SANDBOX_MEMORY_LIMIT",
+        "ASTRABOX_SHARED_SANDBOX_CPU_REQUEST",
+        "ASTRABOX_SHARED_SANDBOX_MEMORY_REQUEST",
+        "ASTRABOX_SANDBOX_QUOTA_BOXES",
+        "ASTRABOX_SANDBOX_QUOTA_MEMORY",
+        "ASTRABOX_SANDBOX_QUOTA_CPU",
+        "ASTRABOX_SANDBOX_QUOTA_CONCURRENT_CREATES",
         "ASTRABOX_SANDBOX_EGRESS_IMAGE",
         # The lifecycle server refuses every mode but dns+nft (sandbox_server.egress).
         "ASTRABOX_SANDBOX_EGRESS_MODE",
@@ -80,6 +99,9 @@ PASS_THROUGH = frozenset(
         "ASTRABOX_IMAGE_PREFIX",
         "ASTRABOX_IMAGE_TAG",
         "ASTRABOX_AGENT_IMAGE",
+        # The embedded PostgreSQL runs the built-in dbos scheduler; none turns
+        # scheduled Deployments off, as in Compose.
+        "ASTRABOX_SCHEDULER_PROVIDER",
         # Workspace storage settings. The volume itself is refused, and with no
         # volume these behave exactly as in a Compose stack that sets none.
         "ASTRABOX_STORAGE_PROVIDER",

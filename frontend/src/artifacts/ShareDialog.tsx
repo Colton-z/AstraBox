@@ -10,6 +10,7 @@ import {
   DialogFooter,
 } from '@/components/ui/dialog';
 import { ErrorNote } from '@/components/shell/ErrorNote';
+import { MODULE_BASE } from '@/api';
 import { artifactsApi } from './api';
 import type { ArtifactRuntimeRecord, Manifest } from './types';
 export function ShareDialog({
@@ -65,7 +66,7 @@ export function ShareDialog({
   };
   const link =
     share?.enabled && share.token
-      ? `${window.location.origin}/share/artifacts/${share.token}`
+      ? `${window.location.origin}${MODULE_BASE}/share/artifacts/${share.token}`
       : '';
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>

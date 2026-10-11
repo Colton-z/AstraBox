@@ -71,7 +71,8 @@ and its `/extensions`):
 - **organization instructions**, given to every Assistant before its owner's
   own [system prompt](#system-prompt);
 - **Skills, MCP servers, packages, and Agent-program configuration** every
-  Assistant gets, written directly or selected from the extension catalog;
+  Assistant gets, written directly or, when the deployment runs one, selected
+  from the [extension catalog](adding-tools.md#extension-catalog);
 - **Credential Vaults** bound to every Assistant. A Vault the defaults bind
   is listed on its Credentials page and cannot be archived or deleted until
   the defaults release it.
@@ -127,11 +128,13 @@ An Assistant can add to its Agent program what that program accepts. The
 Assistant's record page shows a **Skills, plugins and configuration** card with
 the fields the Environment's program declares; the API takes the same fields as
 an [Agent](authoring-agents.md): `skills`, `mcp_servers`, `packages` and
-`engine_options`. The same card also picks MCP servers and Skills from the
-deployment's administrator-managed catalog, as an Agent's page does
+`engine_options`. When the deployment runs an
+[extension catalog](adding-tools.md#extension-catalog), the same card also
+picks MCP servers and Skills from it, as an Agent's page does
 (`GET`/`PUT /api/v1/assistants/{assistant_id}/extensions`); a catalog MCP
 server whose upstream needs a credential reaches it through the Credential
-Vault assigned to the Assistant. For Hermes:
+Vault assigned to the Assistant. Without a catalog the card holds only the
+Assistant's own fields. For Hermes:
 
 - **Skills.** Git sources of `SKILL.md` Skills, written as
   `repository@ref#path`. AstraBox places them in the profile's

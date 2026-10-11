@@ -55,7 +55,9 @@ ENV_GROUPS: list[dict[str, str]] = [
 # Engine / backend / permission enums are derived from the live registries at read/validate
 # time, never hardcoded: the form offers exactly what this deployment can
 # actually run (built-ins + any plugin-registered adapters/providers), and a
-# plugin registering more extends the enum with no edit here.
+# plugin registering more extends the enum with no edit here. Sandbox backends
+# and permission levels come from the backends this deployment enables, not
+# from every installed provider.
 def _engine_kinds() -> list[str]:
     from astrabox.core.service.orchestrator.engine.registry import known_engine_kinds
 
@@ -63,15 +65,15 @@ def _engine_kinds() -> list[str]:
 
 
 def _sandbox_backends() -> list[str]:
-    from astrabox.seams.sandbox import registered_sandbox_names
+    from astrabox.seams.sandbox import enabled_sandbox_names
 
-    return registered_sandbox_names()
+    return enabled_sandbox_names()
 
 
 def _sandbox_permission_levels() -> list[str]:
-    from astrabox.seams.sandbox import registered_sandbox_permission_levels
+    from astrabox.seams.sandbox import enabled_sandbox_permission_levels
 
-    return registered_sandbox_permission_levels()
+    return enabled_sandbox_permission_levels()
 
 
 def _endpoint_providers() -> list[str]:
@@ -321,6 +323,7 @@ def validate_environment_payload(payload: dict[str, Any]) -> None:
     _assert_idle_action_is_reachable(payload)
     _assert_permission_level_is_reachable(payload)
     _assert_tenancy_has_permission_level(payload)
+    _assert_backend_capabilities(payload)
     _assert_provider_configuration_is_reachable(payload)
 
 
@@ -378,16 +381,19 @@ def _assert_idle_action_is_reachable(payload: dict[str, Any]) -> None:
     action = str(payload.get("idle_action") or "").strip().lower()
     if action != "pause":
         return
-    from astrabox.seams.sandbox import sandbox_for_name
+    from astrabox.seams.sandbox import sandbox_for_name, unsupported_sandbox_feature
 
-    provider = sandbox_for_name(payload.get("sandbox_backend"))
-    if provider.supports_pause:
+    refusal = unsupported_sandbox_feature(
+        sandbox_for_name(payload.get("sandbox_backend")),
+        feature="idle_action 'pause'",
+        flags=("supports_pause",),
+    )
+    if refusal is None:
         return
     raise invalid_request(
-        f"environment payload: idle_action 'pause' needs a sandbox backend that "
-        f"can snapshot, and {provider.name!r} cannot — an idle box would go on "
-        f"being destroyed with its workspace. Use 'terminate', or select a "
-        f"backend that supports pausing."
+        f"environment payload: {refusal}. An idle box would go on being "
+        f"destroyed with its workspace; use 'terminate', or select a backend "
+        f"that supports pausing."
     )
 
 
@@ -407,6 +413,41 @@ def _assert_tenancy_has_permission_level(payload: dict[str, Any]) -> None:
         "inside one box and therefore requires sandbox_permission_level "
         "'advanced' or 'privileged'"
     )
+
+
+def _assert_backend_capabilities(payload: dict[str, Any]) -> None:
+    """Refuse what the selected backend has not declared it can run.
+
+    Every Environment's boxes are created under its networking policy, and the
+    platform refuses a create on a backend that cannot enforce one; shared
+    tenancy runs every conversation in an isolated session inside one box.
+    Either would otherwise be refused at the first conversation, long after
+    the Environment was saved.
+    """
+    from astrabox.seams.sandbox import sandbox_for_name, unsupported_sandbox_feature
+
+    provider = sandbox_for_name(payload.get("sandbox_backend"))
+    tenancy = str(
+        payload.get("sandbox_tenancy") or SANDBOX_TENANCY_CONVERSATION
+    ).strip().lower()
+    required = [
+        (
+            "an Environment's networking, which each box is created under",
+            ("supports_create_network_policy",),
+        )
+    ]
+    if tenancy == SANDBOX_TENANCY_AGENT:
+        required.append(
+            (
+                "sandbox_tenancy 'agent', which runs each conversation in an "
+                "isolated session inside the Agent's box",
+                ("supports_isolated_sessions",),
+            )
+        )
+    for feature, flags in required:
+        refusal = unsupported_sandbox_feature(provider, feature=feature, flags=flags)
+        if refusal is not None:
+            raise invalid_request(f"environment payload: {refusal}")
 
 
 def _assert_permission_level_is_reachable(payload: dict[str, Any]) -> None:

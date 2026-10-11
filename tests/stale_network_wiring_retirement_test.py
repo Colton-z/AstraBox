@@ -79,7 +79,7 @@ async def test_stale_managed_boxes_are_destroyed_on_every_page(
     monkeypatch.setattr(runtime_manager_module, "sandbox_for_name", lambda _name: provider)
 
     summary = await RemoteAgentRuntimeManager.retire_sandboxes_with_stale_network_wiring(
-        SimpleNamespace(), page_size=3  # type: ignore[arg-type]
+        SimpleNamespace(), backend="fake", page_size=3  # type: ignore[arg-type]
     )
 
     assert provider.destroyed == ["sb-stale-1", "sb-stale-2"]
@@ -109,7 +109,7 @@ async def test_another_installations_boxes_are_never_retired(
     monkeypatch.setattr(runtime_manager_module, "sandbox_for_name", lambda _name: provider)
 
     await RemoteAgentRuntimeManager.retire_sandboxes_with_stale_network_wiring(
-        SimpleNamespace(), page_size=3  # type: ignore[arg-type]
+        SimpleNamespace(), backend="fake", page_size=3  # type: ignore[arg-type]
     )
 
     assert provider.destroyed == ["sb-ours-stale"]

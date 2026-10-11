@@ -18,11 +18,20 @@ Run it explicitly (deselected in the default unit run):
 from __future__ import annotations
 
 import json
+import shlex
+import threading
+import time
+import uuid
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 import pytest
 
 from tests.e2e._sandbox_helpers import (
+    create_agent_variant_session,
+    data,
+    environment_with_tenancy,
     release_session,
     create_session,
     poll_until_agent_ready,
@@ -31,8 +40,17 @@ from tests.e2e._sandbox_helpers import (
 pytestmark = pytest.mark.e2e
 
 
-def _run_terminal(client: httpx.Client, sid: str, command: str) -> tuple[str, str, int | None, list[dict]]:
-    """Run one command via ``terminal/stream`` SSE; return (stdout, stderr, exit_code, events)."""
+def _run_terminal(
+    client: httpx.Client,
+    sid: str,
+    command: str,
+    on_event: Callable[[dict], None] | None = None,
+) -> tuple[str, str, int | None, list[dict]]:
+    """Run one command via ``terminal/stream`` SSE; return (stdout, stderr, exit_code, events).
+
+    ``on_event`` sees each event as it arrives, for a caller that acts while the
+    command is still running.
+    """
     stdout: list[str] = []
     stderr: list[str] = []
     exit_code: int | None = None
@@ -62,6 +80,8 @@ def _run_terminal(client: httpx.Client, sid: str, command: str) -> tuple[str, st
             if not isinstance(ev, dict):
                 continue
             events.append(ev)
+            if on_event is not None:
+                on_event(ev)
             etype = ev.get("type")
             if etype == "stdout":
                 stdout.append(str(ev.get("text") or ""))
@@ -147,3 +167,66 @@ def test_terminal_nonzero_exit_propagates(e2e_client: httpx.Client) -> None:
         )
     finally:
         release_session(sid)
+
+
+def test_an_interrupt_stops_the_command_in_a_conversation_box_terminal(
+    e2e_client: httpx.Client,
+) -> None:
+    """An interrupt ends the running command, and the terminal takes the next one.
+
+    A conversation with its own box runs its terminal as one persistent execd
+    shell, addressed by its PTY session id. The interrupt has to reach that
+    session: execd's command interrupt knows only the commands execd started
+    itself, so a PTY session id sent there is refused and the command goes on.
+
+    The command announces itself before it sleeps, so the interrupt is sent to
+    a command known to be running. That it stopped is checked three ways: the
+    stream ends with the interrupt's status, the next command runs at once
+    rather than after the sleep, and the file the command would have written
+    once the sleep ended never appears.
+    """
+    created = create_agent_variant_session(
+        e2e_client,
+        name_suffix="terminal-interrupt",
+        engine_options={},
+        environment_name=environment_with_tenancy(e2e_client, "conversation"),
+    )
+    sid = str(created.get("session_id") or "")
+    assert sid, f"no session_id in create response: {created}"
+    poll_until_agent_ready(e2e_client, sid)
+
+    marker = f"/tmp/astrabox-terminal-interrupt-{uuid.uuid4().hex}"
+    sleep_seconds = 30
+    command = f"echo INTERRUPT_ME_STARTED; sleep {sleep_seconds} && touch {shlex.quote(marker)}"
+    announced = threading.Event()
+
+    def _watch(event: dict) -> None:
+        if event.get("type") == "stdout" and "INTERRUPT_ME_STARTED" in str(event.get("text") or ""):
+            announced.set()
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        started = time.monotonic()
+        running = pool.submit(_run_terminal, e2e_client, sid, command, _watch)
+        assert announced.wait(timeout=60), "the command never announced itself"
+        result = data(e2e_client.post(f"/api/v1/sessions/{sid}/interrupt", timeout=60.0))
+        assert result.get("status") == "completed", result
+        _out, _err, code, events = running.result(timeout=60)
+    assert code == 130, f"the interrupted command did not end with the interrupt's status: {events}"
+
+    probe = f"test -e {shlex.quote(marker)} && echo SURVIVED || echo STOPPED"
+    asked = time.monotonic()
+    out, _err, code, events = _run_terminal(e2e_client, sid, probe)
+    # Well under the 10 s a connection to execd costs when its close waits
+    # for a TCP close execd never sends, as well as under the sleep.
+    assert time.monotonic() - asked < 8, (
+        f"the next command waited behind the interrupted one: events={events}"
+    )
+    assert (code, "STOPPED" in out) == (0, True), f"out={out!r} events={events}"
+
+    # Past the end of the sleep, a command that was only detached from would
+    # have written its file.
+    time.sleep(max(0.0, started + sleep_seconds + 5 - time.monotonic()))
+    out, _err, code, events = _run_terminal(e2e_client, sid, probe)
+    assert (code, "STOPPED" in out) == (0, True), (
+        f"the interrupted command kept running in the box: out={out!r} events={events}"
+    )

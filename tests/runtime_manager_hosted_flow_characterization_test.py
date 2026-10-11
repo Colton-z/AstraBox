@@ -240,6 +240,9 @@ class _FakeBackendProvider:
     async def find_sandbox_by_assignment(self, assignment_id: str) -> None:
         return None
 
+    def fit_resources(self, limits: Any, requests: Any) -> tuple[dict[str, str], dict[str, str]]:
+        return dict(limits), dict(requests)
+
     async def create_sandbox(self, create_spec: Any) -> _FakeSandbox:
         self.create_calls.append(
             SimpleNamespace(

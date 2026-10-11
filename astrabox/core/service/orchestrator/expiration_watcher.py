@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -44,6 +45,44 @@ _IDLE_SWEEP_SCAN_LIMIT = 10
 # the compute. Anything else — PROCESSING, STREAMING, INTERRUPTING, or waiting on
 # a tool permission — is a turn whose processes a pause would kill.
 _IDLE_CONVERSATION_STATES = frozenset({"IDLE"})
+
+
+async def sweep_each_inventory_backend(
+    sweep: Callable[..., Awaitable[dict[str, int]]],
+    *,
+    label: str,
+    closing: Callable[[], bool],
+) -> dict[str, int]:
+    """Run ``sweep(backend=name)`` once per enabled backend that lists its sandboxes.
+
+    Each backend is swept on its own: one whose control plane cannot be
+    reached must not keep another backend's stale or ownerless boxes alive.
+    Each backend's counters are returned under its name
+    (``"<backend>.<counter>"``), so a tick says which backend they came from.
+    A backend that is installed but not enabled, or that cannot list its
+    inventory, is not swept.
+    ``closing`` reports that the watcher is shutting down, in which case a
+    failure propagates instead of being logged.
+    """
+    from astrabox.seams.sandbox import enabled_sandbox_names, sandbox_for_name
+
+    backends = [
+        name
+        for name in enabled_sandbox_names()
+        if bool(getattr(sandbox_for_name(name), "supports_inventory_listing", False))
+    ]
+    summary: dict[str, int] = {}
+    for backend in backends:
+        try:
+            counts = await sweep(backend=backend)
+        except Exception:
+            if closing():
+                raise
+            logger.exception("expiration_watcher: %s failed backend=%s", label, backend)
+            continue
+        for key, value in counts.items():
+            summary[f"{backend}.{key}"] = int(value)
+    return summary
 
 
 def _parse_iso(raw: Any) -> datetime | None:
@@ -162,7 +201,11 @@ class ExpirationWatcher:
             return summary
         try:
             summary.update(
-                await self._platform._runtime_manager.retire_sandboxes_with_stale_network_wiring()
+                await sweep_each_inventory_backend(
+                    self._platform._runtime_manager.retire_sandboxes_with_stale_network_wiring,
+                    label="stale-wiring retirement",
+                    closing=lambda: self._closed,
+                )
             )
         except Exception:
             if self._closed:
@@ -182,12 +225,35 @@ class ExpirationWatcher:
             return summary
         try:
             summary.update(
-                await self._platform._runtime_manager.reap_ownerless_sandboxes()
+                await sweep_each_inventory_backend(
+                    self._platform._runtime_manager.reap_ownerless_sandboxes,
+                    label="ownerless reap",
+                    closing=lambda: self._closed,
+                )
             )
         except Exception:
             if self._closed:
                 raise
             logger.exception("expiration_watcher: ownerless reap failed")
+        if self._closed:
+            return summary
+        try:
+            from astrabox.core.service.orchestrator.runtime.sandbox_quota import (
+                reconcile_sandbox_quota,
+            )
+            from astrabox.seams.sandbox import sandbox_for_name
+
+            summary.update(
+                await sweep_each_inventory_backend(
+                    lambda *, backend: reconcile_sandbox_quota(sandbox_for_name(backend)),
+                    label="sandbox quota reconcile",
+                    closing=lambda: self._closed,
+                )
+            )
+        except Exception:
+            if self._closed:
+                raise
+            logger.exception("expiration_watcher: sandbox quota reconcile failed")
         if self._closed:
             return summary
         try:

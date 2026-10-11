@@ -31,6 +31,7 @@ import {
 import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
 import { listAssistantConnectors, listConnectors, setAssistantConnector } from '../api';
+import { useExtensionProvider } from '@/hooks/useExtensionProvider';
 
 import { deleteAssistant, getAssistant, listAssistantScheduledJobs, updateAssistant } from './api';
 import { formatDateTime } from '@/manage/assistantConfig';
@@ -64,6 +65,11 @@ function Names({ names, empty }: { names: string[]; empty: string }) {
  * deployment's Assistant defaults provide, which the owner reads but does not
  * edit. Skills, tools and native options of its own are authored on its
  * console page.
+ *
+ * What the defaults select from the extension catalog is listed as provided
+ * only while the deployment runs a catalog, which the same provider read as the
+ * console's says without asking any catalog; without one it is reported as
+ * unavailable, since every Assistant's new conversations are then refused.
  */
 export function AssistantProfile({ assistantId }: { assistantId: string }) {
   const { t } = useTranslation();
@@ -74,6 +80,7 @@ export function AssistantProfile({ assistantId }: { assistantId: string }) {
   const connectors = useSWR(open ? 'connectors' : null, listConnectors);
   const enabled = useSWR(open ? ['assistant-connectors', assistantId] : null, () => listAssistantConnectors(assistantId));
   const schedule = useSWR(open ? ['assistant-scheduled-jobs', assistantId] : null, () => listAssistantScheduledJobs(assistantId));
+  const extensionProvider = useExtensionProvider(open);
   const [name, setName] = useState('');
   const [timezone, setTimezone] = useState('');
   const [instructions, setInstructions] = useState('');
@@ -130,7 +137,18 @@ export function AssistantProfile({ assistantId }: { assistantId: string }) {
   const on = new Set(enabled.data ?? []);
   const connected = (connectors.data ?? []).filter((c) => c.status === 'connected');
   const inherited = record?.inherited;
-  const readError = (assistant.error ?? connectors.error ?? enabled.error) as Error | undefined;
+  const readError = (
+    assistant.error ?? connectors.error ?? enabled.error ?? extensionProvider.error
+  ) as Error | undefined;
+  // Undefined until the provider read lands; the catalog's part is then left
+  // out rather than claimed either way.
+  const catalogRuns = extensionProvider.provider === undefined ? undefined : extensionProvider.provider !== null;
+  const inheritedNames = Array.from(new Set([
+    ...(inherited?.skills ?? []),
+    ...(catalogRuns ? inherited?.catalog_skills ?? [] : []),
+    ...(inherited?.mcp_servers ?? []),
+  ]));
+  const catalogSelections = (inherited?.catalog_mcp_servers ?? 0) + (inherited?.catalog_skills?.length ?? 0);
   const dirty = record !== undefined && (
     name.trim() !== record.display_name
     || (timezone.trim() || null) !== (record.timezone ?? null)
@@ -249,13 +267,15 @@ export function AssistantProfile({ assistantId }: { assistantId: string }) {
           </Section>
 
           <Section title={t('chat:assistant_profile.from_organization')}>
-            <Names
-              names={[...(inherited?.skills ?? []), ...(inherited?.mcp_servers ?? [])]}
-              empty={t('chat:assistant_profile.nothing_inherited')}
-            />
-            {(inherited?.catalog_mcp_servers ?? 0) > 0 && (
+            <Names names={inheritedNames} empty={t('chat:assistant_profile.nothing_inherited')} />
+            {catalogRuns === true && (inherited?.catalog_mcp_servers ?? 0) > 0 && (
               <p className="text-13 text-muted-foreground">
                 {t('chat:assistant_profile.catalog_tools', { count: inherited?.catalog_mcp_servers ?? 0 })}
+              </p>
+            )}
+            {catalogRuns === false && catalogSelections > 0 && (
+              <p className="text-13 text-muted-foreground" data-testid="assistant-profile-catalog-unavailable">
+                {t('chat:assistant_profile.catalog_unavailable', { count: catalogSelections })}
               </p>
             )}
           </Section>

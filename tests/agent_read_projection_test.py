@@ -1,12 +1,9 @@
 """What an Agent read hands out, and what it must never hand out.
 
-Two drop sets had drifted apart. ``extension_catalog`` — a runtime snapshot
-the Agent-extension API owns — was documented in one reader as an internal
-the Agent form "must neither expose nor write", and returned by the other.
-``conversation_uid_cursor``, the shared box's UID allocation cursor owned by
-``conversation_identity``'s compare-and-set, was returned by both: it carries
-no leading underscore, so the rule that catches the other internals never saw
-it.
+Two drop sets had drifted apart. ``conversation_uid_cursor``, the shared
+box's UID allocation cursor owned by ``conversation_identity``'s
+compare-and-set, was returned by both: it carries no leading underscore, so the
+rule that catches the other internals never saw it.
 
 The write side is deliberately NOT symmetric with this, and that asymmetry is
 load-bearing rather than an oversight: the authoring payload is closed and
@@ -44,7 +41,6 @@ def _stored_agent() -> dict[str, Any]:
         # Internals no client may see.
         "conversation_uid_cursor": 2007,
         "workspace_id": "ws-platform-owned",
-        "extension_catalog": {"snapshot": "opaque"},
         "credential_vault_ids": ["vault-1"],
         "credentials_updated_by": "user-1",
         "credentials_updated_at": "2026-08-25T00:00:00+00:00",
@@ -61,7 +57,6 @@ def _stored_agent() -> dict[str, Any]:
 _MUST_NOT_APPEAR = (
     "conversation_uid_cursor",
     "workspace_id",
-    "extension_catalog",
     "credential_vault_ids",
     "credentials_updated_by",
     "credentials_updated_at",

@@ -130,6 +130,10 @@ Register the following callback URL with the provider:
 https://<astrabox-host>/api/v1/auth/callback
 ```
 
+When AstraBox is published under a path, the callback URL includes that path,
+such as `https://<astrabox-host>/astrabox/api/v1/auth/callback`; see
+[Publish AstraBox under a path](deploy.md#publish-under-a-path).
+
 AstraBox reads user groups from the `groups` claim by default and grants the
 administrator role to members of `astrabox-admin`. Change the claim and group
 name when your provider uses different values:
@@ -145,7 +149,9 @@ organization whose accounts may sign in. Casdoor lets the administrators of its
 account's organization from the `owner` claim of the JWTs Casdoor issues.
 
 Set `ASTRABOX_OIDC_REDIRECT_URL` when the public callback address differs from
-the origin AstraBox receives through the proxy. If the AstraBox service reaches
+the origin AstraBox receives through the proxy. Its path is the callback path
+below `ASTRABOX_PUBLIC_PATH_PREFIX`, such as `/api/v1/auth/callback` at the root
+of the host; the server refuses to start with any other path. If the AstraBox service reaches
 the provider through a private address, keep the public issuer in
 `ASTRABOX_OIDC_ISSUER` and put the private address in
 `ASTRABOX_OIDC_INTERNAL_ISSUER`.
@@ -256,12 +262,21 @@ ASTRABOX_OIDC_REDIRECT_URL=https://astrabox.example.com/api/v1/auth/callback
 ASTRABOX_ALLOWED_HOSTS=astrabox.example.com,localhost,127.0.0.1,[::1]
 ```
 
-From a clone, set these four in the environment of `scripts/compose.sh`.
+When the console is published under a path, also set
+`ASTRABOX_PUBLIC_PATH_PREFIX`, such as `/astrabox` (see
+[Publish AstraBox under a path](deploy.md#publish-under-a-path)). The installer
+then writes the callback below that path,
+`https://astrabox.example.com/astrabox/api/v1/auth/callback`, and Casdoor
+registers the same URL.
+
+From a clone, set these four in the environment of `scripts/compose.sh`, and
+`ASTRABOX_PUBLIC_PATH_PREFIX` when the console is published under a path.
 
 | Setting | Why it is needed |
 |---|---|
 | `ASTRABOX_OIDC_ISSUER` | Casdoor publishes it as its issuer and serves its sign-in page under it. AstraBox checks each ID Token's issuer against it. |
 | `ASTRABOX_CONSOLE_ORIGIN` | Casdoor registers the console's callback under it. |
+| `ASTRABOX_PUBLIC_PATH_PREFIX` | Only when the console is published under a path. Casdoor registers the console's callback, and AstraBox names it, below this path. |
 | `ASTRABOX_OIDC_REDIRECT_URL` | The proxy reaches AstraBox over plain HTTP, so AstraBox cannot derive the public HTTPS callback from the request. With this set, AstraBox sends Casdoor the callback Casdoor registered and marks its login cookie Secure. |
 | `ASTRABOX_ALLOWED_HOSTS` | AstraBox answers only the Host names it lists, and the list replaces the default one, so it keeps the loopback names the installer and the CLI use. The installer keeps a list you wrote, and refuses one without the console's host and `127.0.0.1`. |
 

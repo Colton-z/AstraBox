@@ -10,7 +10,6 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && tsc --noEmit -p tsconfig.artifact-runtime.json && vite build && node artifact-runtime/build.mjs",
-    "preview": "vite preview",
     "test": "vitest run",
     "//gen:api": "The generator does not live here. openapi-typescript prints its output through the TypeScript COMPILER API (ts.factory), and this project is on typescript@7 — the Go port, whose npm package exports no compiler API at all, so `ts.factory` is undefined and the tool dies on import. Its peer bound of ^5.x is live, not stale. npm will not nest a conflicting PEER under the dependent, and turning peer resolution off tree-wide (legacy-peer-deps) would silence every future conflict too, so the generator is its own hermetic package on its own typescript@5: scripts/api-codegen. `make check-api-client` regenerates through it and fails on a byte of difference.",
     "gen:api": "npm --prefix ../scripts/api-codegen run gen",

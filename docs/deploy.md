@@ -187,6 +187,7 @@ which is off on a new installation.
 | `ASTRABOX_INSTALL_TEAM_LOGIN` | `casdoor` runs the bundled Casdoor login service with the stack; `none` runs the stack without login. |
 | `ASTRABOX_CONSOLE_ORIGIN` | With team login: the console's public URL, such as `https://astrabox.example.com`. |
 | `ASTRABOX_OIDC_ISSUER` | With team login: Casdoor's public URL, such as `https://login.example.com`. Set both URLs for browsers on other computers, or neither to sign in on this host only. |
+| `ASTRABOX_PUBLIC_PATH_PREFIX` | The path a gateway publishes the console under, such as `/astrabox`, when the console shares its host with other applications. See [Publish AstraBox under a path](#publish-under-a-path). With team login, the callback URL the installer writes is below this path. |
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Colton-z/AstraBox/main/scripts/install.sh \
@@ -292,8 +293,8 @@ OpenSandbox backend, mergerfs views created outside user sandboxes carry them;
 OpenSandbox mounts those views through its standard PVC or named-volume
 interface. Binding to the selected new or existing workspace completes before
 delivery to the user. The storage adapter selects the backing medium; the
-sandbox backend decides how it is mounted, and a backend that cannot mount a
-persistent workspace is refused at startup when this volume is set.
+sandbox backend decides how it is mounted, and startup refuses this volume when
+an enabled backend cannot mount a persistent workspace.
 
 An unset or empty value leaves workspace files on the sandbox's temporary
 filesystem; replacing that sandbox can discard those files. This setting governs
@@ -351,12 +352,15 @@ releases a view once its sandbox is confirmed gone, and also releases a view no
 sandbox ever took: when a create fails or provisioning stops part way, the view
 is removed ten minutes after its helper was created if no sandbox of the
 installation carries its assignment. A view a container or Pod still mounts is
-never removed.
+never removed. Each enabled backend's route is reconciled on its own. A view
+whose helper names a sandbox backend this deployment does not enable is kept and
+logged, because no enabled backend can confirm that its sandbox is gone.
 
 ### What the medium has to support
 
 For AWS EFS, use the [`aws_efs` storage provider](providers/aws-efs.md). It
-verifies the configured EFS CSI claim; the platform router is unchanged.
+verifies the configured EFS CSI claim; the OpenSandbox backend's workspace
+route is unchanged.
 
 A workspace is a working directory, not a document store, and the code that
 prepares one uses these operations. A medium that lacks any of them is not a
@@ -550,6 +554,185 @@ At the team ingress, terminate TLS, add the public hostname to
 and use the same login-cookie signing secret on every replica. See
 [Set up team login](team-login.md) for the supported identity configurations.
 
+## Publish AstraBox under a path {#publish-under-a-path}
+
+A gateway that serves several applications on one host can publish AstraBox
+below a path, such as `https://example.com/astrabox/`. Set that path on the
+AstraBox server, for an installation in `~/astrabox/containers/.env`, then run
+the installer again:
+
+```bash
+printf '%s\n' "ASTRABOX_PUBLIC_PATH_PREFIX='/astrabox'" >> ~/astrabox/containers/.env
+```
+
+The value starts with a slash and has no trailing slash, and its segments use
+letters, digits, `.`, `_`, `~` and `-`. Leave it empty to publish AstraBox at
+the root of its host. The server refuses to start with any other value and
+names it.
+
+AstraBox routes each request by the part of its path below the prefix, so the
+gateway removes the prefix before the request reaches AstraBox. Do it in one
+of two ways:
+
+| Gateway | How it removes the prefix |
+|---|---|
+| A reverse proxy | It strips the prefix before forwarding, as in the examples below. |
+| A Python application that runs AstraBox in its own process | It mounts AstraBox at the prefix; see [Mount AstraBox under a path](embedding.md#mount-astrabox-under-a-path). |
+
+With nginx, the URI part of `proxy_pass` replaces the matched prefix:
+
+```nginx
+location /astrabox/ {
+    proxy_pass http://127.0.0.1:8088/;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    # Session events and terminal output arrive as long-lived streams.
+    proxy_buffering off;
+    proxy_read_timeout 1h;
+}
+```
+
+With Caddy, `handle_path` strips the prefix:
+
+```caddyfile
+example.com {
+    redir /astrabox /astrabox/ 308
+    handle_path /astrabox/* {
+        reverse_proxy 127.0.0.1:8088 {
+            flush_interval -1
+        }
+    }
+}
+```
+
+AstraBox refuses a request that arrives any other way, and the error names the
+setting:
+
+| Error | Cause |
+|---|---|
+| `PUBLIC_PATH_PREFIX_NOT_REMOVED` (404) | The request still carries the prefix: the proxy forwards it instead of removing it. The console then reports that it cannot load. With nginx, `proxy_pass` needs the trailing `/`. |
+| `PUBLIC_PATH_PREFIX_MISMATCH` (409) | A Python application mounted AstraBox at a path other than `ASTRABOX_PUBLIC_PATH_PREFIX`. |
+
+Health and readiness probes, the installer, and sandboxes calling back to the
+server reach AstraBox directly, at `/healthz`, `/readyz` and the sandbox callback
+address, not through the gateway.
+
+Below the prefix, AstraBox serves the console's pages and files, its API, and
+its event streams. It also composes the addresses it gives out below the prefix:
+the sign-in callback, share links, file downloads, the MCP server URL the console
+shows, channel callback URLs, and the address a person returns to after
+connecting a work app. With team login, register
+`https://example.com/astrabox/api/v1/auth/callback` as the console's callback URL
+with the identity provider; see [Set up team login](team-login.md). The login
+cookie is scoped to the prefix.
+
+Set the prefix before you create messaging-platform Deployments and connectors.
+A channel Deployment keeps the callback URL it was created with, and a connector
+keeps the address it was set up with. After changing the prefix, create the
+channel Deployments again. Update `ASTRABOX_CONTEXTFORGE_PUBLIC_URL` and each
+vendor OAuth app's redirect URI, then set the connectors up again. With team
+login, also update the identity provider's redirect URL and
+`ASTRABOX_OIDC_REDIRECT_URL`, and set a new `ASTRABOX_AUTH_SESSION_SECRET`. A
+login cookie issued for the old path would otherwise keep a browser signed in
+after it signs out.
+
+LiteLLM's management pages load their files from the root of the host, so
+AstraBox cannot serve them below a prefix. Under **Integrated services**, the
+bundled gateway's console is not listed. On an Agent's page, **Manage remote MCP
+servers** and **Manage Skills** report that these pages cannot be opened below
+the prefix (`PUBLIC_PATH_PREFIX_UNSUPPORTED`). An Agent's MCP servers and Skills
+remain editable on its page. Open the gateway's own console at its address.
+
+A path separates addresses, not trust. Every application on the host shares one
+browser origin, so a script of another application can call AstraBox with the
+cookies of a person signed in to it. Give AstraBox its own hostname when the
+other applications on that host are not trusted.
+
+## Size sandboxes and cap what they use {#size-sandboxes-and-cap-what-they-use}
+
+A conversation's own sandbox and an Agent's shared sandbox each have a size:
+
+| Sandbox | Limits | Requests | Set with |
+|---|---|---|---|
+| A conversation's own sandbox | 1 CPU, 1 GiB | 250m CPU, 1 GiB | `ASTRABOX_SANDBOX_CPU_LIMIT`, `ASTRABOX_SANDBOX_MEMORY_LIMIT`, `ASTRABOX_SANDBOX_CPU_REQUEST`, `ASTRABOX_SANDBOX_MEMORY_REQUEST` |
+| An Agent's shared sandbox | 4 CPU, 4 GiB | 1 CPU, 4 GiB | The same four variables with the prefix `ASTRABOX_SHARED_SANDBOX_` |
+
+A limit is the most a sandbox may use. A request is what the Kubernetes
+scheduler reserves for it on a node; Docker ignores requests. Memory requests
+equal the limits, so a node never promises memory it does not have. CPU
+requests are lower, because a sandbox that finds the CPU busy only runs slower.
+A sandbox takes the size in effect when it is created and keeps it until it is
+replaced.
+
+A shared sandbox takes another conversation while its free memory, measured
+from what the sandbox uses rather than from its limit, leaves 640 MiB for it.
+One Claude Code conversation grows by about 570 MiB from its start, so a 4 GiB
+shared sandbox holds about five. A larger shared sandbox holds more
+conversations for its size, because the runtime underneath is paid for once:
+an 8 GiB sandbox holds about twelve.
+
+Each sandbox runs beside an egress sidecar limited to 1 CPU and 128 MiB. On a
+Docker host the bundled sandbox server sets that limit. On Kubernetes,
+OpenSandbox 0.2.3 creates the sidecar without resources, so give the sandbox
+namespace a LimitRange whose container default is the same:
+
+```yaml
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: astrabox-sandbox-sidecars
+spec:
+  limits:
+    - type: Container
+      default: {cpu: "1", memory: 128Mi}
+      defaultRequest: {cpu: 50m, memory: 128Mi}
+```
+
+The default applies to every container in the namespace that states no
+resources of its own, OpenSandbox's execd init container included.
+
+### Cap what a sandbox backend runs {#cap-what-a-sandbox-backend-runs}
+
+A sandbox quota caps what one sandbox backend runs for the deployment, across
+all platform replicas:
+
+| Variable | Caps |
+|---|---|
+| `ASTRABOX_SANDBOX_QUOTA_BOXES` | The number of sandboxes |
+| `ASTRABOX_SANDBOX_QUOTA_MEMORY` | The sum of their memory limits and their sidecars', for example `24Gi` |
+| `ASTRABOX_SANDBOX_QUOTA_CPU` | The sum of their CPU limits and their sidecars' |
+| `ASTRABOX_SANDBOX_QUOTA_CONCURRENT_CREATES` | The number of sandboxes being created at once |
+
+Every sandbox the backend runs for the deployment counts: those conversations
+use, shared sandboxes, prepared sandboxes, sandboxes being created and
+sandboxes whose removal the backend has not confirmed. A paused sandbox counts
+on a Docker host, where it keeps its memory, and not on Kubernetes, where
+pausing it releases its Pod; resuming it takes its room back. A sandbox's
+charge is fixed when it is created, so a size changed later does not change
+what a running sandbox counts.
+
+A sandbox that would take the backend past a ceiling is not created: the
+conversation that needed it ends at once, and its error names the ceiling, what
+is in use and the limit, for example `sandbox backend 'opensandbox' has no room
+for another box: boxes 12 of 12 in use, and this box needs 1`. Nothing waits for
+room.
+A prepared sandbox refused this way is tried again later, at a growing
+interval. Conversations that already have a sandbox are not affected.
+
+Leave a variable unset for no ceiling, except the memory ceiling of the bundled
+sandbox server on a Docker host: there it is the host's memory less 4 GiB for
+the platform, its stores and the host. On a 16 GiB host that is 12 GiB, about
+ten conversations with their own sandboxes. On a host of 8 GiB or less the
+ceiling is 4 GiB or less, too little for one shared sandbox of the default size
+(4 GiB and its sidecar), so an Agent or Assistant whose Environment shares a
+sandbox cannot start: lower `ASTRABOX_SHARED_SANDBOX_MEMORY_LIMIT` and its request, or raise
+`ASTRABOX_SANDBOX_QUOTA_MEMORY`. Set a variable to `unlimited` to remove the
+ceiling. Startup logs each ceiling and where it came from, and
+refuses a ceiling on a backend that cannot list its sandboxes, since what it
+runs could not be counted. The **Sandboxes** page of the console shows each
+ceiling and what is in use.
+
 ## Plan capacity for prepared sandboxes {#plan-capacity-for-prepared-sandboxes}
 
 Every Agent keeps as many idle prepared runtimes as its
@@ -564,16 +747,17 @@ enabled; after a conversation takes an idle sandbox, AstraBox prepares a
 replacement, up to eight at a time per Agent. Size the deployment for the sum
 of the Agents' `prepared_capacity`: for example, an Agent serving 1,000 users
 that expects 100 conversations to start together needs a capacity of 100, and
-with a sandbox per conversation that is 100 idle sandboxes. When an Agent's
+with a sandbox per conversation that is 100 idle sandboxes. Prepared sandboxes
+count against the [sandbox quota](#cap-what-a-sandbox-backend-runs). When an Agent's
 conversations share a sandbox, each prepared sandbox carries as many seats as
 its memory limit admits with 640 MiB set aside for each, and the Agent keeps
 the capacity divided by that number of idle sandboxes, rounded up. A seat that no
 conversation takes within the sandbox lease (`ASTRABOX_SANDBOX_LEASE_SECONDS`)
 is discarded, like an idle sandbox. Set `ASTRABOX_PREPARED_CAPACITY_LIMIT`
 to the sum the deployment can hold, and AstraBox refuses an Agent write that
-would exceed it; on a Docker host, which reserves nothing for an idle sandbox,
-nothing else stops one Agent's capacity from exhausting the host. Set the
-capacity of Agents that do not need a fast first conversation to 0.
+would exceed it. Without it, one Agent's prepared sandboxes can take the whole
+sandbox quota and leave none for conversations. Set the capacity of Agents that
+do not need a fast first conversation to 0.
 
 What an idle prepared sandbox uses depends on the engine that the Agent's
 Environment runs:
@@ -590,13 +774,13 @@ sandbox uses 2–5% of one CPU.
 
 | Where sandboxes run | How that capacity is accounted for |
 |---|---|
-| One Docker host | Nothing is reserved: Docker sets aside nothing for an idle container, so the cost is the memory above plus the sidecar. About 20 Claude Code Agents use roughly 11 GiB of the host's memory while idle. |
-| Kubernetes with OpenSandbox | Each sandbox requests 200m CPU and 768 MiB of memory, and the scheduler places sandboxes by these requests. A DeepSeek Harness sandbox uses more memory than it requests, so plan node memory from actual use, not from requests. For example, 19 sandboxes request 3.8 CPUs and 14.25 GiB, about all that a node with 4 vCPUs and 16 GiB leaves allocatable to Pods, yet 19 idle DeepSeek Harness sandboxes use about 17 GiB. |
-| An existing OpenSandbox service | The same request per sandbox: 200m CPU and 768 MiB. Whether it is reserved depends on that service's runtime, as in the two rows above; plan memory from actual use either way. |
+| One Docker host | Docker reserves nothing for an idle container, so the host's memory holds the figures above plus the sidecar. The sandbox quota still counts each prepared sandbox at its full size. |
+| Kubernetes with OpenSandbox | The scheduler reserves each sandbox's requests on a node: 250m CPU and 1 GiB for a conversation's own sandbox, 1 CPU and 4 GiB for a shared one, plus the sidecar's request from the namespace's LimitRange. |
+| An existing OpenSandbox service | The same requests. Whether they are reserved depends on that service's runtime, as in the two rows above. |
 
-Each sandbox may grow to 4 CPUs (on Docker, at most the host's CPU count) and
-4 GiB of memory while it works; the figures above are what idle capacity
-takes. To turn prewarming off for an Agent, set **Prepared capacity** to 0 in
+The figures above are what idle capacity takes; while it works, a sandbox may
+grow to its [limits](#size-sandboxes-and-cap-what-they-use). To turn
+prewarming off for an Agent, set **Prepared capacity** to 0 in
 its **Runtime and availability** settings, or set `"prepared_capacity": 0`
 through the API or in an `astrabox.yaml` document.
 

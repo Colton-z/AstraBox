@@ -34,13 +34,38 @@ const workers = process.env.ASTRABOX_E2E_WORKERS
   : 1;
 const browserServerEndpoint = (process.env.ASTRABOX_E2E_BROWSER_WS_ENDPOINT || '').trim();
 const externalAccountsEnabled = process.env.ASTRABOX_E2E_EXTERNAL_ACCOUNTS === '1';
+// A deployment that runs no extension catalog (ASTRABOX_EXTENSION_PROVIDER=none)
+// is a different deployment shape from the lanes' one, whose Agents select from
+// the gateway's catalog. Its specs are collected only against such a
+// deployment, which the run declares with ASTRABOX_E2E_EXTENSION_PROVIDER=none.
+const noExtensionCatalog = (process.env.ASTRABOX_E2E_EXTENSION_PROVIDER || '').trim() === 'none';
+// A deployment published below a path (ASTRABOX_PUBLIC_PATH_PREFIX) is a
+// different deployment shape from the lanes' root one, with its own proxy in
+// front. Its specs are collected only against such a deployment, which the run
+// declares with ASTRABOX_E2E_APP_PREFIX.
+const pathPrefixDeployment = Boolean((process.env.ASTRABOX_E2E_APP_PREFIX || '').trim());
+// A deployment whose boxes take a resource envelope other than the defaults
+// (ASTRABOX_SANDBOX_*_LIMIT / *_REQUEST) is a different deployment shape from
+// the lanes' one. Its specs are collected only against such a deployment, which
+// the run declares by naming the envelope in ASTRABOX_E2E_SANDBOX_ENVELOPE.
+const sandboxEnvelopeDeployment = Boolean((process.env.ASTRABOX_E2E_SANDBOX_ENVELOPE || '').trim());
+// A deployment that sets ASTRABOX_SANDBOX_QUOTA_BOXES a few boxes above what
+// it runs is a different deployment shape from the lanes' unlimited one. Its
+// specs are collected only when the run declares ASTRABOX_E2E_SANDBOX_QUOTA=1.
+const sandboxQuotaDeployment = process.env.ASTRABOX_E2E_SANDBOX_QUOTA === '1';
 export default defineConfig({
   globalSetup: path.join(__dirname, 'global-setup.ts'),
   testDir: path.join(__dirname, 'specs'),
   // Real Slack, Feishu, DingTalk and Google accounts are an explicit
   // acceptance target. Ordinary collection must never fail because those
   // private credentials are absent; the external specs have no skips or mocks.
-  testIgnore: externalAccountsEnabled ? [] : ['**/*.external.spec.ts'],
+  testIgnore: [
+    ...(externalAccountsEnabled ? [] : ['**/*.external.spec.ts']),
+    ...(noExtensionCatalog ? [] : ['**/*.no-extension-catalog.spec.ts']),
+    ...(pathPrefixDeployment ? [] : ['**/*.path-prefix.spec.ts']),
+    ...(sandboxEnvelopeDeployment ? [] : ['**/*.sandbox-envelope.spec.ts']),
+    ...(sandboxQuotaDeployment ? [] : ['**/*.sandbox-quota.spec.ts']),
+  ],
   fullyParallel: true,
   timeout: MAX_E2E_TEST_MS,
   expect: {

@@ -21,6 +21,7 @@ import type {
   AdminSandboxDiagnosticScope,
   AdminSandboxPage,
   AdminSandboxIdleAction,
+  AdminSandboxQuota,
   AdminSessionDetail,
   AdminSessionFilters,
   AdminSessionPage,
@@ -39,10 +40,13 @@ import type {
   AgentDeployment,
   Connector,
   ChannelProviderDescriptor,
+  ChannelAccountLink,
+  ChannelExecutionMode,
   DeploymentRun,
   AgentDraft,
   ApiResponse,
   EnvironmentConfig,
+  ExtensionProviderView,
   FormSchema,
   InteractionResponse,
   PendingInteraction,
@@ -215,20 +219,35 @@ function normalizeLegacyApiError(
 }
 
 
-function inferModuleBasePath(): string {
-  // The app is always root-mounted: the backend serves the SPA at "/", and dev
-  // uses the Vite `/api` proxy. A prefixed deployment would mount the app under a
-  // deploy prefix (e.g. `/astrabox/`) inferred from `location.pathname` — but
-  // that inference wrongly treats the SPA's own first route segment
-  // (`/agents`, `/sandbox`, `/assistants`, `/manage`, `/share`, …) as a
-  // module prefix, which corrupts both the BrowserRouter basename (routes nest
-  // under it, e.g. `/sandbox/agents`) and the API base (calls hit `/sandbox/api/...`
-  // → the SPA HTML 200, surfaced as "Load failed HTTP_200: <!doctype"). Root-mount has
-  // no prefix; `VITE_API_BASE` (below) still overrides for non-proxied deploys.
-  return '';
+/**
+ * The path this console is published under: `''` at the root of the host, or a
+ * path such as `/astrabox` with no trailing slash. It is the router's basename
+ * and the base of every API and console URL the page composes.
+ *
+ * The AstraBox server writes it into the `astrabox-base-path` meta element on
+ * every request (`ASTRABOX_PUBLIC_PATH_PREFIX`, astrabox/deploy/public_path.py),
+ * and the Vite dev server writes `''`. It is not inferred from
+ * `location.pathname`: the first segment there is as likely to be a console
+ * route (`/agents`, `/manage`, `/share`) as a prefix, and taking a route for a
+ * prefix would nest every route and API call under it. A page without the
+ * value was not served by AstraBox, so loading stops with that reason rather
+ * than guessing. Outside a document, as in the unit suite's node environment,
+ * there is no page and therefore no prefix.
+ */
+function servedBasePath(): string {
+  if (typeof document === 'undefined') return '';
+  const value = document
+    .querySelector<HTMLMetaElement>('meta[name="astrabox-base-path"]')
+    ?.getAttribute('content');
+  if (value === null || value === undefined || !/^(\/[A-Za-z0-9._~-]+)*$/.test(value)) {
+    throw new Error(
+      `This page carries no base path from the AstraBox server (astrabox-base-path is ${JSON.stringify(value ?? null)}). Open the console through the AstraBox server.`,
+    );
+  }
+  return value;
 }
 
-export const MODULE_BASE = inferModuleBasePath();
+export const MODULE_BASE = servedBasePath();
 const API_BASE_ENV = String(import.meta.env.VITE_API_BASE ?? '').replace(/\/$/, '');
 
 const API_BASE = API_BASE_ENV || MODULE_BASE;
@@ -300,7 +319,7 @@ export type AuthProbe =
  * ask this question at all.
  */
 export async function probeAuthSession(signal?: AbortSignal): Promise<AuthProbe> {
-  const response = await fetchWithNetworkRecovery('/api/v1/auth/session', {
+  const response = await fetchWithNetworkRecovery(buildApiUrl('/api/v1/auth/session'), {
     credentials: 'include',
     signal,
   });
@@ -319,9 +338,31 @@ export async function probeAuthSession(signal?: AbortSignal): Promise<AuthProbe>
   };
 }
 
-/** Where the browser goes to start the OIDC flow, preserving where it was headed. */
+/**
+ * Where the browser goes to start the OIDC flow, preserving where it was headed.
+ * *next* is a console route (see `currentAppPath`); the server adds the base
+ * path when it sends the reader back.
+ */
 export function signInHref(next: string): string {
-  return `/api/v1/auth/login?next=${encodeURIComponent(next)}`;
+  return buildApiUrl(`/api/v1/auth/login?next=${encodeURIComponent(next)}`);
+}
+
+/** End this browser's session: `POST /api/v1/auth/logout` clears its cookie. */
+export async function endAuthSession(): Promise<void> {
+  await fetch(buildApiUrl('/api/v1/auth/logout'), { method: 'POST', credentials: 'include' });
+}
+
+/**
+ * Where the reader is, as a console route with its query: the page's path
+ * without `MODULE_BASE`. Sign-in carries it as `next` in this form, so every
+ * redirect the server composes from it stays inside the base path.
+ */
+export function currentAppPath(): string {
+  const { pathname, search } = window.location;
+  if (pathname !== MODULE_BASE && !pathname.startsWith(`${MODULE_BASE}/`)) {
+    throw new Error(`${pathname} is outside the console's base path ${MODULE_BASE}`);
+  }
+  return `${pathname.slice(MODULE_BASE.length) || '/'}${search}`;
 }
 
 // Under the oidc identity mode the backend answers 401 AUTH_REQUIRED when no
@@ -335,9 +376,7 @@ function redirectToSignIn(): void {
   const last = Number(window.sessionStorage.getItem('astrabox:signin-redirect') || 0);
   if (Date.now() - last < 10_000) return;
   window.sessionStorage.setItem('astrabox:signin-redirect', String(Date.now()));
-  const next = window.location.pathname + window.location.search;
-  const login = `${MODULE_BASE}/login`.replace(/\/{2,}/g, '/');
-  window.location.assign(`${login}?next=${encodeURIComponent(next)}`);
+  window.location.assign(`${MODULE_BASE}/login?next=${encodeURIComponent(currentAppPath())}`);
 }
 
 // ── The generated client ─────────────────────────────────────────────────────
@@ -938,6 +977,19 @@ export async function updateAgent(
   })) as Promise<AgentConfig>;
 }
 
+/**
+ * The extension provider whose catalog this deployment offers, or null when it
+ * runs none (`ASTRABOX_EXTENSION_PROVIDER=none`). Reads no catalog.
+ */
+export async function getExtensionProvider(): Promise<ExtensionProviderView | null> {
+  const page = expectPage<{ provider: ExtensionProviderView | null }>(
+    await send((wire) => client.GET('/api/v1/extension-provider', wire)),
+    '/extension-provider',
+    'provider',
+  );
+  return page.provider;
+}
+
 export async function createAgentExtensionConsoleSession(
   agentId: string,
   section: 'mcp' | 'skills',
@@ -1295,6 +1347,16 @@ export async function adminListSandboxes(
 }
 
 /**
+ * Each enabled backend's quota ceilings, what is held against them, and its
+ * boxes. Usage is the backend's last inventory (taken at `inventory_at`) plus
+ * the reservations for boxes that inventory does not show yet, counted the way
+ * the quota itself counts them when it judges the next create.
+ */
+export async function adminSandboxQuota(): Promise<AdminSandboxQuota> {
+  return send((wire) => client.GET('/api/v1/admin/sandbox-quota', wire)) as Promise<AdminSandboxQuota>;
+}
+
+/**
  * One plain-text diagnostic report. Rejections are meaningful here: a backend
  * (or its server) that cannot produce the report answers 501 with the reason,
  * which the caller should show as-is rather than as an empty report.
@@ -1416,6 +1478,7 @@ type DeploymentPayload = {
   name?: string;
   prompt_prefix?: string;
   secret?: string;
+  execution_mode?: ChannelExecutionMode;
   execution_user_id?: string;
   allowed_participants?: string[];
   attention_policy?: 'all' | 'mentions';
@@ -1477,6 +1540,43 @@ export async function updateDeployment(
     params: { path: { agent_id: target.id, deployment_id: deploymentId } },
     body: undeclared(patch),
   })) as Promise<AgentDeployment>;
+}
+
+/** The participants an Agent trigger runs as their own linked accounts. */
+export async function listDeploymentAccountLinks(
+  agentId: string,
+  deploymentId: string,
+): Promise<ChannelAccountLink[]> {
+  return expectList<ChannelAccountLink>(
+    await send((wire) => client.GET('/api/v1/admin/agents/{agent_id}/deployments/{deployment_id}/account-links', {
+      ...wire,
+      params: { path: { agent_id: agentId, deployment_id: deploymentId } },
+    })),
+    '/admin/agents/{agent_id}/deployments/{deployment_id}/account-links',
+  );
+}
+
+export async function linkDeploymentAccount(
+  agentId: string,
+  deploymentId: string,
+  link: { participant: string; user_id: string },
+): Promise<ChannelAccountLink> {
+  return send((wire) => client.PUT('/api/v1/admin/agents/{agent_id}/deployments/{deployment_id}/account-links', {
+    ...wire,
+    params: { path: { agent_id: agentId, deployment_id: deploymentId } },
+    body: undeclared(link),
+  })) as Promise<ChannelAccountLink>;
+}
+
+export async function unlinkDeploymentAccount(
+  agentId: string,
+  deploymentId: string,
+  participant: string,
+): Promise<void> {
+  await send((wire) => client.DELETE('/api/v1/admin/agents/{agent_id}/deployments/{deployment_id}/account-links', {
+    ...wire,
+    params: { path: { agent_id: agentId, deployment_id: deploymentId }, query: { participant } },
+  }));
 }
 
 export async function listDeploymentRuns(

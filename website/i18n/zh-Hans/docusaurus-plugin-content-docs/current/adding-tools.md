@@ -81,7 +81,7 @@ provider 只在符合规则的受保护出站请求上加入凭证，让密钥�
 
 ![在 AstraBox 控制台配置 MCP 服务器、Skill 和 Plugin 仓库](./img/agent-create-console-zh.png)
 
-对于已有 Agent，还可以在「MCP 服务与 Skill」卡片中选择管理员配置的远程 MCP 服务器和 Skill。直接配置字段使用下面的格式：
+部署启用[扩展目录](#extension-catalog)时，已有 Agent 的「MCP 配置」和「Skill 配置」分别把目录多选框（以目录命名，例如「来自 LiteLLM 的 MCP 服务」）和自定义配置字段放在一起；两类来源合并生效，MCP 服务名称不能重复，完全相同的 Skill 来源会去重。不启用目录时，这两个字段单独显示为「MCP 服务」和「Skill」。直接配置字段使用下面的格式：
 
 ```json
 {
@@ -163,6 +163,29 @@ Plugin 或 Skill 配置中的仓库 URL 保持不含 Token，完成分配后新�
 }
 ```
 
+## 扩展目录 {#extension-catalog}
+
+扩展目录是部署统一维护的一组 MCP 服务和 Skill，Agent 和 Assistant 从中选择，而不必在每条记录上重复填写定义。目录来自部署用 `ASTRABOX_EXTENSION_PROVIDER` 选择的扩展 provider：
+
+| 取值 | 目录 |
+| --- | --- |
+| 留空（默认）或 `litellm` | 内置 LiteLLM 网关中登记的 MCP 服务和 Skill。Agent 管理者在 Agent 页面用「在 LiteLLM 中管理 MCP 服务」和「在 LiteLLM 中管理 Skill」打开它的管理页面。 |
+| `builtin` | 管理员通过 `/api/v1/admin/mcp-servers` 在 AstraBox 中登记的 MCP 服务。没有 Skill，也没有管理页面。 |
+| `none` | 不启用目录。Agent 和 Assistant 只使用记录上直接填写的 MCP 服务、Skill 和扩展包。 |
+| 其他名称 | 已安装的扩展包在 `astrabox.providers.extensions` 入口点注册的 provider。 |
+
+控制台用 provider 的名称称呼目录，只有 provider 提供管理页面时才显示管理入口。取值不是任何已安装 provider 注册的名称时，启动会被拒绝。Compose 安装在 `containers/.env` 中设置这个变量。
+
+### 不启用扩展目录
+
+设置 `ASTRABOX_EXTENSION_PROVIDER=none` 后，Agent 页面、Assistant 页面和 Assistant 默认配置页面只显示记录自己的 MCP、Skill 和扩展包字段，不会向任何目录发送请求。目录 API（`GET /api/v1/agents/{agent_id}/extensions`，以及 Assistant 和默认配置的对应接口）返回 `409 EXTENSION_CATALOG_DISABLED`。
+
+启用目录期间保存的目录选择仍会留在记录上。AstraBox 不会丢弃它，也不会在缺少它的情况下运行：
+
+- 启动日志会列出仍持有目录选择的每个已启用 Agent、每个 Assistant 以及 Assistant 默认配置。
+- 为这类 Agent 或 Assistant 开始工作（新对话、预热的运行实例、Assistant 工作区）会以 `EXTENSION_CATALOG_DISABLED` 失败，而不是带着比记录更少的工具启动；Assistant 默认配置持有目录选择时，所有 Assistant 都是如此。新建 Agent 对话返回 `409`。已有对话仍可查看。
+- 记录页面会列出这些选择（MCP 服务的 provider 和条目、Skill 的 Git 来源），并提供「移除这些选择」。移除会保存一个空选择，这是不启用目录时唯一接受的选择。如果还要使用某个目录 Skill，先把列出的 Git 来源加到「Skill」字段，再移除选择。
+
 ## 更新 Agent
 
 在「管理台 > Agent」中打开 Agent。在扩展卡片中修改所选 MCP 服务器或 Skill，或修改直接配置的 MCP、Skill 和 Plugin 仓库字段，然后点击该部分的「保存」。
@@ -173,7 +196,7 @@ Plugin 或 Skill 配置中的仓库 URL 保持不含 Token，完成分配后新�
 
 ## 查看当前扩展配置
 
-在「管理台 > Agent」中打开 Agent。管理员配置的 MCP 服务器和 Skill 显示在「MCP 服务与 Skill」卡片中；直接配置的 MCP 定义、Skill 来源和 Plugin 仓库显示在「MCP、Skill 与 Plugin」部分。
+在「管理台 > Agent」中打开 Agent。「MCP、Skill 与 Plugin」部分显示直接配置的 MCP 定义、Skill 来源和 Plugin 仓库；部署启用扩展目录时，也显示从目录中选择的 MCP 服务和 Skill。
 
 ## 常见问题
 

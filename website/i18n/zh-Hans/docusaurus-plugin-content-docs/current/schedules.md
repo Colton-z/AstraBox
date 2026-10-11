@@ -14,7 +14,10 @@
 - 创建负责处理每次任务的 Agent 或 Assistant。
 - 以 Agent 所有者或 AstraBox 管理员身份登录。只有 Assistant 的归属用户可以为它
   设置定时计划。
-- AstraBox 数据库使用 PostgreSQL 或 SQLite；其他数据库后端不支持定时计划。
+- AstraBox 安装需要运行一个 scheduler provider。内置 provider 把 Schedule 和运行记录
+  保存在 AstraBox 已使用的 PostgreSQL 或 SQLite 数据库中。设置了
+  `ASTRABOX_SCHEDULER_PROVIDER=none` 的安装不能创建、启用或运行 Schedule；使用 MongoDB
+  且没有安装其他 scheduler provider 的安装必须这样设置。
 
 打开**控制台 → 触发配置 → 新建触发配置**，然后选择**定时计划**。表单中包含
 完整的 Schedule 配置：
@@ -109,8 +112,7 @@ Agent、Schedule 名称、触发方式或 ID 搜索，也可以按启用或停�
 
 - 内置 Schedule 是周期任务，只接受五段 Cron 和有效的 IANA 时区，最小粒度
   为 1 分钟。
-- 定时计划要求使用 PostgreSQL 或 SQLite；每个 AstraBox 安装最多启用 64 个
-  Schedule。
+- 使用内置 scheduler provider 时，每个 AstraBox 安装最多启用 64 个 Schedule。
 - AstraBox 离线期间错过的时刻不会补跑。Schedule 也不能修改成其他触发方式；
   需要时请创建新的触发配置。
 

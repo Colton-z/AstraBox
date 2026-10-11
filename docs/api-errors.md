@@ -41,7 +41,7 @@ response with logs.
 | `error.status_code` | integer | Yes | Status registered for the error code; use the actual HTTP response status for transport handling |
 | `error.category` | string | Yes | Error category, such as `request`, `auth`, `state`, or `persistence` |
 | `error.retryable` | boolean | Yes | Whether retrying after a delay can succeed without changing the request |
-| `error.owner` | string | Yes | Component or party that must act: `client`, `session`, `mongo`, `runtime`, `template`, `platform`, or `unknown` |
+| `error.owner` | string | Yes | Component or party that must act: `client`, `session`, `store`, `runtime`, `template`, `platform`, or `unknown` |
 | `error.user_message` | string | Yes | Message safe to show to the caller |
 | `error.debug_message` | string | No | Additional diagnostic message when the error provides one |
 | `error.evidence` | object | No | Structured evidence for diagnosis |
@@ -245,15 +245,15 @@ AstraBox, its infrastructure, or an upstream dependency failed.
 ```json
 {
   "code": "PERSISTENCE_UNAVAILABLE",
-  "message": "mongodb timeout/unavailable, please retry",
+  "message": "the record store is unavailable, please retry",
   "data": null,
   "error": {
     "code": "PERSISTENCE_UNAVAILABLE",
     "status_code": 503,
     "category": "persistence",
     "retryable": true,
-    "owner": "mongo",
-    "user_message": "mongodb timeout/unavailable, please retry"
+    "owner": "store",
+    "user_message": "the record store is unavailable, please retry"
   }
 }
 ```

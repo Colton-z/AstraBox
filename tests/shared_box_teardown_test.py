@@ -25,7 +25,7 @@ from astrabox.core.service.orchestrator.runtime_manager import (
 )
 from astrabox.core.service.orchestrator import runtime_manager as runtime_manager_module
 from astrabox.core.service.orchestrator.sandbox_names import keep_name_updates
-from astrabox.seams.sandbox import SandboxAllocation
+from astrabox.seams.sandbox import SandboxAllocation, SandboxUnreachable
 from astrabox.seams.sandbox_disposal import (
     SANDBOX_DESTRUCTION_REFUSED,
     SANDBOX_DESTRUCTION_RETAINED,
@@ -188,10 +188,17 @@ def _with_agents(monkeypatch: Any, agents: _Agents) -> None:
 def _answer_census(
     monkeypatch: Any, mgr: RemoteAgentRuntimeManager, live_sessions: int
 ) -> None:
-    """Make the box itself report ``live_sessions`` isolated sessions."""
+    """Make the box itself report ``live_sessions`` isolated sessions.
+
+    A negative count stands for a box that does not answer the census.
+    """
 
     class _Census:
-        async def count_live_isolated_sessions(self, sandbox_id: str) -> int:
+        supports_isolated_sessions = True
+
+        async def count_active_isolated_sessions(self, sandbox_id: str) -> int:
+            if live_sessions < 0:
+                raise SandboxUnreachable(sandbox_id, "connection refused")
             return live_sessions
 
     async def _provider(sandbox_id: str) -> Any:

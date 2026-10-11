@@ -283,8 +283,9 @@ export function progressLabel(progress: string | null | undefined): string {
   return normalized;
 }
 
-export function isMongoTransientError(message: string | undefined): boolean {
-  return String(message || '').includes('mongodb timeout/unavailable');
+/** The record store was unreachable; the request is retryable as sent. */
+export function isPersistenceUnavailableError(message: string | undefined): boolean {
+  return String(message || '').includes('PERSISTENCE_UNAVAILABLE');
 }
 
 export function toPrettyJson(value: unknown): string {

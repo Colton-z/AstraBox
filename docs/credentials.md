@@ -203,7 +203,7 @@ OpenSandbox adds HTTP Basic authentication to `GET`, `HEAD`, and `POST`
 requests for the configured path and its descendants, not sibling repository
 paths. No token or placeholder needs to be placed in the Git URL or sandbox
 environment. This uses the same platform path for every Agent program and for
-custom or LiteLLM-managed Git Skill sources.
+custom Git Skill sources and those selected from an extension catalog.
 
 ### 3. Use in a Session
 

@@ -265,6 +265,9 @@ class _FakeBackend:
     def __init__(self, sandbox: _FakeSandbox) -> None:
         self._sandbox = sandbox
 
+    def fit_resources(self, limits: Any, requests: Any) -> tuple[dict[str, str], dict[str, str]]:
+        return dict(limits), dict(requests)
+
     async def create_sandbox(self, spec: Any) -> Any:
         return self._sandbox
 

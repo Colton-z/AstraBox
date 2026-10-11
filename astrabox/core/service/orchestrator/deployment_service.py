@@ -1,9 +1,10 @@
 """Deployment management and invocation through the Session kernel.
 
 Deployments are trigger bindings on an Agent or an Assistant. Built-in
-schedules create durable Runs through the internal execution adapter; external
-systems can instead call an authenticated webhook or a registered channel
-provider. Every path starts a normal Session on the binding's target through
+schedules create durable Runs through the deployment's selected scheduler
+provider (:mod:`astrabox.seams.scheduler`); external systems can instead call
+an authenticated webhook or a registered channel provider. Every path starts a
+normal Session on the binding's target through
 :class:`~astrabox.core.service.orchestrator.conversation_targets.ConversationTargets`
 and uses the existing turn authority.
 
@@ -34,8 +35,9 @@ import json
 import os
 import time
 import uuid
-from datetime import datetime, timezone
+from collections.abc import AsyncIterator
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from astrabox.persistence.repository import (
     DeploymentRepository,
@@ -50,6 +52,7 @@ from astrabox.core.service.orchestrator.agent_access import is_platform_admin
 from astrabox.core.service.orchestrator.channel_ingress_service import (
     VALID_ATTENTION_POLICIES,
     ChannelIngressService,
+    binding_execution_mode,
 )
 from astrabox.core.service.orchestrator.channel_credentials import (
     ChannelCredentialService,
@@ -61,11 +64,24 @@ from astrabox.core.service.orchestrator.conversation_targets import (
     target_fields,
     target_ref,
 )
-from astrabox.core.service.orchestrator.deployment_run_runtime import (
-    PermanentDeploymentRunError,
-    deployment_run_runtime,
+from astrabox.core.service.orchestrator.deployment_scheduling import (
+    run_payload,
+    schedule_definition,
+)
+from astrabox.seams.scheduler import (
+    InvalidSchedule,
+    RunPermanentError,
+    RunRecord,
+    ScheduleCapacityExceeded,
+    SchedulerNotStarted,
+    SchedulerProvider,
+    SchedulerUnavailable,
+    configured_scheduler,
 )
 from astrabox.seams.channel import (
+    EXECUTION_ACCOUNT,
+    EXECUTION_MODES,
+    EXECUTION_OWNER,
     ChannelCallbackResponse,
     channel_if_registered,
     channel_scene_name,
@@ -111,6 +127,9 @@ def _hmac_signature(secret: str, timestamp: str, raw_body: bytes) -> str:
 _SESSION_READY_TIMEOUT_SECONDS = 120
 _SESSION_READY_POLL_SECONDS = 2.0
 
+#: ``scheduler=`` default: resolve the deployment's selected provider per call.
+_SELECTED_SCHEDULER: Any = object()
+
 
 class DeploymentService:
     def __init__(
@@ -126,7 +145,7 @@ class DeploymentService:
         agent_config: Any,
         channel_ingress: ChannelIngressService,
         channel_credentials: ChannelCredentialService | None = None,
-        run_runtime: Any | None = None,
+        scheduler: SchedulerProvider | None | Any = _SELECTED_SCHEDULER,
         session_snapshots_repo: Any | None = None,
         session_events_repo: Any | None = None,
         assistant_service_getter: Any = None,
@@ -146,7 +165,9 @@ class DeploymentService:
         # need the durable admission receipt, not the turn's output stream.
         self._dispatch_turn_input = dispatch_turn_input
         self._sessions_repo = sessions_repo
-        self._run_runtime = run_runtime or deployment_run_runtime
+        # Tests pass a provider (or ``None`` for disabled scheduling); the
+        # server resolves the deployment's selection on each call.
+        self._scheduler_override = scheduler
         self._session_snapshots_repo = (
             session_snapshots_repo
             if session_snapshots_repo is not None
@@ -165,6 +186,92 @@ class DeploymentService:
         # after the webhook's HTTP response returns. Raw asyncio.ensure_future
         # would be torn down with the request task.
         self._spawn_background_task = spawn_background_task
+
+    # ── scheduler provider access ────────────────────────────────────────────
+
+    def _scheduler(self) -> SchedulerProvider | None:
+        """The deployment's scheduler provider; ``None`` when scheduling is disabled."""
+
+        if self._scheduler_override is not _SELECTED_SCHEDULER:
+            return self._scheduler_override
+        try:
+            return configured_scheduler()
+        except SchedulerNotStarted as exc:
+            raise APIError(
+                code="SCHEDULE_UNAVAILABLE", message=str(exc), status_code=409
+            ) from exc
+
+    def _require_scheduler(self) -> SchedulerProvider:
+        provider = self._scheduler()
+        if provider is None:
+            raise APIError(
+                code="SCHEDULE_UNAVAILABLE",
+                message=(
+                    "scheduled Deployments are disabled in this deployment "
+                    "(ASTRABOX_SCHEDULER_PROVIDER=none)"
+                ),
+                status_code=409,
+            )
+        return provider
+
+    @staticmethod
+    @contextlib.asynccontextmanager
+    async def _scheduling() -> AsyncIterator[None]:
+        """Answer a scheduler provider's refusal with the public schedule errors.
+
+        The provider's own vocabulary and error text stay out of the response.
+        """
+
+        try:
+            yield
+        except InvalidSchedule as exc:
+            raise APIError(
+                code="INVALID_SCHEDULE",
+                message="schedule cron or timezone is invalid",
+                status_code=400,
+            ) from exc
+        except ScheduleCapacityExceeded as exc:
+            raise APIError(
+                code="SCHEDULE_CAPACITY_EXCEEDED",
+                message=(
+                    f"this deployment's scheduler supports at most {exc.limit} "
+                    "active schedules"
+                ),
+                status_code=409,
+            ) from exc
+        except SchedulerNotStarted as exc:
+            raise APIError(
+                code="SCHEDULE_UNAVAILABLE", message=str(exc), status_code=409
+            ) from exc
+        except SchedulerUnavailable as exc:
+            raise APIError(
+                code="SCHEDULE_EXECUTION_UNAVAILABLE",
+                message="the schedule execution store is unavailable",
+                status_code=503,
+            ) from exc
+
+    async def _apply_schedule(self, deployment: dict[str, Any]) -> None:
+        """Project a Deployment's schedule into the scheduler provider.
+
+        With scheduling disabled a disabled schedule needs no projection, so it
+        can still be edited; enabling one is refused.
+        """
+
+        definition = schedule_definition(deployment)
+        scheduler = self._scheduler()
+        if scheduler is None:
+            if definition.enabled:
+                self._require_scheduler()
+            return
+        async with self._scheduling():
+            await scheduler.apply(definition)
+
+    async def _delete_schedule(self, deployment_id: str) -> None:
+        scheduler = self._scheduler()
+        if scheduler is None:
+            return
+        async with self._scheduling():
+            await scheduler.delete(deployment_id)
 
     # ── Management (called by authenticated admin routes) ────────────────────
 
@@ -260,30 +367,81 @@ class DeploymentService:
         return participants
 
     @staticmethod
-    def _validate_execution_user(
-        value: Any, *, actor: UserContext | None, is_channel: bool,
-        previous: str = "",
-    ) -> str:
-        """Only an administrator may delegate a channel to another account."""
-        if not is_channel or not isinstance(value, str):
+    def _validate_execution_identity(
+        mode: Any,
+        user_id: Any,
+        *,
+        provider: Any,
+        scene: str,
+        on_assistant: bool,
+        actor: UserContext | None,
+        previous: tuple[str, str] = (EXECUTION_OWNER, ""),
+    ) -> tuple[str, str]:
+        """Who a channel binding's messages run as: ``(execution_mode, execution_user_id)``.
+
+        ``owner`` runs them as the target's owner, ``account`` as the one
+        account in ``execution_user_id``, and ``linked`` as each
+        participant's linked account. The mode must be one the provider
+        declares, so a binding of a provider whose work belongs to a person
+        cannot run as the owner. Only an administrator may choose anything
+        but the owner or change the choice, and an Assistant's conversations
+        always run as its owner.
+        """
+        if mode is not None and not isinstance(mode, str):
             raise APIError(
-                code="INVALID_REQUEST",
-                message="execution_user_id must be a string on a channel deployment",
+                code="INVALID_REQUEST", message="execution_mode must be a string",
                 status_code=400,
             )
-        user_id = value.strip()
-        if user_id and not user_id.isprintable():
+        if user_id is not None and not isinstance(user_id, str):
+            raise APIError(
+                code="INVALID_REQUEST", message="execution_user_id must be a string",
+                status_code=400,
+            )
+        user = str(user_id or "").strip()
+        if user and not user.isprintable():
             raise APIError(
                 code="INVALID_REQUEST", message="execution_user_id contains control characters",
                 status_code=400,
             )
-        if user_id != previous and not is_platform_admin(getattr(actor, "roles", [])):
+        chosen = str(mode or "").strip() or EXECUTION_OWNER
+        if chosen not in EXECUTION_MODES:
+            raise APIError(
+                code="INVALID_REQUEST",
+                message=f"execution_mode must be one of {list(EXECUTION_MODES)}",
+                status_code=400,
+            )
+        supported = provider.describe().execution_modes
+        if chosen not in supported:
+            raise APIError(
+                code="INVALID_REQUEST",
+                message=f"{scene!r} runs its messages only as {list(supported)}",
+                status_code=400,
+            )
+        if on_assistant and chosen != EXECUTION_OWNER:
+            raise APIError(
+                code="INVALID_REQUEST",
+                message="an Assistant's conversations always run as its owner",
+                status_code=400,
+            )
+        if chosen == EXECUTION_ACCOUNT and not user:
+            raise APIError(
+                code="INVALID_REQUEST",
+                message="execution_mode 'account' runs as execution_user_id, which is empty",
+                status_code=400,
+            )
+        if chosen != EXECUTION_ACCOUNT and user:
+            raise APIError(
+                code="INVALID_REQUEST",
+                message="execution_user_id applies only to execution_mode 'account'",
+                status_code=400,
+            )
+        if (chosen, user) != previous and not is_platform_admin(getattr(actor, "roles", [])):
             raise APIError(
                 code="FORBIDDEN",
-                message="only an administrator may change the channel execution account",
+                message="only an administrator may change who a channel's messages run as",
                 status_code=403,
             )
-        return user_id
+        return chosen, user
 
     async def list_manageable(self, user: UserContext) -> list[dict[str, Any]]:
         """List the caller's Deployments without one request per Agent."""
@@ -334,6 +492,7 @@ class DeploymentService:
         callback_base_url: str | None = None,
         schedule: Any = None,
         execution_user_id: Any = None,
+        execution_mode: Any = None,
         allowed_participants: Any = None,
         actor: UserContext | None = None,
     ) -> dict[str, Any]:
@@ -387,15 +546,17 @@ class DeploymentService:
         resolved_policy = self._validate_attention_policy(
             attention_policy, is_channel=channel_name is not None
         )
-        if on_assistant and execution_user_id:
+        if channel_provider is not None:
+            mode, execution_user = self._validate_execution_identity(
+                execution_mode, execution_user_id, provider=channel_provider, scene=scene,
+                on_assistant=on_assistant, actor=actor,
+            )
+        elif execution_mode is not None or execution_user_id is not None:
             raise APIError(
                 code="INVALID_REQUEST",
-                message="an Assistant's conversations always run as its owner",
+                message="execution_mode and execution_user_id apply only to channel scenes",
                 status_code=400,
             )
-        execution_user = self._validate_execution_user(
-            execution_user_id, actor=actor, is_channel=channel_name is not None,
-        ) if execution_user_id is not None else ""
         participants = self._validate_allowed_participants(
             allowed_participants,
             is_channel=channel_name is not None,
@@ -415,6 +576,7 @@ class DeploymentService:
         }
         normalized_credentials: dict[str, Any] | None = None
         if channel_provider is not None:
+            doc["execution_mode"] = mode
             doc["execution_user_id"] = execution_user
             doc["allowed_participants"] = participants
             descriptor = channel_provider.describe()
@@ -474,17 +636,19 @@ class DeploymentService:
                 )
             doc["name"] = schedule_name
             doc["schedule"] = self._normalize_schedule(schedule)
+            # Refuse before any write when this deployment runs no scheduler.
+            self._require_scheduler()
             # The repository is the desired-state authority. Write it first so
             # any invocation created during projection sees committed config;
             # startup reconciliation repairs a crash between these two writes.
             stored = await self._deployment_repo.upsert(deployment_id, doc)
             try:
-                await self._run_runtime.apply(doc)
+                await self._apply_schedule(doc)
                 return self._sanitize(stored)
             except Exception:
-                # The runtime restores its prior projection before raising. A
-                # fresh random ID therefore has no execution state to delete;
-                # only the desired-state write needs to be rolled back here.
+                # The provider restores its prior schedule before raising. A
+                # fresh random ID therefore has no schedule to delete; only the
+                # desired-state write needs to be rolled back here.
                 cleanup_error: Exception | None = None
                 try:
                     await self._deployment_repo.soft_delete_for_deployment(
@@ -560,16 +724,11 @@ class DeploymentService:
             "name",
             "schedule",
             "execution_user_id",
+            "execution_mode",
             "allowed_participants",
         }
         updates = {k: v for k, v in patch.items() if k in allowed}
         existing_scene = str(existing.get("scene") or "")
-        if assistant_id and updates.get("execution_user_id"):
-            raise APIError(
-                code="INVALID_REQUEST",
-                message="an Assistant's conversations always run as its owner",
-                status_code=400,
-            )
         if "allowed_participants" in updates:
             updates["allowed_participants"] = self._validate_allowed_participants(
                 updates["allowed_participants"],
@@ -577,12 +736,45 @@ class DeploymentService:
                 required=bool(assistant_id)
                 and channel_scene_name(existing_scene) is not None,
             )
-        if "execution_user_id" in updates:
-            updates["execution_user_id"] = self._validate_execution_user(
-                updates["execution_user_id"], actor=actor,
-                is_channel=channel_scene_name(existing_scene) is not None,
-                previous=str(existing.get("execution_user_id") or ""),
+        if "execution_mode" in updates or "execution_user_id" in updates:
+            existing_channel = channel_scene_name(existing_scene)
+            if existing_channel is None:
+                raise APIError(
+                    code="INVALID_REQUEST",
+                    message="execution_mode and execution_user_id apply only to channel scenes",
+                    status_code=400,
+                )
+            for key in ("execution_mode", "execution_user_id"):
+                if key in updates and not isinstance(updates[key], str):
+                    raise APIError(
+                        code="INVALID_REQUEST", message=f"{key} must be a string",
+                        status_code=400,
+                    )
+            previous_mode = binding_execution_mode(existing)
+            previous_user = (
+                str(existing.get("execution_user_id") or "").strip()
+                if previous_mode == EXECUTION_ACCOUNT else ""
             )
+            provider = channel_if_registered(existing_channel)
+            if provider is None:
+                raise APIError(
+                    code="CHANNEL_PROVIDER_UNKNOWN",
+                    message=f"no channel provider named {existing_channel!r} is registered",
+                    status_code=400,
+                )
+            mode_value = updates.get("execution_mode", previous_mode)
+            mode, user = self._validate_execution_identity(
+                mode_value,
+                updates.get(
+                    "execution_user_id",
+                    previous_user if mode_value == EXECUTION_ACCOUNT else "",
+                ),
+                provider=provider, scene=existing_scene,
+                on_assistant=bool(assistant_id), actor=actor,
+                previous=(previous_mode, previous_user),
+            )
+            updates["execution_mode"] = mode
+            updates["execution_user_id"] = user
         if "scene" in updates:
             next_scene = str(updates["scene"] or "").strip()
             if next_scene != existing_scene and SCENE_SCHEDULE in {
@@ -658,11 +850,11 @@ class DeploymentService:
             if "schedule" in updates:
                 updates["schedule"] = self._normalize_schedule(updates["schedule"])
             candidate = {**existing, **updates, "updated_at": utcnow_iso()}
-            # The execution engine validates and changes its projection first.
+            # The scheduler provider validates and changes its schedule first.
             # If the guarded product write then fails or loses a delete race,
-            # restore the old projection; startup reconciliation is the
+            # restore the old schedule; startup reconciliation is the
             # crash-safe backstop.
-            await self._run_runtime.apply(candidate)
+            await self._apply_schedule(candidate)
             try:
                 updated = await self._deployment_repo.update_for_deployment(
                     deployment_id,
@@ -676,8 +868,8 @@ class DeploymentService:
             if updated is None:
                 # The row disappeared after the visibility read. Its desired
                 # state is deletion, so leaving either old or candidate
-                # execution config would create an orphan invocation source.
-                await self._run_runtime.delete(deployment_id)
+                # schedule would create an orphan invocation source.
+                await self._delete_schedule(deployment_id)
                 self._raise_deployment_not_found()
             return self._sanitize(updated)
         updates.pop("name", None)
@@ -786,6 +978,16 @@ class DeploymentService:
                 message="schedule timezone is required",
                 status_code=400,
             )
+        # The timezone's validity is the product's rule, not one scheduler
+        # engine's: every provider receives an IANA name it can resolve.
+        try:
+            ZoneInfo(timezone_name)
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise APIError(
+                code="INVALID_SCHEDULE",
+                message=f"schedule timezone {timezone_name!r} is not an IANA timezone",
+                status_code=400,
+            ) from exc
         return {"cron": cron, "timezone": timezone_name}
 
     @staticmethod
@@ -878,7 +1080,7 @@ class DeploymentService:
             )
             self._raise_deployment_not_found()
         if str(existing.get("scene") or "") == SCENE_SCHEDULE:
-            await self._run_runtime.delete(deployment_id)
+            await self._delete_schedule(deployment_id)
         channel_name = channel_scene_name(str(existing.get("scene") or ""))
         prior_credentials: dict[str, Any] | None = None
         if channel_name is not None and get_channel(channel_name).describe().credential_fields:
@@ -917,7 +1119,7 @@ class DeploymentService:
         """Restore a known committed definition after its product write fails."""
 
         try:
-            await self._run_runtime.apply(deployment)
+            await self._apply_schedule(deployment)
         except Exception:
             logger.exception(
                 "could not restore scheduled Deployment projection %s",
@@ -1067,12 +1269,10 @@ class DeploymentService:
             deployment_id, agent_id, assistant_id=assistant_id
         )
         self._require_schedule(deployment)
-        rows = await self._run_runtime.list_runs(deployment_id, limit=limit)
-        session_ids = [
-            self._run_binding(row)[0]
-            for row in rows
-            if self._run_binding(row)[0]
-        ]
+        scheduler = self._require_scheduler()
+        async with self._scheduling():
+            records = list(await scheduler.list_runs(deployment_id, limit=limit))
+        session_ids = [record.session_id for record in records if record.session_id]
         snapshots = await self._session_snapshots_repo.get_snapshots_batch(
             session_ids,
             projection={
@@ -1086,10 +1286,10 @@ class DeploymentService:
         )
         return [
             self._render_run(
-                row,
-                snapshot=snapshots.get(self._run_binding(row)[0]),
+                record,
+                snapshot=snapshots.get(record.session_id or ""),
             )
-            for row in rows
+            for record in records
         ]
 
     async def trigger_now(
@@ -1099,8 +1299,14 @@ class DeploymentService:
             deployment_id, agent_id, assistant_id=assistant_id
         )
         self._require_schedule(deployment)
-        row = await self._run_runtime.run_now(deployment)
-        return self._render_run(row, snapshot=await self._snapshot_for_run(row))
+        scheduler = self._require_scheduler()
+        async with self._scheduling():
+            record = await scheduler.enqueue(
+                deployment_id=deployment_id,
+                trigger="manual",
+                payload=run_payload(deployment),
+            )
+        return self._render_run(record, snapshot=await self._snapshot_for_run(record))
 
     async def replay_run(
         self,
@@ -1110,25 +1316,47 @@ class DeploymentService:
         agent_id: str = "",
         assistant_id: str = "",
     ) -> dict[str, Any]:
+        """Start a new Run with the prompt a previous Run of this Deployment captured.
+
+        The new Run uses the Deployment's current target; the source Run's id is
+        recorded on it. A Run of another Deployment is the same 404 as a
+        missing one.
+        """
+
         deployment = await self._get_for_deployment(
             deployment_id, agent_id, assistant_id=assistant_id
         )
         self._require_schedule(deployment)
-        row = await self._run_runtime.replay(deployment, run_id)
-        return self._render_run(row, snapshot=await self._snapshot_for_run(row))
+        scheduler = self._require_scheduler()
+        async with self._scheduling():
+            source = await scheduler.get_run(run_id)
+        if source is None or source.invocation.deployment_id != str(deployment_id):
+            raise APIError(
+                code="NOT_FOUND", message="Deployment Run not found", status_code=404
+            )
+        captured = str(source.invocation.payload.get("input_text") or "")
+        async with self._scheduling():
+            record = await scheduler.enqueue(
+                deployment_id=deployment_id,
+                trigger="replay",
+                payload=run_payload(deployment, input_text=captured),
+                replayed_from_run_id=run_id,
+            )
+        return self._render_run(record, snapshot=await self._snapshot_for_run(record))
 
-    async def _snapshot_for_run(
-        self, run: dict[str, Any]
-    ) -> dict[str, Any] | None:
-        session_id, _ = self._run_binding(run)
-        if not session_id:
+    async def _snapshot_for_run(self, run: RunRecord) -> dict[str, Any] | None:
+        if not run.session_id:
             return None
-        return await self._session_snapshots_repo.get_snapshot(session_id)
+        return await self._session_snapshots_repo.get_snapshot(run.session_id)
 
     async def start_run_session(
         self, context: dict[str, Any], *, run_id: str
     ) -> str:
-        """DBOS step target: idempotently create one Run's Session."""
+        """Create (or find) one Run's Session; the scheduler provider calls this.
+
+        The Session's idempotency key is the Run id, so a provider that calls
+        again for the same Run gets the same Session.
+        """
 
         deployment_id = str(context.get("deployment_id") or "").strip()
         deployment = await self._deployment_repo.get_by_id(deployment_id)
@@ -1138,15 +1366,15 @@ class DeploymentService:
             or str(deployment.get("scene") or "") != SCENE_SCHEDULE
             or target_ref(deployment) != target_ref(context)
         ):
-            raise PermanentDeploymentRunError("scheduled Deployment no longer exists")
+            raise RunPermanentError("scheduled Deployment no longer exists")
         if (
             str(context.get("trigger") or "schedule") == "schedule"
             and deployment.get("enabled") is False
         ):
-            raise PermanentDeploymentRunError("scheduled Deployment is disabled")
+            raise RunPermanentError("scheduled Deployment is disabled")
         target = await self._targets.resolve(context)
         if target is None or not target.owner_user_id:
-            raise PermanentDeploymentRunError(
+            raise RunPermanentError(
                 "scheduled Deployment's Agent or owner is missing"
             )
         started = await self._targets.start_conversation(
@@ -1166,12 +1394,17 @@ class DeploymentService:
         run_id: str,
         session_id: str,
     ) -> dict[str, Any]:
-        """DBOS step target: idempotently admit one Session turn."""
+        """Admit (or find) one Run's turn; the scheduler provider calls this.
+
+        The turn's ``client_message_id`` is derived from the Run id, so a
+        provider that calls again for the same Run finds the admitted command
+        instead of admitting a second one.
+        """
 
         target = await self._targets.resolve(context)
         creator_user_id = target.owner_user_id if target is not None else ""
         if not creator_user_id:
-            raise PermanentDeploymentRunError(
+            raise RunPermanentError(
                 "Deployment Run's Agent or owner is missing"
             )
         if not await self._wait_session_ready(session_id):
@@ -1222,40 +1455,30 @@ class DeploymentService:
                 status_code=404,
             )
 
-    @staticmethod
-    def _run_binding(run: dict[str, Any]) -> tuple[str, str]:
-        attributes = run.get("attributes")
-        if not isinstance(attributes, dict):
-            attributes = {}
-        return (
-            str(attributes.get("session_id") or ""),
-            str(attributes.get("turn_id") or ""),
-        )
+    #: The public status of a Run whose turn the bound Session does not yet
+    #: describe, by the provider's dispatch state.
+    _DISPATCH_STATUS = {
+        "QUEUED": "QUEUED",
+        "DISPATCHING": "RUNNING",
+        "DISPATCHED": "COMPLETED",
+        "FAILED": "FAILED",
+        "CANCELLED": "CANCELLED",
+    }
 
     @classmethod
     def _render_run(
-        cls, run: dict[str, Any], *, snapshot: dict[str, Any] | None
+        cls, run: RunRecord, *, snapshot: dict[str, Any] | None
     ) -> dict[str, Any]:
-        workflow_id = str(run.get("workflow_id") or "")
-        dbos_status = str(run.get("status") or "")
-        attributes = run.get("attributes")
-        if not isinstance(attributes, dict):
-            attributes = {}
-        context = deployment_run_runtime.context_from_status(run)
-        session_id, turn_id = cls._run_binding(run)
+        """The public Run: the provider's dispatch state, then the bound Session's turn."""
+
+        invocation = run.invocation
+        session_id = run.session_id or ""
+        turn_id = run.turn_id or ""
         if isinstance(snapshot, dict) and session_id and not turn_id:
             # A Run owns a fresh Session, so its in-flight turn is unambiguous
-            # before the durable workflow has copied the turn ID to its ledger.
+            # before the provider has recorded the turn id.
             turn_id = str(snapshot.get("current_turn_id") or "")
-        status = {
-            "ENQUEUED": "QUEUED",
-            "DELAYED": "QUEUED",
-            "PENDING": "RUNNING",
-            "SUCCESS": "COMPLETED",
-            "ERROR": "FAILED",
-            "MAX_RECOVERY_ATTEMPTS_EXCEEDED": "FAILED",
-            "CANCELLED": "CANCELLED",
-        }.get(dbos_status, "UNKNOWN")
+        status = cls._DISPATCH_STATUS.get(run.state, "UNKNOWN")
         error: str | None = None
         if isinstance(snapshot, dict) and turn_id:
             if str(snapshot.get("last_turn_id") or "") == turn_id:
@@ -1268,59 +1491,28 @@ class DeploymentService:
                     if snapshot.get("active_interaction_id")
                     else "RUNNING"
                 )
-        if error is None and status == "FAILED" and run.get("error") is not None:
-            # The durable engine stores Python exception details for operators.
-            # They are implementation diagnostics, not part of the Run API.
+        if error is None and status == "FAILED" and run.failed:
+            # The provider keeps its own failure detail for operators; it is
+            # not part of the Run API.
             error = "Deployment Run execution failed"
-
-        def timestamp(value: Any) -> str | None:
-            if value is None:
-                return None
-            try:
-                return datetime.fromtimestamp(
-                    int(value) / 1000, tz=timezone.utc
-                ).isoformat()
-            except (TypeError, ValueError, OverflowError):
-                return None
-
-        trigger = str(
-            attributes.get("trigger") or context.get("trigger") or "schedule"
-        )
-        scheduled_for = str(attributes.get("scheduled_for") or "").strip() or None
-        if scheduled_for is None and trigger == "schedule":
-            workflow_input = run.get("input")
-            args = workflow_input.get("args") if isinstance(workflow_input, dict) else None
-            if isinstance(args, (list, tuple)) and args and isinstance(args[0], datetime):
-                value = args[0]
-                scheduled_for = (
-                    value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
-                ).astimezone(timezone.utc).isoformat()
+        payload = invocation.payload
         return {
-            "run_id": workflow_id,
-            "deployment_id": str(
-                attributes.get("deployment_id") or context.get("deployment_id") or ""
-            ),
-            "agent_id": str(
-                attributes.get("agent_id") or context.get("agent_id") or ""
-            )
-            or None,
-            "assistant_id": str(
-                attributes.get("assistant_id") or context.get("assistant_id") or ""
-            )
-            or None,
-            "trigger": trigger,
+            "run_id": invocation.run_id,
+            "deployment_id": invocation.deployment_id,
+            "agent_id": str(payload.get("agent_id") or "") or None,
+            "assistant_id": str(payload.get("assistant_id") or "") or None,
+            "trigger": invocation.trigger,
             "status": status,
-            "scheduled_for": scheduled_for,
-            "replayed_from_run_id": str(
-                attributes.get("replayed_from_run_id")
-                or context.get("replayed_from_run_id")
-                or ""
-            )
-            or None,
+            "scheduled_for": (
+                invocation.scheduled_for.isoformat()
+                if invocation.scheduled_for is not None
+                else None
+            ),
+            "replayed_from_run_id": invocation.replayed_from_run_id,
             "session_id": session_id or None,
             "turn_id": turn_id or None,
             "error": error,
-            "created_at": timestamp(run.get("created_at")),
+            "created_at": run.created_at.isoformat() if run.created_at is not None else None,
         }
 
     # ── internals ────────────────────────────────────────────────────────────
@@ -1467,6 +1659,8 @@ class DeploymentService:
         clean = dict(doc)
         clean.pop("_id", None)
         clean.pop("source_cursor", None)
+        if channel_scene_name(str(clean.get("scene") or "")) is not None:
+            clean["execution_mode"] = binding_execution_mode(clean)
         if not include_secret:
             clean.pop("secret", None)
         return clean

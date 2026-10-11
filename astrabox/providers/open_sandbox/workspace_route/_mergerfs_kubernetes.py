@@ -7,11 +7,10 @@ import time
 from datetime import datetime
 from typing import Any
 
-from astrabox.core.service.orchestrator.runtime.storage.mergerfs import (
+from astrabox.providers.open_sandbox.workspace_route.mergerfs import (
     CLI,
     INSTALLATION,
     MANAGED,
-    OWNER,
     SANDBOX_BACKEND,
     SANDBOX_ID,
     STORAGE_ID,
@@ -19,6 +18,7 @@ from astrabox.core.service.orchestrator.runtime.storage.mergerfs import (
     verify_labels,
     verify_status,
 )
+from astrabox.seams.storage import WORKSPACE_ASSIGNMENT_METADATA_KEY
 
 HOSTNAME = "kubernetes.io/hostname"
 
@@ -349,7 +349,7 @@ class KubernetesMounts:
         """
         digest = hashlib.sha256(assignment_id.encode()).hexdigest()
         name = "astrabox-view-" + digest[:32]
-        labels = {MANAGED: "mergerfs", OWNER: digest[:63]}
+        labels = {MANAGED: "mergerfs", WORKSPACE_ASSIGNMENT_METADATA_KEY: digest[:63]}
         consumers = [
             pod
             for pod in self.api.list_namespaced_pod(self.namespace, _request_timeout=30).items
@@ -395,7 +395,11 @@ class KubernetesMounts:
             raise RuntimeError(f"cannot attach sandbox to missing workspace PVC/{name}")
         verify_labels(
             claim.metadata.labels,
-            {MANAGED: "mergerfs", OWNER: digest[:63], INSTALLATION: installation},
+            {
+                MANAGED: "mergerfs",
+                WORKSPACE_ASSIGNMENT_METADATA_KEY: digest[:63],
+                INSTALLATION: installation,
+            },
             name,
         )
         desired = {

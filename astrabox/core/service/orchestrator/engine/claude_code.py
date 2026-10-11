@@ -99,6 +99,23 @@ class ClaudeCodeEngineAdapter(EngineAdapter):
             return True
         raise ChildRunProjectionError(f"Claude task has no activity status for event {event!r}")
 
+    def child_run_fact_reopens(self, data: dict[str, Any]) -> bool:
+        """Revive a closed task only on a fact that changes its state.
+
+        ``TaskProgressMessage`` is emitted while a task is in progress, and a
+        ``TaskUpdatedMessage`` patch carries only the fields that changed
+        (``claude_agent_sdk.types``). A progress report or a patch that names
+        no status therefore leaves a terminal status standing: journaled after
+        it, such a fact describes the activation that status ended.
+        ``task_started`` and a patch to a live status change the state.
+        """
+        engine_event = str(data.get("engineEvent") or "").strip()
+        if engine_event == "task_progress":
+            return False
+        if engine_event == "task_updated":
+            return bool(str(data.get("engineStatus") or "").strip())
+        return True
+
     @property
     def engine_kind(self) -> EngineKind:
         return "claude_code"

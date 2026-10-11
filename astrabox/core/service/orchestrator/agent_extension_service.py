@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from typing import Any
 
 from astrabox.common.logger.logger_factory import get_logger
@@ -14,13 +15,15 @@ from astrabox.core.service.orchestrator.agent_access import can_manage_agent
 from astrabox.core.service.orchestrator.mcp_assignments import (
     AGENT_MCP_ASSIGNMENTS_FIELD,
     assignments_for_provider,
+    normalize_assignments,
     replace_provider_assignments,
 )
 from astrabox.persistence.repository import AgentRepository
 from astrabox.seams.extensions import (
+    EXTENSION_PROVIDER_NONE,
     ExtensionCatalog,
     ExtensionProvider,
-    extension_provider_for_name,
+    selected_extension_provider,
 )
 
 logger = get_logger(__name__)
@@ -57,15 +60,199 @@ def _version(agent: dict[str, Any]) -> int:
         return 1
 
 
-def configured_extension_provider() -> ExtensionProvider:
-    """The deployment's extension provider, resolved through the extension seam."""
+def configured_extension_provider() -> ExtensionProvider | None:
+    """The deployment's extension provider, or ``None`` when it runs no catalog.
+
+    Resolved from ``ASTRABOX_EXTENSION_PROVIDER`` through the extension seam on
+    every call; ``none`` answers ``None``.
+    """
 
     from astrabox.common.utils.settings import load_astrabox_settings
 
     settings = load_astrabox_settings()
-    return extension_provider_for_name(
+    return selected_extension_provider(
         str(getattr(settings, "extension_provider", "") or "").strip()
     )
+
+
+def extension_catalog_enabled() -> bool:
+    """Whether the deployment runs an extension catalog at all.
+
+    Read from the setting alone, so a caller that only needs this answer does
+    not resolve a provider; startup has already refused a setting that names
+    no installed provider.
+    """
+
+    from astrabox.common.utils.settings import load_astrabox_settings
+
+    setting = str(getattr(load_astrabox_settings(), "extension_provider", "") or "")
+    return setting.strip().lower() != EXTENSION_PROVIDER_NONE
+
+
+@dataclass(frozen=True)
+class CatalogSelection:
+    """What a record has selected from extension catalogs, as it stores it.
+
+    ``mcp_servers`` are the ``(provider, item_id)`` assignment rows and
+    ``skill_ids`` / ``skills`` the Skill snapshot a catalog selection compiled.
+    Agents, Assistants and the Assistant-defaults layer all store these two
+    fields.
+    """
+
+    mcp_servers: tuple[tuple[str, str], ...] = ()
+    skill_ids: tuple[str, ...] = ()
+    skills: tuple[str, ...] = ()
+
+    def __bool__(self) -> bool:
+        return bool(self.mcp_servers or self.skill_ids or self.skills)
+
+    def describe(self) -> str:
+        """The selection in words, for a message that names what was refused."""
+
+        parts: list[str] = []
+        providers = sorted({provider for provider, _item_id in self.mcp_servers})
+        if providers:
+            parts.append("MCP servers from " + ", ".join(repr(name) for name in providers))
+        if self.skill_ids or self.skills:
+            parts.append("catalog Skills")
+        return " and ".join(parts)
+
+
+def _stored_strings(raw: Any) -> tuple[str, ...]:
+    if not isinstance(raw, list):
+        return ()
+    return tuple(text for text in (str(value or "").strip() for value in raw) if text)
+
+
+def catalog_selection(record: Mapping[str, Any]) -> CatalogSelection:
+    """Read the catalog selection a stored Agent, Assistant or layer holds."""
+
+    snapshot = record.get(AGENT_EXTENSION_CATALOG_FIELD)
+    skills = snapshot if isinstance(snapshot, Mapping) else {}
+    return CatalogSelection(
+        mcp_servers=tuple(normalize_assignments(record.get(AGENT_MCP_ASSIGNMENTS_FIELD))),
+        skill_ids=_stored_strings(skills.get("skill_ids")),
+        skills=_stored_strings(skills.get("skills")),
+    )
+
+
+def extension_catalog_disabled(message: str) -> APIError:
+    """``EXTENSION_CATALOG_DISABLED``: the deployment runs no extension catalog."""
+
+    return APIError(code="EXTENSION_CATALOG_DISABLED", message=message, status_code=409)
+
+
+def catalog_selection_in_use(
+    record: Mapping[str, Any],
+    *,
+    owner: str,
+    admits_work: bool,
+) -> bool:
+    """Whether ``record``'s catalog selection takes part in a runtime view.
+
+    It always does while the deployment runs an extension catalog. Without one
+    nothing can resolve it, so a view that admits new work (a conversation, a
+    prepared runtime) refuses with ``EXTENSION_CATALOG_DISABLED`` rather than
+    running with fewer tools than the record names, and a view that only reads
+    leaves the selection out, so existing conversations stay readable. ``owner``
+    names the record in that refusal.
+    """
+
+    selection = catalog_selection(record)
+    if not selection or extension_catalog_enabled():
+        return True
+    if admits_work:
+        raise extension_catalog_disabled(
+            f"the catalog selection of {owner} ({selection.describe()}) needs an "
+            "extension catalog, and this deployment runs none "
+            "(ASTRABOX_EXTENSION_PROVIDER=none). Remove the selection on its "
+            "console page, or select an extension provider."
+        )
+    return False
+
+
+def clear_catalog_selection(*, mcp_server_ids: list[str], skill_ids: list[str]) -> dict[str, Any]:
+    """The fields a save writes when the deployment runs no extension catalog.
+
+    The only selection a record can then be given is none, and saving it
+    removes every catalog selection the record holds, whichever provider it
+    came from. Anything else is refused with ``EXTENSION_CATALOG_DISABLED``.
+    """
+
+    if _clean_ids(mcp_server_ids) or _clean_ids(skill_ids):
+        raise extension_catalog_disabled(
+            "this deployment runs no extension catalog (ASTRABOX_EXTENSION_PROVIDER=none); "
+            "only an empty selection, which removes the stored one, can be saved"
+        )
+    return {
+        AGENT_EXTENSION_CATALOG_FIELD: {"skill_ids": [], "skills": []},
+        AGENT_MCP_ASSIGNMENTS_FIELD: [],
+    }
+
+
+def refuse_catalog_read() -> APIError:
+    """The refusal a catalog read answers when the deployment runs no catalog."""
+
+    return extension_catalog_disabled(
+        "this deployment runs no extension catalog (ASTRABOX_EXTENSION_PROVIDER=none)"
+    )
+
+
+async def warn_about_catalog_selections_without_a_catalog() -> None:
+    """Name each record that still holds a catalog selection while no catalog runs.
+
+    Startup proceeds: an operator may stop running a catalog while keeping the
+    records that selected from it. Each enabled Agent, each Assistant and the
+    deployment's Assistant defaults named here fail new work with
+    ``EXTENSION_CATALOG_DISABLED`` until the selection is removed; this names
+    them before anyone meets that.
+    """
+
+    from astrabox.persistence.repository.assistant_catalog_repository import (
+        AssistantCatalogRepository,
+    )
+    from astrabox.persistence.repository.assistant_defaults_repository import (
+        DEPLOYMENT_SCOPE,
+        AssistantDefaultsRepository,
+    )
+
+    if extension_catalog_enabled():
+        return
+    named: list[tuple[str, str, CatalogSelection]] = []
+    for agent in await AgentRepository().list_catalog_selections():
+        selection = catalog_selection(agent)
+        if selection and agent.get("enabled") is not False:
+            named.append((
+                f"Agent {agent.get('name')!r} ({agent.get('agent_id')})",
+                "its new conversations fail",
+                selection,
+            ))
+    for assistant in await AssistantCatalogRepository().list_catalog_selections():
+        selection = catalog_selection(assistant)
+        if selection:
+            named.append((
+                f"Assistant {assistant.get('display_name')!r} ({assistant.get('assistant_id')})",
+                "its new conversations fail",
+                selection,
+            ))
+    layer = await AssistantDefaultsRepository().get_layer(DEPLOYMENT_SCOPE) or {}
+    selection = catalog_selection(layer)
+    if selection:
+        named.append((
+            "The deployment's Assistant defaults",
+            "every Assistant's new conversations fail",
+            selection,
+        ))
+    for owner, consequence, selected in named:
+        logger.warning(
+            "%s selected %s, but ASTRABOX_EXTENSION_PROVIDER=none runs no "
+            "extension catalog: %s with EXTENSION_CATALOG_DISABLED until that "
+            "selection is removed on its console page or an extension provider "
+            "is selected",
+            owner,
+            selected.describe(),
+            consequence,
+        )
 
 
 async def compile_extension_selection(
@@ -147,8 +334,11 @@ class AgentExtensionService:
         self._configured_provider = provider
         self._schedule_runtime_reconciliation = schedule_runtime_reconciliation
 
-    def provider(self) -> ExtensionProvider:
-        """Resolve the configured provider through the extension seam."""
+    def provider(self) -> ExtensionProvider | None:
+        """Resolve the configured provider through the extension seam.
+
+        ``None`` when the deployment runs no extension catalog.
+        """
 
         if self._configured_provider is not None:
             return self._configured_provider
@@ -157,6 +347,8 @@ class AgentExtensionService:
     async def get_catalog(self, user: UserContext, agent_id: str) -> dict[str, Any]:
         agent = await self.assert_can_manage(user, agent_id)
         provider = self.provider()
+        if provider is None:
+            raise refuse_catalog_read()
         catalog = await provider.list_catalog(org_id=_org_id(user, agent))
         return self._view(agent, catalog, provider.name)
 
@@ -175,6 +367,12 @@ class AgentExtensionService:
         # cannot inspect catalog availability or consume provider capacity.
         authorized = await self.assert_can_manage(user, agent_id)
         provider = self.provider()
+        if provider is None:
+            return await self._clear_selection(
+                user, agent_id, clear_catalog_selection(
+                    mcp_server_ids=mcp_server_ids, skill_ids=skill_ids
+                )
+            )
         catalog, snapshot, selected_mcp = await compile_extension_selection(
             provider,
             org_id=_org_id(user, authorized),
@@ -218,6 +416,36 @@ class AgentExtensionService:
         raise _failure(
             "AGENT_VERSION_CONFLICT",
             "Agent was modified concurrently; reload and save extensions again",
+            409,
+        )
+
+    async def _clear_selection(
+        self, user: UserContext, agent_id: str, cleared: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Remove every catalog selection from the Agent; no catalog runs to check it."""
+
+        for _ in range(3):
+            agent = await self.assert_can_manage(user, agent_id)
+            if not catalog_selection(agent):
+                return self._view(agent, ExtensionCatalog(), "")
+            version = _version(agent)
+            applied = await self._agents.compare_and_update_agent(
+                str(agent.get("agent_id") or agent_id),
+                expected={"version": version},
+                updates={
+                    **cleared,
+                    "version": version + 1,
+                    "updated_at": utcnow_iso(),
+                    "updated_by": user.user_id,
+                },
+            )
+            if applied:
+                updated = await self.assert_can_manage(user, agent_id)
+                self._schedule_runtime_reconciliation_after_write(agent, updated)
+                return self._view(updated, ExtensionCatalog(), "")
+        raise _failure(
+            "AGENT_VERSION_CONFLICT",
+            "Agent was modified concurrently; reload and remove its catalog selection again",
             409,
         )
 
@@ -291,7 +519,15 @@ def _org_id(user: UserContext, agent: dict[str, Any]) -> str:
 __all__ = [
     "AGENT_EXTENSION_CATALOG_FIELD",
     "AgentExtensionService",
+    "CatalogSelection",
+    "catalog_selection",
+    "catalog_selection_in_use",
+    "clear_catalog_selection",
     "compile_extension_selection",
     "configured_extension_provider",
+    "extension_catalog_disabled",
+    "extension_catalog_enabled",
     "extension_catalog_view",
+    "refuse_catalog_read",
+    "warn_about_catalog_selections_without_a_catalog",
 ]

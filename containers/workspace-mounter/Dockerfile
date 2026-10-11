@@ -23,5 +23,5 @@ RUN --mount=type=bind,from=mergerfs-release,source=/mergerfs.tar.gz,target=/tmp/
     tar -xzf /tmp/mergerfs.tar.gz -C /
 COPY --from=mergerfs-license --chmod=0644 /LICENSE /usr/share/doc/mergerfs/LICENSE
 
-COPY --chmod=u=rwX,go=rX astrabox/core/service/orchestrator/runtime/storage/mergerfs_node.py /opt/astrabox/mergerfs_node.py
+COPY --chmod=u=rwX,go=rX astrabox/providers/open_sandbox/workspace_route/mergerfs_node.py /opt/astrabox/mergerfs_node.py
 ENTRYPOINT ["python3", "-u", "/opt/astrabox/mergerfs_node.py"]

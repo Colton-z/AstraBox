@@ -49,6 +49,13 @@ class AssistantDefaults(AssistantDefaultsFields):
     effective_environment_name: str | None = None
     #: The enabled Environments whose engine runs Assistants.
     assistant_environment_names: list[str]
+    #: The layer's MCP servers selected from extension catalogs, as stored:
+    #: ``{provider, item_id}`` rows. Written only through ``/extensions``.
+    mcp_assignments: list[dict[str, Any]] | None = None
+    #: The layer's Skills selected from the extension catalog, as stored:
+    #: ``skill_ids`` and the Git ``skills`` they compiled to. Written only
+    #: through ``/extensions``.
+    extension_catalog: dict[str, Any] | None = None
     updated_at: str | None = None
 
 

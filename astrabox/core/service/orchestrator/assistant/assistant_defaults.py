@@ -23,9 +23,12 @@ from astrabox.core.service.orchestrator.assistant.assistant_layers import (
 )
 from astrabox.core.service.orchestrator.agent_extension_service import (
     AGENT_EXTENSION_CATALOG_FIELD,
+    catalog_selection,
+    clear_catalog_selection,
     compile_extension_selection,
     configured_extension_provider,
     extension_catalog_view,
+    refuse_catalog_read,
 )
 from astrabox.core.service.orchestrator.mcp_assignments import (
     AGENT_MCP_ASSIGNMENTS_FIELD,
@@ -36,6 +39,7 @@ from astrabox.persistence.repository.assistant_defaults_repository import (
     AssistantDefaultsRepository,
 )
 from astrabox.persistence.repository.environment_repository import EnvironmentRepository
+from astrabox.seams.extensions import ExtensionCatalog
 
 #: What a layer stores: its authored fields and its catalog selection.
 _STORED_FIELDS = (*LAYER_FIELDS, AGENT_EXTENSION_CATALOG_FIELD, AGENT_MCP_ASSIGNMENTS_FIELD)
@@ -76,13 +80,19 @@ class AssistantDefaultsService:
         return await self._environment_repo.list_all()
 
     async def view(self) -> dict[str, Any]:
-        """The deployment's layer, the Environment new Assistants would use, and the choices."""
+        """The deployment's layer, the Environment new Assistants would use, and the choices.
+
+        The layer's catalog selection is reported as stored, so a deployment
+        that runs no extension catalog can still show what the layer selected.
+        """
 
         layer = await self._repo.get_layer(DEPLOYMENT_SCOPE) or {}
         environments = await self._environments()
         layers = await inherited_layers(repo=self._repo)
         return {
             **{field: layer.get(field) for field in LAYER_FIELDS},
+            AGENT_MCP_ASSIGNMENTS_FIELD: layer.get(AGENT_MCP_ASSIGNMENTS_FIELD),
+            AGENT_EXTENSION_CATALOG_FIELD: layer.get(AGENT_EXTENSION_CATALOG_FIELD),
             "effective_environment_name": await default_environment_name(layers, environments),
             "assistant_environment_names": await assistant_environment_names(environments),
             "updated_at": layer.get("updated_at"),
@@ -162,6 +172,8 @@ class AssistantDefaultsService:
         """The extension catalog with the deployment layer's selection marked."""
 
         provider = configured_extension_provider()
+        if provider is None:
+            raise refuse_catalog_read()
         catalog = await provider.list_catalog(org_id=default_org_id())
         layer = await self._repo.get_layer(DEPLOYMENT_SCOPE) or {}
         return extension_catalog_view(layer, catalog, provider.name)
@@ -169,9 +181,22 @@ class AssistantDefaultsService:
     async def set_extensions(
         self, user: UserContext, *, mcp_server_ids: list[str], skill_ids: list[str]
     ) -> dict[str, Any]:
-        """Select catalog MCP servers and Skills for every Assistant in the deployment."""
+        """Select catalog MCP servers and Skills for every Assistant in the deployment.
+
+        Without an extension catalog only an empty selection is accepted, and it
+        removes every catalog selection the layer holds.
+        """
 
         provider = configured_extension_provider()
+        if provider is None:
+            cleared = clear_catalog_selection(mcp_server_ids=mcp_server_ids, skill_ids=skill_ids)
+            current = await self._repo.get_layer(DEPLOYMENT_SCOPE) or {}
+            if not catalog_selection(current):
+                return extension_catalog_view(current, ExtensionCatalog(), "")
+            stored = {field: current.get(field) for field in _STORED_FIELDS}
+            stored.update(cleared)
+            updated = await self._repo.put_layer(DEPLOYMENT_SCOPE, stored, updated_by=user.user_id)
+            return extension_catalog_view(updated, ExtensionCatalog(), "")
         catalog, snapshot, selected_mcp = await compile_extension_selection(
             provider, org_id=default_org_id(), mcp_server_ids=mcp_server_ids, skill_ids=skill_ids
         )

@@ -223,7 +223,7 @@
       },
       "tools": {
         "label": "MCP、Skill 与 Plugin",
-        "description": "Agent Runtime 使用的扩展能力；LiteLLM 托管配置与自定义配置合并生效"
+        "description": "Agent Runtime 加载的扩展能力"
       },
       "workspace": {
         "label": "工作区配置",
@@ -282,11 +282,15 @@
       },
       "skills": {
         "label": "自定义 Skill",
-        "help": "填写 Skill 来源，与 LiteLLM 托管配置中的选择合并；完全相同的来源会去重"
+        "help": "填写 Skill 来源，与从 {{catalog}} 中选择的 Skill 合并；完全相同的来源会去重",
+        "label_alone": "Skill",
+        "help_alone": "填写 Skill 来源；完全相同的来源会去重"
       },
       "mcp_servers": {
         "label": "自定义 MCP",
-        "help": "填写服务配置，与 LiteLLM 托管配置中的选择合并；服务名称不能重复"
+        "help": "填写服务配置，与从 {{catalog}} 中选择的服务合并；服务名称不能重复",
+        "label_alone": "MCP 服务",
+        "help_alone": "填写服务配置；服务名称不能重复"
       },
       "default_repo": {
         "label": "项目代码仓库"

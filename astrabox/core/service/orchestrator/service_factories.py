@@ -68,9 +68,10 @@ class DeploymentServiceReplacement(Protocol):
     Runtime protocol checks establish method presence; type checking establishes
     the keyword signatures. Implementations own persistence, but scoped update
     and delete MUST enforce the Agent or Assistant boundary themselves rather
-    than treating ``agent_id``/``assistant_id`` as informational. Execution-account changes receive
-    the authenticated ``actor`` and must enforce administrator authorization.
-    Calls without ``execution_user_id`` retain their existing keyword shape.
+    than treating ``agent_id``/``assistant_id`` as informational. A create or
+    update naming ``execution_mode`` or ``execution_user_id`` receives the
+    authenticated ``actor`` and must enforce administrator authorization; calls
+    without either keep their existing keyword shape.
     """
 
     async def assert_can_manage_agent(
@@ -103,6 +104,7 @@ class DeploymentServiceReplacement(Protocol):
         callback_base_url: str | None = None,
         schedule: Any = None,
         execution_user_id: Any = None,
+        execution_mode: Any = None,
         allowed_participants: Any = None,
         actor: Any = None,
     ) -> dict[str, Any]: ...

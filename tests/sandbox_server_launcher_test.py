@@ -1038,6 +1038,8 @@ class _FakeDockerDaemon:
         self.created: dict[str, dict[str, Any]] = {}
         self.published: dict[str, dict[str, list[dict[str, str]]]] = {}
         self.removed: list[str] = []
+        #: Resource updates applied to a running container, by container id.
+        self.updates: dict[str, dict[str, Any]] = {}
         self.api = SimpleNamespace(
             create_host_config=lambda **kwargs: dict(kwargs),
             create_container=self._create_container,
@@ -1115,6 +1117,9 @@ class _FakeDockerDaemon:
 
             def remove(self, force: bool = False) -> None:
                 daemon.removed.append(container_id)
+
+            def update(self, **resources: Any) -> None:
+                daemon.updates.setdefault(container_id, {}).update(resources)
 
         return _Container()
 

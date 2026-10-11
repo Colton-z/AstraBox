@@ -21,8 +21,9 @@ never decides that a record with an ``id`` is a response.
 
 ``PtyTerminal`` in :mod:`.pty_terminal` serves the other shape — an
 interactive shell whose output is bytes for a human and whose completion is a
-sentinel — and stays separate. The two share endpoint and header resolution,
-not a protocol.
+sentinel — and stays separate. The two share endpoint and header resolution
+and the connection that ends TCP after execd's closing handshake, not a
+protocol.
 """
 
 from __future__ import annotations
@@ -35,10 +36,9 @@ from typing import Any
 
 import httpx
 import websockets
-from websockets.asyncio.client import ClientConnection
-from websockets.frames import Frame, Opcode
 
 from astrabox.core.service.orchestrator.runtime.pty_terminal import (
+    ExecdClientConnection,
     ResolvedExecdEndpoint,
     websocket_header_kwargs,
 )
@@ -75,33 +75,6 @@ class ExecdChannelDetached(RuntimeError):
 
 class ExecdChannelAlreadyAttached(RuntimeError):
     """Another live connection holds the pipe's exclusive read/write slot."""
-
-
-class _ExecdConnection(ClientConnection):
-    """A client connection that ends TCP itself once the closing handshake is done.
-
-    RFC 6455 §7.1.1 has the server close the TCP connection first once both
-    Close frames have been exchanged, and lets the client close it when the
-    server has not. execd answers a Close frame but never closes its side, and
-    websockets' ``close()`` otherwise waits its whole ``close_timeout`` for
-    that FIN on every detach of a live pipe. The handshake itself is still
-    awaited: nothing here closes the socket before
-    the peer's Close frame has answered the one this side sent.
-    """
-
-    def process_event(self, event: Any) -> None:
-        super().process_event(event)
-        protocol = self.protocol
-        if (
-            isinstance(event, Frame)
-            and event.opcode is Opcode.CLOSE
-            and protocol.close_sent is not None
-            and protocol.close_rcvd is not None
-            and not self.transport.is_closing()
-        ):
-            # The Close this side sent, or the echo the protocol just
-            # queued, is flushed before the transport closes.
-            self.transport.close()
 
 
 class ExecdJsonLineChannel:
@@ -227,7 +200,7 @@ class ExecdJsonLineChannel:
                 open_timeout=CONNECT_TIMEOUT_SECONDS,
                 close_timeout=CLOSE_TIMEOUT_SECONDS,
                 max_size=4 * 1024 * 1024,
-                create_connection=_ExecdConnection,
+                create_connection=ExecdClientConnection,
                 **websocket_header_kwargs(self.endpoint.headers),
             )
             self._reader_task = asyncio.create_task(

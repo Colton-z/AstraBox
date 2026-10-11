@@ -14,8 +14,14 @@ import { getAdminVaultCatalog } from '@/api';
 import { Checkbox } from '@/components/ui/checkbox';
 import type { EnvironmentConfig, VaultSummary } from '@/types';
 import { useFrontendReleaseHold } from '@/hooks/useFrontendReleaseHold';
+import { useExtensionProvider } from '@/hooks/useExtensionProvider';
 
 import { CatalogExtensionField, sameIds } from './CatalogExtensionField';
+import {
+  UnavailableCatalogSelection,
+  catalogSelectionOf,
+  hasCatalogSelection,
+} from './UnavailableCatalogSelection';
 import {
   ConsoleEditSections,
   ConsoleErrorState,
@@ -122,7 +128,8 @@ function baseSection(view: AssistantDefaults): EditSectionSpec {
  * Assistant gets, the deployment's own or picked from the extension catalog.
  * Assistants read this live, so a save reaches each on its next start. The
  * extension fields are the ones the chosen Environment's program reads, so
- * they wait for an Environment.
+ * they wait for an Environment. Without an extension catalog the layer's own
+ * fields stand alone, and a selection it still holds is shown as unavailable.
  */
 export default function AssistantDefaultsPage() {
   const { t } = useTranslation();
@@ -138,6 +145,12 @@ export default function AssistantDefaultsPage() {
   const [mcpIds, setMcpIds] = useState<string[]>([]);
   const [skillIds, setSkillIds] = useState<string[]>([]);
   const [catalogLoading, setCatalogLoading] = useState(false);
+  const [removingSelection, setRemovingSelection] = useState(false);
+  const {
+    provider: extensionProvider,
+    error: extensionProviderError,
+    retry: retryExtensionProvider,
+  } = useExtensionProvider();
   const [vaults, setVaults] = useState<VaultSummary[] | null>(null);
   useEffect(() => {
     void getAdminVaultCatalog().then((found) => setVaults(found.vaults), (e: Error) => setSaveError(e.message));
@@ -166,7 +179,10 @@ export default function AssistantDefaultsPage() {
       setCatalogLoading(false);
     }
   }, []);
-  useEffect(() => { void load(); void loadCatalog(); }, [load, loadCatalog]);
+  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    if (extensionProvider) void loadCatalog();
+  }, [extensionProvider, loadCatalog]);
   useEffect(() => {
     void loadAssistantEnvironments().then(setEnvironments, (e: Error) => setSaveError(e.message));
   }, []);
@@ -222,6 +238,22 @@ export default function AssistantDefaultsPage() {
     }
   };
 
+  /** Drop a selection no catalog can serve; the server accepts only this then. */
+  const removeCatalogSelection = async () => {
+    setRemovingSelection(true);
+    setSaveError('');
+    try {
+      await setAssistantDefaultsExtensions({ mcp_server_ids: [], skill_ids: [] });
+      // The view only: re-reading through `load` would reset the draft and
+      // discard edits pending in the cards.
+      setView(await getAssistantDefaults());
+    } catch (e) {
+      setSaveError((e as Error).message);
+    } finally {
+      setRemovingSelection(false);
+    }
+  };
+
   const title = t('manage:assistant_defaults.title');
   if (error) {
     return (
@@ -230,16 +262,40 @@ export default function AssistantDefaultsPage() {
       </ConsoleRecordPage>
     );
   }
-  if (!view || !draft) {
+  if (extensionProviderError && extensionProvider === undefined) {
+    return (
+      <ConsoleRecordPage title={title}>
+        <ConsoleErrorState
+          title={t('manage:assistant_defaults.load_failed')}
+          detail={extensionProviderError.message}
+          onRetry={retryExtensionProvider}
+        />
+      </ConsoleRecordPage>
+    );
+  }
+  // Which catalog the fields stand beside decides how they are laid out, so the
+  // page waits for that answer rather than redrawing the card once it lands.
+  if (!view || !draft || extensionProvider === undefined) {
     return (
       <ConsoleRecordPage title={title}>
         <ConsoleRecordLoading />
       </ConsoleRecordPage>
     );
   }
+  const staleSelection = extensionProvider === null
+    ? catalogSelectionOf(view as unknown as Record<string, unknown>)
+    : null;
   return (
     <ConsoleRecordPage title={title} lede={t('manage:assistant_defaults.lede')}>
       {saveError && <ErrorNote>{saveError}</ErrorNote>}
+      {staleSelection && hasCatalogSelection(staleSelection) && (
+        <UnavailableCatalogSelection
+          selection={staleSelection}
+          defaults
+          removing={removingSelection}
+          onRemove={() => void removeCatalogSelection()}
+        />
+      )}
       {view.assistant_environment_names.length === 0 && (
         <ErrorNote title={t('manage:assistant_defaults.no_environment_title')}>
           {t('manage:assistant_defaults.no_environment')}
@@ -280,12 +336,14 @@ export default function AssistantDefaultsPage() {
             );
           }
           if (spec.key !== 'mcp_servers' && spec.key !== 'skills') return customField;
+          if (!extensionProvider) return customField;
           const isMcp = spec.key === 'mcp_servers';
           const kind = isMcp ? 'mcp' : 'skills';
           return (
             <CatalogExtensionField
               kind={kind}
               id={`assistant-defaults-extension-${kind}`}
+              provider={extensionProvider}
               catalog={catalog}
               value={isMcp ? mcpIds : skillIds}
               onChange={isMcp ? setMcpIds : setSkillIds}

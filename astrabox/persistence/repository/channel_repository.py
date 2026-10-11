@@ -4,34 +4,46 @@ Durable collections behind the channel ingress spine
 (:mod:`astrabox.core.service.orchestrator.channel_ingress_service`), contract
 in ``docs/channel-spine.md``:
 
-* ``channel_inbound`` — one durable work item per accepted inbound message.
-  The document is both the at-least-once dedup identity (``_id`` is
-  deterministic per (binding, dedup_key)) and the recoverable unit of work:
-  it carries the full typed payload, so driving the turn never depends on the
-  source redelivering. States::
+* ``channel_inbound`` — one durable record per platform message. The document
+  is both the at-least-once dedup identity (``_id`` is deterministic per
+  (binding, dedup_key)) and the recoverable unit of work: it carries the full
+  typed payload, so driving the turn never depends on the source
+  redelivering. The ingress classifies an inbound before writing it, so a
+  record is created in the state it belongs in::
 
-      (absent) ─claim/steal─► RECEIVED ─policy─► IGNORED   (terminal)
-                                 │
-                          begin_dispatch
-                                 ▼
-                            DISPATCHING ─exhausted─► DEAD  (terminal)
-                                 │
-                             turn drove
-                                 ▼
-                              SETTLED                      (terminal)
+      (absent) ─refused──────────────► IGNORED      (terminal)
+      (absent) ─context only─────────► OBSERVED ─admitting signal─┐
+      (absent) ─authorization────────► AUTHORIZED ─observation────┤
+                     │                     └─wait expires─► DEAD │
+      (absent) ─admitted message─────► RECEIVED ◄────────────────┘
+                                          │
+                                   begin_dispatch
+                                          ▼
+                                     DISPATCHING ─exhausted─► DEAD  (terminal)
+                                          │
+                                      turn drove
+                                          ▼
+                                       SETTLED                      (terminal)
 
-  Every non-terminal item is held by ``owner_token`` under a monotonic
-  ``generation`` fence with a renewable lease. Every transition CAS-matches
-  ``(_id, state, owner_token, generation)``: a stale worker — one whose lease
-  expired and was stolen — misses its predicate and changes nothing. Failure
-  paths never delete: they CAS back to RECEIVED (re-drivable, attempts
-  ``$inc``-ed, lease set to the retry watermark) or to DEAD with evidence.
+  OBSERVED and AUTHORIZED records are never driven or recovered: only the
+  promotion to RECEIVED, at most once per record, gives one a turn. Every live
+  item is held by ``owner_token`` under a monotonic ``generation`` fence with a
+  renewable lease. Every transition CAS-matches ``(_id, state, owner_token,
+  generation)``: a stale worker — one whose lease expired and was stolen —
+  misses its predicate and changes nothing. Failure paths never delete: they
+  CAS back to RECEIVED (re-drivable, attempts ``$inc``-ed, lease set to the
+  retry watermark) or to DEAD with evidence. An admitted record's payload is
+  never replaced: a redelivery that steals or revives it drives the input and
+  execution account it was admitted with.
 * ``channel_conversations`` — conversation continuity. One doc per
   (binding, configured execution account, conversation_key) mapping to the live session; replaced via CAS
   when the mapped session is terminated. Doubles as the per-conversation
   dispatch lock (owner + TTL + the same monotonic fence).
 * ``channel_output_subscriptions`` — one destination and one journal cursor per
   (binding, Session). Delivery intents are durable before the cursor advances.
+* ``channel_account_links`` — which AstraBox account a participant of one
+  binding runs as when the binding runs as linked accounts. Platform
+  administrators write them; the built-in account resolver reads them.
 * ``channel_outbox`` — reply delivery, created idempotently per
   (binding, Session, response) and
   bound to the exact response it reports — the deliverer never reads
@@ -65,6 +77,7 @@ OUTBOX_COLLECTION = "channel_outbox"
 ALIASES_COLLECTION = "channel_aliases"
 OUTPUT_SUBSCRIPTIONS_COLLECTION = "channel_output_subscriptions"
 INTERACTIONS_COLLECTION = "channel_interactions"
+ACCOUNT_LINKS_COLLECTION = "channel_account_links"
 
 # A question a channel showed: OPEN while it can still be answered there;
 # ANSWERED once the engine accepted the participant's answer; CLOSED when the
@@ -79,8 +92,24 @@ INBOUND_DISPATCHING = "DISPATCHING"
 INBOUND_SETTLED = "SETTLED"
 INBOUND_IGNORED = "IGNORED"
 INBOUND_DEAD = "DEAD"
+#: Recorded as retained context, not admitted to run: an observation, or a
+#: message the binding's attention policy did not address.
+INBOUND_OBSERVED = "OBSERVED"
+#: Admitted to run by an authorization whose observation has not arrived.
+INBOUND_AUTHORIZED = "AUTHORIZED"
 
 _INBOUND_LIVE_STATES = (INBOUND_RECEIVED, INBOUND_DISPATCHING)
+_INBOUND_UNADMITTED_STATES = (INBOUND_OBSERVED, INBOUND_AUTHORIZED)
+_INBOUND_CLAIM_STATES = (
+    INBOUND_RECEIVED, INBOUND_OBSERVED, INBOUND_AUTHORIZED, INBOUND_IGNORED,
+)
+
+#: How long an authorization waits for the observation that carries its
+#: message before it dies with evidence. An authorization arrives on a
+#: platform's trigger feed and its message on a separate context feed; one day
+#: covers a context feed that is down for hours, and a message older than that
+#: is answered by asking again rather than late.
+_AUTHORIZATION_WAIT_SECONDS = 24 * 3600.0
 
 
 #: The drive path's longest bounded stretch between lease writes: the
@@ -112,7 +141,9 @@ def _inbound_lease_seconds() -> float:
 CLAIM_OUTCOME_CLAIMED = "claimed"          # dispatch this message (caller owns it)
 CLAIM_OUTCOME_DUPLICATE = "duplicate"      # already settled — ack the winner
 CLAIM_OUTCOME_IN_PROGRESS = "in_progress"  # a live owner holds it — ack, no dispatch
-CLAIM_OUTCOME_IGNORED = "ignored"          # attention policy classified it away
+CLAIM_OUTCOME_IGNORED = "ignored"          # terminally refused or classified away
+CLAIM_OUTCOME_OBSERVED = "observed"        # held as context, not admitted to run
+CLAIM_OUTCOME_AUTHORIZED = "authorized"    # admitted, waiting for its observation
 
 OUTBOX_PENDING = "PENDING"
 OUTBOX_SENDING = "SENDING"
@@ -165,30 +196,48 @@ class ChannelRepository:
         assistant_id: str = "",
         payload: dict[str, Any],
         now: float | None = None,
+        state: str = INBOUND_RECEIVED,
+        ignored_reason: str | None = None,
+        context_excluded: bool = False,
     ) -> tuple[dict[str, Any], str]:
-        """Durably claim one inbound message; return ``(doc, outcome)``.
+        """Durably record one inbound message; return ``(doc, outcome)``.
 
         This is the ACK point of the spine (channel-spine.md invariant A):
         once the outcome is anything but an exception, the source may
         acknowledge — the payload is persisted, so recovery does not depend
         on redelivery.
 
-        ``dedup_key=None`` (a platform without message ids) claims under a
-        synthetic unique key: every callback is a distinct message, but it
-        still gets a recoverable work item.
+        ``state`` is the ingress classification, written with the record so no
+        process loss can leave an unaddressed message driveable: RECEIVED (an
+        admitted message), AUTHORIZED (an admitted authorization, waiting for
+        its observation), OBSERVED (context only), or IGNORED (refused, with
+        ``ignored_reason``). ``dedup_key=None`` (a platform without message
+        ids) records under a synthetic unique key: every callback is a
+        distinct message, but it still gets a recoverable work item.
 
-        Outcomes: ``claimed`` (caller owns the item — drive it),
-        ``duplicate`` (SETTLED — ack the winner's session), ``ignored``
-        (terminally classified), ``in_progress`` (a live owner holds it).
-        A DEAD item explicitly redelivered by the platform is revived —
-        stolen back to RECEIVED with the fresh payload; its prior evidence
-        stays on the row.
+        A message that already has a record keeps it. Outcomes:
+
+        * ``claimed`` — the caller owns a RECEIVED item and drives it;
+        * ``duplicate`` — the message settled (or died, for a signal that
+          cannot revive it);
+        * ``in_progress`` — a live owner holds it;
+        * ``ignored`` — it was refused;
+        * ``observed`` / ``authorized`` — it is OBSERVED or AUTHORIZED. The
+          caller decides whether this inbound completes it (see
+          :meth:`promote_inbound`).
+
+        Only RECEIVED and AUTHORIZED requests admit work, so only they steal an
+        expired live item or revive a DEAD one; both keep the payload the
+        message was admitted with and the prior evidence on the row.
         """
+        if state not in _INBOUND_CLAIM_STATES:
+            raise ValueError(f"not an inbound claim state: {state!r}")
         collection = await get_async_collection(INBOUND_COLLECTION)
         now = now if now is not None else time.time()
         key = dedup_key if dedup_key else f"anon:{uuid.uuid4().hex}"
         doc_id = _scoped_id("inbound", deployment_id, key)
         owner = new_owner_token()
+        live = state == INBOUND_RECEIVED
         doc = {
             "_id": doc_id,
             "deployment_id": deployment_id,
@@ -196,10 +245,10 @@ class ChannelRepository:
             "channel_name": channel_name,
             **({"assistant_id": assistant_id} if assistant_id else {"agent_id": agent_id}),
             "payload": dict(payload),
-            "state": INBOUND_RECEIVED,
-            "owner_token": owner,
+            "state": state,
+            "owner_token": owner if live else None,
             "generation": 1,
-            "lease_expires_epoch": now + _inbound_lease_seconds(),
+            "lease_expires_epoch": now + _inbound_lease_seconds() if live else None,
             "session_id": None,
             "command_id": None,
             "turn_id": None,
@@ -208,23 +257,41 @@ class ChannelRepository:
             "created_at": utcnow_iso(),
             "updated_at": utcnow_iso(),
         }
+        if state == INBOUND_IGNORED:
+            doc["ignored_reason"] = str(ignored_reason or "")[:200]
+            if context_excluded:
+                doc["context_excluded"] = True
+        if state == INBOUND_AUTHORIZED:
+            doc["authorization_expires_epoch"] = now + _AUTHORIZATION_WAIT_SECONDS
         try:
             await run_mongo_with_retry(
                 "channel.claim_inbound", lambda: collection.insert_one(doc)
             )
-            return doc, CLAIM_OUTCOME_CLAIMED
+            return doc, {
+                INBOUND_RECEIVED: CLAIM_OUTCOME_CLAIMED,
+                INBOUND_OBSERVED: CLAIM_OUTCOME_OBSERVED,
+                INBOUND_AUTHORIZED: CLAIM_OUTCOME_AUTHORIZED,
+                INBOUND_IGNORED: CLAIM_OUTCOME_IGNORED,
+            }[state]
         except DuplicateKeyError:
             pass
 
         existing = await collection.find_one({"_id": doc_id})
         if existing is None:  # pragma: no cover - winner's insert just landed
             raise RuntimeError("inbound claim vanished after duplicate-key race")
-        state = str(existing.get("state") or "")
-        if state == INBOUND_SETTLED:
+        current = str(existing.get("state") or "")
+        if current == INBOUND_SETTLED:
             return existing, CLAIM_OUTCOME_DUPLICATE
-        if state == INBOUND_IGNORED:
+        if current == INBOUND_IGNORED:
             return existing, CLAIM_OUTCOME_IGNORED
-        if state == INBOUND_DEAD:
+        if current == INBOUND_OBSERVED:
+            return existing, CLAIM_OUTCOME_OBSERVED
+        if current == INBOUND_AUTHORIZED:
+            return existing, CLAIM_OUTCOME_AUTHORIZED
+        admits = state in (INBOUND_RECEIVED, INBOUND_AUTHORIZED)
+        if current == INBOUND_DEAD:
+            if not admits:
+                return existing, CLAIM_OUTCOME_DUPLICATE
             # The platform redelivered a message whose retries were exhausted:
             # that is a fresh, explicit signal — revive rather than dedupe the
             # message away forever. Prior evidence (attempts/last_error) stays.
@@ -232,7 +299,6 @@ class ChannelRepository:
                 collection,
                 existing,
                 owner=owner,
-                payload=payload,
                 now=now,
                 expected_states=(INBOUND_DEAD,),
             )
@@ -241,14 +307,13 @@ class ChannelRepository:
             return existing, CLAIM_OUTCOME_IN_PROGRESS
 
         # Live states: a fresh lease means a live owner; an expired one means
-        # a crashed/stalled owner whose item the redelivery may steal.
-        if float(existing.get("lease_expires_epoch") or 0.0) > now:
+        # a crashed/stalled owner whose item an admitting redelivery may steal.
+        if not admits or float(existing.get("lease_expires_epoch") or 0.0) > now:
             return existing, CLAIM_OUTCOME_IN_PROGRESS
         stolen = await self._steal_inbound(
             collection,
             existing,
             owner=owner,
-            payload=payload,
             now=now,
             expected_states=_INBOUND_LIVE_STATES,
         )
@@ -262,24 +327,21 @@ class ChannelRepository:
         existing: dict[str, Any],
         *,
         owner: str,
-        payload: dict[str, Any],
         now: float,
         expected_states: tuple[str, ...],
     ) -> dict[str, Any] | None:
-        """CAS-steal an expired/DEAD item: fence forward, refresh the payload.
+        """CAS-steal an expired/DEAD item: fence forward, keep the payload.
 
         The predicate pins the exact ``generation`` that was read, so exactly
         one stealer wins; the prior owner's later writes miss their own
         generation and change nothing. The stolen item returns to RECEIVED
-        with the redelivered payload — command/turn bindings are kept so an
-        attach-not-append re-drive can find the prior dispatch.
+        with the payload it was admitted with: a redelivery is a signal to run
+        the accepted message again, and it never replaces that input, its
+        context identity, or the execution account captured at admission.
+        Command/turn bindings are kept so an attach-not-append re-drive can
+        find the prior dispatch.
         """
         prior_generation = int(existing.get("generation") or 0)
-        retained_payload = dict(existing.get("payload") or {})
-        if retained_payload.get("retain_context"):
-            # The original context identity and input belong to the accepted
-            # message, not to a later transport redelivery or binding revision.
-            payload = retained_payload
         updated = await collection.find_one_and_update(
             {
                 "_id": existing["_id"],
@@ -292,6 +354,82 @@ class ChannelRepository:
                     "owner_token": owner,
                     "generation": prior_generation + 1,
                     "lease_expires_epoch": now + _inbound_lease_seconds(),
+                    "updated_at": utcnow_iso(),
+                },
+            },
+            return_document=ReturnDocument.AFTER,
+        )
+        return updated if isinstance(updated, dict) else None
+
+    async def promote_inbound(
+        self,
+        *,
+        item_id: str,
+        expected_state: str,
+        expected_generation: int,
+        payload: dict[str, Any],
+        now: float | None = None,
+    ) -> dict[str, Any] | None:
+        """Admit one OBSERVED or AUTHORIZED record: CAS it to an owned RECEIVED.
+
+        ``payload`` is the admitted input, assembled by the ingress from the
+        message's first recorded content and the admitting signal. The
+        predicate pins the state and generation that were read, so of two
+        racing admissions exactly one wins and the record gets at most one
+        turn; a record carrying a recall is never admitted. Returns the owned
+        item, or ``None`` when the record changed first.
+        """
+        if expected_state not in _INBOUND_UNADMITTED_STATES:
+            raise ValueError(f"not an unadmitted inbound state: {expected_state!r}")
+        collection = await get_async_collection(INBOUND_COLLECTION)
+        now = now if now is not None else time.time()
+        updated = await collection.find_one_and_update(
+            {
+                "_id": item_id,
+                "state": expected_state,
+                "generation": int(expected_generation),
+                "recall": {"$exists": False},
+            },
+            {
+                "$set": {
+                    "state": INBOUND_RECEIVED,
+                    "owner_token": new_owner_token(),
+                    "generation": int(expected_generation) + 1,
+                    "lease_expires_epoch": now + _inbound_lease_seconds(),
+                    "payload": dict(payload),
+                    "admitted_at": utcnow_iso(),
+                    "updated_at": utcnow_iso(),
+                },
+            },
+            return_document=ReturnDocument.AFTER,
+        )
+        return updated if isinstance(updated, dict) else None
+
+    async def observe_authorized_inbound(
+        self,
+        *,
+        item_id: str,
+        expected_generation: int,
+        payload: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Record the content of an AUTHORIZED message that will not run.
+
+        An authorization's message can be recalled before its observation
+        arrives. The observation still supplies the recalled message's place
+        in the conversation's context, so the record becomes OBSERVED with
+        that content, never RECEIVED.
+        """
+        collection = await get_async_collection(INBOUND_COLLECTION)
+        updated = await collection.find_one_and_update(
+            {
+                "_id": item_id,
+                "state": INBOUND_AUTHORIZED,
+                "generation": int(expected_generation),
+            },
+            {
+                "$set": {
+                    "state": INBOUND_OBSERVED,
+                    "generation": int(expected_generation) + 1,
                     "payload": dict(payload),
                     "updated_at": utcnow_iso(),
                 },
@@ -299,6 +437,75 @@ class ChannelRepository:
             return_document=ReturnDocument.AFTER,
         )
         return updated if isinstance(updated, dict) else None
+
+    async def refuse_unadmitted_inbound(
+        self,
+        *,
+        item_id: str,
+        expected_state: str,
+        expected_generation: int,
+        reason: str,
+    ) -> bool:
+        """CAS one OBSERVED or AUTHORIZED record to IGNORED, out of context.
+
+        Used when a later signal for the message contradicts the identity the
+        record holds. A refused message never joins retained context.
+        """
+        if expected_state not in _INBOUND_UNADMITTED_STATES:
+            raise ValueError(f"not an unadmitted inbound state: {expected_state!r}")
+        collection = await get_async_collection(INBOUND_COLLECTION)
+        result = await collection.update_one(
+            {
+                "_id": item_id,
+                "state": expected_state,
+                "generation": int(expected_generation),
+            },
+            {
+                "$set": {
+                    "state": INBOUND_IGNORED,
+                    "ignored_reason": str(reason)[:200],
+                    "context_excluded": True,
+                    "updated_at": utcnow_iso(),
+                },
+            },
+        )
+        return bool(getattr(result, "modified_count", 0))
+
+    async def expire_authorizations(
+        self, *, limit: int = 50, now: float | None = None,
+    ) -> list[dict[str, Any]]:
+        """Move AUTHORIZED records whose wait has expired to DEAD, with evidence.
+
+        Each transition CAS-matches the generation it read, so replicas
+        sweeping together expire a record once. Returns the expired records
+        for the caller to report.
+        """
+        collection = await get_async_collection(INBOUND_COLLECTION)
+        now = now if now is not None else time.time()
+        cursor = collection.find({
+            "state": INBOUND_AUTHORIZED,
+            "authorization_expires_epoch": {"$lte": now},
+        }).limit(int(limit))
+        expired: list[dict[str, Any]] = []
+        for record in [doc async for doc in cursor]:
+            updated = await collection.find_one_and_update(
+                {
+                    "_id": record["_id"],
+                    "state": INBOUND_AUTHORIZED,
+                    "generation": int(record.get("generation") or 0),
+                },
+                {
+                    "$set": {
+                        "state": INBOUND_DEAD,
+                        "last_error": "the observation of this authorized message never arrived",
+                        "updated_at": utcnow_iso(),
+                    },
+                },
+                return_document=ReturnDocument.AFTER,
+            )
+            if isinstance(updated, dict):
+                expired.append(updated)
+        return expired
 
     async def begin_inbound_dispatch(
         self, *, item_id: str, owner_token: str, generation: int,
@@ -356,8 +563,13 @@ class ChannelRepository:
         session_id: str | None = None,
         command_id: str | None = None,
         turn_id: str | None = None,
+        conversation_key: str | None = None,
     ) -> bool:
         """Record dispatch bindings (session, then command/turn) on the owned item.
+
+        ``conversation_key`` is the conversation the session was resolved
+        for. A re-drive reuses the bound session without resolving it again,
+        so it reads the key from here to take the same conversation lock.
 
         The command/turn binding is evidence, not the idempotency mechanism —
         the kernel's command journal keyed by ``client_message_id`` is the
@@ -372,6 +584,8 @@ class ChannelRepository:
             updates["command_id"] = command_id
         if turn_id is not None:
             updates["turn_id"] = turn_id
+        if conversation_key is not None:
+            updates["resolved_conversation_key"] = conversation_key
         collection = await get_async_collection(INBOUND_COLLECTION)
         result = await collection.update_one(
             {
@@ -383,6 +597,36 @@ class ChannelRepository:
             {"$set": updates},
         )
         return bool(getattr(result, "modified_count", 0))
+
+    async def capture_inbound_account(
+        self, *, item_id: str, owner_token: str, generation: int, user_id: str,
+    ) -> dict[str, Any] | None:
+        """Keep the account a linked binding's message runs as; return the payload.
+
+        Written once, under the owner fence and only while no account is
+        kept, so recovery, a steal or a redelivery runs the message as the
+        account its first drive resolved. ``None`` when this worker does not
+        own the item.
+        """
+        collection = await get_async_collection(INBOUND_COLLECTION)
+        updated = await collection.find_one_and_update(
+            {
+                "_id": item_id,
+                "state": {"$in": list(_INBOUND_LIVE_STATES)},
+                "owner_token": owner_token,
+                "generation": int(generation),
+                "payload.execution_user_id": "",
+            },
+            {
+                "$set": {
+                    "payload.creator_user_id": user_id,
+                    "payload.execution_user_id": user_id,
+                    "updated_at": utcnow_iso(),
+                }
+            },
+            return_document=ReturnDocument.AFTER,
+        )
+        return dict(updated["payload"]) if isinstance(updated, dict) else None
 
     async def mark_inbound_answer(
         self,
@@ -441,12 +685,16 @@ class ChannelRepository:
         self, *, item_id: str, owner_token: str, generation: int, reason: str,
         exclude_from_context: bool = False,
     ) -> bool:
-        """CAS RECEIVED → IGNORED: a terminal, ACK-safe policy classification."""
+        """CAS a live item → IGNORED: a terminal, ACK-safe refusal.
+
+        A refusal can be decided at admission (RECEIVED) or when a recovered
+        message is driven again (DISPATCHING), always before its turn starts.
+        """
         collection = await get_async_collection(INBOUND_COLLECTION)
         result = await collection.update_one(
             {
                 "_id": item_id,
-                "state": INBOUND_RECEIVED,
+                "state": {"$in": list(_INBOUND_LIVE_STATES)},
                 "owner_token": owner_token,
                 "generation": int(generation),
             },
@@ -573,11 +821,24 @@ class ChannelRepository:
         collection = await get_async_collection(INBOUND_COLLECTION)
         return await collection.find_one({"_id": item_id})
 
+    async def get_message_record(
+        self, *, deployment_id: str, dedup_key: str,
+    ) -> dict[str, Any] | None:
+        """The record of one platform message, by the provider's dedup key."""
+        return await self.get_inbound(_scoped_id("inbound", deployment_id, dedup_key))
+
     async def record_recall(
         self, *, deployment_id: str, conversation_key: str,
         event_id: str, message_id: str, timestamp: str,
     ) -> bool:
-        """Record external deletion without rewriting accepted Agent input."""
+        """Record external deletion without rewriting accepted Agent input.
+
+        A recalled message that has not been admitted never runs: an admitting
+        signal that arrives after the recall is refused (see
+        :meth:`promote_inbound`). An AUTHORIZED record may not know its
+        conversation yet — its observation carries that — so only a record
+        that holds a conversation key is checked against the recall's.
+        """
         if not all((deployment_id, conversation_key, event_id, message_id, timestamp)):
             raise ValueError("recall event identity is incomplete")
         if event_id == message_id:
@@ -587,7 +848,9 @@ class ChannelRepository:
         target = await collection.find_one({"_id": target_id})
         if target is None:
             return False
-        if (target.get("payload") or {}).get("conversation_key") != conversation_key:
+        target_key = (target.get("payload") or {}).get("conversation_key")
+        awaiting_content = target.get("state") == INBOUND_AUTHORIZED and not target_key
+        if not awaiting_content and target_key != conversation_key:
             raise RuntimeError("recall target conversation identity changed")
         recall = {"event_id": event_id, "timestamp": timestamp}
         existing = target.get("recall")
@@ -595,13 +858,12 @@ class ChannelRepository:
             if existing != recall:
                 raise RuntimeError(f"conflicting recall payload for message {message_id!r}")
             return True
+        predicate: dict[str, Any] = {"_id": target_id, "recall": {"$exists": False}}
+        if not awaiting_content:
+            predicate["payload.conversation_key"] = conversation_key
         result = await run_mongo_with_retry(
             "channel.record_recall",
-            lambda: collection.update_one(
-                {"_id": target_id, "payload.conversation_key": conversation_key,
-                 "recall": {"$exists": False}},
-                {"$set": {"recall": recall}},
-            ),
+            lambda: collection.update_one(predicate, {"$set": {"recall": recall}}),
         )
         if result.matched_count:
             return True
@@ -613,21 +875,29 @@ class ChannelRepository:
     async def collect_unsubmitted_context(
         self, item: dict[str, Any],
     ) -> list[dict[str, Any]]:
-        """Read ordinary context in the current binding revision and time cutoff."""
+        """Read ordinary context in the current binding revision and time cutoff.
+
+        Context is the unsubmitted messages of the conversation the item
+        continues, no later than the item's own message. It does not depend on
+        the account a message runs as: what was said in a room is context for
+        whoever the agent answers there.
+        """
         payload = item["payload"]
         if not payload.get("retain_context"):
             return []
         if not all(payload.get(key) for key in (
-            "conversation_key", "binding_revision", "message_timestamp",
+            "conversation", "binding_revision", "message_timestamp",
         )):
             raise RuntimeError("channel context ordering identity is incomplete")
         collection = await get_async_collection(INBOUND_COLLECTION)
         cursor = collection.find({
             "_id": {"$ne": item["_id"]},
             "deployment_id": item["deployment_id"],
-            "payload.conversation_key": payload["conversation_key"],
+            # The conversation the message continues: its conversation_key, or
+            # the conversation of the message it replies to when its provider
+            # groups messages by reply chain.
+            "payload.conversation": payload["conversation"],
             "payload.binding_revision": payload["binding_revision"],
-            "payload.creator_user_id": payload.get("creator_user_id"),
             "payload.retain_context": True,
             "payload.provider_ignore_reason": None,
             "payload.message_timestamp": {"$lte": payload["message_timestamp"]},
@@ -642,7 +912,10 @@ class ChannelRepository:
                 "message_id": record["dedup_key"],
                 "timestamp": retained["message_timestamp"],
                 "participant": retained["participant"],
-                "content": retained["content"],
+                # What the participant wrote: the binding's prompt prefix
+                # belongs to the turn's own input, once, not to every message
+                # quoted as context.
+                "content": retained["reply_text"],
             }
             if isinstance(record.get("recall"), dict):
                 entry["recall"] = dict(record["recall"])
@@ -881,7 +1154,6 @@ class ChannelRepository:
         deployment_id: str,
         channel_name: str,
         session_id: str,
-        command_id: str,
         turn_id: str,
         response_seq: int,
         response_id: str,
@@ -902,7 +1174,6 @@ class ChannelRepository:
             "deployment_id": deployment_id,
             "channel_name": channel_name,
             "session_id": session_id,
-            "command_id": command_id,
             "turn_id": turn_id,
             "response_seq": response_seq,
             "response_id": response_id,
@@ -1363,3 +1634,54 @@ class ChannelRepository:
     async def get_outbox_entry(self, outbox_id: str) -> dict[str, Any] | None:
         collection = await get_async_collection(OUTBOX_COLLECTION)
         return await collection.find_one({"_id": outbox_id})
+
+    # ── participant account links ────────────────────────────────────────
+
+    async def list_account_links(self, deployment_id: str) -> list[dict[str, Any]]:
+        """One binding's links, by participant."""
+        collection = await get_async_collection(ACCOUNT_LINKS_COLLECTION)
+        rows = [row async for row in collection.find({"deployment_id": deployment_id})]
+        return sorted(rows, key=lambda row: str(row.get("participant") or ""))
+
+    async def get_account_link(
+        self, *, deployment_id: str, participant: str,
+    ) -> dict[str, Any] | None:
+        collection = await get_async_collection(ACCOUNT_LINKS_COLLECTION)
+        return await collection.find_one(
+            {"_id": _scoped_id("link", deployment_id, participant)}
+        )
+
+    async def put_account_link(
+        self, *, deployment_id: str, participant: str, user_id: str, linked_by: str,
+    ) -> dict[str, Any]:
+        """Link a participant to an account, replacing any earlier link.
+
+        Messages already admitted keep the account they captured; the link
+        decides only messages whose first drive is still ahead.
+        """
+        collection = await get_async_collection(ACCOUNT_LINKS_COLLECTION)
+        link_id = _scoped_id("link", deployment_id, participant)
+        fields = {
+            "deployment_id": deployment_id,
+            "participant": participant,
+            "user_id": user_id,
+            "linked_by": linked_by,
+            "linked_at": utcnow_iso(),
+        }
+        await run_mongo_with_retry(
+            "channel.put_account_link",
+            lambda: collection.update_one({"_id": link_id}, {"$set": fields}, upsert=True),
+        )
+        return {"_id": link_id, **fields}
+
+    async def delete_account_link(self, *, deployment_id: str, participant: str) -> bool:
+        collection = await get_async_collection(ACCOUNT_LINKS_COLLECTION)
+        result = await collection.delete_one(
+            {"_id": _scoped_id("link", deployment_id, participant)}
+        )
+        return bool(getattr(result, "deleted_count", 0))
+
+    async def delete_account_links(self, deployment_id: str) -> None:
+        """Remove every link of a deleted binding."""
+        collection = await get_async_collection(ACCOUNT_LINKS_COLLECTION)
+        await collection.delete_many({"deployment_id": deployment_id})

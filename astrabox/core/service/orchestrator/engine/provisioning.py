@@ -35,7 +35,6 @@ from __future__ import annotations
 
 import contextlib
 import json
-import os
 import shlex
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
@@ -114,31 +113,30 @@ from astrabox.seams.model import ResolvedModelAccess
 logger = get_logger(__name__)
 
 
-#: CPU ceiling of one sandbox box (see :func:`sandbox_create_resources`).
-SANDBOX_CPU_LIMIT = 4
+def sandbox_create_resources(*, shared: bool) -> tuple[dict[str, str], dict[str, str]]:
+    """Return the deployment's ``(limits, requests)`` for one kind of box.
 
-
-def sandbox_create_resources() -> tuple[dict[str, str], dict[str, str]]:
-    """Return the platform's measured ``(limits, requests)`` box envelope.
-
-    Limits are the runtime ceiling shared conversations consume; requests are
-    only the Kubernetes scheduling reservation. Keeping the values separate
-    preserves the last server-Pool recipe: five conversations can burst without
-    CPU starvation or an OOM, while idle boxes do not reserve their ceilings.
-
-    The Docker runtime drives the daemon of the host this server runs on, and
-    Docker refuses a CPU limit above that host's CPU count ("range of CPUs is
-    from 0.01 to 2.00"), so there the ceiling is at most the host's CPUs. A
-    Kubernetes limit may exceed one node's capacity and keeps the recipe.
+    ``shared`` selects an Agent's shared box, otherwise a conversation's own
+    box. Limits are the ceiling; requests are only the Kubernetes scheduling
+    reservation. A deployment sets them with ``ASTRABOX_SANDBOX_*`` and
+    ``ASTRABOX_SHARED_SANDBOX_*`` (defaults in
+    :class:`~astrabox.config.settings.AstraBoxSettings`). Every create passes
+    them through its backend's ``fit_resources``, which refuses what that
+    runtime cannot honour.
     """
-    from astrabox.deploy.sandbox_server import RUNTIME_DOCKER, sandbox_runtime
+    from astrabox.config.settings import get_settings
 
-    cpu = SANDBOX_CPU_LIMIT
-    if sandbox_runtime() == RUNTIME_DOCKER:
-        cpu = min(cpu, os.cpu_count() or 1)
+    settings = get_settings()
+    prefix = "shared_sandbox" if shared else "sandbox"
     return (
-        {"cpu": str(cpu), "memory": "4Gi"},
-        {"cpu": "200m", "memory": "768Mi"},
+        {
+            "cpu": getattr(settings, f"{prefix}_cpu_limit"),
+            "memory": getattr(settings, f"{prefix}_memory_limit"),
+        },
+        {
+            "cpu": getattr(settings, f"{prefix}_cpu_request"),
+            "memory": getattr(settings, f"{prefix}_memory_request"),
+        },
     )
 
 
@@ -1024,6 +1022,7 @@ async def write_engine_env_file(
 
 def engine_create_spec(
     *,
+    backend: Any,
     session_id: str,
     assignment_id: str,
     template: Any,
@@ -1037,6 +1036,7 @@ def engine_create_spec(
     vault_write: Any,
     planned_mounts: tuple[tuple[str, str], ...],
     callback_url: str | None,
+    shared: bool,
 ) -> SandboxCreateSpec:
     """What a box must BE, separate from where it comes from.
 
@@ -1044,10 +1044,13 @@ def engine_create_spec(
     conversation in its Agent's box, or create a box — and only the create needs
     this recipe. It is composed once for every engine and every placement so
     boxes of the same Environment cannot disagree on their boot environment or
-    durable mounts.
+    durable mounts. ``backend``, the provider that creates the box, fits the
+    resource recipe to what its runtime can honour.
     """
 
-    resource_limits, resource_requests = sandbox_create_resources()
+    resource_limits, resource_requests = backend.fit_resources(
+        *sandbox_create_resources(shared=shared)
+    )
     return SandboxCreateSpec(
         session_id=session_id,
         assignment_id=assignment_id,
@@ -1138,6 +1141,7 @@ async def create_shared_agent_sandbox(
     candidate = await create_sandbox_with_storage(
         backend_adapter,
         engine_create_spec(
+            backend=backend_adapter,
             session_id=agent_runtime_owner_id(agent_id),
             assignment_id=assignment_id,
             template=template,
@@ -1151,7 +1155,9 @@ async def create_shared_agent_sandbox(
             vault_write=vault_write,
             planned_mounts=planned_mounts,
             callback_url=None,
-        )
+            shared=True,
+        ),
+        reason="agent-shared",
     )
     candidate_id = extract_sandbox_id(candidate)
     try:
@@ -2415,6 +2421,7 @@ async def provision_engine_sandbox(
     # this capability.  A provider receives one complete, immutable box recipe;
     # it does not choose between reuse, pooling and creation on AstraBox's behalf.
     create_spec = engine_create_spec(
+        backend=backend_adapter,
         session_id=session_id,
         assignment_id=assignment_id,
         template=template,
@@ -2428,8 +2435,11 @@ async def provision_engine_sandbox(
         vault_write=vault_write,
         planned_mounts=planned_mounts,
         callback_url=callback_url,
+        shared=False,
     )
-    sandbox = await create_sandbox_with_storage(backend_adapter, create_spec)
+    sandbox = await create_sandbox_with_storage(
+        backend_adapter, create_spec, reason="conversation"
+    )
     # Recorded before the caller can fail: an unrecorded box that fails during
     # engine start is a leak nothing later can name.
     sandbox_id = extract_sandbox_id(sandbox)
@@ -2492,249 +2502,4 @@ async def provision_engine_sandbox(
         vault_enabled=vault_enabled,
         runtime_env=runtime_env,
         runner_uri=runner_uri,
-    )
-
-
-@dataclass(frozen=True)
-class ProvisionedSlotSandbox:
-    """A box created under slot identity, before any Session exists."""
-
-    sandbox: Any
-    sandbox_id: str
-    #: The directory the box starts in — the slot identity's workspace, which
-    #: the claim re-points to its Session without moving.
-    cwd: str
-    #: The platform's name for the directory this box was given. Minted with the
-    #: box because a slot has no conversation to read one from; the claim writes
-    #: it onto the Session that takes the slot, and a box built to replace this
-    #: one mounts that same name.
-    workspace_id: str
-    #: Whether the box's gateway binding substitutes this slot's placeholder,
-    #: i.e. whether a claim must mint a Session key and replace the slot
-    #: credential. Derived from the composed vault write, not asserted.
-    gateway_substitution: bool
-    model_credential: str
-    runtime_env: Mapping[str, str] = field(default_factory=dict)
-    environment_credential_contract: tuple[Mapping[str, Any], ...] = ()
-
-
-async def provision_engine_slot_sandbox(
-    manager: Any,
-    *,
-    slot_id: str,
-    template: Any,
-    runtime_identity: dict[str, Any],
-    request: EngineSandboxRequest,
-) -> ProvisionedSlotSandbox:
-    """Create one engine's box for a prepared slot from the same declaration.
-
-    The differences from :func:`provision_engine_sandbox` are exactly the
-    Session-bound residues a preparation must not freeze:
-
-    * the create's ``session_id`` metadata carries the SLOT id — a slot never
-      impersonates a platform Session, and the claim re-points the box's
-      metadata to its Session before recording the allocation;
-    * no startup allocation is recorded — there is no Session row to own the
-      box yet; the claim records it (``record_startup_allocation``);
-    * a transcript-mirroring engine's box gets the deferred target file
-      (:func:`transcript_mirror.deferred_mirror_env`) instead of per-session
-      mirror values, and the claim writes the target before the engine
-      conversation exists;
-    * the model credential is the slot's own placeholder with a per-slot vault
-      substitution behind it (see :func:`resolve_model_credential_delivery`),
-      so the claim can re-point the child's gateway identity without touching
-      the box;
-    * resume never reaches this path — a prepared box is for new
-      conversations only (a resume names its own durable engine session).
-
-    The returned box is untracked by any Session; the CALLER owns destroying
-    it on any failure before its manifest is published.
-    """
-
-    target_slot = str(slot_id or "").strip()
-    if not target_slot:
-        raise APIError(
-            code="AGENT_PREWARM_CONFIG_INVALID",
-            message="engine slot provisioning requires a slot id",
-            status_code=500,
-        )
-    from astrabox.core.service.orchestrator.engine.platform_mcp import request_with_platform_mcp
-    from astrabox.core.service.orchestrator.runtime.mcp_servers import prepared_slot_mcp_deployment_id
-
-    request = request_with_platform_mcp(
-        request, template=template, deployment_settings=getattr(manager, "deployment_settings", None),
-        deployment_id=prepared_slot_mcp_deployment_id(target_slot),
-    )
-
-    composed = {request.credential_env_var, request.cwd_env_var} - {None}
-    conflicting = sorted(composed & set(request.env))
-    if conflicting:
-        raise RuntimeError(
-            f"engine env must not set {conflicting}: the platform composes "
-            "those, so a value declared here would either disagree with the "
-            "sidecar's real credential or name a directory the box is not in"
-        )
-
-    from astrabox.seams.sandbox import sandbox_for_template
-
-    # The template's backend directly: backend persistence lives on Session
-    # rows, and a slot has none — the claim's allocation record is what later
-    # makes the box resolvable by id.
-    backend_adapter = sandbox_for_template(template)
-    if not bool(getattr(backend_adapter, "supports_correlated_create", False)):
-        raise APIError(
-            code="SANDBOX_CORRELATED_CREATE_UNSUPPORTED",
-            message=(
-                f"sandbox backend {backend_adapter.name!r} cannot recover a "
-                "prepared create after its worker exits"
-            ),
-            status_code=501,
-        )
-
-    cwd = (
-        str(request.cwd or "").strip()
-        or str((runtime_identity or {}).get("workspace_dir") or "").strip()
-    )
-    if not cwd:
-        raise RuntimeError(f"engine slot sandbox for slot {target_slot!r} has no working directory")
-
-    vault_enabled = bool(
-        getattr(load_astrabox_settings(), "sandbox_credential_vault_enabled", False)
-    )
-    mcp_vault_write = await resolve_agent_mcp_credential_plan(
-        template=template,
-        vault_enabled=vault_enabled,
-    )
-    credential, network_policy, vault_write = resolve_model_credential_delivery(
-        template=template,
-        backend_adapter=backend_adapter,
-        credential=request.credential,
-        additional_vault_write=mcp_vault_write,
-        required_hosts=(
-            *tuple(request.required_network_hosts),
-            *package_egress_hosts(template),
-        ),
-        mcp_hosts=tuple(sandbox_mcp_egress_hosts(getattr(template, "mcp_servers", None))),
-        slot_id=target_slot,
-    )
-    vault_write, runtime_env = await resolve_prepared_environment_credentials(
-        template,
-        slot_id=target_slot,
-        vault_enabled=vault_enabled,
-        vault_write=vault_write,
-    )
-
-    session_log = _session_log_declaration(template)
-    mirror_env: dict[str, str] = (
-        transcript_mirror.deferred_mirror_env() if session_log is not None else {}
-    )
-
-    # A prepared whole box already has one conversation-shaped identity: the
-    # temporary slot. Mount exactly that identity's workspace, under a fresh
-    # platform workspace id. Claim later changes ownership, not layout; a cold
-    # replacement can therefore mount the same ``.../workspace`` subpath at the
-    # same box path. Mounting an Agent-wide home root here would create a layout
-    # that only a shared Agent box understands and make replacement lose files.
-    slot_workspace_id = mint_workspace_id()
-    planned_mounts = await plan_workspace_mounts(
-        subject_kind="deployment_conversation",
-        session_id="",
-        workspace_id=slot_workspace_id,
-        agent_id=str(getattr(template, "agent_id", "") or ""),
-        assistant_id=None,
-        user_id=None,
-        runtime_identity=runtime_identity,
-    )
-    resource_limits, resource_requests = sandbox_create_resources()
-    from astrabox.core.service.orchestrator.agent.prepared_slots import (
-        _delete_prepared_platform_mcp_binding,
-        _publish_prepared_platform_mcp_binding,
-        _suppress_and_log,
-    )
-
-    await _publish_prepared_platform_mcp_binding(
-        template, agent_id=str(template.agent_id), slot_id=target_slot,
-        sandbox_id="", sandbox_backend=str(backend_adapter.name),
-    )
-    try:
-        sandbox = await create_sandbox_with_storage(
-            backend_adapter,
-            SandboxCreateSpec(
-                session_id=target_slot,
-                assignment_id=target_slot,
-                resource_limits=resource_limits,
-                resource_requests=resource_requests,
-                image=resolve_runtime_template_name(template),
-                entrypoint=tuple(request.entrypoint),
-                cwd=cwd,
-                env={
-                    **SANDBOX_SELF_DESCRIPTION,
-                    **dict(request.env),
-                    **mirror_env,
-                    **runtime_env,
-                    **({request.credential_env_var: credential} if request.credential_env_var else {}),
-                    **({request.cwd_env_var: cwd} if request.cwd_env_var else {}),
-                },
-                publish_ports=tuple(request.publish_ports),
-                wait_for_inbox_service_port=request.wait_for_inbox_service_port,
-                # Every box the platform hands to a conversation has commands run
-                # in it before its engine starts — the mount check, the workspace
-                # provisioning, the identity script. Proving the channel at create
-                # puts that failure where the box is still just a box, instead of
-                # in the first thing that tried to use it.
-                requires_command_channel=True,
-                death_callback_url=None,
-                network_policy=network_policy,
-                permission_level=resolve_sandbox_permission_level(template),
-                vault_write=vault_write,
-                workspace_mounts=planned_mounts,
-            )
-        )
-    except BaseException:
-        with _suppress_and_log("slot create binding delete", target_slot):
-            await _delete_prepared_platform_mcp_binding(target_slot)
-        raise
-    # A slot that reaches the pool without its mount is worse than a slot that
-    # was never prepared: it is lent out as ready, and every conversation that
-    # borrows it writes where nothing will look.
-    #
-    # Destroying on refusal is this function's job rather than its caller's. No
-    # startup allocation is recorded for a slot — there is no Session row to own
-    # the box until a claim records one — so between the create above and the
-    # return below the box is named by nothing, and a caller's `try` that begins
-    # after the return cannot reach it.
-    try:
-        await workspace_is_ready(
-            sandbox,
-            planned_mounts,
-            ref=workspace_ref_for_subject(
-                subject_kind="deployment_conversation",
-                agent_id=str(getattr(template, "agent_id", "") or ""),
-                assistant_id=None,
-                session_id=target_slot,
-            ),
-            backend=backend_adapter,
-        )
-    except BaseException:
-        from astrabox.core.service.orchestrator.agent.prepared_boxes import (
-            destroy_slot_box,
-        )
-
-        await destroy_slot_box(
-            extract_sandbox_id(sandbox),
-            sandbox_backend=str(backend_adapter.name),
-            slot_id=target_slot,
-        )
-        raise
-    return ProvisionedSlotSandbox(
-        workspace_id=slot_workspace_id,
-        sandbox=sandbox,
-        sandbox_id=extract_sandbox_id(sandbox),
-        cwd=cwd,
-        gateway_substitution=vault_write is not None,
-        model_credential=credential,
-        runtime_env=runtime_env,
-        environment_credential_contract=tuple(
-            environment_credential_contract(vault_write)
-        ),
     )

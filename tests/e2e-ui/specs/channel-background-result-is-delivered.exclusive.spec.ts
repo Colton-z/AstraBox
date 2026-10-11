@@ -92,7 +92,7 @@ for (const scenario of cases) test(scenario.title, async ({
       await expect.poll(() => {
         healthy();
         const inbound = documentsByField('channel_inbound', '$.deployment_id', deploymentId)
-          .find((row) => row.dedup_key === `e2e:${source.botId}:message:${id}`);
+          .find((row) => row.dedup_key === `e2e:${source.botId}:channel:${id}:message:${id}`);
         sessionId = String(inbound?.session_id || '');
         return sessionId;
       }, { timeout: 75_000 }).not.toBe('');
@@ -250,7 +250,7 @@ for (const scenario of cases) test(scenario.title, async ({
       expect(outboxes()).toEqual(deliveredRows);
     }
     expect(documentsByField('channel_inbound', '$.deployment_id', deploymentId)
-      .filter((row) => !source || row.dedup_key === `e2e:${source.botId}:message:${id}`))
+      .filter((row) => !source || row.dedup_key === `e2e:${source.botId}:channel:${id}:message:${id}`))
       .toHaveLength(scenario.mode === 'historical' ? 2 : 1);
     const finalHistory = await api.getMessages(sessionId, 50);
     expect(finalHistory.messages.filter((row) => row.role === 'user').map(messageText))

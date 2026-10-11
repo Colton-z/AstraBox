@@ -420,7 +420,7 @@ def _bind_real_backend(
         storage_mounts, "storage_provider",
         lambda: SimpleNamespace(provision_mounts=backing_mounts),
     )
-    from astrabox.core.service.orchestrator.runtime.storage.mergerfs import workspace_router
+    from astrabox.providers.open_sandbox.workspace_route.mergerfs import workspace_router
 
     monkeypatch.setattr(workspace_router, "provision_mounts", routed_mounts)
     monkeypatch.setattr(workspace_router, "attach_sandbox", AsyncMock())

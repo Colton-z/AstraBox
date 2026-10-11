@@ -91,14 +91,44 @@ FastAPI 只会自动运行主应用的 lifespan，不会自动运行挂载子应
 一样准确进入和退出一次 AstraBox lifespan，否则数据库迁移、后台恢复、计划任务和关闭
 流程都不会执行。
 
-## 将 AstraBox 保持在域名根路径
+## 将 AstraBox 挂载到子路径 {#mount-astrabox-under-a-path}
 
-AstraBox 管理台使用 `/assets`、`/api` 和 `/manage` 等根路径下的静态资源、API、认证和
-管理台地址。因此，不支持把应用挂载到 `/astrabox` 这样的子路径。
+如果上层应用的页面要留在根路径，可以把 AstraBox 挂载到一个子路径下。在调用
+`create_app()` 之前，在进程环境中把 `ASTRABOX_PUBLIC_PATH_PREFIX` 设为同一个路径：
 
-上层应用可以在根挂载之前注册自己的路由。如果两个应用都需要各自的根路由或浏览器
-界面，请为 AstraBox 使用独立域名，或将单独的虚拟主机转发给 ASGI 应用。
-内置管理台不支持部署在路径前缀下。
+```python
+# host_app.py
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
+
+from astrabox.api.app import create_app
+
+astrabox_app = create_app()
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    async with astrabox_app.router.lifespan_context(astrabox_app):
+        yield
+
+
+app = FastAPI(lifespan=lifespan)
+app.mount("/astrabox", astrabox_app)
+```
+
+```bash
+ASTRABOX_PUBLIC_PATH_PREFIX=/astrabox \
+  uvicorn host_app:app --host 127.0.0.1 --port 8088
+```
+
+挂载会把该路径作为请求的 `root_path` 交给 AstraBox，AstraBox 按其下的路径匹配路由。
+管理台、API 以及 AstraBox 对外给出的所有地址都位于 `/astrabox` 之下，详见
+[在子路径下发布 AstraBox](deploy.md#publish-under-a-path)。该设置必须与挂载路径一致：
+如果请求来自挂载在其他路径上的应用，AstraBox 会返回 `PUBLIC_PATH_PREFIX_MISMATCH`。
+
+沙箱通过 `ASTRABOX_MCP_PROXY_BASE_URL` 回调 AstraBox。沙箱经上层应用访问 AstraBox 时，
+该地址要包含挂载路径，例如 `http://<主机地址>:8088/astrabox`。
 
 ## Lifespan 启动的服务
 
@@ -144,9 +174,10 @@ finally:
     await run_lifecycle_shutdown(reason="host_shutdown")
 ```
 
-`bootstrap()` 可以重复调用。它会加载内置和已安装的 Provider、选择已经配置的沙箱服务，
-并拒绝不兼容的部署设置。它不会准备存储、执行迁移、启动定时 Deployment、进入应用
-lifespan hook 或安排关闭流程。
+`bootstrap()` 可以重复调用。它会加载内置和已安装的 Provider，发布默认沙箱后端和已启用
+的沙箱后端，选择 scheduler provider 并检查它与数据库后端是否兼容，拒绝不兼容的部署
+设置。它不会准备存储、执行迁移、启动定时 Deployment、进入应用 lifespan hook 或安排
+关闭流程。
 
 上例只启动服务层使用的运行恢复，不能代替完整应用 lifespan。原有应用需要定时
 Deployment、应用扩展、就绪与排空、管理台或任何 HTTP 能力时，请使用 `create_app()`。
@@ -172,8 +203,9 @@ Deployment、应用扩展、就绪与排空、管理台或任何 HTTP 能力时�
 整个应用的 Middleware 应安装到上层 ASGI 应用。
 
 可用 Provider 接口见[系统架构](architecture.md#plugin-interfaces)。适配器指南分别介绍
-[Agent 程序](writing-an-engine-adapter.md)和
-[消息平台](writing-a-channel-provider.md)。
+[Agent 程序](writing-an-engine-adapter.md)、
+[消息平台](writing-a-channel-provider.md)和
+[调度器](writing-a-scheduler-provider.md)。
 
 ## 进程与安全要求
 

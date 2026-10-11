@@ -59,7 +59,7 @@ Assistant 能做什么，由运行部署的人和它的归属用户决定。管�
 - Assistant 自己没有指定时使用的**模型**；
 - **组织指令**，在归属用户自己的[系统提示词](#系统提示词)之前交给每个 Assistant；
 - 每个 Assistant 都有的 **Skill、MCP 服务、软件包和 Agent 程序配置**，可以直接填写，
-  也可以从扩展目录中选择；
+  部署启用[扩展目录](adding-tools.md#extension-catalog)时也可以从目录中选择；
 - 绑定到每个 Assistant 的 **Credential Vault**。被默认配置绑定的 Vault 会列在它的凭证页上，
   在默认配置解除绑定之前不能归档或删除。
 
@@ -99,7 +99,7 @@ Assistant 按属主的时区计时，时区是 IANA 名称，例如 `Asia/Shangh
 Assistant 可以给它的 Agent 程序添加该程序接受的内容。Assistant 的记录页有一张
 **技能、插件与配置**卡片，只显示 Environment 的程序声明支持的字段；API 使用与
 [Agent](authoring-agents.md) 相同的字段：`skills`、`mcp_servers`、`packages` 和
-`engine_options`。同一张卡片也可以像 Agent 页面一样，从部署的管理员托管目录中选择 MCP 服务器和 Skill（`GET`/`PUT /api/v1/assistants/{assistant_id}/extensions`）；需要上游凭证的目录 MCP 服务器，通过分配给该 Assistant 的 Credential Vault 访问。对 Hermes 而言：
+`engine_options`。部署启用[扩展目录](adding-tools.md#extension-catalog)时，同一张卡片也可以像 Agent 页面一样从目录中选择 MCP 服务器和 Skill（`GET`/`PUT /api/v1/assistants/{assistant_id}/extensions`）；需要上游凭证的目录 MCP 服务器，通过分配给该 Assistant 的 Credential Vault 访问。不启用目录时，卡片中只有 Assistant 自己的字段。对 Hermes 而言：
 
 - **技能。** `SKILL.md` 技能的 Git 来源，写作 `仓库@引用#路径`。AstraBox 把它们放进
   配置目录的 `skills/astrabox` 分类，Hermes 会列出它们，并用 `skill_view` 加载。技能名

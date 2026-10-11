@@ -16,10 +16,10 @@ from typing import Any
 
 import pytest
 
-from astrabox.core.service.orchestrator.runtime.storage._mergerfs_kubernetes import (
+from astrabox.providers.open_sandbox.workspace_route._mergerfs_kubernetes import (
     KubernetesMounts,
 )
-from astrabox.core.service.orchestrator.runtime.storage.mergerfs import MountAssignment
+from astrabox.providers.open_sandbox.workspace_route.mergerfs import MountAssignment
 
 WORKER = "ip-10-0-0-2.us-west-2.compute.internal"
 CONTROL = "ip-10-0-0-1.us-west-2.compute.internal"

@@ -391,7 +391,7 @@ export function buildAssistantExtensionSection(
       get: (d) => (d as Partial<AssistantEditDraft>).engine_options?.[block.key],
       set: (d, value) => {
         const bag = { ...(d as Partial<AssistantEditDraft>).engine_options };
-        if (value === undefined) delete bag[block.key];
+        if (value == null) delete bag[block.key];
         else bag[block.key] = value;
         return { ...d, engine_options: bag };
       },

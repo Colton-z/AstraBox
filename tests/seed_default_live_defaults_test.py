@@ -17,6 +17,7 @@ from astrabox.core.service.orchestrator.runtime.config_resolver import (
 )
 from astrabox.persistence import repository as repository_module
 from astrabox.seams import sandbox as sandbox_module
+from astrabox.seams.sandbox import SandboxClientPoolReadiness
 from astrabox.seams.extensions import (
     ExtensionCatalog,
     ExtensionCatalogItem,
@@ -177,14 +178,16 @@ async def test_seeded_agents_take_the_deployments_prewarm_default(
     The seed writes the repository directly, bypassing the create path, so it
     must store the same create-time value: a missing key is read as off by the
     capacity sweep, which would leave the Agents a new user meets first cold.
+    Whether the deployment can prewarm is the default backend's answer about
+    its client pool.
     """
-    if redis_url is None:
-        monkeypatch.delenv("ASTRABOX_AGENT_PREWARM_REDIS_URL", raising=False)
-    else:
-        monkeypatch.setenv("ASTRABOX_AGENT_PREWARM_REDIS_URL", redis_url)
     agents = _SeedAgentRepository()
     provider = SimpleNamespace(
-        runtime_defaults=lambda: SimpleNamespace(runtime_image="deployment-image")
+        runtime_defaults=lambda: SimpleNamespace(runtime_image="deployment-image"),
+        supports_client_pool=True,
+        client_pool_readiness=lambda: SandboxClientPoolReadiness(
+            available=redis_url is not None
+        ),
     )
     monkeypatch.setattr(repository_module, "AgentRepository", lambda: agents)
     monkeypatch.setattr(
@@ -194,6 +197,7 @@ async def test_seeded_agents_take_the_deployments_prewarm_default(
         sandbox_module, "default_sandbox_backend", lambda: "deployment-backend"
     )
     monkeypatch.setattr(sandbox_module, "sandbox_for_name", lambda _name: provider)
+    monkeypatch.setattr(sandbox_module, "sandbox_if_registered", lambda _name: provider)
     monkeypatch.setattr(app_module, "_seed_default_model", lambda: "deployment-model")
 
     await app_module._seed_default_agent_if_empty()

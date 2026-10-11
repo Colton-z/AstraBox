@@ -1,18 +1,21 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import i18n from '@/i18n';
-import type { AdminSandboxPage } from '@/types';
+import type { AdminSandboxPage, AdminSandboxQuota, AdminSandboxQuotaBackend } from '@/types';
+import { formatDateTime } from './agentConfig';
 
 // Same reason as the diagnostics panel's mock: the refusal path is the point of
 // this file, and a spy that returns a rejected promise reports it as unhandled
 // before the page can render it.
 let listing: () => Promise<AdminSandboxPage> = async () => page();
+let quotaRead: () => Promise<AdminSandboxQuota> = async () => ({ backends: [quotaBackend()] });
 
 vi.mock('@/api', () => ({
   adminListSandboxes: async () => listing(),
+  adminSandboxQuota: async () => quotaRead(),
   adminReadSandboxDiagnostics: async () => {
     throw new Error('not used in this file');
   },
@@ -26,6 +29,7 @@ beforeAll(async () => {
 });
 beforeEach(() => {
   listing = async () => page();
+  quotaRead = async () => ({ backends: [quotaBackend()] });
 });
 
 function page(overrides: Partial<AdminSandboxPage> = {}): AdminSandboxPage {
@@ -73,6 +77,84 @@ function renderPage() {
       <SandboxesListPage />
     </MemoryRouter>,
   );
+}
+
+const GIB = 2 ** 30;
+// What the quota charges one conversation's sandbox on the bundled Docker
+// server: its own limits (1 CPU, 1Gi) plus the egress sidecar beside it (1 CPU,
+// 128Mi).
+const CHARGE = { cpu: 2, memory: GIB + 128 * 2 ** 20 };
+
+/**
+ * One backend's entry as `quota_report` builds it: two conversations' sandboxes
+ * and one pool member nobody has claimed in the inventory, one create still in
+ * flight, and one create that has answered but that no inventory shows yet.
+ * Usage is what the quota counts from those five.
+ */
+function quotaBackend(overrides: Partial<AdminSandboxQuotaBackend> = {}): AdminSandboxQuotaBackend {
+  return {
+    backend: 'open_sandbox',
+    quota: {
+      boxes: 5,
+      // A host of 16,750,000,000 bytes less the 4Gi the derived ceiling leaves.
+      memory_bytes: 12_455_032_704,
+      cpu: null,
+      concurrent_creates: 2,
+      sources: {
+        boxes: 'configured',
+        memory: 'derived: host memory 15.6Gi less 4Gi for the platform and the host',
+        cpu: 'unlimited (unset)',
+        concurrent_creates: 'configured',
+      },
+    },
+    usage: { boxes: 5, memory_bytes: 5 * CHARGE.memory, cpu: 5 * CHARGE.cpu, creating: 1 },
+    inventory_at: '2026-10-10T09:30:00+00:00',
+    boxes: [
+      { sandbox_id: 'sbx-conv-0001', ...CHARGE, state: 'Running', session_id: 'sess-1' },
+      { sandbox_id: 'sbx-conv-0002', ...CHARGE, state: 'Running', session_id: 'sess-2' },
+      {
+        sandbox_id: 'sbx-pool-0003',
+        ...CHARGE,
+        state: 'Running',
+        session_id: 'client-pool-3f2a9c1b7d4e-0a1b2c3d4e5f60718293a4b5',
+      },
+    ],
+    reservations: [
+      {
+        state: 'creating',
+        reason: 'conversation',
+        session_id: 'sess-3',
+        sandbox_id: null,
+        ...CHARGE,
+        reserved_at: '2026-10-10T09:31:00+00:00',
+      },
+      {
+        state: 'created',
+        reason: 'prepared-conversation',
+        session_id: 'client-pool-3f2a9c1b7d4e-9f8e7d6c5b4a39281706f5e4',
+        sandbox_id: 'sbx-pool-0004',
+        ...CHARGE,
+        reserved_at: '2026-10-10T09:29:00+00:00',
+      },
+    ],
+    ...overrides,
+  };
+}
+
+/** The quota card, found the way a reader finds it: by its heading. */
+async function quotaCard(): Promise<HTMLElement> {
+  const heading = await screen.findByRole('heading', { name: 'Quota' });
+  return heading.closest('[data-slot="card"]') as HTMLElement;
+}
+
+/** Everything shown under one ceiling's label: its figure and where it came from. */
+function reading(card: HTMLElement, label: string): HTMLElement {
+  return within(card).getByText(label).parentElement as HTMLElement;
+}
+
+/** The one element whose whole text is `text`, such as a count with its word. */
+function phrase(card: HTMLElement, text: string): HTMLElement {
+  return within(card).getByText((_, element) => element?.textContent === text);
 }
 
 describe('the sandboxes list', () => {
@@ -205,5 +287,132 @@ describe('the sandboxes list', () => {
         i18n.t('manage:sandboxes.page_of', { page: 1, pages: 3, total: 120 }),
       ),
     ).toBeTruthy();
+  });
+});
+
+describe('the quota card', () => {
+  it('shows each ceiling with what is held against it, and where the ceiling came from', async () => {
+    renderPage();
+    const card = await quotaCard();
+    await within(card).findByText('5 / 5');
+
+    const sandboxes = reading(card, 'Sandboxes');
+    expect(within(sandboxes).getByText('5 / 5')).toBeTruthy();
+    expect(within(sandboxes).getByText('Configured')).toBeTruthy();
+    // Five sandboxes of 1Gi + 128Mi against the ceiling derived from host
+    // memory; how it was derived is the quota's own account, quoted as given.
+    const memory = reading(card, 'Memory');
+    expect(within(memory).getByText('5.6 Gi / 11.6 Gi')).toBeTruthy();
+    expect(
+      within(memory).getByText('derived: host memory 15.6Gi less 4Gi for the platform and the host'),
+    ).toBeTruthy();
+    const creates = reading(card, 'Concurrent creates');
+    expect(within(creates).getByText('1 / 2')).toBeTruthy();
+    expect(within(creates).getByText('Configured')).toBeTruthy();
+    expect(
+      within(card).getByText(`As of ${formatDateTime('2026-10-10T09:30:00+00:00')}`),
+    ).toBeTruthy();
+  });
+
+  it('reads a ceiling that is not set as no limit', async () => {
+    renderPage();
+    const card = await quotaCard();
+    await within(card).findByText('CPU');
+
+    const cpu = reading(card, 'CPU');
+    expect(within(cpu).getByText('10 · no limit')).toBeTruthy();
+    expect(within(cpu).getByText('Not set')).toBeTruthy();
+    // The wire's null is the absence of a ceiling, not a value to print.
+    expect(within(card).queryByText(/null/)).toBeNull();
+  });
+
+  it('counts the sandboxes by what they are doing', async () => {
+    const base = quotaBackend();
+    quotaRead = async () => ({
+      backends: [
+        quotaBackend({
+          boxes: [
+            ...base.boxes,
+            { sandbox_id: 'sbx-conv-0005', ...CHARGE, state: 'Stopping', session_id: 'sess-5' },
+          ],
+        }),
+      ],
+    });
+    renderPage();
+    const card = await quotaCard();
+    await within(card).findByText('In use');
+
+    // Two conversations hold a sandbox each and the unclaimed pool member is
+    // prepared. Of the two reservations only the create still in flight is
+    // starting: the other already has a sandbox, which the next inventory will
+    // list. The sandbox the backend is stopping is cleaning up, not in use.
+    expect(phrase(card, 'In use 2')).toBeTruthy();
+    expect(phrase(card, 'Prepared 1')).toBeTruthy();
+    expect(phrase(card, 'Starting 1')).toBeTruthy();
+    expect(phrase(card, 'Cleaning up 1')).toBeTruthy();
+  });
+
+  it('marks the ceiling the sandboxes have reached, and only that one', async () => {
+    renderPage();
+    const card = await quotaCard();
+
+    // At 5 of 5 the quota refuses the next sandbox, which is why a new
+    // conversation fails. The figure says so in colour, with a glyph that
+    // survives a greyscale screen, and in words for a screen reader.
+    const full = await within(card).findByText('5 / 5');
+    expect(full.classList.contains('text-crimson-fg')).toBe(true);
+    expect(full.querySelector('svg')).not.toBeNull();
+    expect(full.textContent).toContain('at the limit');
+
+    for (const [label, figure] of [
+      ['Memory', '5.6 Gi / 11.6 Gi'],
+      ['CPU', '10 · no limit'],
+      ['Concurrent creates', '1 / 2'],
+    ]) {
+      const shown = within(reading(card, label)).getByText(figure);
+      expect(shown.classList.contains('text-crimson-fg')).toBe(false);
+      expect(shown.querySelector('svg')).toBeNull();
+      expect(shown.textContent).not.toContain('at the limit');
+    }
+  });
+
+  it('says the quota could not be read instead of showing zeros', async () => {
+    quotaRead = async () => {
+      throw new Error("sandbox quota ledger for 'open_sandbox' stayed contended");
+    };
+    renderPage();
+    const card = await quotaCard();
+
+    await within(card).findByText("Couldn't load the quota");
+    expect(within(card).getByText(/stayed contended/)).toBeTruthy();
+    expect(within(card).queryByText(/\d \/ \d/)).toBeNull();
+    expect(within(card).queryByText('In use')).toBeNull();
+    // The inventory is a read of its own, and still answers.
+    expect(await screen.findByText('CrashLoopBackOff')).toBeTruthy();
+  });
+
+  it('does not count sandboxes before the backend has been counted', async () => {
+    // A ledger that no inventory has filled holds only its reservations, so its
+    // usage leaves out every sandbox already running.
+    quotaRead = async () => ({
+      backends: [
+        quotaBackend({
+          usage: { boxes: 2, memory_bytes: 2 * CHARGE.memory, cpu: 2 * CHARGE.cpu, creating: 1 },
+          inventory_at: null,
+          boxes: [],
+        }),
+      ],
+    });
+    renderPage();
+    const card = await quotaCard();
+
+    await within(card).findByText(
+      "The backend's sandboxes have not been counted yet, so these figures leave out any already running.",
+    );
+    expect(phrase(card, 'In use —')).toBeTruthy();
+    expect(phrase(card, 'Prepared —')).toBeTruthy();
+    expect(phrase(card, 'Starting 1')).toBeTruthy();
+    expect(phrase(card, 'Cleaning up —')).toBeTruthy();
+    expect(within(card).queryByText(/^As of/)).toBeNull();
   });
 });

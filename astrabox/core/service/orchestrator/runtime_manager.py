@@ -135,7 +135,6 @@ _RUNTIME_SANDBOX_BINDING_UNSPECIFIED = object()
 
 
 ProgressCallback = Callable[[str], Coroutine[Any, Any, None]] | None
-_ASSISTANT_SANDBOX_DEFAULT_RESOURCE = {"cpu": "8", "memory": "16"}
 _SANDBOX_ID_IN_ENDPOINT_RES = (
     re.compile(r"(?:^|[.-])sandbox-([0-9a-f]{32})(?:[.-]|$)", re.IGNORECASE),
     re.compile(r"(?:^|[.-])([0-9a-f]{32})-\d+(?:[.-]|$)", re.IGNORECASE),
@@ -858,21 +857,6 @@ class RemoteAgentRuntimeManager:
         try:
             # Deadline the destroy so a wedged control plane surfaces as an
             # unconfirmed destruction instead of hanging startup cleanup.
-            # Reclaim snapshots before the destroy, and only in this order:
-            # deleting a sandbox drops its snapshot records with it, so once the
-            # box is gone there is no id left to ask about, while the images
-            # those records named stay in the registry. One orphaned image per
-            # pause adds up; together with build cache it fills the node's disk,
-            # after which kubelet reports DiskPressure and every create fails
-            # with a network error three layers from the cause.
-            #
-            # Best-effort by contract: a snapshot that cannot be reclaimed must never
-            # keep a box alive. Leaking an image costs disk; leaking a running box
-            # costs money and privacy, so the destroy always proceeds.
-            discard = getattr(provider, "discard_snapshots", None)
-            if callable(discard):
-                with contextlib.suppress(Exception):
-                    await discard(target)
             async with asyncio.timeout(deadline):
                 return await provider.confirm_destroyed(target)
         except TimeoutError:
@@ -1012,13 +996,31 @@ class RemoteAgentRuntimeManager:
     async def resume_sandbox_by_id(self, sandbox_id: str) -> bool:
         """Restore a parked box under the same id. True when it is RUNNING again.
 
+        A box its backend released when it paused takes room in the sandbox
+        quota again first, and a full quota refuses the resume.
+
         A resume is a fresh boot on old files: the image's entrypoint runs again and
         the in-box control server comes back with it. Nothing in the box is carried
         over from before the pause, so a caller must re-establish its connection
         rather than reuse one.
         """
+        from astrabox.core.service.orchestrator.runtime import sandbox_quota
+
         backend = await self._resolve_sandbox_backend(sandbox_id)
-        return await sandbox_for_name(backend).resume(sandbox_id)
+        provider = sandbox_for_name(backend)
+        key = await sandbox_quota.reserve_resume(provider, sandbox_id)
+        try:
+            resumed = await provider.resume(sandbox_id)
+        except BaseException:
+            if key is not None:
+                await sandbox_quota.release(backend, key)
+            raise
+        if key is not None:
+            if resumed:
+                await sandbox_quota.mark_created(backend, key, sandbox_id)
+            else:
+                await sandbox_quota.release(backend, key)
+        return resumed
 
     async def wake_parked_session(self, session: dict[str, Any]) -> None:
         """Wake a parked binding and discard its pre-pause transport address.
@@ -2329,18 +2331,23 @@ class RemoteAgentRuntimeManager:
         *,
         execution_id: str,
     ) -> None:
-        command_runner = getattr(sandbox_obj, "commands", None) if sandbox_obj is not None else None
-        interrupt_fn = (
-            getattr(command_runner, "interrupt", None) if command_runner is not None else None
-        )
-        if not callable(interrupt_fn):
+        """Interrupt the command running in a box-level terminal shell.
+
+        ``execution_id`` is the shell's PTY session id, so the interrupt is
+        that session's own ``SIGINT``; execd's command interrupt knows only
+        the commands it started itself.
+        """
+        if sandbox_obj is None:
             raise APIError(
                 code="AGENT_RUNTIME_ERROR",
                 message="interrupt failed: terminal execution handle unavailable",
                 status_code=502,
             )
         try:
-            await interrupt_fn(execution_id)
+            endpoint = await resolve_execd_endpoint(sandbox_obj)
+            await PtyTerminal(endpoint.origin, headers=endpoint.headers).signal(
+                execution_id, "SIGINT"
+            )
         except APIError:
             raise
         except Exception as exc:
@@ -2929,10 +2936,10 @@ class RemoteAgentRuntimeManager:
     async def retire_sandboxes_with_stale_network_wiring(
         self,
         *,
-        backend: str = "open_sandbox",
+        backend: str,
         page_size: int = 100,
     ) -> dict[str, int]:
-        """Destroy every managed box whose recorded addresses differ from the deployment's.
+        """Destroy every ``backend`` box whose recorded addresses differ from the deployment's.
 
         A box fixes the deployment's sandbox-facing addresses when it is created
         (``SandboxProvider.created_with_current_network_wiring``). After they
@@ -2963,7 +2970,11 @@ class RemoteAgentRuntimeManager:
             ownership = await _this_installations_boxes()
             provider = sandbox_for_name(backend)
         except Exception:
-            logger.exception("stale-wiring retirement could not read the installation id")
+            logger.exception(
+                "stale-wiring retirement could not resolve the installation id or "
+                "the %r backend",
+                backend,
+            )
             summary["stale_wiring_failures"] += 1
             return summary
         while True:
@@ -2972,7 +2983,10 @@ class RemoteAgentRuntimeManager:
                     page=page_number, page_size=page_size, metadata=ownership
                 )
             except Exception:
-                logger.exception("stale-wiring retirement could not list the inventory")
+                logger.exception(
+                    "stale-wiring retirement could not list the %r backend's inventory",
+                    backend,
+                )
                 summary["stale_wiring_failures"] += 1
                 return summary
             for descriptor in getattr(page, "items", ()):
@@ -3017,11 +3031,11 @@ class RemoteAgentRuntimeManager:
     async def reap_ownerless_sandboxes(
         self,
         *,
-        backend: str = "open_sandbox",
+        backend: str,
         grace_seconds: float = 600.0,
         page_size: int = 100,
     ) -> dict[str, int]:
-        """Give back every managed box that no row names any more.
+        """Give back every managed ``backend`` box that no row names any more.
 
         The population the row-driven sweep cannot see: a lend abandoned by
         its client (the server finished the Pod after the caller's deadline)
@@ -3070,7 +3084,7 @@ class RemoteAgentRuntimeManager:
                     break
                 page_number += 1
         except Exception:
-            logger.exception("ownerless reap could not list the inventory")
+            logger.exception("ownerless reap could not list the %r backend's inventory", backend)
             summary["ownerless_reap_failures"] += 1
             return summary
         agent_repo = AgentRepository()
@@ -3648,8 +3662,8 @@ class RemoteAgentRuntimeManager:
         binding yet. The provider's live-session census also catches occupants
         not visible in those records.
 
-        A missing sandbox id or a lookup exception retains the box. A negative
-        census result contributes no occupancy evidence; the ownership records
+        A missing sandbox id or a lookup exception retains the box. A census
+        that raises contributes no occupancy evidence; the ownership records
         determine the result in that case.
         """
 
@@ -3668,18 +3682,20 @@ class RemoteAgentRuntimeManager:
             # owner lookup here would prevent examining an ownerless resource.
             if provider is None:
                 provider = await self.resolve_sandbox_provider(target)
-            census = getattr(provider, "count_live_isolated_sessions", None)
-            if callable(census):
-                live = await census(target)
-                if live < 0:
+            if provider.supports_isolated_sessions:
+                try:
+                    live = await provider.count_active_isolated_sessions(target)
+                except Exception as exc:  # noqa: BLE001 - no answer is not an occupant
                     # An unavailable census does not add an occupant. The
                     # ownership checks above determine whether to retain the
                     # box; the caller must separately confirm its destruction.
                     logger.info(
-                        "terminate: box=%s did not answer the session census; "
+                        "terminate: box=%s did not answer the session census (%s); "
                         "leaving the decision to its owner records",
                         target,
+                        exc,
                     )
+                    live = 0
                 # Every caller reaches this question after the departing
                 # placement has closed, or without a departing placement at
                 # all. Any active isolated session therefore belongs to an

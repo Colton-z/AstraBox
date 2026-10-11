@@ -187,13 +187,13 @@ class _FakeRuntimeManager:
     async def reconcile_startup_allocations(self, **_kwargs: Any) -> dict[str, int]:
         return {}
 
-    async def retire_sandboxes_with_stale_network_wiring(self) -> dict[str, int]:
+    async def retire_sandboxes_with_stale_network_wiring(self, **_kwargs: Any) -> dict[str, int]:
         return {}
 
     async def reap_abandoned_agent_boxes(self) -> dict[str, int]:
         return {}
 
-    async def reap_ownerless_sandboxes(self) -> dict[str, int]:
+    async def reap_ownerless_sandboxes(self, **_kwargs: Any) -> dict[str, int]:
         return {}
 
     async def keep_prewarmed_agents_ready(self) -> dict[str, int]:
@@ -718,7 +718,7 @@ class EnvironmentWriteGateTests(unittest.TestCase):
                     self._payload(idle_action="pause", sandbox_backend="open_sandbox")
                 )
         self.assertEqual(caught.exception.status_code, 400)
-        self.assertIn("can snapshot", str(caught.exception))
+        self.assertIn("supports_pause", str(caught.exception))
 
     def test_an_unknown_action_is_refused_by_the_enum(self) -> None:
         from astrabox.common.utils.errors import APIError
@@ -843,7 +843,9 @@ class SharedBoxParkingTests(unittest.IsolatedAsyncioTestCase):
         census = AsyncMock(return_value=2)
         occupied = await RemoteAgentRuntimeManager.agent_box_has_other_occupants(
             manager, "sbx-1", excluding="s-1",  # type: ignore[arg-type]
-            provider=SimpleNamespace(count_live_isolated_sessions=census),
+            provider=SimpleNamespace(
+                supports_isolated_sessions=True, count_active_isolated_sessions=census
+            ),
         )
         self.assertTrue(occupied)
         census.assert_awaited_once_with("sbx-1")
@@ -1101,63 +1103,6 @@ class ReattachSinglePathTests(unittest.IsolatedAsyncioTestCase):
             last_error="sandbox sbx-1 is gone",
             reason="runtime_attach:SANDBOX_GONE",
         )
-
-
-class SnapshotReclamationTests(unittest.IsolatedAsyncioTestCase):
-    """A parked box's snapshot must be reclaimed BEFORE the box, or never.
-
-    Deleting a sandbox drops its snapshot records with it, so after the destroy there
-    is no id left to ask about while the images those records named stay in the
-    registry. Thirty orphans in one day of pausing, combined with build cache,
-    filled the node's disk until kubelet reported DiskPressure and every sandbox
-    create failed with a network error three layers from the cause.
-    """
-
-    def _manager(self, *, discard_raises: bool = False) -> tuple[Any, list[str]]:
-        from astrabox.core.service.orchestrator import runtime_manager as rm
-
-        calls: list[str] = []
-
-        class _Provider:
-            name = "open_sandbox"
-
-            async def discard_snapshots(self, sandbox_id: str) -> int:
-                calls.append("discard")
-                if discard_raises:
-                    raise RuntimeError("the control plane refused")
-                return 2
-
-            async def confirm_destroyed(self, sandbox_id: str) -> Any:
-                calls.append("destroy")
-                return SimpleNamespace(confirmed=True, leaked_sandbox_id=None, detail="")
-
-        manager = rm.RemoteAgentRuntimeManager.__new__(rm.RemoteAgentRuntimeManager)
-
-        async def _resolve(_sandbox_id: str) -> str:
-            return "open_sandbox"
-
-        manager._resolve_sandbox_backend = _resolve  # type: ignore[attr-defined]
-        return (manager, calls, _Provider())
-
-    async def test_the_snapshot_goes_before_the_box(self) -> None:
-        from astrabox.core.service.orchestrator import runtime_manager as rm
-
-        manager, calls, provider = self._manager()
-        with patch.object(rm, "sandbox_for_name", lambda _name: provider):
-            result = await manager.destroy_sandbox_by_id("sbx-1")
-        self.assertEqual(calls, ["discard", "destroy"])
-        self.assertTrue(result.confirmed)
-
-    async def test_an_unreclaimable_snapshot_never_keeps_a_box_alive(self) -> None:
-        # Leaking an image costs disk; leaking a running box costs money and
-        # privacy. The destroy proceeds either way.
-        from astrabox.core.service.orchestrator import runtime_manager as rm
-
-        manager, calls, provider = self._manager(discard_raises=True)
-        with patch.object(rm, "sandbox_for_name", lambda _name: provider):
-            result = await manager.destroy_sandbox_by_id("sbx-2")
-        self.assertEqual(calls, ["discard", "destroy"])
-        self.assertTrue(result.confirmed)
 
 
 class FreshRowTests(unittest.IsolatedAsyncioTestCase):

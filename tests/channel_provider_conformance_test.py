@@ -18,6 +18,10 @@ from astrabox.providers.channel_satori import (
     GatewayChannelProvider,
 )
 from astrabox.seams.channel import (
+    SIGNAL_AUTHORIZATION,
+    SIGNAL_OBSERVATION,
+    ChannelAliasLink,
+    ChannelAttention,
     ChannelDescriptor,
     ChannelDeliveryHandle,
     ChannelDeliveryReceipt,
@@ -25,6 +29,7 @@ from astrabox.seams.channel import (
     ChannelField,
     ChannelInbound,
     ChannelProvider,
+    ChannelRecall,
     register_channel,
 )
 from astrabox.testing.provider_conformance import ChannelProviderContractSuite
@@ -349,3 +354,44 @@ def test_import_isolation_probe_handles_dataclass_provider_modules(
         _Bound().test_provider_module_imports_no_spine_internals()
     finally:
         sys.modules.pop(spec.name, None)
+
+
+# ── inbound signals carry the identity their role needs ─────────────────────
+
+
+def test_inbound_signals_carry_the_identity_their_role_needs() -> None:
+    """An observation and an authorization meet on one record, so each must
+    name its message and sender, and neither may carry what the other owns:
+    an observation has no destination to answer, an authorization no content
+    to run. A malformed signal fails when the provider builds it."""
+    mention = ChannelAttention(is_mention=True)
+    observed = {
+        "content": "the message", "dedup_key": "m-1", "participant": "u-1",
+        "conversation_key": "room", "message_timestamp": "2026-10-01T00:00:00Z",
+        "retain_context": True, "signal": SIGNAL_OBSERVATION,
+    }
+    authorized = {
+        "content": "", "dedup_key": "m-1", "participant": "u-1",
+        "attention": mention, "reply_context": {"cb": "x"},
+        "signal": SIGNAL_AUTHORIZATION,
+    }
+    assert ChannelInbound(**observed).signal == SIGNAL_OBSERVATION
+    assert ChannelInbound(**authorized).signal == SIGNAL_AUTHORIZATION
+    for invalid in [
+        {**observed, "signal": "trigger"},
+        {**observed, "dedup_key": None},
+        {**observed, "participant": None},
+        {**observed, "retain_context": False},
+        {**observed, "message_timestamp": None},
+        {**observed, "reply_context": {"cb": "x"}},
+        {**authorized, "content": "the message"},
+        {**authorized, "reference": "m-0"},
+        {**authorized, "attention": None},
+        {**authorized, "attention": ChannelAttention()},
+        {**authorized, "participant": None},
+        {**observed, "recall": ChannelRecall(message_id="m-0", timestamp="t")},
+        {**authorized, "alias_link": ChannelAliasLink(existing_alias="a", new_alias="b")},
+        {**authorized, "action": "ix1:0000000000000000:0:1"},
+    ]:
+        with pytest.raises(ValueError):
+            ChannelInbound(**invalid)

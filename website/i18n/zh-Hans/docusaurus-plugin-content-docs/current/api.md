@@ -14,7 +14,9 @@ OpenAPI 文档描述当前部署版本的准确 API 接口。</Note>
 | 自托管生产环境 | `https://astrabox.example.com/api/v1` |
 | 本地开发 | `http://127.0.0.1:8088/api/v1` |
 
-请将 `astrabox.example.com` 替换为自己的部署地址。
+请将 `astrabox.example.com` 替换为自己的部署地址。发布在子路径下的部署会把该路径放在
+`/api/v1` 之前，例如 `https://example.com/astrabox/api/v1`，`/docs` 和 `/openapi.json`
+也位于该路径下，见[在子路径下发布 AstraBox](deploy.md#publish-under-a-path)。
 
 ## 版本
 

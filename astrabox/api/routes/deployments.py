@@ -11,6 +11,7 @@ from astrabox.common.utils.api_response import error_response, success_response
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.user_context import get_current_user_context
 from astrabox.core.service.orchestrator.service_registry import get_platform_service
+from astrabox.deploy.public_path import public_url
 
 _registered_on: int | None = None
 
@@ -36,6 +37,7 @@ class DeploymentRecord(BaseModel):
     scene: str | None = None
     prompt_prefix: str | None = None
     attention_policy: str | None = None
+    execution_mode: str | None = None
     execution_user_id: str | None = None
     secret: str | None = None
     created_at: str | None = None
@@ -63,6 +65,22 @@ class DeletedDeployment(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     deployment_id: str
+    deleted: bool
+
+
+class ChannelAccountLinkRecord(BaseModel):
+    """One participant of a trigger and the AstraBox account its messages run as."""
+
+    participant: str
+    user_id: str
+    linked_by: str
+    linked_at: str
+
+
+class DeletedChannelAccountLink(BaseModel):
+    """The participant whose link is gone; ``deleted`` is false if it had none."""
+
+    participant: str
     deleted: bool
 
 
@@ -187,7 +205,7 @@ def register_deployment_routes(app: Any) -> None:
             user,
             agent_id,
             payload,
-            callback_base_url=str(request.base_url).rstrip("/"),
+            callback_base_url=public_url(request, ""),
         )
         return success_response(result)
 
@@ -210,6 +228,46 @@ def register_deployment_routes(app: Any) -> None:
     async def delete_agent_deployment(agent_id: str, deployment_id: str, request: Request):
         user = await get_current_user_context(request)
         result = await _service.delete_agent_deployment(user, agent_id, deployment_id)
+        return success_response(result)
+
+    @app.get(
+        "/api/v1/admin/agents/{agent_id}/deployments/{deployment_id}/account-links",
+        response_model=ApiEnvelope[list[ChannelAccountLinkRecord]],
+    )
+    async def list_agent_deployment_account_links(
+        agent_id: str, deployment_id: str, request: Request
+    ):
+        user = await get_current_user_context(request)
+        result = await _service.list_agent_deployment_account_links(
+            user, agent_id, deployment_id
+        )
+        return success_response(result)
+
+    @app.put(
+        "/api/v1/admin/agents/{agent_id}/deployments/{deployment_id}/account-links",
+        response_model=ApiEnvelope[ChannelAccountLinkRecord],
+    )
+    async def put_agent_deployment_account_link(
+        agent_id: str, deployment_id: str, request: Request
+    ):
+        user = await get_current_user_context(request)
+        payload = await request.json()
+        result = await _service.put_agent_deployment_account_link(
+            user, agent_id, deployment_id, payload if isinstance(payload, dict) else {}
+        )
+        return success_response(result)
+
+    @app.delete(
+        "/api/v1/admin/agents/{agent_id}/deployments/{deployment_id}/account-links",
+        response_model=ApiEnvelope[DeletedChannelAccountLink],
+    )
+    async def delete_agent_deployment_account_link(
+        agent_id: str, deployment_id: str, participant: str, request: Request
+    ):
+        user = await get_current_user_context(request)
+        result = await _service.delete_agent_deployment_account_link(
+            user, agent_id, deployment_id, participant
+        )
         return success_response(result)
 
     @app.get(
@@ -277,7 +335,7 @@ def register_deployment_routes(app: Any) -> None:
             user,
             assistant_id,
             payload,
-            callback_base_url=str(request.base_url).rstrip("/"),
+            callback_base_url=public_url(request, ""),
         )
         return success_response(result)
 

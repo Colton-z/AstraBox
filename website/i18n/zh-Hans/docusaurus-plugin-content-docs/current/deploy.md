@@ -145,6 +145,7 @@ Anthropic 兼容端点，优先使用它。
 | `ASTRABOX_INSTALL_TEAM_LOGIN` | `casdoor` 表示随服务运行内置的 Casdoor 登录服务；`none` 表示不启用登录。 |
 | `ASTRABOX_CONSOLE_ORIGIN` | 启用团队登录时：控制台的公网 URL，例如 `https://astrabox.example.com`。 |
 | `ASTRABOX_OIDC_ISSUER` | 启用团队登录时：Casdoor 的公网 URL，例如 `https://login.example.com`。供其他计算机上的浏览器使用时两个 URL 都要设置；只在本机登录时都不设置。 |
+| `ASTRABOX_PUBLIC_PATH_PREFIX` | 管理台与其他应用共用一个主机时，网关发布管理台所用的路径，例如 `/astrabox`，见[在子路径下发布 AstraBox](#publish-under-a-path)。启用团队登录时，安装脚本写入的回调地址位于该路径之下。 |
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Colton-z/AstraBox/main/scripts/install.sh \
@@ -235,8 +236,8 @@ scripts/compose.sh up --build -d
 或 Docker named volume，各工作区使用该文件系统中的独立目录。使用内置 OpenSandbox
 后端时，用户沙箱之外创建的 mergerfs 视图承载这些目录，OpenSandbox 使用标准 PVC 或
 named volume 接口挂载这些视图。在交给用户之前，平台将视图绑定到新建或已有的工作区
-目录。存储适配器选择底层介质，沙箱后端决定如何挂载；设置了该卷时，不能挂载持久工作区的
-后端会在启动时被拒绝。
+目录。存储适配器选择底层介质，沙箱后端决定如何挂载；设置了该卷时，只要有一个已启用的
+后端不能挂载持久工作区，启动就会被拒绝。
 
 未设置或设为空值时，工作区文件保存在沙箱的临时文件系统中；替换沙箱可能丢失这些文件。
 这项配置只影响工作区文件，原生 SessionStore 仍由平台数据库保存。无卷部署不会启动挂载
@@ -278,12 +279,13 @@ Node；命名空间必须允许这些特权基础设施 Pod。底层 PVC 仍由�
 每个辅助程序从创建起就记录它服务的分配、沙箱后端和所属的 AstraBox 安装。过期监视器在
 确认沙箱已不存在后释放视图；对于从未被沙箱使用的视图（创建失败或准备中途停止），如果
 该安装没有任何沙箱携带这个分配，会在辅助程序创建十分钟后将其删除。仍被容器或 Pod 挂载
-的视图不会被删除。
+的视图不会被删除。每个已启用后端的挂载路径分别回收。辅助程序记录的沙箱后端未在本部署
+启用时，视图会被保留并记录日志，因为没有已启用的后端能确认它的沙箱已经不存在。
 
 ### 存储介质必须支持的操作
 
 AWS EFS 使用 [`aws_efs` 存储适配器](providers/aws-efs.md)，它检查实际的 EFS CSI
-claim，仍使用同一个平台路由。工作区是常规工作目录，不是文档存储。存储介质必须支持
+claim，OpenSandbox 后端的工作区挂载路径保持不变。工作区是常规工作目录，不是文档存储。存储介质必须支持
 以下操作：
 
 | 操作 | 用途 |
@@ -416,6 +418,152 @@ scripts/compose.sh -f containers/compose.sso.yaml up -d
 
 团队入口需要终止 TLS，把公网主机名加入 `ASTRABOX_ALLOWED_HOSTS`，禁止直接访问 AstraBox 服务端口，并让所有副本使用相同的登录 Cookie 签名密钥。受支持的身份配置见[设置团队登录](team-login.md)。
 
+## 在子路径下发布 AstraBox {#publish-under-a-path}
+
+网关在一个主机上服务多个应用时，可以把 AstraBox 发布在某个路径下，例如
+`https://example.com/astrabox/`。请在 AstraBox 服务端设置这个路径。已安装的部署写入
+`~/astrabox/containers/.env`，再运行一次安装脚本：
+
+```bash
+printf '%s\n' "ASTRABOX_PUBLIC_PATH_PREFIX='/astrabox'" >> ~/astrabox/containers/.env
+```
+
+该值以斜杠开头，不带结尾斜杠。各段只能使用字母、数字、`.`、`_`、`~` 和 `-`。留空表示
+把 AstraBox 发布在主机根路径。值不合法时，服务端会拒绝启动并给出该值。
+
+AstraBox 按请求路径中前缀之后的部分匹配路由，因此网关要在请求到达 AstraBox 之前去掉
+前缀。可以用以下两种方式之一：
+
+| 网关 | 去掉前缀的方式 |
+|---|---|
+| 反向代理 | 转发前去掉前缀，见下面的示例。 |
+| 在自身进程中运行 AstraBox 的 Python 应用 | 把 AstraBox 挂载到该前缀，见[将 AstraBox 挂载到子路径](embedding.md#mount-astrabox-under-a-path)。 |
+
+使用 nginx 时，`proxy_pass` 中的 URI 部分会替换匹配到的前缀：
+
+```nginx
+location /astrabox/ {
+    proxy_pass http://127.0.0.1:8088/;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    # 会话事件和终端输出通过长连接流返回。
+    proxy_buffering off;
+    proxy_read_timeout 1h;
+}
+```
+
+使用 Caddy 时，`handle_path` 会去掉前缀：
+
+```caddyfile
+example.com {
+    redir /astrabox /astrabox/ 308
+    handle_path /astrabox/* {
+        reverse_proxy 127.0.0.1:8088 {
+            flush_interval -1
+        }
+    }
+}
+```
+
+请求以其他方式到达时，AstraBox 会拒绝该请求，错误信息会指出这个设置：
+
+| 错误 | 原因 |
+|---|---|
+| `PUBLIC_PATH_PREFIX_NOT_REMOVED`（404） | 请求仍带着前缀：代理原样转发了前缀，没有去掉它。此时管理台会提示无法加载。使用 nginx 时，`proxy_pass` 需要结尾的 `/`。 |
+| `PUBLIC_PATH_PREFIX_MISMATCH`（409） | Python 应用把 AstraBox 挂载到了与 `ASTRABOX_PUBLIC_PATH_PREFIX` 不同的路径。 |
+
+健康检查、就绪检查、安装脚本以及回调服务端的沙箱都直接访问 AstraBox，分别使用
+`/healthz`、`/readyz` 和沙箱回调地址，不经过网关。
+
+AstraBox 在前缀之下提供管理台页面和文件、API 以及事件流。它对外给出的地址也位于前缀
+之下：登录回调、分享链接、文件下载、管理台显示的 MCP 服务地址、渠道回调地址，以及
+连接工作应用后返回管理台的地址。启用团队登录时，请在身份提供方登记
+`https://example.com/astrabox/api/v1/auth/callback` 作为管理台的回调地址，见
+[设置团队登录](team-login.md)。登录 Cookie 的作用路径限定在该前缀下。
+
+请先设置前缀，再创建消息平台 Deployment 和 connector。渠道 Deployment 会保留创建时的
+回调地址，connector 会保留设置时的地址。修改前缀后，请重新创建渠道 Deployment。
+请更新 `ASTRABOX_CONTEXTFORGE_PUBLIC_URL` 和每个厂商 OAuth 应用的回调地址，再重新设置
+connector。启用团队登录时，还要更新身份提供方的回调地址和 `ASTRABOX_OIDC_REDIRECT_URL`，
+并设置新的 `ASTRABOX_AUTH_SESSION_SECRET`。否则，为旧路径签发的登录 Cookie 会让浏览器
+在退出后仍保持登录。
+
+LiteLLM 的管理页面从主机根路径加载文件，AstraBox 无法在前缀下提供这些页面。
+**集成服务**中不会列出内置网关的管理台。Agent 页面上的**管理远程 MCP 服务**和
+**管理 Skill** 会提示这些页面无法在前缀下打开（`PUBLIC_PATH_PREFIX_UNSUPPORTED`）。
+Agent 的 MCP 服务和 Skill 仍可在其页面上编辑。请在网关自己的地址打开它的管理台。
+
+路径只区分地址，不区分信任。同一主机上的所有应用共用一个浏览器源（origin），其他应用
+的脚本可以带着已登录用户的 Cookie 调用 AstraBox。如果主机上的其他应用不可信，请为
+AstraBox 使用独立的主机名。
+
+## 设置沙箱规格和资源上限 {#size-sandboxes-and-cap-what-they-use}
+
+对话独占的沙箱和 Agent 共享的沙箱各有一套规格：
+
+| 沙箱 | 上限 | 请求 | 设置方式 |
+|---|---|---|---|
+| 对话独占的沙箱 | 1 个 CPU、1 GiB | 250m CPU、1 GiB | `ASTRABOX_SANDBOX_CPU_LIMIT`、`ASTRABOX_SANDBOX_MEMORY_LIMIT`、`ASTRABOX_SANDBOX_CPU_REQUEST`、`ASTRABOX_SANDBOX_MEMORY_REQUEST` |
+| Agent 共享的沙箱 | 4 个 CPU、4 GiB | 1 个 CPU、4 GiB | 前缀为 `ASTRABOX_SHARED_SANDBOX_` 的同名四个变量 |
+
+上限是沙箱最多能用的资源。请求是 Kubernetes 调度器在节点上为它预留的资源；Docker 不看
+请求。内存请求等于上限，节点不会承诺它没有的内存。CPU 请求低于上限，因为 CPU 繁忙时
+沙箱只是变慢。沙箱采用创建时生效的规格，直到被替换前都保持不变。
+
+共享沙箱按实际用量（而不是上限）计算空闲内存，空闲内存还能给新对话留出 640 MiB 时才接入
+它。一个 Claude Code 对话从启动起会增长约 570 MiB，所以 4 GiB 的共享沙箱大约容纳五个对话。
+共享沙箱越大，单位内存能容纳的对话越多，因为底层运行时只占用一次：8 GiB 的沙箱大约容纳
+十二个。
+
+每个沙箱旁边运行一个出网 sidecar，上限为 1 个 CPU 和 128 MiB。在 Docker 主机上由随附的
+沙箱服务设置这个上限。在 Kubernetes 上，OpenSandbox 0.2.3 创建的 sidecar 不带资源设置，
+请为沙箱所在的命名空间配置一个 LimitRange，让容器默认值与之相同：
+
+```yaml
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: astrabox-sandbox-sidecars
+spec:
+  limits:
+    - type: Container
+      default: {cpu: "1", memory: 128Mi}
+      defaultRequest: {cpu: 50m, memory: 128Mi}
+```
+
+这个默认值作用于该命名空间中所有没有自行声明资源的容器，包括 OpenSandbox 的 execd 初始化
+容器。
+
+### 限制沙箱后端的总用量 {#cap-what-a-sandbox-backend-runs}
+
+沙箱额度限制一个沙箱后端为整个部署运行的资源总量，所有平台副本共用：
+
+| 变量 | 限制 |
+|---|---|
+| `ASTRABOX_SANDBOX_QUOTA_BOXES` | 沙箱数量 |
+| `ASTRABOX_SANDBOX_QUOTA_MEMORY` | 沙箱及其 sidecar 的内存上限之和，例如 `24Gi` |
+| `ASTRABOX_SANDBOX_QUOTA_CPU` | 沙箱及其 sidecar 的 CPU 上限之和 |
+| `ASTRABOX_SANDBOX_QUOTA_CONCURRENT_CREATES` | 同时创建中的沙箱数量 |
+
+后端为本部署运行的每个沙箱都计入额度：对话使用的沙箱、共享沙箱、已准备沙箱、创建中的
+沙箱，以及后端尚未确认删除的沙箱。暂停的沙箱在 Docker 主机上计入（它仍占着内存），在
+Kubernetes 上不计入（暂停会释放它的 Pod）；恢复时重新占用额度。沙箱的占用量在创建时确定，
+之后修改规格不会改变运行中沙箱的占用量。
+
+会让后端超出某项上限的沙箱不会被创建：需要它的对话立即结束，错误信息说明是哪项上限、当前
+用量和上限值，例如 `sandbox backend 'opensandbox' has no room for another box: boxes 12 of 12
+in use, and this box needs 1`。不会排队等待。以这种方式被拒绝的已准备沙箱会稍后重试，间隔
+逐渐拉长。已有沙箱的对话不受影响。
+
+变量不设置即没有上限，只有一个例外：在 Docker 主机上运行随附的沙箱服务时，内存上限默认为
+主机内存减去 4 GiB（留给平台、它的存储服务和主机本身）。16 GiB 的主机上就是 12 GiB，大约
+够十个独占沙箱的对话。8 GiB 及以下的主机上，这个上限不超过 4 GiB，放不下一个默认规格的共享
+沙箱（4 GiB 加 sidecar），运行环境使用共享沙箱的 Agent 或 Assistant 都无法启动：请调低
+`ASTRABOX_SHARED_SANDBOX_MEMORY_LIMIT` 及其请求，或调高 `ASTRABOX_SANDBOX_QUOTA_MEMORY`。把变量设为 `unlimited` 即取消该项上限。启动时会记录每项上限及其来源；
+如果后端无法列出自己的沙箱，就无法统计用量，此时设置上限会导致启动失败。控制台的「沙箱」
+页面会显示每项上限和当前用量。
+
 ## 为已准备沙箱规划容量 {#plan-capacity-for-prepared-sandboxes}
 
 每个 Agent 会按它的[预备容量](authoring-agents.md#prewarming)保留空闲的已准备运行时，
@@ -425,13 +573,13 @@ scripts/compose.sh -f containers/compose.sso.yaml up -d
 同样如此。只要预备容量大于 0、Agent 及其运行环境处于启用状态，这些运行时就一直保留；
 对话取走一个空闲沙箱之后，AstraBox 会再准备一个补上，每个 Agent 同时最多准备八个。请按
 各 Agent 的 `prepared_capacity` 之和规划部署容量：例如一个服务 1,000 名用户、预计会有 100
-个对话同时开始的 Agent，预备容量需要 100，每个对话独立使用沙箱时就是 100 个空闲沙箱。Agent
-的对话共用沙箱时，每个已准备的沙箱按内存上限放入尽可能多的席位，每个席位预留 640 MiB，
+个对话同时开始的 Agent，预备容量需要 100，每个对话独立使用沙箱时就是 100 个空闲沙箱。已准备
+沙箱计入[沙箱额度](#cap-what-a-sandbox-backend-runs)。Agent 的对话共用沙箱时，每个已准备的沙箱按内存上限放入尽可能多的席位，每个席位预留 640 MiB，
 Agent 保留的空闲沙箱数是预备容量除以每个沙箱的席位数并向上取整。在沙箱租期
 （`ASTRABOX_SANDBOX_LEASE_SECONDS`）内没有对话取走的席位会被丢弃，与空闲沙箱相同。把
 `ASTRABOX_PREPARED_CAPACITY_LIMIT` 设为部署能承受的总和，AstraBox 会拒绝会超出它的 Agent
-写入；Docker 主机不为空闲沙箱预留资源，除此之外没有任何东西能阻止一个 Agent 的预备容量
-耗尽主机。不需要快速开始首个对话的 Agent 可以把预备容量设为 0。
+写入。不设置时，一个 Agent 的已准备沙箱可能占满整个沙箱额度，不给对话留下余地。不需要快速
+开始首个对话的 Agent 可以把预备容量设为 0。
 
 空闲的已准备沙箱占用多少资源，取决于 Agent 的运行环境使用的 Agent 程序：
 
@@ -447,12 +595,12 @@ Agent 保留的空闲沙箱数是预备容量除以每个沙箱的席位数并�
 
 | 沙箱运行位置 | 这些资源如何计算 |
 |---|---|
-| 单台 Docker 主机 | 不预留资源：Docker 不会为空闲容器预留任何资源，占用就是上表中的内存加上 sidecar。约 20 个 Claude Code Agent 空闲时大约占用主机 11 GiB 内存。 |
-| Kubernetes 上的 OpenSandbox | 每个沙箱请求 200m CPU 和 768 MiB 内存，调度器按这些请求放置沙箱。DeepSeek Harness 沙箱实际使用的内存超过它的请求，因此请按实际使用量而不是请求量规划节点内存。例如 19 个沙箱共请求 3.8 个 CPU 和 14.25 GiB 内存，大致相当于一个 4 vCPU、16 GiB 节点可分配给 Pod 的全部资源，而 19 个空闲的 DeepSeek Harness 沙箱实际使用约 17 GiB。 |
-| 已有的 OpenSandbox 服务 | 每个沙箱同样请求 200m CPU 和 768 MiB 内存；是否真正预留取决于该服务的运行时，与上面两行相同。无论哪种情况，都请按实际使用量规划内存。 |
+| 单台 Docker 主机 | Docker 不为空闲容器预留资源，主机内存承载的就是上表中的占用加上 sidecar。沙箱额度仍按完整规格计入每个已准备沙箱。 |
+| Kubernetes 上的 OpenSandbox | 调度器在节点上为每个沙箱预留它的请求：对话独占的沙箱 250m CPU 和 1 GiB，共享沙箱 1 个 CPU 和 4 GiB，另加命名空间 LimitRange 给 sidecar 的请求。 |
+| 已有的 OpenSandbox 服务 | 请求相同；是否真正预留取决于该服务的运行时，与上面两行相同。 |
 
-每个沙箱工作时最多可用 4 个 CPU（Docker 上不超过主机的 CPU 数）和 4 GiB 内存；上表
-是空闲的已准备沙箱占用的资源。要为某个 Agent 关闭预热，在它的「运行设置」中把
+上表是空闲的已准备沙箱占用的资源；工作时沙箱最多可以用到它的[上限](#size-sandboxes-and-cap-what-they-use)。
+要为某个 Agent 关闭预热，在它的「运行设置」中把
 「预备容量」设为 0，或通过 API 或 `astrabox.yaml` 文档设置 `"prepared_capacity": 0`。
 
 部署多个平台副本时，每个 Agent 的已准备沙箱同一时刻只由一个副本负责补充，任何副本都能

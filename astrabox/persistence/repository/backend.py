@@ -101,6 +101,7 @@ __all__ = [
     "mongo_fail_fast_reset",
     "close_direct_mongo_for_current_loop",
     "create_all",
+    "active_backend",
     "active_backend_name",
     "REPOSITORY_GROUP",
     # re-exported vocabulary
@@ -207,32 +208,18 @@ def _resolve_backend(name: str) -> Any:
 def active_backend_name() -> str:
     """Resolve the active persistence backend name (fail-loud on an unknown name).
 
-    Precedence: an explicit database URL selects MongoDB or PostgreSQL;
-    otherwise ``AstraBoxSettings.db_backend`` (default ``postgresql``). A name that
-    is neither builtin must be registered at the
-    ``astrabox.providers.repository`` entry-point group (an installed plugin
-    distribution); anything else raises.
+    Precedence: a configured ``db_backend`` that names an installed plugin
+    (registered at the ``astrabox.providers.repository`` entry-point group)
+    wins, and the database URL is only its connection string — a plugin over
+    MongoDB or PostgreSQL uses those URL schemes too. Otherwise an explicit
+    database URL selects the matching builtin, which lets the server image's
+    ``ASTRABOX_DB_BACKEND=postgresql`` run over a ``mongodb://`` URL; failing
+    both, ``AstraBoxSettings.db_backend`` (default ``postgresql``). A name that
+    is neither builtin nor installed raises.
     """
-    raw_url = str(os.getenv("ASTRABOX_DB_URL") or "").strip()
-    if raw_url.startswith("mongodb"):
-        return "mongo"
-    if raw_url.startswith(("postgres://", "postgresql://", "postgresql+asyncpg://")):
-        return "postgresql"
-    if raw_url.startswith(("sqlite://", "sqlite+aiosqlite://")):
-        return "sqlite"
-
     from astrabox.config.settings import get_settings
 
     settings = get_settings()
-    # db_url on the settings object can also pin mongo even without the env var.
-    settings_url = str(getattr(settings, "db_url", "") or "").strip()
-    if settings_url.startswith("mongodb"):
-        return "mongo"
-    if settings_url.startswith(("postgres://", "postgresql://", "postgresql+asyncpg://")):
-        return "postgresql"
-    if settings_url.startswith(("sqlite://", "sqlite+aiosqlite://")):
-        return "sqlite"
-
     name = str(getattr(settings, "db_backend", "postgresql") or "postgresql").strip().lower()
     if name in ("postgres", "postgresql"):
         name = "postgresql"
@@ -241,7 +228,35 @@ def active_backend_name() -> str:
         # is fail-loud: an unknown/uninstalled name raises here with the
         # entry-point group named.
         _resolve_backend(name)
+        return name
+
+    raw_url = str(os.getenv("ASTRABOX_DB_URL") or "").strip()
+    if raw_url.startswith("mongodb"):
+        return "mongo"
+    if raw_url.startswith(("postgres://", "postgresql://", "postgresql+asyncpg://")):
+        return "postgresql"
+    if raw_url.startswith(("sqlite://", "sqlite+aiosqlite://")):
+        return "sqlite"
+
+    # db_url on the settings object can also pin mongo even without the env var.
+    settings_url = str(getattr(settings, "db_url", "") or "").strip()
+    if settings_url.startswith("mongodb"):
+        return "mongo"
+    if settings_url.startswith(("postgres://", "postgresql://", "postgresql+asyncpg://")):
+        return "postgresql"
+    if settings_url.startswith(("sqlite://", "sqlite+aiosqlite://")):
+        return "sqlite"
     return name
+
+
+def active_backend() -> Any:
+    """The active repository backend object: a builtin module or a plugin instance.
+
+    A component that needs a capability the backend declares beyond the
+    collection ingress (for example ``sql_database_url()``) asks this object,
+    never the configured name.
+    """
+    return _resolve_backend(active_backend_name())
 
 
 # --------------------------------------------------------------------------- #

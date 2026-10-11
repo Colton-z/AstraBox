@@ -9,6 +9,7 @@ import jwt
 import pytest
 from fastapi import FastAPI
 
+from astrabox.api.routes import extensions as extension_routes
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.user_context import UserContext
 from astrabox.core.service.orchestrator.agent_extension_service import (
@@ -28,8 +29,13 @@ from astrabox.seams.extensions import (
     ExtensionCatalog,
     ExtensionCatalogItem,
     ExtensionProvider,
+    ExtensionProviderFeatures,
     ExtensionRuntimeSelection,
+    ManagementConsoleCookie,
+    ManagementConsoleSession,
     RuntimeMCPServer,
+    register_extension_provider,
+    registered_extension_provider_names,
 )
 _SIGNING_SECRET = "astrabox-extension-test-signing-key-32-bytes"
 
@@ -417,3 +423,108 @@ async def test_gateway_key_and_inference_routes_are_refused_by_policy(
     assert inference_post.status_code == 403
     assert key_get.status_code == 403
     assert upstream_paths == []
+
+
+class _DeclaredProvider(ExtensionProvider):
+    name = "declared"
+    features = ExtensionProviderFeatures(display_name="Declared")
+
+    async def list_catalog(self, *, org_id: str) -> ExtensionCatalog:
+        _ = org_id
+        return ExtensionCatalog()
+
+    def materialize(
+        self,
+        *,
+        mcp_servers: tuple[ExtensionCatalogItem, ...],
+        skills: tuple[ExtensionCatalogItem, ...],
+    ) -> ExtensionRuntimeSelection:
+        _ = (mcp_servers, skills)
+        return ExtensionRuntimeSelection()
+
+
+def test_registration_refuses_a_provider_the_console_could_not_present() -> None:
+    """What the console renders comes from the declaration, so it must hold."""
+
+    class _Undeclared(_DeclaredProvider):
+        name = "undeclared"
+        features = None  # type: ignore[assignment]
+
+    class _ConsoleWithoutOpener(_DeclaredProvider):
+        name = "console-without-opener"
+        features = ExtensionProviderFeatures(display_name="Promises", management_console=True)
+
+    class _Reserved(_DeclaredProvider):
+        name = "none"
+
+    for provider, reason in (
+        (_Undeclared(), "must declare features"),
+        (_ConsoleWithoutOpener(), "does not implement open_management_console"),
+        (_Reserved(), "is reserved"),
+    ):
+        with pytest.raises(RuntimeError, match=reason):
+            register_extension_provider(provider)
+        assert provider.name not in registered_extension_provider_names()
+
+
+class _ConsoleProvider(_DeclaredProvider):
+    name = "console"
+    features = ExtensionProviderFeatures(display_name="Console", management_console=True)
+
+    def __init__(self) -> None:
+        self.opened: list[tuple[str, str]] = []
+
+    async def open_management_console(
+        self, *, user: UserContext, agent_id: str, section: Any
+    ) -> ManagementConsoleSession:
+        self.opened.append((agent_id, section))
+        return ManagementConsoleSession(
+            open_url="/console/open",
+            expires_in=60,
+            cookies=(ManagementConsoleCookie("console_grant", "grant-token", max_age=60),),
+        )
+
+
+async def test_the_console_session_opens_only_a_console_the_selected_provider_declares(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _manager(_self: Any, _user: Any, agent_id: str) -> dict[str, Any]:
+        return {"agent_id": agent_id}
+
+    async def _user(_request: Any) -> UserContext:
+        return UserContext("owner")
+
+    monkeypatch.setattr(AgentExtensionService, "assert_can_manage", _manager)
+    monkeypatch.setattr(extension_routes, "get_current_user_context", _user)
+    monkeypatch.setattr(extension_routes, "_registered_on", None)
+    selected: list[ExtensionProvider | None] = []
+    monkeypatch.setattr(extension_routes, "configured_extension_provider", lambda: selected[-1])
+    app = FastAPI()
+    extension_routes.register_extension_routes(app)
+
+    async with httpx.AsyncClient(
+        base_url="https://astrabox.test", transport=httpx.ASGITransport(app=app)
+    ) as client:
+        console = _ConsoleProvider()
+        selected.append(console)
+        opened = await client.post(
+            "/api/v1/agents/agent-1/extension-console/session", json={"section": "skills"}
+        )
+        assert opened.status_code == 200
+        assert opened.json()["data"] == {"open_url": "/console/open", "expires_in": 60}
+        assert console.opened == [("agent-1", "skills")]
+        cookie = opened.headers["set-cookie"]
+        assert cookie.startswith("console_grant=grant-token;")
+        assert "HttpOnly" in cookie and "Secure" in cookie and "SameSite=lax" in cookie
+        assert opened.headers["cache-control"] == "no-store"
+
+        # A provider that declares no console is never asked to open one.
+        selected.append(_DeclaredProvider())
+        with pytest.raises(APIError) as unsupported:
+            await client.post("/api/v1/agents/agent-1/extension-console/session", json={})
+        assert unsupported.value.code == "EXTENSION_CONSOLE_UNSUPPORTED"
+
+        selected.append(None)
+        with pytest.raises(APIError) as disabled:
+            await client.post("/api/v1/agents/agent-1/extension-console/session", json={})
+        assert disabled.value.code == "EXTENSION_CATALOG_DISABLED"

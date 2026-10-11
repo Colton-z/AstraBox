@@ -807,6 +807,307 @@
         "title": "AdminSandboxPagination",
         "type": "object"
       },
+      "AdminSandboxQuota": {
+        "additionalProperties": true,
+        "description": "The sandbox quota of every enabled backend.",
+        "properties": {
+          "backends": {
+            "items": {
+              "$ref": "#/components/schemas/AdminSandboxQuotaBackend"
+            },
+            "title": "Backends",
+            "type": "array"
+          }
+        },
+        "required": [
+          "backends"
+        ],
+        "title": "AdminSandboxQuota",
+        "type": "object"
+      },
+      "AdminSandboxQuotaBackend": {
+        "additionalProperties": true,
+        "description": "One enabled backend's quota, usage and boxes.",
+        "properties": {
+          "backend": {
+            "title": "Backend",
+            "type": "string"
+          },
+          "boxes": {
+            "items": {
+              "$ref": "#/components/schemas/AdminSandboxQuotaBox"
+            },
+            "title": "Boxes",
+            "type": "array"
+          },
+          "inventory_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Inventory At"
+          },
+          "quota": {
+            "$ref": "#/components/schemas/AdminSandboxQuotaCeilings"
+          },
+          "reservations": {
+            "items": {
+              "$ref": "#/components/schemas/AdminSandboxQuotaReservation"
+            },
+            "title": "Reservations",
+            "type": "array"
+          },
+          "usage": {
+            "$ref": "#/components/schemas/AdminSandboxQuotaUsage"
+          }
+        },
+        "required": [
+          "backend",
+          "quota",
+          "usage",
+          "inventory_at",
+          "boxes",
+          "reservations"
+        ],
+        "title": "AdminSandboxQuotaBackend",
+        "type": "object"
+      },
+      "AdminSandboxQuotaBox": {
+        "additionalProperties": true,
+        "description": "One box of the backend's last inventory, with what it is charged.",
+        "properties": {
+          "cpu": {
+            "title": "Cpu",
+            "type": "number"
+          },
+          "memory": {
+            "title": "Memory",
+            "type": "integer"
+          },
+          "sandbox_id": {
+            "title": "Sandbox Id",
+            "type": "string"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sandbox_id",
+          "cpu",
+          "memory",
+          "state",
+          "session_id"
+        ],
+        "title": "AdminSandboxQuotaBox",
+        "type": "object"
+      },
+      "AdminSandboxQuotaCeilings": {
+        "additionalProperties": true,
+        "description": "A backend's quota ceilings; ``null`` is no ceiling.",
+        "properties": {
+          "boxes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Boxes"
+          },
+          "concurrent_creates": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Concurrent Creates"
+          },
+          "cpu": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cpu"
+          },
+          "memory_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Memory Bytes"
+          },
+          "sources": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Sources",
+            "type": "object"
+          }
+        },
+        "required": [
+          "boxes",
+          "memory_bytes",
+          "cpu",
+          "concurrent_creates",
+          "sources"
+        ],
+        "title": "AdminSandboxQuotaCeilings",
+        "type": "object"
+      },
+      "AdminSandboxQuotaReservation": {
+        "additionalProperties": true,
+        "description": "Room taken for a box the inventory does not show yet.",
+        "properties": {
+          "cpu": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cpu"
+          },
+          "memory": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Memory"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "reserved_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reserved At"
+          },
+          "sandbox_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sandbox Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State"
+          }
+        },
+        "required": [
+          "state",
+          "reason",
+          "session_id",
+          "sandbox_id",
+          "cpu",
+          "memory",
+          "reserved_at"
+        ],
+        "title": "AdminSandboxQuotaReservation",
+        "type": "object"
+      },
+      "AdminSandboxQuotaUsage": {
+        "additionalProperties": true,
+        "description": "What the backend's boxes and pending creates hold against the quota.",
+        "properties": {
+          "boxes": {
+            "title": "Boxes",
+            "type": "integer"
+          },
+          "cpu": {
+            "title": "Cpu",
+            "type": "number"
+          },
+          "creating": {
+            "title": "Creating",
+            "type": "integer"
+          },
+          "memory_bytes": {
+            "title": "Memory Bytes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "boxes",
+          "memory_bytes",
+          "cpu",
+          "creating"
+        ],
+        "title": "AdminSandboxQuotaUsage",
+        "type": "object"
+      },
       "AdminSandboxSecurity": {
         "additionalProperties": true,
         "description": "What one sandbox reports about its own containment.",
@@ -2018,6 +2319,18 @@
             ],
             "title": "Exposure Mode"
           },
+          "extension_catalog": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Extension Catalog"
+          },
           "idle_hibernate_seconds": {
             "anyOf": [
               {
@@ -2028,6 +2341,21 @@
               }
             ],
             "title": "Idle Hibernate Seconds"
+          },
+          "mcp_assignments": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mcp Assignments"
           },
           "mcp_servers": {
             "anyOf": [
@@ -2566,6 +2894,28 @@
           "data"
         ],
         "title": "ApiEnvelope[AdminSandboxPage]",
+        "type": "object"
+      },
+      "ApiEnvelope_AdminSandboxQuota_": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/AdminSandboxQuota"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[AdminSandboxQuota]",
         "type": "object"
       },
       "ApiEnvelope_AdminSandboxSecurity_": {
@@ -3294,6 +3644,28 @@
         "title": "ApiEnvelope[AuthorizeResponse]",
         "type": "object"
       },
+      "ApiEnvelope_ChannelAccountLinkRecord_": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/ChannelAccountLinkRecord"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[ChannelAccountLinkRecord]",
+        "type": "object"
+      },
       "ApiEnvelope_ChildRunMessagePage_": {
         "properties": {
           "code": {
@@ -3426,6 +3798,28 @@
         "title": "ApiEnvelope[CurrentUser]",
         "type": "object"
       },
+      "ApiEnvelope_DeletedChannelAccountLink_": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/DeletedChannelAccountLink"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[DeletedChannelAccountLink]",
+        "type": "object"
+      },
       "ApiEnvelope_DeletedDeployment_": {
         "properties": {
           "code": {
@@ -3446,6 +3840,28 @@
           "data"
         ],
         "title": "ApiEnvelope[DeletedDeployment]",
+        "type": "object"
+      },
+      "ApiEnvelope_DeploymentExtensionProvider_": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/DeploymentExtensionProvider"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[DeploymentExtensionProvider]",
         "type": "object"
       },
       "ApiEnvelope_DeploymentRecord_": {
@@ -4676,6 +5092,32 @@
         "title": "ApiEnvelope[list[Assistant]]",
         "type": "object"
       },
+      "ApiEnvelope_list_ChannelAccountLinkRecord__": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/ChannelAccountLinkRecord"
+            },
+            "title": "Data",
+            "type": "array"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[list[ChannelAccountLinkRecord]]",
+        "type": "object"
+      },
       "ApiEnvelope_list_Connector__": {
         "properties": {
           "code": {
@@ -5721,6 +6163,18 @@
             ],
             "title": "Environment Name"
           },
+          "extension_catalog": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Extension Catalog"
+          },
           "icon": {
             "anyOf": [
               {
@@ -5752,6 +6206,21 @@
               }
             ],
             "title": "Main Session Id"
+          },
+          "mcp_assignments": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mcp Assignments"
           },
           "mcp_servers": {
             "anyOf": [
@@ -5967,6 +6436,18 @@
             ],
             "title": "Environment Name"
           },
+          "extension_catalog": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Extension Catalog"
+          },
           "instructions": {
             "anyOf": [
               {
@@ -5977,6 +6458,21 @@
               }
             ],
             "title": "Instructions"
+          },
+          "mcp_assignments": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mcp Assignments"
           },
           "mcp_servers": {
             "anyOf": [
@@ -6678,6 +7174,35 @@
           "files"
         ],
         "title": "Body_upload_session_files_api_v1_sessions__session_id__files_upload_post",
+        "type": "object"
+      },
+      "ChannelAccountLinkRecord": {
+        "description": "One participant of a trigger and the AstraBox account its messages run as.",
+        "properties": {
+          "linked_at": {
+            "title": "Linked At",
+            "type": "string"
+          },
+          "linked_by": {
+            "title": "Linked By",
+            "type": "string"
+          },
+          "participant": {
+            "title": "Participant",
+            "type": "string"
+          },
+          "user_id": {
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "participant",
+          "user_id",
+          "linked_by",
+          "linked_at"
+        ],
+        "title": "ChannelAccountLinkRecord",
         "type": "object"
       },
       "ChildRunMessagePage": {
@@ -7612,6 +8137,25 @@
         "title": "DeleteSessionFilesRequest",
         "type": "object"
       },
+      "DeletedChannelAccountLink": {
+        "description": "The participant whose link is gone; ``deleted`` is false if it had none.",
+        "properties": {
+          "deleted": {
+            "title": "Deleted",
+            "type": "boolean"
+          },
+          "participant": {
+            "title": "Participant",
+            "type": "string"
+          }
+        },
+        "required": [
+          "participant",
+          "deleted"
+        ],
+        "title": "DeletedChannelAccountLink",
+        "type": "object"
+      },
       "DeletedDeployment": {
         "additionalProperties": true,
         "description": "The binding that is gone. ``deleted`` is the confirmed soft delete.",
@@ -7682,6 +8226,27 @@
           }
         },
         "title": "DeliveryFailure",
+        "type": "object"
+      },
+      "DeploymentExtensionProvider": {
+        "additionalProperties": false,
+        "description": "The deployment's extension provider; ``provider`` is null when it runs no catalog.",
+        "properties": {
+          "provider": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExtensionProviderView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "provider"
+        ],
+        "title": "DeploymentExtensionProvider",
         "type": "object"
       },
       "DeploymentRecord": {
@@ -7793,6 +8358,17 @@
               }
             ],
             "title": "Enabled"
+          },
+          "execution_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Execution Mode"
           },
           "execution_user_id": {
             "anyOf": [
@@ -7935,7 +8511,7 @@
       },
       "ExtensionConsoleSession": {
         "additionalProperties": true,
-        "description": "Where to send the browser, and how long the grant lasts.\n\nThe session itself lives in the two cookies the route sets; the body carries\nno token, so a client that logs or forwards it discloses nothing. The\nobligations that come with declaring a response model are in\n:mod:`astrabox.api.routes.response_envelope`.",
+        "description": "Where to send the browser, and how long the grant lasts.\n\nThe session itself lives in the cookies the route sets; the body carries no\ntoken, so a client that logs or forwards it discloses nothing. The\nobligations that come with declaring a response model are in\n:mod:`astrabox.api.routes.response_envelope`.",
         "properties": {
           "expires_in": {
             "title": "Expires In",
@@ -7951,6 +8527,48 @@
           "expires_in"
         ],
         "title": "ExtensionConsoleSession",
+        "type": "object"
+      },
+      "ExtensionConsoleSessionRequest": {
+        "additionalProperties": false,
+        "description": "Which kind of catalog entry the management console is opened for.",
+        "properties": {
+          "section": {
+            "default": "mcp",
+            "enum": [
+              "mcp",
+              "skills"
+            ],
+            "title": "Section",
+            "type": "string"
+          }
+        },
+        "title": "ExtensionConsoleSessionRequest",
+        "type": "object"
+      },
+      "ExtensionProviderView": {
+        "additionalProperties": false,
+        "description": "The extension provider whose catalog this deployment offers.\n\n``name`` is the ``ASTRABOX_EXTENSION_PROVIDER`` value that selects it;\n``display_name`` and ``management_console`` are what the provider declares\n(``ExtensionProviderFeatures``).",
+        "properties": {
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "management_console": {
+            "title": "Management Console",
+            "type": "boolean"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "display_name",
+          "management_console"
+        ],
+        "title": "ExtensionProviderView",
         "type": "object"
       },
       "HTTPValidationError": {
@@ -7973,6 +8591,13 @@
           "catalog_mcp_servers": {
             "title": "Catalog Mcp Servers",
             "type": "integer"
+          },
+          "catalog_skills": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Catalog Skills",
+            "type": "array"
           },
           "credential_vaults": {
             "title": "Credential Vaults",
@@ -8008,6 +8633,7 @@
         "required": [
           "instructions",
           "skills",
+          "catalog_skills",
           "mcp_servers",
           "catalog_mcp_servers",
           "packages",
@@ -10975,29 +11601,13 @@
         ],
         "title": "WebshellAccess",
         "type": "object"
-      },
-      "_CreateSessionRequest": {
-        "additionalProperties": false,
-        "properties": {
-          "section": {
-            "default": "mcp",
-            "enum": [
-              "mcp",
-              "skills"
-            ],
-            "title": "Section",
-            "type": "string"
-          }
-        },
-        "title": "_CreateSessionRequest",
-        "type": "object"
       }
     }
   },
   "info": {
     "summary": "Self-hosted agent runtime that runs installed Agent programs in isolated sandboxes and streams responses over the AI SDK Data Stream Protocol (SSE).",
     "title": "AstraBox",
-    "version": "0.1.5"
+    "version": "0.1.6"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -11430,6 +12040,155 @@
           }
         },
         "summary": "Update Agent Deployment"
+      }
+    },
+    "/api/v1/admin/agents/{agent_id}/deployments/{deployment_id}/account-links": {
+      "delete": {
+        "operationId": "delete_agent_deployment_account_link_api_v1_admin_agents__agent_id__deployments__deployment_id__account_links_delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "title": "Agent Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "deployment_id",
+            "required": true,
+            "schema": {
+              "title": "Deployment Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "participant",
+            "required": true,
+            "schema": {
+              "title": "Participant",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_DeletedChannelAccountLink_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Agent Deployment Account Link"
+      },
+      "get": {
+        "operationId": "list_agent_deployment_account_links_api_v1_admin_agents__agent_id__deployments__deployment_id__account_links_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "title": "Agent Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "deployment_id",
+            "required": true,
+            "schema": {
+              "title": "Deployment Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_list_ChannelAccountLinkRecord__"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Agent Deployment Account Links"
+      },
+      "put": {
+        "operationId": "put_agent_deployment_account_link_api_v1_admin_agents__agent_id__deployments__deployment_id__account_links_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "title": "Agent Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "deployment_id",
+            "required": true,
+            "schema": {
+              "title": "Deployment Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_ChannelAccountLinkRecord_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Put Agent Deployment Account Link"
       }
     },
     "/api/v1/admin/agents/{agent_id}/deployments/{deployment_id}/runs": {
@@ -12544,6 +13303,25 @@
           }
         },
         "summary": "Run Sandbox Idle Sweep"
+      }
+    },
+    "/api/v1/admin/sandbox-quota": {
+      "get": {
+        "description": "Each enabled backend's quota ceilings, what is held against them, and its boxes.\n\nUsage is the backend's last inventory plus the reservations for boxes\nit does not show yet, as the quota itself counts it; ``inventory_at``\nsays when that inventory was taken.",
+        "operationId": "describe_sandbox_quota_api_v1_admin_sandbox_quota_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_AdminSandboxQuota_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Describe Sandbox Quota"
       }
     },
     "/api/v1/admin/sandboxes": {
@@ -13936,6 +14714,7 @@
     },
     "/api/v1/agents/{agent_id}/extension-console/session": {
       "post": {
+        "description": "Open the selected provider's management console for one Agent.",
         "operationId": "create_extension_console_session_api_v1_agents__agent_id__extension_console_session_post",
         "parameters": [
           {
@@ -13952,7 +14731,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/_CreateSessionRequest"
+                "$ref": "#/components/schemas/ExtensionConsoleSessionRequest"
               }
             }
           },
@@ -17995,6 +18774,25 @@
           }
         },
         "summary": "Refresh Exposed Port Url"
+      }
+    },
+    "/api/v1/extension-provider": {
+      "get": {
+        "description": "What the console offers for extension catalogs; reads no catalog.",
+        "operationId": "get_extension_provider_api_v1_extension_provider_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_DeploymentExtensionProvider_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Extension Provider"
       }
     },
     "/api/v1/mcp": {

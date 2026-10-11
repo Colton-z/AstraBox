@@ -218,18 +218,26 @@ class RuntimeEnsure:
     async def _sandbox_data_plane_dead(
         self, session: dict[str, Any], sandbox_id: str
     ) -> bool:
-        """Ask the backend whether the box's data plane is gone (false Ready)."""
+        """Whether the backend found the box's data plane gone (false Ready).
 
-        from astrabox.seams.sandbox import sandbox_for_name
+        Only a ``DEAD`` assessment converges the box's owners; ``UNKNOWN`` is no
+        evidence, and the attach judges the box as before.
+        """
+
+        from astrabox.seams.sandbox import SANDBOX_DATA_PLANE_DEAD, sandbox_for_name
 
         backend = str(session.get("sandbox_backend") or "").strip().lower()
         if not backend:
             return False
-        provider = sandbox_for_name(backend)
-        assess = getattr(provider, "data_plane_unreachable", None)
-        if not callable(assess):
-            return False
-        return bool(await assess(sandbox_id))
+        assessment = await sandbox_for_name(backend).assess_data_plane(sandbox_id)
+        if assessment.state != SANDBOX_DATA_PLANE_DEAD:
+            logger.debug(
+                "data-plane assessment sandbox=%s: %s %s",
+                sandbox_id,
+                assessment.state,
+                assessment.detail,
+            )
+        return assessment.state == SANDBOX_DATA_PLANE_DEAD
 
     async def bound_sandbox_confirmed_gone(self, session: dict[str, Any]) -> bool:
         """Converge the owners of this conversation's box when it is confirmed gone.

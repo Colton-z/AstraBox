@@ -38,6 +38,11 @@
 #                                    as https://login.example.com. Set both for
 #                                    browsers on other computers; set neither
 #                                    to sign in on this host only.
+#   ASTRABOX_PUBLIC_PATH_PREFIX      the path a gateway publishes the console under,
+#                                    such as /astrabox, when it shares the host
+#                                    and removes that path before forwarding.
+#                                    With team login, the console's callback is
+#                                    registered below it.
 #
 # Docs: https://www.astrabox.ai/docs/deploy
 set -euo pipefail
@@ -563,7 +568,7 @@ origin_host() {
 # Everything is checked before anything is written, so a refused run leaves
 # the settings file as it was.
 configure_public_urls() {
-  local env_file="$1" name console issuer host allowed
+  local env_file="$1" name console issuer host allowed prefix
   for name in ASTRABOX_CONSOLE_ORIGIN ASTRABOX_OIDC_ISSUER; do
     [ -z "${!name:-}" ] || valid_origin "${!name}" \
       || die "$name must be a scheme and a host name or IPv4 address, with an optional port" \
@@ -588,8 +593,10 @@ configure_public_urls() {
   env_set "$env_file" ASTRABOX_CONSOLE_ORIGIN "$console"
   env_set "$env_file" ASTRABOX_OIDC_ISSUER "$issuer"
   # Behind a proxy the server cannot tell the public scheme from the request,
-  # and the callback it names to Casdoor must be the one Casdoor registered.
-  env_set "$env_file" ASTRABOX_OIDC_REDIRECT_URL "$console$OIDC_CALLBACK_PATH"
+  # and the callback it names to Casdoor must be the one Casdoor registered:
+  # the console's origin, the path it is published under, the callback route.
+  prefix="$(env_get "$env_file" ASTRABOX_PUBLIC_PATH_PREFIX)"
+  env_set "$env_file" ASTRABOX_OIDC_REDIRECT_URL "$console$prefix$OIDC_CALLBACK_PATH"
   [ -n "$allowed" ] || env_set "$env_file" ASTRABOX_ALLOWED_HOSTS "$host,localhost,127.0.0.1,[::1]"
 }
 
@@ -640,11 +647,12 @@ EOF
 }
 
 show_team_login() {
-  local env_file="$1" port="$2" secret_dir="$3" casdoor_port console issuer
+  local env_file="$1" port="$2" secret_dir="$3" casdoor_port console issuer prefix
   casdoor_port="$(env_get "$env_file" ASTRABOX_CASDOOR_HOST_PORT)"
   casdoor_port="${casdoor_port:-8087}"
   console="$(env_get "$env_file" ASTRABOX_CONSOLE_ORIGIN)"
   issuer="$(env_get "$env_file" ASTRABOX_OIDC_ISSUER)"
+  prefix="$(env_get "$env_file" ASTRABOX_PUBLIC_PATH_PREFIX)"
   cat <<EOF
   Team login is on. Sign in as admin with the password in
     $secret_dir/casdoor_admin_password
@@ -652,7 +660,7 @@ show_team_login() {
 EOF
   if [ -n "$console" ]; then
     cat <<EOF
-  Browsers open $console and sign in at $issuer.
+  Browsers open $console$prefix/ and sign in at $issuer.
   Route both to the loopback ports through your HTTPS proxy, publishing only
   Casdoor's sign-in paths: $TEAM_LOGIN_DOCS_URL
 EOF
@@ -801,6 +809,8 @@ main() {
   chmod 600 "$env_file"
   [ -n "$(env_get "$env_file" COMPOSE_PROJECT_NAME)" ] || env_set "$env_file" COMPOSE_PROJECT_NAME astrabox
   [ -z "${ASTRABOX_IMAGE_PREFIX:-}" ] || env_set "$env_file" ASTRABOX_IMAGE_PREFIX "$ASTRABOX_IMAGE_PREFIX"
+  [ -z "${ASTRABOX_PUBLIC_PATH_PREFIX:-}" ] \
+    || env_set "$env_file" ASTRABOX_PUBLIC_PATH_PREFIX "$ASTRABOX_PUBLIC_PATH_PREFIX"
   env_set "$env_file" ASTRABOX_IMAGE_TAG "$version"
   local docker_gid gateway
   docker_gid="$(socket_group)" || die "Cannot read the group of /var/run/docker.sock."

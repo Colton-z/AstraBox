@@ -51,10 +51,51 @@ AstraBox 会先保存入站任务，再返回确认。适配器提供稳定的 `
 | `reply_context` | 投递回复时使用的非敏感路由信息 |
 | `attention` | 私聊、提及和回复信号 |
 | `participant` | 随消息记录的外部发送者身份，并与触发配置的“允许的发送者”比对；设置了该列表的触发配置会拒绝不带此字段的消息 |
+| `signal` | 这条入站对其消息的说明：`message`、`observation` 或 `authorization`（见下文） |
 
-`reference` 将入站回复关联到之前发出的平台消息；`ack_extra` 在回调响应中加入产品要求的字段；`alias_link` 记录投递后才获取的平台消息 ID；`ignore_reason` 标记不应触发执行的已认证事件。
+`reference` 将入站回复关联到之前的平台消息，格式与 `dedup_key` 和投递回执 ID 相同。`dedup_key`、`reference` 和回执 ID 在同一个 Deployment 内必须唯一：平台在不同聊天中会重复的消息编号需要加上聊天标识。`ack_extra` 在回调响应中加入产品要求的字段；`alias_link` 记录投递后才获取的平台消息 ID；`ignore_reason` 标记不应触发执行的已认证事件。
 
-Deployment 的 `attention_policy` 决定一条已认证消息是否需要私聊、提及或回复信号。适配器只报告这些事实，不负责决定策略。
+Deployment 的 `attention_policy` 决定一条已认证消息是否需要私聊、提及或回复信号。适配器只报告这些事实，不负责决定策略。策略未唤起的消息会保留为对话上下文，因此之后针对同一 `dedup_key` 唤起它的信号仍可以让它执行。
+
+### 上下文与触发分属两路
+
+有些消息产品在一路消息流中投递所有群消息，却在另一路中给出回复某条消息的许可（例如提及机器人时的回调），两者到达顺序不定。请用 `signal` 分别报告，并为两者使用同一个 `dedup_key`：
+
+| `signal` | 用途 | 要求 |
+| --- | --- | --- |
+| `message`（默认） | 可按 Deployment 规则执行的完整消息 | — |
+| `observation` | 仅作为上下文投递的消息 | `dedup_key`、`participant`、`conversation_key`、`message_timestamp`、`retain_context=True`；不带 `reply_context` |
+| `authorization` | 执行同一 `dedup_key` 已观察消息的许可 | `dedup_key`、`participant`、一个 `attention` 信号；不带 `content`、`reference`、`message_timestamp` 或 `retain_context` |
+
+AstraBox 为每个 `dedup_key` 只保留一条记录，并且最多为它执行一次。无论 `attention_policy` 如何，observation 都不会执行。authorization 以已观察消息的文本和自身的 `reply_context` 执行；它先到达时，AstraBox 最多等待观察一天，之后告知参与者该消息未被回复。消息首次记录的内容会被保留：发送者或对话不一致的信号会被拒绝，在授权前被撤回的消息永远不会执行。
+
+### 将消息划分为对话
+
+`conversation_key` 决定消息继续哪个对话，也就决定了它进入哪个 Session。同一个对话中的每条消息都返回同一个 key：一个私聊、一个群、一个工单，或平台命名的一个话题。
+
+如果要按回复链划分群消息，请让 AstraBox 沿着回复链查找。不回复任何消息的消息使用它自己的对话 key。对于回复，把 `reference` 设为它所回复的消息，并设置 `conversation_from_reference=True`。如果 AstraBox 记录过被回复的消息（本 Deployment 收到的消息，或它投递的回复），这条回复就继续那条消息的对话；否则使用这条回复自己的 `conversation_key`，因此请根据它所回复的消息生成这个 key：
+
+```python
+root = quoted_id or message_id
+return ChannelInbound(
+    content=text,
+    dedup_key=f"{room}:{message_id}",
+    conversation_key=f"{room}/chain/{root}",
+    reference=f"{room}:{quoted_id}" if quoted_id else None,
+    conversation_from_reference=quoted_id is not None,
+    participant=sender,
+    message_timestamp=sent_at,
+    retain_context=True,
+)
+```
+
+AstraBox 会记录每条消息所属的对话。对回复的回复、对 Agent 回答的回复，都会加入回复链起点所在的对话，尽管适配器只给出了它引用的那条消息。保留的上下文按同样的对话划分，因此每条回复链只读取自己未被唤起的回复。如果需要让每个 Deployment 在“按群划分”和“按回复链划分”之间选择，请把这个选择作为适配器的一个配置字段提供。
+
+### 执行身份
+
+`participant` 只能填写适配器验证过的身份，不能填写请求仅仅声称的身份：触发配置可能以与该参与者关联的 AstraBox 账号执行每条消息。平台没有说明消息发送者时不要设置它；以关联账号执行的触发配置会拒绝这样的消息。
+
+`ChannelDescriptor.execution_modes` 列出该适配器的触发配置可以使用的执行方式，默认是 `("owner", "account", "linked")`。工作属于具体某个人的适配器（例如分配给处理人的工单）声明 `("linked",)`，这样它的任何触发配置都不能以 Agent 创建者或某个固定账号执行。参与者以哪个账号执行不由适配器决定，而由部署配置的账号解析器决定。内置的 `links` 解析器读取管理员在每个触发配置上维护的关联。基于目录服务的解析器在 `astrabox.providers.channel_accounts` 入口点组注册，并通过 `ASTRABOX_CHANNEL_ACCOUNT_RESOLVER` 选择。
 
 ## 消息源连接模式
 
@@ -199,8 +240,8 @@ AstraBox 会为目标渠道订阅 Session 输出，与 Web 读取同一份内容
 
 如果消息产品支持在 Agent 执行期间更新消息，请设置 `supports_streaming_delivery = True` 并实现 `open_delivery()`。依次处理 `turn_started`、`progress`、`settled` 和 `failed` 事件。`prior_aliases` 参数包含之前一次投递已保存的平台消息 ID；应更新这些消息，不要创建替代消息。
 
-使用 `ChannelEvent.response_id` 标识主 Agent 回复，无需依赖它的触发来源。原生 Session
-输出的 `command_id` 和 `turn_id` 可以为空，不应以存在入站命令作为投递条件。`progress`
+使用 `ChannelEvent.response_id` 标识主 Agent 回复，无需依赖它的触发来源。`turn_id`
+是产生该回复的 Session 轮次，原生 Session 输出的 `turn_id` 可以为空；不应以存在入站消息作为投递条件。`progress`
 包含回复的累计正文，包括之前的文本块；更新消息时应替换正文。纯文本投递省略没有正文的
 回复，原生工具卡片仍可在 Web 查看。
 

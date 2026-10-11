@@ -82,6 +82,18 @@ case "$console_origin" in
     exit 1
     ;;
 esac
+# The console is published at its origin followed by the deployment's public
+# path prefix; the AstraBox server validates the prefix itself, and this keeps
+# it from breaking the seed's JSON.
+public_path_prefix="${ASTRABOX_PUBLIC_PATH_PREFIX:-}"
+case "$public_path_prefix" in
+  '') ;;
+  *[\"\\\ ]*|*/|[!/]*)
+    printf '%s\n' "ASTRABOX_PUBLIC_PATH_PREFIX must be empty or a path such as /astrabox, without quotes, spaces, backslashes, or a trailing slash" >&2
+    exit 1
+    ;;
+esac
+console_url="$console_origin$public_path_prefix"
 
 template=/conf/init_data.template.json
 init_data=/run/astrabox-casdoor/init_data.json
@@ -95,7 +107,7 @@ sed \
   -e "s|__ASTRABOX_OIDC_API_CLIENT_ID__|$(escape_sed_replacement "$api_client_id")|g" \
   -e "s|__ASTRABOX_OIDC_API_CLIENT_SECRET__|$(escape_sed_replacement "$api_client_secret")|g" \
   -e "s|__ASTRABOX_CASDOOR_ADMIN_PASSWORD__|$(escape_sed_replacement "$admin_password")|g" \
-  -e "s|__ASTRABOX_CONSOLE_ORIGIN__|$(escape_sed_replacement "$console_origin")|g" \
+  -e "s|__ASTRABOX_CONSOLE_URL__|$(escape_sed_replacement "$console_url")|g" \
   "$template" >"$init_data"
 chmod 0600 "$init_data"
 

@@ -467,6 +467,38 @@ async def test_kill_destroys_and_returns_true() -> None:
     assert "sb-1" not in fake.sandboxes
 
 
+async def test_kill_reclaims_snapshots_first_and_never_keeps_a_box_for_them(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A parked box's snapshots go before the box, and never keep it alive.
+
+    Deleting a sandbox drops its snapshot records with it while the images
+    they named stay in the registry, so reclaiming them afterwards has no id
+    left to ask about. A snapshot that cannot be reclaimed still lets the box
+    go: an orphaned image costs disk, a running box costs money and privacy.
+    """
+
+    fake = _FakeLifecycle()
+    fake.add_sandbox("sb-1")
+    fake.add_sandbox("sb-2")
+    provider = _provider(fake)
+    asked: list[tuple[str, bool]] = []
+
+    async def _discard(sandbox_id: str) -> int:
+        asked.append((sandbox_id, sandbox_id in fake.sandboxes))
+        if sandbox_id == "sb-2":
+            raise RuntimeError("the control plane refused the snapshot listing")
+        return 1
+
+    monkeypatch.setattr(provider, "discard_snapshots", _discard)
+
+    assert await provider.kill("sb-1") is True
+    assert await provider.kill("sb-2") is True
+
+    assert asked == [("sb-1", True), ("sb-2", True)], "each box still existed when asked"
+    assert "sb-1" not in fake.sandboxes and "sb-2" not in fake.sandboxes
+
+
 async def test_kill_404_is_idempotent_true() -> None:
     fake = _FakeLifecycle()
     assert await _provider(fake).kill("sb-gone") is True

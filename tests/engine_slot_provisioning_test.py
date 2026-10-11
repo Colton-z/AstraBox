@@ -1,9 +1,8 @@
-"""Slot-identity provisioning: what a box prepared before its Session omits.
+"""Prepared boxes: the credential a box built before its Session carries, and its claim.
 
-The Session-bound residues named in ``provision_engine_slot_sandbox``'s
-docstring are each held here: slot id as create identity, no allocation
-record, deferred mirror target, and the per-slot gateway placeholder with its
-substitution behind it.
+A prepared box exists before any Session, so its model credential is a per-slot
+gateway placeholder with the substitution behind it, and a claim adopts the box
+only when its placement and Environment policy still hold.
 """
 
 from __future__ import annotations
@@ -65,25 +64,16 @@ class _Backend:
         return None
 
     def workspace_route(self) -> Any:
-        from astrabox.core.service.orchestrator.runtime.storage.mergerfs import workspace_router
+        from astrabox.providers.open_sandbox.workspace_route.mergerfs import workspace_router
 
         return workspace_router
+
+    def fit_resources(self, limits: Any, requests: Any) -> tuple[dict[str, str], dict[str, str]]:
+        return dict(limits), dict(requests)
 
     async def create_sandbox(self, spec: Any) -> Any:
         self.spec = spec
         return SimpleNamespace(sandbox_id="box-slot-1", id="box-slot-1")
-
-
-class _Manager:
-    def __init__(self) -> None:
-        self.tracked: list[Any] = []
-
-    async def record_startup_allocation(self, session_id: str, allocation: Any) -> None:
-        self.tracked.append((session_id, allocation))
-
-    @property
-    def deployment_settings(self) -> Any:
-        return SimpleNamespace(mcp_proxy_base_url="http://backend.slot.test:8000")
 
 
 def _template() -> AgentView:
@@ -303,235 +293,6 @@ def test_the_cold_delivery_shape_is_unchanged_without_a_slot(
     # No per-slot credential rides a cold create; the box-wide entry stands alone.
     assert len(vault_write.model) == 1
     assert vault_write.model[0].substitutions == ()
-
-
-# ── the slot create itself ────────────────────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_the_slot_create_carries_slot_identity_and_defers_the_mirror(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _vault_on(monkeypatch)
-    backend = _Backend()
-    agent_mcp = AsyncMock(return_value=None)
-    import astrabox.seams.sandbox as sandbox_seam
-
-    monkeypatch.setattr(sandbox_seam, "sandbox_for_template", lambda template: backend)
-    monkeypatch.setattr(
-        provisioning,
-        "resolve_agent_mcp_credential_plan",
-        agent_mcp,
-    )
-    manager = _Manager()
-    template = _template()
-    template.sandbox_permission_level = "advanced"
-    provisioned = await provisioning.provision_engine_slot_sandbox(
-        manager,
-        slot_id="slot-9",
-        template=template,
-        runtime_identity={"workspace_dir": "/workspace"},
-        request=provisioning.EngineSandboxRequest(
-            entrypoint=("/opt/gem/run.sh",),
-            credential=_credential(),
-            credential_env_var="OPENAI_API_KEY",
-            cwd_env_var="ASTRABOX_WORKSPACE",
-            wait_for_inbox_service_port=44790,
-        ),
-    )
-    spec = backend.spec
-    # The create's reverse-lookup metadata names the SLOT, never a Session id
-    # that does not exist; the claim re-points it.
-    assert spec.session_id == "slot-9"
-    assert spec.wait_for_inbox_service_port == 44790
-    assert spec.resource_limits == provisioning.sandbox_create_resources()[0]
-    assert spec.resource_requests == {"cpu": "200m", "memory": "768Mi"}
-    assert spec.permission_level == "advanced"
-    env = dict(spec.env)
-    assert env["OPENAI_API_KEY"] == workload_model_placeholder("slot-9")
-    assert env["ASTRABOX_WORKSPACE"] == "/workspace"
-    # Codex declares a session log, so the box gets the deferred target file
-    # rather than per-session mirror values it could not know yet.
-    assert (
-        env[transcript_mirror.TRANSCRIPT_MIRROR_TARGET_FILE_ENV]
-        == transcript_mirror.DEFERRED_MIRROR_TARGET_FILE
-    )
-    assert transcript_mirror.TRANSCRIPT_BASE_URL_ENV not in env
-    assert transcript_mirror.PLATFORM_SESSION_ID_ENV not in env
-    # No Session row exists to own the box: the claim records the allocation.
-    assert manager.tracked == []
-    assert provisioned.sandbox_id == "box-slot-1"
-    assert provisioned.cwd == "/workspace"
-    assert provisioned.gateway_substitution is True
-    agent_mcp.assert_awaited_once_with(template=template, vault_enabled=True)
-
-
-@pytest.mark.asyncio
-async def test_the_slot_create_requires_a_working_directory(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _vault_on(monkeypatch)
-    import astrabox.seams.sandbox as sandbox_seam
-
-    monkeypatch.setattr(
-        sandbox_seam, "sandbox_for_template", lambda template: _Backend()
-    )
-    with pytest.raises(RuntimeError, match="working directory"):
-        await provisioning.provision_engine_slot_sandbox(
-            _Manager(),
-            slot_id="slot-9",
-            template=_template(),
-            runtime_identity={},
-            request=provisioning.EngineSandboxRequest(
-                entrypoint=("/x",), credential=_credential()
-            ),
-        )
-
-
-# ── the readiness gate, and the window it sits in ─────────────────────────
-#
-# A slot records NO startup allocation: there is no Session row to own the box
-# until a claim records one. So between the create and the return the box is
-# named by nothing, and the caller's `try` — which begins after the return —
-# cannot reach it. Anything this function does in that window owns its own
-# cleanup, or it leaks a box per refusal with no record of what leaked.
-
-
-class _RefusingMedium:
-    """A workspace medium that reports the mount did not arrive."""
-
-    name = "slot_refusing_medium"
-
-    async def prepare(self, ref: Any, *, box: Any, box_path: str) -> None:
-        raise RuntimeError("volume is not mounted in this sandbox")
-
-
-class _PresentMedium:
-    """A workspace medium that confirms the mount, so the slot is kept."""
-
-    name = "slot_present_medium"
-
-    def __init__(self) -> None:
-        self.asked: list[str] = []
-
-    async def prepare(self, ref: Any, *, box: Any, box_path: str) -> None:
-        self.asked.append(box_path)
-
-
-def _deployment_with_a_workspace_volume(
-    monkeypatch: pytest.MonkeyPatch, medium: Any
-) -> tuple[list[tuple[str, str | None]], AsyncMock]:
-    """A deployment that mounts a volume, and a record of what gets destroyed."""
-
-    import astrabox.core.service.orchestrator.agent.prepared_boxes as prepared_boxes
-    from astrabox.core.service.orchestrator.runtime.storage.mergerfs import workspace_router
-    import astrabox.seams.storage as storage_seam
-
-    monkeypatch.setenv("ASTRABOX_SANDBOX_WORKSPACE_VOLUME", "astrabox-workspaces")
-    monkeypatch.setenv("ASTRABOX_NAS_BASE_PATH", "/nas")
-    monkeypatch.setattr(storage_seam, "_PROVIDERS", dict(storage_seam._PROVIDERS))
-    storage_seam.register_storage(medium.name, medium)
-    monkeypatch.setattr(storage_seam, "_CONFIGURED", medium.name)
-
-    async def backing(_assignment: str, mounts: Any) -> storage_seam.StorageMountPlan:
-        return storage_seam.StorageMountPlan("backing-volume", mounts)
-
-    async def routed(
-        _assignment: str, plan: Any, **_kwargs: Any
-    ) -> storage_seam.StorageMountPlan:
-        return storage_seam.StorageMountPlan("routed-volume", plan.mounts)
-
-    monkeypatch.setattr(medium, "provision_mounts", backing, raising=False)
-    monkeypatch.setattr(workspace_router, "provision_mounts", routed)
-    monkeypatch.setattr(workspace_router, "attach_sandbox", AsyncMock())
-    route_ready = AsyncMock()
-    monkeypatch.setattr(workspace_router, "prepare", route_ready)
-
-    destroyed: list[tuple[str, str | None]] = []
-
-    async def _record_destroy(
-        sandbox_id: str, *, sandbox_backend: str, slot_id: str | None
-    ) -> None:
-        assert sandbox_backend == "fake"
-        destroyed.append((sandbox_id, slot_id))
-
-    monkeypatch.setattr(prepared_boxes, "destroy_slot_box", _record_destroy)
-    return destroyed, route_ready
-
-
-async def _prepare_one_slot(monkeypatch: pytest.MonkeyPatch) -> Any:
-    _vault_on(monkeypatch)
-    import astrabox.seams.sandbox as sandbox_seam
-
-    monkeypatch.setattr(
-        sandbox_seam, "sandbox_for_template", lambda template: _Backend()
-    )
-    return await provisioning.provision_engine_slot_sandbox(
-        _Manager(),
-        slot_id="slot-9",
-        template=AgentView(
-            engine_kind="codex",
-            model_config={},
-            networking=None,
-            runtime_template_name="astrabox/sandbox-codex:latest",
-            sandbox_backend="open_sandbox",
-            agent_id="agent-7",
-        ),
-        runtime_identity={
-            "linux_user": "agent",
-            "home_dir": "/home/agent",
-            "sandbox_tenancy": "conversation",
-            "workspace_dir": "/workspace",
-            "workspace_source_dir": "/workspace",
-        },
-        request=provisioning.EngineSandboxRequest(
-            entrypoint=("/opt/gem/run.sh",),
-            credential=_credential(),
-            credential_env_var="OPENAI_API_KEY",
-            cwd_env_var="ASTRABOX_WORKSPACE",
-        ),
-    )
-
-
-@pytest.mark.asyncio
-async def test_a_slot_whose_mount_arrived_is_kept(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The control: this input reaches the pool when the medium confirms.
-
-    Without it the refusal test below proves only that the box is destroyed,
-    not that it is destroyed BECAUSE the mount was refused.
-    """
-
-    medium = _PresentMedium()
-    destroyed, route_ready = _deployment_with_a_workspace_volume(monkeypatch, medium)
-
-    provisioned = await _prepare_one_slot(monkeypatch)
-
-    assert provisioned.sandbox_id == "box-slot-1"
-    assert destroyed == []
-    assert medium.asked == ["/workspace"]
-    route_ready.assert_awaited_once()
-    assert route_ready.await_args.kwargs == {"box": provisioned.sandbox, "box_path": "/workspace"}
-
-
-@pytest.mark.asyncio
-async def test_a_slot_whose_mount_was_refused_destroys_its_own_box(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A leaked slot box costs capacity nothing can name back.
-
-    Lending it instead would be worse: a prepared box is handed over as ready,
-    so every conversation that borrows it writes to the container's own disk.
-    """
-
-    destroyed, route_ready = _deployment_with_a_workspace_volume(monkeypatch, _RefusingMedium())
-
-    with pytest.raises(RuntimeError, match="volume is not mounted in this sandbox"):
-        await _prepare_one_slot(monkeypatch)
-
-    assert destroyed == [("box-slot-1", "slot-9")]
-    route_ready.assert_not_awaited()
 
 
 def _environment_credential(

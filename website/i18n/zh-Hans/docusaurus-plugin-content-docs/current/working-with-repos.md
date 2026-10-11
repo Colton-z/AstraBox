@@ -131,7 +131,7 @@ services:
 
 部署中的每位 Agent 作者都可以使用已列出的 Deploy Key，因此只列出你愿意向他们每个人开放仓库权限的密钥。
 
-部分沙箱后端允许 HTTP/HTTPS 出站，但不允许 SSH。对于这些后端，AstraBox 会把 SSH 克隆转换为 HTTPS，并使用 `ASTRABOX_GIT_HTTPS_TOKEN_SECRET_NAME` 指定的部署 Secret，且只用于 `ASTRABOX_GIT_HTTPS_TOKEN_HOST` 指定的 Git 主机；其他主机上的仓库会被拒绝。这两个设置必须同时配置；在通过 SSH 克隆的后端上没有克隆会使用该 Token，AstraBox 会拒绝启动。
+部分沙箱后端允许 HTTP/HTTPS 出站，但不允许 SSH。对于这些后端，AstraBox 会把 SSH 克隆转换为 HTTPS，并使用 `ASTRABOX_GIT_HTTPS_TOKEN_SECRET_NAME` 指定的部署 Secret，且只用于 `ASTRABOX_GIT_HTTPS_TOKEN_HOST` 指定的 Git 主机；其他主机上的仓库会被拒绝。这两个设置必须同时配置；如果所有已启用的沙箱后端都通过 SSH 克隆，没有克隆会使用该 Token，AstraBox 会拒绝启动。
 
 ### 推荐权限对照
 

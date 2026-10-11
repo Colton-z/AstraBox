@@ -24,6 +24,7 @@ from astrabox.api.routes.response_envelope import ApiEnvelope
 from astrabox.common.utils.api_response import success_response
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.user_context import get_current_user_context
+from astrabox.core.service.connectors.contextforge import HUB_PUBLIC_PATH
 from astrabox.core.service.connectors.service import (
     AgentConnectors,
     AssistantConnectors,
@@ -35,9 +36,6 @@ from astrabox.core.service.orchestrator.service_registry import (
 )
 
 _registered_on: int | None = None
-#: Where the connector hub's browser-facing callback is served on the console's
-#: origin; ``ASTRABOX_CONTEXTFORGE_PUBLIC_URL`` is the origin followed by it.
-HUB_PUBLIC_PATH = "/connector-hub"
 
 
 class Connector(BaseModel):

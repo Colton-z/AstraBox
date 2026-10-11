@@ -79,6 +79,16 @@ class ChannelField:
         }
 
 
+#: A binding's conversations run as its Agent's owner.
+EXECUTION_OWNER = "owner"
+#: A binding's conversations run as one account an administrator chose.
+EXECUTION_ACCOUNT = "account"
+#: Each participant's conversations run as the AstraBox account linked to that
+#: participant; an unlinked participant is refused, never run as anyone else.
+EXECUTION_LINKED = "linked"
+EXECUTION_MODES = (EXECUTION_OWNER, EXECUTION_ACCOUNT, EXECUTION_LINKED)
+
+
 @dataclass(frozen=True)
 class ChannelDescriptor:
     """Non-secret product metadata exposed by one channel provider."""
@@ -90,6 +100,11 @@ class ChannelDescriptor:
     callback_path: str | None = None
     setup_url: str | None = None
     documentation_url: str | None = None
+    #: The execution modes a binding of this provider may use. A provider
+    #: whose work belongs to a person — a ticket assigned to its processor —
+    #: declares ``(EXECUTION_LINKED,)``, so no binding can run that work as the
+    #: Agent's owner or one fixed account.
+    execution_modes: tuple[str, ...] = EXECUTION_MODES
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -103,6 +118,7 @@ class ChannelDescriptor:
             "callback_path": self.callback_path,
             "setup_url": self.setup_url,
             "documentation_url": self.documentation_url,
+            "execution_modes": list(self.execution_modes),
         }
 
 
@@ -162,9 +178,30 @@ class ChannelRecall:
     timestamp: str
 
 
+#: A complete platform message: core records it and runs it when the
+#: binding's participant and attention rules admit it.
+SIGNAL_MESSAGE = "message"
+#: A platform message delivered for context only, such as a group feed that
+#: carries every message but no permission to answer any of them. Core records
+#: it as retained context; it never starts a turn, answers a question, or
+#: routes a conversation, whatever the binding's attention policy.
+SIGNAL_OBSERVATION = "observation"
+#: Authenticated permission to run the message whose observation carries the
+#: same ``dedup_key``, such as a bot callback that names the message but is
+#: not the context feed. It carries no message content: core runs the observed
+#: message, waiting for its observation when the authorization arrives first.
+SIGNAL_AUTHORIZATION = "authorization"
+CHANNEL_SIGNALS = (SIGNAL_MESSAGE, SIGNAL_OBSERVATION, SIGNAL_AUTHORIZATION)
+
+
 @dataclass
 class ChannelInbound:
-    """What a verified inbound callback resolves to."""
+    """What a verified inbound callback resolves to.
+
+    Construction validates the fields each :attr:`signal` needs and raises
+    ``ValueError`` for an inbound that core could not process, so a provider
+    defect fails at the provider instead of becoming a half-recorded message.
+    """
 
     #: The message the agent turn runs with.
     content: str
@@ -186,17 +223,32 @@ class ChannelInbound:
     #: set, the spine routes the message into the SAME agent session for the
     #: binding+key (creating it on first sight, replacing it if terminated)
     #: instead of starting a fresh session per message. ``None`` → one-shot
-    #: session per callback.
+    #: session per callback. The key must be unique within the binding:
+    #: qualify an id a platform repeats across chats.
     conversation_key: str | None = None
     #: Typed attention signals for the core-owned respond/ignore policy.
     #: ``None`` → the platform has no attention concept; the message is
     #: always eligible.
     attention: ChannelAttention | None = None
-    #: Platform message id this inbound replies to/quotes, if any. Core maps
-    #: it onto the conversation chain (reply-chain identity).
+    #: Platform message id this inbound replies to/quotes, if any, in the
+    #: same form as ``dedup_key`` and delivery receipts. Core maps it onto the
+    #: conversation chain (reply-chain identity): without a
+    #: ``conversation_key``, a reference to a reply core delivered continues
+    #: that reply's conversation.
     reference: str | None = None
+    #: Continue the conversation of the message :attr:`reference` names when
+    #: core recorded that message: an inbound message of this binding or a
+    #: reply it delivered. ``conversation_key`` is the conversation otherwise.
+    #: Core keeps which conversation every recorded message belongs to, so a
+    #: provider that groups messages by reply chain sets this on a reply and
+    #: never tracks the chain itself; the Session and retained context follow
+    #: the conversation the message joined.
+    conversation_from_reference: bool = False
     #: External sender identity (a Slack member id, a phone number…) — an
-    #: execution subject recorded on the work item, never an owner.
+    #: execution subject recorded on the work item, never an owner. Report
+    #: only an identity the provider verified, never one the request merely
+    #: claims: a binding that runs as linked accounts runs the message as the
+    #: account linked to this participant.
     participant: str | None = None
     #: Post-delivery alias enrichment. When set, this inbound is NOT a
     #: message: the spine performs the enrichment and never starts a turn
@@ -219,13 +271,68 @@ class ChannelInbound:
     #: Core resolves it to the question it belongs to: the inbound answers
     #: that question and never starts a turn, so ``content`` is ignored.
     action: str | None = None
+    #: What this inbound says about its platform message: :data:`SIGNAL_MESSAGE`
+    #: (the default), :data:`SIGNAL_OBSERVATION`, or :data:`SIGNAL_AUTHORIZATION`.
+    #: Core keeps one record per ``dedup_key`` and starts at most one turn for
+    #: it, so a platform that delivers a message's content and its trigger on
+    #: separate feeds reports one observation and one authorization, in either
+    #: order. The first record of a message's content is kept: a later signal
+    #: for the same ``dedup_key`` can admit it, but cannot replace it.
+    signal: str = SIGNAL_MESSAGE
+
+    def __post_init__(self) -> None:
+        if self.signal not in CHANNEL_SIGNALS:
+            raise ValueError(
+                f"channel inbound signal must be one of {list(CHANNEL_SIGNALS)}"
+            )
+        if self.conversation_from_reference and not (
+            self.reference and self.conversation_key
+        ):
+            raise ValueError(
+                "conversation_from_reference needs the reference it follows and the "
+                "conversation_key that applies when core recorded no such message"
+            )
+        if self.signal == SIGNAL_MESSAGE:
+            return
+        if self.alias_link is not None or self.recall is not None or self.action:
+            raise ValueError(
+                "an alias link, a recall, or a button press is a message signal"
+            )
+        if not self.dedup_key or not self.participant:
+            raise ValueError(
+                f"a {self.signal} names its platform message and sender: "
+                "dedup_key and participant are required"
+            )
+        if self.signal == SIGNAL_OBSERVATION:
+            if self.reply_context is not None:
+                raise ValueError(
+                    "an observation is context only and has no reply destination"
+                )
+            if not (
+                self.retain_context and self.conversation_key and self.message_timestamp
+            ):
+                raise ValueError(
+                    "an observation is retained context: retain_context, "
+                    "conversation_key and message_timestamp are required"
+                )
+            return
+        if self.content or self.retain_context or self.message_timestamp or self.reference:
+            raise ValueError(
+                "an authorization carries no message content: its observation "
+                "supplies the text, time, reference and context"
+            )
+        if self.attention is None or not self.attention.any_signal:
+            raise ValueError(
+                "an authorization is the platform invoking the agent and must "
+                "report the attention signal that invoked it"
+            )
 
 
 #: Version stamped on every :class:`ChannelEvent` — the stable, versioned
 #: projection providers consume (docs/channel-spine.md invariant D). This is
 #: a forward contract for third-party providers, never a compatibility layer:
 #: raw internal AI-SDK frames must not cross the seam.
-CHANNEL_EVENT_VERSION = 1
+CHANNEL_EVENT_VERSION = 2
 
 EVENT_TURN_STARTED = "turn_started"
 EVENT_PROGRESS = "progress"
@@ -285,8 +392,9 @@ class ChannelInteraction:
 class ChannelEvent:
     """One rendering update from the platform Session output subscription.
 
-    ``response_id`` identifies the mainline reply independently of its trigger.
-    Command and turn metadata can be empty for engine-owned Session messages.
+    ``response_id`` identifies the mainline reply independently of its
+    trigger; ``turn_id`` names the Session turn that produced it and can be
+    empty for engine-owned Session messages.
 
     ``progress`` carries the coalesced assistant text SO FAR (idempotent
     update-the-card semantics — intermediate steps may be skipped);
@@ -296,7 +404,6 @@ class ChannelEvent:
 
     type: str
     seq: int
-    command_id: str
     turn_id: str
     text: str | None = None
     error: str | None = None
@@ -588,6 +695,17 @@ def _validate_channel_capabilities(provider: ChannelProvider, name: str) -> None
     if len(keys) != len(set(keys)):
         raise RuntimeError(
             f"channel provider {name!r}: descriptor field keys must be unique"
+        )
+    modes = descriptor.execution_modes
+    if (
+        not isinstance(modes, tuple)
+        or not modes
+        or any(mode not in EXECUTION_MODES for mode in modes)
+        or len(set(modes)) != len(modes)
+    ):
+        raise RuntimeError(
+            f"channel provider {name!r}: execution_modes must be a non-empty tuple "
+            f"of distinct values from {list(EXECUTION_MODES)}"
         )
     allowed_kinds = {"string", "number", "boolean", "select"}
     if any(field.kind not in allowed_kinds for field in fields):

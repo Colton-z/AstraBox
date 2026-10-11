@@ -11,14 +11,15 @@
  * frontend/src/i18n/locales/en/manage.json:276) that is false as it is read.
  *
  * WHY A REAL DEPLOYMENT IS THE ONLY PLACE THIS CAN BE ASKED. Three parties have
- * to agree and only one of them is the page: DBOS's scheduler thread inside the
- * server decides when the minute is up (deployment_run_runtime.py:226-228,
- * automatic_backfill False at :290, so the first tick is strictly the next
- * boundary); the Run has to be *listable* the instant it is enqueued, which is
- * the ENQUEUED→QUEUED projection at deployment_service.py:1070 reading the DBOS
- * workflow ledger (list_workflows_async, deployment_run_runtime.py:487) before
- * any Session, sandbox or model turn exists; and only then does the page's own
- * re-read have something to find. `useKeepCurrent.test.ts` proves the hook's
+ * to agree and only one of them is the page: the scheduler provider inside the
+ * server decides when the minute is up (the built-in one is DBOS's scheduler
+ * thread, astrabox/providers/scheduler_dbos.py, with automatic_backfill False in
+ * `_schedule_input`, so the first tick is strictly the next boundary); the Run
+ * has to be *listable* the instant it is enqueued, which is the provider's
+ * QUEUED dispatch state (DBOS ENQUEUED, read from its workflow ledger by
+ * `list_runs`) rendered by `DeploymentService._render_run` before any Session,
+ * sandbox or model turn exists; and only then does the page's own re-read have
+ * something to find. `useKeepCurrent.test.ts` proves the hook's
  * timer in isolation. Nothing proves the page arms it for a table that started
  * EMPTY, which is the only state a fresh schedule's record page is ever in.
  *
@@ -50,9 +51,9 @@
  * Engine: none. The oracle is the ledger row, which exists before any engine
  * does, and this spec sends no prompt and reads no model answer — so it runs
  * under whichever profile the matrix selected. It does require a deployment
- * whose db_backend is PostgreSQL or SQLite, since scheduled Deployments are
- * otherwise unavailable (deployment_run_runtime.py:196-211); that precondition
- * fails loudly at Create, exactly as it does for the sibling schedule spec.
+ * that runs a scheduler provider: with ASTRABOX_SCHEDULER_PROVIDER=none, Create
+ * answers SCHEDULE_UNAVAILABLE, so that precondition fails loudly at Create,
+ * exactly as it does for the sibling schedule spec.
  */
 import { expect, test } from '@playwright/test';
 

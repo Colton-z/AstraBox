@@ -55,6 +55,7 @@ from astrabox.common.utils.user_context import (
     PLATFORM_ADMIN_ROLE,
     UserContext,
 )
+from astrabox.deploy.public_path import public_path
 from astrabox.identity.oidc import (
     OidcAccessTokenRejected,
     OidcIdentityRejected,
@@ -212,9 +213,13 @@ class OidcSessionWebIdentityResolver:
 
     @staticmethod
     def login_url(next_url: str = "/") -> str:
-        """Return the local login entry point for a same-origin destination."""
+        """Return the browser path that signs in and then opens *next_url*.
 
-        return "/api/v1/auth/login?" + urlencode({"next": next_url})
+        *next_url* is a path below the public path prefix; the login route and
+        its callback (``astrabox/api/routes/auth.py``) add the prefix.
+        """
+
+        return public_path("/api/v1/auth/login") + "?" + urlencode({"next": next_url})
 
     @staticmethod
     def _cookie_token(headers: Mapping[str, str]) -> str:

@@ -78,6 +78,31 @@ Replies are not the only messages sent to the conversation. Anything the Agent
 program produces on its own in that conversation afterwards, such as a
 scheduled job's result or a finished background task, is delivered there too.
 
+### Run messages as
+
+**Run messages as** decides whose AstraBox account a trigger's messages run
+as. That account owns the conversations, supplies their connectors, and sees
+them in the console. Only administrators can change it:
+
+| Setting | Messages run as |
+| --- | --- |
+| The Agent's creator | The account that created the Agent. This is the default. |
+| One chosen account | The identity-provider user ID entered under **Execution account user ID**. |
+| Each sender's linked account | The account an administrator linked to the sender under **Linked accounts** on the trigger's page. |
+
+With each sender's linked account, every sender holds their own conversation
+with the Agent, even in a shared room, and the Agent's access settings apply
+to each linked account. AstraBox tells a sender why a message was not
+answered, and never answers it as anyone else, when:
+
+- the sender has no linked account;
+- the linked account may not use the Agent;
+- the message replies to another account's conversation, or presses a button
+  that conversation showed.
+
+Some platforms run only as linked accounts because their work belongs to a
+person; their triggers offer no other setting.
+
 ### Conversation mapping
 
 After platform authorization is complete, message routing works as follows:

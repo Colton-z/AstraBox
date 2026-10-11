@@ -57,7 +57,7 @@ from astrabox.seams.sandbox import (
     SandboxDescriptor,
     SandboxProvider,
     default_sandbox_backend,
-    registered_sandbox_names,
+    enabled_sandbox_names,
     sandbox_for_name,
 )
 from astrabox.api.routes._shared import _resolve_user, _svc
@@ -161,14 +161,15 @@ def _diagnostic_scope(raw: str) -> str:
 def _resolve_backend(raw: str | None) -> tuple[str, SandboxProvider]:
     """The named backend, or the deployment default; never a guess.
 
-    An unconfigured default with several backends registered is a real
+    An unconfigured default with several backends enabled is a real
     ambiguity, not something to resolve by picking one — it fails with the
-    registered names so the caller can name one.
+    enabled names so the caller can name one.
 
     This one caller string needs no segment grammar: it is resolved by lookup in
     the process-wide registry and never reaches a URL. A name that is not a
     registered key is a 404, so the only values that survive are ones a provider
-    registered under.
+    registered under; an installed backend this deployment does not enable is
+    refused with ``SANDBOX_BACKEND_DISABLED``.
     """
     name = str(raw or "").strip().lower() or default_sandbox_backend()
     if not name:
@@ -176,7 +177,7 @@ def _resolve_backend(raw: str | None) -> tuple[str, SandboxProvider]:
             code="SANDBOX_BACKEND_UNRESOLVED",
             message=(
                 "no sandbox backend named and no deployment default is "
-                f"configured (registered: {registered_sandbox_names()})"
+                f"configured (enabled: {enabled_sandbox_names()})"
             ),
             status_code=400,
         )
@@ -288,6 +289,77 @@ class AdminSandboxPage(BaseModel):
     backend: str
     items: list[AdminSandboxSummary]
     pagination: AdminSandboxPagination
+
+
+class AdminSandboxQuotaCeilings(BaseModel):
+    """A backend's quota ceilings; ``null`` is no ceiling."""
+
+    model_config = ConfigDict(extra="allow")
+
+    boxes: int | None
+    memory_bytes: int | None
+    cpu: float | None
+    concurrent_creates: int | None
+    #: Where each ceiling came from: configured, derived (and from what), or unlimited.
+    sources: dict[str, str]
+
+
+class AdminSandboxQuotaUsage(BaseModel):
+    """What the backend's boxes and pending creates hold against the quota."""
+
+    model_config = ConfigDict(extra="allow")
+
+    boxes: int
+    memory_bytes: int
+    cpu: float
+    creating: int
+
+
+class AdminSandboxQuotaBox(BaseModel):
+    """One box of the backend's last inventory, with what it is charged."""
+
+    model_config = ConfigDict(extra="allow")
+
+    sandbox_id: str
+    cpu: float
+    memory: int
+    state: str
+    session_id: str | None
+
+
+class AdminSandboxQuotaReservation(BaseModel):
+    """Room taken for a box the inventory does not show yet."""
+
+    model_config = ConfigDict(extra="allow")
+
+    state: str | None
+    reason: str | None
+    session_id: str | None
+    sandbox_id: str | None
+    cpu: float | None
+    memory: int | None
+    reserved_at: str | None
+
+
+class AdminSandboxQuotaBackend(BaseModel):
+    """One enabled backend's quota, usage and boxes."""
+
+    model_config = ConfigDict(extra="allow")
+
+    backend: str
+    quota: AdminSandboxQuotaCeilings
+    usage: AdminSandboxQuotaUsage
+    inventory_at: str | None
+    boxes: list[AdminSandboxQuotaBox]
+    reservations: list[AdminSandboxQuotaReservation]
+
+
+class AdminSandboxQuota(BaseModel):
+    """The sandbox quota of every enabled backend."""
+
+    model_config = ConfigDict(extra="allow")
+
+    backends: list[AdminSandboxQuotaBackend]
 
 
 class AdminSandboxIdleAction(BaseModel):
@@ -405,6 +477,26 @@ def register_sandbox_routes(app: Any) -> None:
                     "has_next_page": result.has_next_page,
                 },
             }
+        )
+
+    @app.get(
+        "/api/v1/admin/sandbox-quota",
+        response_model=ApiEnvelope[AdminSandboxQuota],
+        response_model_exclude_unset=True,
+    )
+    async def describe_sandbox_quota(request: Request):
+        """Each enabled backend's quota ceilings, what is held against them, and its boxes.
+
+        Usage is the backend's last inventory plus the reservations for boxes
+        it does not show yet, as the quota itself counts it; ``inventory_at``
+        says when that inventory was taken.
+        """
+        from astrabox.core.service.orchestrator.runtime.sandbox_quota import quota_report
+        from astrabox.seams.sandbox import enabled_sandbox_providers
+
+        await _resolve_user(request)
+        return success_response(
+            {"backends": await quota_report(dict(enabled_sandbox_providers()))}
         )
 
     @app.get(

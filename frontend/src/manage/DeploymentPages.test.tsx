@@ -6,6 +6,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import i18n from '@/i18n';
 import type {
   AgentDeployment,
+  ChannelAccountLink,
   ChannelProviderDescriptor,
   DeploymentRun,
 } from '@/types';
@@ -86,6 +87,7 @@ let updateCalls: Array<{
 }> = [];
 let triggerCalls: Array<{ agentId: string; deploymentId: string }> = [];
 let replayCalls: Array<{ agentId: string; deploymentId: string; runId: string }> = [];
+let links: ChannelAccountLink[] = [];
 
 vi.mock('@/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/api')>();
@@ -149,6 +151,16 @@ vi.mock('@/api', async (importOriginal) => {
       return created;
     },
     deleteDeployment: async () => ({}),
+    listDeploymentAccountLinks: async () => links,
+    linkDeploymentAccount: async (
+      _agentId: string,
+      _deploymentId: string,
+      link: { participant: string; user_id: string },
+    ) => {
+      const stored = { ...link, linked_by: 'admin', linked_at: '2026-10-10T00:00:00Z' };
+      links = [...links.filter((row) => row.participant !== link.participant), stored];
+      return stored;
+    },
   };
 });
 
@@ -193,6 +205,7 @@ beforeEach(() => {
   updateCalls = [];
   triggerCalls = [];
   replayCalls = [];
+  links = [];
 });
 
 function renderCreate() {
@@ -516,7 +529,7 @@ describe('channel execution accounts', () => {
     channelProviders[0].can_configure_execution_user = true;
     deployment = {
       ...deployment, scene: 'channel:generic_json', name: undefined, schedule: undefined,
-      execution_user_id: 'alice', channel_config: {},
+      execution_mode: 'account', execution_user_id: 'alice', channel_config: {},
     };
     renderDetail();
     const account = await screen.findByRole('textbox', { name: 'Execution account user ID' });
@@ -530,10 +543,31 @@ describe('channel execution accounts', () => {
   it('shows a delegated account without offering a non-administrator an editor', async () => {
     deployment = {
       ...deployment, scene: 'channel:generic_json', name: undefined, schedule: undefined,
-      execution_user_id: 'alice', channel_config: {},
+      execution_mode: 'account', execution_user_id: 'alice', channel_config: {},
     };
     renderDetail();
     await screen.findByText('alice');
     expect(screen.queryByRole('textbox', { name: 'Execution account user ID' })).toBeNull();
+  });
+
+  it('lets an administrator link a sender on a trigger that runs as linked accounts', async () => {
+    channelProviders[0].can_configure_execution_user = true;
+    deployment = {
+      ...deployment, scene: 'channel:generic_json', name: undefined, schedule: undefined,
+      execution_mode: 'linked', execution_user_id: '', channel_config: {},
+    };
+    renderDetail();
+
+    await screen.findByText('No linked senders');
+    // Each sender runs as its own account, so there is no single account to enter.
+    expect(screen.queryByRole('textbox', { name: 'Execution account user ID' })).toBeNull();
+    fireEvent.change(screen.getByLabelText(/^Sender/), { target: { value: 'telegram:42' } });
+    fireEvent.change(screen.getByLabelText(/^AstraBox user ID/), { target: { value: 'alice' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Link' }));
+
+    await screen.findByText('telegram:42');
+    expect(links.map(({ participant, user_id }) => ({ participant, user_id }))).toEqual([
+      { participant: 'telegram:42', user_id: 'alice' },
+    ]);
   });
 });

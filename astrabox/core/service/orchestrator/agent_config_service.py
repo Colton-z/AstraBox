@@ -58,6 +58,9 @@ from astrabox.core.service.orchestrator.engine.registry import (
     EngineKindNotRegistered,
 )
 from astrabox.core.service.orchestrator.engine.extensions import extensions_projection
+from astrabox.core.service.orchestrator.agent_extension_service import (
+    catalog_selection_in_use,
+)
 from astrabox.core.service.orchestrator.mcp_assignments import (
     AGENT_MCP_ASSIGNMENTS_FIELD,
     normalize_assignments,
@@ -272,6 +275,8 @@ class AgentConfigService:
 
         The layers above the Assistant (assistant_layers) come first and its
         own fields stack on top; see that module for how each field combines.
+        A catalog selection the deployment cannot resolve, on a layer or on the
+        Assistant, is treated as in :meth:`_build_agent_view`.
         """
         from astrabox.core.service.orchestrator.assistant.assistant_layers import (
             inherited_layers,
@@ -297,17 +302,31 @@ class AgentConfigService:
         own_mcp_servers = self._normalize_mcp_servers(assistant.get("mcp_servers"))
         assistant_ref = f"assistant '{assistant_id}'"
         refuse_reserved_mcp_fields(own_mcp_servers, owner=assistant_ref)
+        # Each record's catalog selection is checked before anything resolves,
+        # so a deployment without a catalog refuses the view whole.
+        selecting = [
+            record
+            for label, record in [*layers, (assistant_ref, assistant)]
+            if catalog_selection_in_use(
+                record, owner=label, admits_work=require_enabled_environment
+            )
+        ]
         sources: list[tuple[str, dict[str, Any]]] = []
         for label, layer in layers:
             layer_servers = self._normalize_mcp_servers(layer.get("mcp_servers")) or {}
             refuse_reserved_mcp_fields(layer_servers, owner=label)
             sources.append((label, layer_servers))
-            sources.extend(await self._resolve_assigned_mcp_servers(layer))
+            if any(layer is record for record in selecting):
+                sources.extend(await self._resolve_assigned_mcp_servers(layer))
         mcp_servers = self._merge_mcp_servers(
             [
                 *sources,
                 ("the Assistant's own MCP servers", own_mcp_servers or {}),
-                *await self._resolve_assigned_mcp_servers(assistant),
+                *(
+                    await self._resolve_assigned_mcp_servers(assistant)
+                    if any(assistant is record for record in selecting)
+                    else []
+                ),
                 ("its connectors", self._connector_servers(assistant)),
             ],
             ref=assistant_ref,
@@ -315,7 +334,7 @@ class AgentConfigService:
         records = [layer for _label, layer in layers] + [assistant]
         catalog_skills = self._dedupe_strings([
             skill
-            for record in records
+            for record in selecting
             for skill in self._normalize_skills(
                 (record.get("extension_catalog") if isinstance(record.get("extension_catalog"), dict) else {})
                 .get("skills")
@@ -389,7 +408,13 @@ class AgentConfigService:
         self, item: dict[str, Any], env_cache: dict[str, dict[str, Any]],
         *, require_enabled_environment: bool = True,
     ) -> AgentView:
-        """Merge an agent doc with its named environment into an AgentView."""
+        """Merge an agent doc with its named environment into an AgentView.
+
+        ``require_enabled_environment=False`` builds a view that only reads (a
+        session page, an admin detail, the idle sweep). Such a view also leaves
+        out a catalog selection the deployment cannot resolve, which a view that
+        admits work refuses (``catalog_selection_in_use``).
+        """
         env_name = str(item.get("environment_name") or "").strip()
         if env_name not in env_cache:
             env_cache[env_name] = await self._require_environment(
@@ -410,15 +435,20 @@ class AgentConfigService:
         # `credential_target_url`. Saving refuses them on the Agent's own
         # servers; this refuses a definition saved before that check.
         refuse_reserved_mcp_fields(own_mcp_servers, owner=agent_ref)
+        selecting = catalog_selection_in_use(
+            item, owner=agent_ref, admits_work=require_enabled_environment
+        )
         resolved_mcp_servers = self._merge_mcp_servers(
             [
                 ("the Agent's own mcp_servers", own_mcp_servers),
-                *await self._resolve_assigned_mcp_servers(item),
+                *(await self._resolve_assigned_mcp_servers(item) if selecting else []),
                 ("its connectors", self._connector_servers(item)),
             ],
             ref=agent_ref,
         )
-        catalog_skills = self._normalize_skills(extension_catalog.get("skills"))
+        catalog_skills = (
+            self._normalize_skills(extension_catalog.get("skills")) if selecting else []
+        )
         resolved_skills = self._dedupe_strings(
             [
                 *self._normalize_skills(item.get("skills")),
@@ -808,8 +838,12 @@ class AgentConfigService:
             # Written, not assumed on read: the capacity sweep selects Agents
             # whose stored value is positive, so an absent key would stay cold.
             editable["prepared_capacity"] = default_prepared_capacity(
-                load_astrabox_settings()
+                str(env.get("sandbox_backend") or "")
             )
+        self._check_prepared_capacity_backend(
+            int(editable["prepared_capacity"]),
+            sandbox_backend=str(env.get("sandbox_backend") or ""),
+        )
         await self._check_prepared_capacity_limit(
             int(editable["prepared_capacity"]), agent_id=""
         )
@@ -938,6 +972,15 @@ class AgentConfigService:
                 for field in ("mcp_servers", "skills", "packages")
             },
         )
+        if "prepared_capacity" in updates or "environment_name" in updates:
+            self._check_prepared_capacity_backend(
+                int(
+                    updates["prepared_capacity"]
+                    if "prepared_capacity" in updates
+                    else existing.get("prepared_capacity") or 0
+                ),
+                sandbox_backend=str(env.get("sandbox_backend") or ""),
+            )
         if "prepared_capacity" in updates:
             await self._check_prepared_capacity_limit(
                 int(updates["prepared_capacity"]), agent_id=target
@@ -992,6 +1035,37 @@ class AgentConfigService:
             )
         refreshed = await self._agent_repo.get_agent(target)
         return self.sanitize_agent_doc(refreshed or {**existing, **updates})
+
+    @staticmethod
+    def _check_prepared_capacity_backend(capacity: int, *, sandbox_backend: str) -> None:
+        """Refuse prepared capacity where the Agent's backend cannot pool boxes.
+
+        Checked when capacity is set or the Agent moves to another Environment,
+        so an Agent is never saved with capacity its backend cannot prepare,
+        which would only record ``AGENT_PREWARM_CONFIG_INVALID`` on every try.
+        """
+
+        if capacity <= 0:
+            return
+        from astrabox.seams.sandbox import sandbox_for_name, unsupported_sandbox_feature
+
+        provider = sandbox_for_name(sandbox_backend)
+        refusal = unsupported_sandbox_feature(
+            provider, feature="prepared capacity", flags=("supports_client_pool",)
+        )
+        if refusal is None:
+            readiness = provider.client_pool_readiness()
+            if readiness.available:
+                return
+            refusal = (
+                f"sandbox backend {provider.name!r} cannot run its client pool in "
+                f"this deployment: {readiness.detail}"
+            )
+        raise APIError(
+            code="AGENT_PREWARM_UNSUPPORTED",
+            message=f"{refusal}; set prepared_capacity to 0",
+            status_code=409,
+        )
 
     async def _check_prepared_capacity_limit(self, capacity: int, *, agent_id: str) -> None:
         """Refuse a capacity that would lift the deployment's sum over its ceiling."""

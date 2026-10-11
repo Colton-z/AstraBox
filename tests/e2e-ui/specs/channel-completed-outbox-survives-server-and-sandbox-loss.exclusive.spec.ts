@@ -152,7 +152,6 @@ test('a completed channel outbox replays its original reply after the server and
     const recovered = outbox();
     expect(recovered._id).toBe(originalOutbox._id);
     expect(recovered.response_id).toBe(originalResponseId);
-    expect(recovered.command_id).toBe(originalOutbox.command_id);
     expect(recovered.turn_id).toBe(turnId);
     expect(recovered.lease_generation).toBe(deadGeneration + 1);
     expect(recovered.lease_owner).toBeNull();

@@ -227,10 +227,8 @@ _AGENT_UPDATE_REQUEST_FIELDS = AGENT_EDITABLE_REQUEST_FIELDS | {"version"}
 #: themselves; these carry no underscore and so have to be named.
 #:
 #: This set exists in one place because it was in two, and they had drifted:
-#: ``extension_catalog`` was documented as an internal the Agent form "must
-#: neither expose nor write" in one reader while the other returned it, and
 #: ``conversation_uid_cursor`` — the shared box's UID allocation cursor — was
-#: returned by both.
+#: returned by both readers.
 #:
 #: This is about what a client may SEE. What it may WRITE is a separate and
 #: deliberately stricter contract: the authoring payload is closed and rejects
@@ -238,7 +236,10 @@ _AGENT_UPDATE_REQUEST_FIELDS = AGENT_EDITABLE_REQUEST_FIELDS | {"version"}
 #: access-policy or ownership field would let a caller believe a
 #: security-semantic change took effect (``agent_access_control_update_test``).
 #: A read-modify-write client therefore strips what it does not own — the
-#: fields here never reach it to strip.
+#: fields here never reach it to strip. The catalog selection
+#: (``mcp_assignments``, ``extension_catalog``) is returned but written only
+#: through the Agent-extension API: without an extension catalog it is the
+#: only place the console can read what the Agent still selects.
 AGENT_PRIVATE_STORED_FIELDS = frozenset(
     {
         "main_session_id",
@@ -247,8 +248,6 @@ AGENT_PRIVATE_STORED_FIELDS = frozenset(
         "credentials_updated_by",
         "credentials_updated_at",
         "plugin_mcp_bridge_allowlist",
-        # Runtime snapshots maintained only by the Agent-extension API.
-        "extension_catalog",
         # Allocation state owned by conversation_identity's CAS.
         "conversation_uid_cursor",
         # Durable storage identity owned by the platform's mount planner.
@@ -279,20 +278,26 @@ def agent_artifacts_enabled(agent: Mapping[str, Any]) -> bool:
     return agent.get("artifacts_enabled") is not False
 
 
-def default_prepared_capacity(settings: Any) -> int:
+def default_prepared_capacity(sandbox_backend: str | None = None) -> int:
     """The prepared capacity of an Agent created without choosing one.
 
-    One wherever the deployment can prewarm, and zero elsewhere. Prepared
-    capacity is coordinated through ``ASTRABOX_AGENT_PREWARM_REDIS_URL``;
-    without it an Agent with capacity can only record
-    ``AGENT_PREWARM_CONFIG_INVALID``, so there the default stays zero rather
-    than creating an Agent that is broken from the start.
+    One where the Agent's sandbox backend (its Environment's, or the
+    deployment's default) declares a client pool and says this deployment
+    gives that pool what it needs, and zero elsewhere: an Agent created with
+    capacity on a backend whose pool cannot run would only record
+    ``AGENT_PREWARM_CONFIG_INVALID``. A process that has not composed an
+    unambiguous default backend has nothing to prepare on and answers zero.
     """
+    from astrabox.seams.sandbox import default_sandbox_backend, sandbox_if_registered
 
-    return 1 if str(getattr(settings, "agent_prewarm_redis_url", "") or "").strip() else 0
+    name = str(sandbox_backend or "").strip().lower() or default_sandbox_backend()
+    provider = sandbox_if_registered(name)
+    if provider is None or not provider.supports_client_pool:
+        return 0
+    return 1 if provider.client_pool_readiness().available else 0
 
 
-def get_agent_schema(settings: Any) -> dict[str, Any]:
+def get_agent_schema() -> dict[str, Any]:
     """Return the JSON-serializable schema consumed by the admin form.
 
     ``prepared_capacity`` carries this deployment's create-time default, so the
@@ -301,7 +306,7 @@ def get_agent_schema(settings: Any) -> dict[str, Any]:
     fields = [dict(f) for f in AGENT_FIELD_SCHEMA]
     for field in fields:
         if field["key"] == "prepared_capacity":
-            field["default"] = default_prepared_capacity(settings)
+            field["default"] = default_prepared_capacity()
     return {
         "version": AGENT_SCHEMA_VERSION,
         "groups": [dict(g) for g in AGENT_GROUPS],

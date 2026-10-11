@@ -1,5 +1,5 @@
 import { runtimeDataPath, runtimeSegment } from '../../artifact-runtime/paths';
-import { ApiError, MODULE_BASE } from '@/api';
+import { ApiError, MODULE_BASE, currentAppPath } from '@/api';
 import type { components, paths } from '@/api/schema';
 import type {
   ArtifactPage,
@@ -137,9 +137,8 @@ export async function artifactRequest<T>(
     response.status === 401 &&
     (payload?.error?.code ?? payload?.code) === 'AUTH_REQUIRED'
   ) {
-    const next = `${window.location.pathname}${window.location.search}`;
     window.location.assign(
-      `${MODULE_BASE}/login?next=${encodeURIComponent(next)}`,
+      `${MODULE_BASE}/login?next=${encodeURIComponent(currentAppPath())}`,
     );
   }
   if (!response.ok || payload?.code !== 'OK')

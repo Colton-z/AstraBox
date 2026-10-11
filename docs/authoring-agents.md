@@ -123,12 +123,13 @@ prepared capacity is ready or preparation failed.
 
 **Prepared capacity** (`prepared_capacity`) is how many new conversations can
 start at the same moment without waiting, from 0 to 1000. A new Agent gets 1
-wherever the deployment can prewarm, which means
-`ASTRABOX_AGENT_PREWARM_REDIS_URL` is set; every bundled Compose deployment
-sets it. Where it is unset, a new Agent gets 0, because prepared capacity
-cannot be coordinated there. The value is stored on the Agent when it is
-created and the create form starts from it; changing the deployment later does
-not change an existing Agent's value.
+wherever its sandbox service can run its pool of prepared sandboxes; for the
+built-in OpenSandbox service that means `ASTRABOX_AGENT_PREWARM_REDIS_URL` is
+set, which every bundled Compose deployment does. Elsewhere a new Agent gets 0,
+and a capacity above 0 is refused when the Agent is saved, because nothing
+could be prepared for it. The value is stored on the Agent when it is created
+and the create form starts from it; changing the deployment later does not
+change an existing Agent's value.
 
 Each unit of capacity is one prepared runtime waiting for a conversation:
 a whole idle sandbox when each conversation gets its own, or a seat (a started,

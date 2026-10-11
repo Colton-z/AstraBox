@@ -70,11 +70,11 @@ def test_no_provider_is_named_after_a_sandbox_backend() -> None:
     instead of the configured storage medium.
     """
     from astrabox.providers import register_builtin_providers
-    from astrabox.seams.sandbox import registered_sandbox_names
+    from astrabox.seams.sandbox import installed_sandbox_names
 
     register_builtin_providers()
     assert "mounted_volume" in storage_seam._PROVIDERS
-    assert set(storage_seam._PROVIDERS) & set(registered_sandbox_names()) == set()
+    assert set(storage_seam._PROVIDERS) & set(installed_sandbox_names()) == set()
 
 
 def test_an_unknown_name_is_refused_and_lists_what_is_registered() -> None:

@@ -161,9 +161,9 @@ test('removing the final skill and package persists empty lists after reload', a
       await expect(group).toHaveJSProperty('tagName', 'FIELDSET');
       await expect(group.locator(':scope > legend')).toBeVisible();
     }
-    await expect(mcpGroup.getByRole('combobox', { name: 'LiteLLM-managed MCP', exact: true })).toBeVisible();
+    await expect(mcpGroup.getByRole('combobox', { name: 'MCP servers from LiteLLM', exact: true })).toBeVisible();
     await expect(mcpGroup.getByRole('textbox', { name: 'Custom MCP', exact: true })).toBeVisible();
-    await expect(skillGroup.getByRole('combobox', { name: 'LiteLLM-managed Skills', exact: true })).toBeVisible();
+    await expect(skillGroup.getByRole('combobox', { name: 'Skills from LiteLLM', exact: true })).toBeVisible();
     await expect(skillGroup.getByRole('group', { name: 'Custom Skills', exact: true })).toBeVisible();
     await expect(mcpGroup.locator('#agent-extension-skills')).toHaveCount(0);
     await expect(skillGroup.locator('#agent-extension-mcp')).toHaveCount(0);
@@ -247,6 +247,22 @@ test('removing the final skill and package persists empty lists after reload', a
     await expect(skills.getByRole('textbox')).toHaveValue(descriptor);
     expect(JSON.parse(await tools.locator('#agent-mcp_servers').inputValue())).toEqual(directMcp);
     expect(JSON.parse(await plugins.inputValue())).toEqual(repositories);
+    await expect(tools.getByRole('button', { name: 'Save', exact: true })).toHaveCount(0);
+
+    // Emptying a saved JSON block is an explicit clear. Sent as "not edited",
+    // the update kept the stored servers while the editor showed none.
+    const mcpBlock = tools.locator('#agent-mcp_servers');
+    await mcpBlock.fill('');
+    await mcpBlock.blur();
+    const clearedSaved = page.waitForResponse((response) => response.request().method() === 'PUT'
+      && new URL(response.url()).pathname === apiPath(`/agents/${agentId}`));
+    await tools.getByRole('button', { name: 'Save', exact: true }).click();
+    expect((await clearedSaved).status()).toBe(200);
+    const cleared = await api.data<Record<string, unknown>>('GET', `/agents/${agentId}`);
+    expect(cleared.mcp_servers ?? {}, 'the emptied custom MCP block must be stored as cleared').toEqual({});
+    expect(cleared.packages, 'clearing one block leaves the others').toEqual(repositories);
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await expect(mcpBlock).toHaveValue('');
     await expect(tools.getByRole('button', { name: 'Save', exact: true })).toHaveCount(0);
   });
 });

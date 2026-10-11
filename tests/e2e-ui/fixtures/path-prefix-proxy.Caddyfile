@@ -1,0 +1,25 @@
+# Publishes an AstraBox deployment below ASTRABOX_E2E_APP_PREFIX the way
+# docs/deploy.md ("Publish AstraBox under a path") describes, for
+# specs/*.path-prefix.spec.ts. Every path outside the prefix answers 404, so a
+# URL the console or the server builds from the host root fails visibly instead
+# of reaching AstraBox at the root.
+#
+# The deployment behind it runs with ASTRABOX_PUBLIC_PATH_PREFIX equal to
+# ASTRABOX_E2E_APP_PREFIX.
+#
+#   ASTRABOX_E2E_PROXY_LISTEN    the site address browsers use, such as :8443 or
+#                                https://console.example.com
+#   ASTRABOX_E2E_PROXY_UPSTREAM  the AstraBox server, such as 127.0.0.1:8088
+#   ASTRABOX_E2E_APP_PREFIX      the path, such as /astrabox
+{$ASTRABOX_E2E_PROXY_LISTEN} {
+	redir {$ASTRABOX_E2E_APP_PREFIX} {$ASTRABOX_E2E_APP_PREFIX}/ 308
+	handle_path {$ASTRABOX_E2E_APP_PREFIX}/* {
+		reverse_proxy {$ASTRABOX_E2E_PROXY_UPSTREAM} {
+			# Session events and terminal output are long-lived streams.
+			flush_interval -1
+		}
+	}
+	handle {
+		respond "outside the AstraBox prefix" 404
+	}
+}

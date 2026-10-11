@@ -18,6 +18,7 @@ import pytest
 
 from astrabox.common.utils.errors import APIError
 from astrabox.core.service.orchestrator.agent import prepared_slots as ps
+from astrabox.seams.sandbox import SandboxMemoryHeadroom
 
 
 class FakeAgentRepo:
@@ -117,7 +118,10 @@ async def _claim_one(
 def test_concurrent_claims_have_exactly_one_winner(monkeypatch: pytest.MonkeyPatch) -> None:
     repo = FakeAgentRepo(_row(_manifest()))
     monkeypatch.setattr(ps, "sandbox_for_name", lambda _name: SimpleNamespace(
-        name="fake", read_memory_headroom=AsyncMock(return_value=(4 * 1024**3, 0)),
+        name="fake",
+        read_memory_headroom=AsyncMock(
+            return_value=SandboxMemoryHeadroom(limit_bytes=4 * 1024**3, current_bytes=0)
+        ),
     ))
 
     async def run() -> list[dict[str, Any] | None]:
@@ -868,9 +872,9 @@ def _capacity_fixture(
     repo = FakeAgentRepo(_row(
         manifest, sandbox_id="box-1", sandbox_backend="fake", box_admissions=admissions,
     ))
-    memory = AsyncMock(return_value=(
-        512 * 1024**2 + free_reservations * CONVERSATION_MEMORY_RESERVE_BYTES,
-        512 * 1024**2,
+    memory = AsyncMock(return_value=SandboxMemoryHeadroom(
+        limit_bytes=512 * 1024**2 + free_reservations * CONVERSATION_MEMORY_RESERVE_BYTES,
+        current_bytes=512 * 1024**2,
     ))
     monkeypatch.setattr(ps, "sandbox_for_name", lambda _name: SimpleNamespace(
         name="fake", read_memory_headroom=memory,
@@ -950,9 +954,9 @@ def test_capacity_refusal_cannot_retire_a_slot_claimed_by_another_worker(
     manifest = _slots(repo)[0]
     winner = {**manifest, "state": "claimed", "claimed_session_id": "winner"}
 
-    async def read_memory(_box: str) -> tuple[int, int]:
+    async def read_memory(_box: str) -> SandboxMemoryHeadroom:
         repo.rows["agent-1"][ps.PREPARED_SLOTS_FIELD] = [winner]
-        return 512 * 1024**2, 512 * 1024**2
+        return SandboxMemoryHeadroom(limit_bytes=512 * 1024**2, current_bytes=512 * 1024**2)
 
     memory.side_effect = read_memory
     assert _capacity_claim(repo) is None
@@ -986,10 +990,10 @@ def test_slot_expiring_during_the_capacity_probe_is_not_claimed(
     manifest = repo.rows["agent-1"][ps.PREPARED_SLOTS_FIELD][0]
     manifest["prepared_at"] = now.isoformat()
 
-    async def delayed_probe(_box: str) -> tuple[int, int]:
+    async def delayed_probe(_box: str) -> SandboxMemoryHeadroom:
         nonlocal now
         now += timedelta(seconds=ps.prepared_seat_ttl_seconds() + 1)
-        return 4 * 1024**3, 0
+        return SandboxMemoryHeadroom(limit_bytes=4 * 1024**3, current_bytes=0)
 
     memory.side_effect = delayed_probe
     assert _capacity_claim(repo) is None

@@ -172,6 +172,13 @@ EPHEMERAL_PORT_RANGE_FILE = "/proc/sys/net/ipv4/ip_local_port_range"
 #: different defaults (4096 PIDs; a 0.0.0.0 publish).
 PIDS_LIMIT_ENV = "ASTRABOX_SANDBOX_PIDS_LIMIT"
 DEFAULT_PIDS_LIMIT = "512"
+#: Docker's CFS period; a CPU limit is a quota of microseconds per period.
+_CPU_PERIOD_MICROSECONDS = 100_000
+#: The ceiling of the egress sidecar beside each Docker sandbox. It is part of
+#: what one sandbox costs, not a separate setting: it measured 64-76MiB at its
+#: peak on the test cluster.
+EGRESS_SIDECAR_CPU = 1.0
+EGRESS_SIDECAR_MEMORY_BYTES = 128 * 1024 * 1024
 #: Linux capabilities dropped from every sandbox container: Docker's
 #: ``cap_drop``, and on Kubernetes the sandbox container's
 #: ``securityContext.capabilities.drop``. ``NET_RAW`` removes raw/packet
@@ -1764,6 +1771,14 @@ def let_docker_assign_published_ports(
             raise surfaced from exc.__cause__
         wanted = [*SIDECAR_INBOX_PORTS, *(["18080"] if egress_api_host_port is not None else [])]
         try:
+            # Upstream builds the sidecar's host config with no resource limit,
+            # so the ceiling is applied as soon as the container exists.
+            sidecar.update(
+                mem_limit=EGRESS_SIDECAR_MEMORY_BYTES,
+                memswap_limit=EGRESS_SIDECAR_MEMORY_BYTES,
+                cpu_period=_CPU_PERIOD_MICROSECONDS,
+                cpu_quota=int(EGRESS_SIDECAR_CPU * _CPU_PERIOD_MICROSECONDS),
+            )
             published = _published_host_ports(sidecar, wanted)
             if egress_api_host_port is not None:
                 self._wait_for_egress_sidecar_ready(

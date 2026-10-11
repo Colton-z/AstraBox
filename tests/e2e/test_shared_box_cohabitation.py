@@ -123,13 +123,17 @@ def _prepared_isolation(agent_id: str, pool_box: str) -> str:
 
     program = """
 import asyncio, json, sys
-from astrabox.deploy.onebox import ensure_database_wiring
+from astrabox.deploy.onebox import ensure_database_wiring, needs_sandbox_server, _export_backend_wiring
 from astrabox.persistence.repository.agent_repository import AgentRepository
 from astrabox.providers import register_builtin_providers
 from astrabox.seams.sandbox import sandbox_for_name
 from astrabox.core.service.orchestrator.agent.prepared_slots import POOL_SEATS_RECEIPT
 async def main():
     ensure_database_wiring()
+    # The server process learns the embedded lifecycle server's address at
+    # start; a separate process has to export the same wiring to connect.
+    if needs_sandbox_server():
+        _export_backend_wiring()
     register_builtin_providers()
     row = await AgentRepository().get_agent(sys.argv[1]) or {}
     seats = [s for s in row.get('_prepared_slots') or [] if s.get('state') == 'prepared']

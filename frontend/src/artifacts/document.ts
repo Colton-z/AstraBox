@@ -1,8 +1,13 @@
 import type { ArtifactKind } from './types';
 export const ARTIFACT_SANDBOX =
   'allow-scripts allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox';
-export function artifactCSP(origin: string) {
-  return `default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' ${origin}/artifact-runtime/ https://cdnjs.cloudflare.com https://cdn.jsdelivr.net/npm/ https://unpkg.com https://cdn.tailwindcss.com https://code.jquery.com; style-src 'unsafe-inline' ${origin}/artifact-runtime/ https://fonts.googleapis.com https://cdnjs.cloudflare.com https://cdn.jsdelivr.net/npm/; font-src ${origin}/artifact-runtime/ https://fonts.gstatic.com data:; img-src data: blob: ${origin}/artifact-runtime/; media-src data: blob:; connect-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'`;
+/**
+ * The policy an artifact page runs under. *base* is the console's address, its
+ * origin followed by the path it is published under (`MODULE_BASE`); the
+ * artifact runtime is served at `${base}/artifact-runtime/`.
+ */
+export function artifactCSP(base: string) {
+  return `default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' ${base}/artifact-runtime/ https://cdnjs.cloudflare.com https://cdn.jsdelivr.net/npm/ https://unpkg.com https://cdn.tailwindcss.com https://code.jquery.com; style-src 'unsafe-inline' ${base}/artifact-runtime/ https://fonts.googleapis.com https://cdnjs.cloudflare.com https://cdn.jsdelivr.net/npm/; font-src ${base}/artifact-runtime/ https://fonts.gstatic.com data:; img-src data: blob: ${base}/artifact-runtime/; media-src data: blob:; connect-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'`;
 }
 const scriptJSON = (value: string) =>
   JSON.stringify(value)
@@ -12,13 +17,13 @@ const scriptJSON = (value: string) =>
 export function buildArtifactDocument({
   kind,
   content,
-  origin,
+  base,
   release,
   theme,
 }: {
   kind: ArtifactKind;
   content: string;
-  origin: string;
+  base: string;
   release: string;
   theme?: 'light' | 'dark';
 }) {
@@ -45,9 +50,9 @@ export function buildArtifactDocument({
   }
   const csp = doc.createElement('meta');
   csp.httpEquiv = 'Content-Security-Policy';
-  csp.content = artifactCSP(origin);
+  csp.content = artifactCSP(base);
   const bridge = doc.createElement('script');
-  bridge.src = `${origin}/artifact-runtime/bridge.js?release=${encodeURIComponent(release)}`;
+  bridge.src = `${base}/artifact-runtime/bridge.js?release=${encodeURIComponent(release)}`;
   doc.head.prepend(csp, bridge);
   if (kind === 'svg') {
     const root = doc.getElementById('root')!;
@@ -66,13 +71,13 @@ export function buildArtifactDocument({
       '@custom-variant dark (&:where(.dark, .dark *)); @theme inline { --color-background: var(--background); --color-foreground: var(--foreground); --color-card: var(--background); --color-card-foreground: var(--foreground); --color-muted: var(--muted); --color-muted-foreground: var(--muted-foreground); --color-border: var(--border); --color-input: var(--border); --color-primary: var(--primary); --color-primary-foreground: var(--primary-foreground); --color-secondary: var(--muted); --color-secondary-foreground: var(--foreground); --color-accent: var(--muted); --color-accent-foreground: var(--foreground); --color-ring: Highlight; }';
     if (kind === 'react') doc.head.append(tailwind);
     const config = doc.createElement('script');
-    config.textContent = `window.__artifactSource=${scriptJSON(content)};window.__artifactBase=${scriptJSON(`${origin}/artifact-runtime`)};window.__artifactRelease=${scriptJSON(release)};`;
+    config.textContent = `window.__artifactSource=${scriptJSON(content)};window.__artifactBase=${scriptJSON(`${base}/artifact-runtime`)};window.__artifactRelease=${scriptJSON(release)};`;
     const renderer = doc.createElement('script');
-    renderer.src = `${origin}/artifact-runtime/${kind}.js?release=${encodeURIComponent(release)}`;
+    renderer.src = `${base}/artifact-runtime/${kind}.js?release=${encodeURIComponent(release)}`;
     if (kind === 'react') {
       const theme = doc.createElement('link');
       theme.rel = 'stylesheet';
-      theme.href = `${origin}/artifact-runtime/theme.css?release=${encodeURIComponent(release)}`;
+      theme.href = `${base}/artifact-runtime/theme.css?release=${encodeURIComponent(release)}`;
       doc.head.append(theme);
     }
     doc.body.append(config, renderer);

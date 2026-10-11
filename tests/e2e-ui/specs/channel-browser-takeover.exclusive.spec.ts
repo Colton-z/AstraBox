@@ -120,7 +120,7 @@ test('a channel-created conversation accepts one browser turn without replacing 
   const channelPrompt = `Conversation ${id}. In one short sentence explain what a bookmark is. Do not use tools.`;
   const browserPrompt = `Conversation ${id}. In one short sentence explain what a notebook is. Do not use tools.`;
   const timestamp = Date.now();
-  const messageKey = `e2e:${source!.botId}:message:${messageId}`;
+  const messageKey = `e2e:${source!.botId}:channel:room:message:${messageId}`;
   source!.send({ type: 'message-created', timestamp,
     channel: { id: 'room', type: 0 }, user: { id: 'participant', name: 'Participant' },
     message: { id: messageId, content: `<at id="${source!.botId}"/>${channelPrompt}`, created_at: timestamp } });
@@ -254,7 +254,7 @@ test('a channel-created conversation accepts one browser turn without replacing 
   expect(inboundRows().filter((row) => row.dedup_key === messageKey)).toEqual([originalInbound]);
   const allInbound = inboundRows();
   expect(allInbound.filter((row) => String(row.dedup_key)
-    .startsWith(`e2e:${source!.botId}:message:`)).map((row) => row.dedup_key)).toEqual([messageKey]);
+    .startsWith(`e2e:${source!.botId}:channel:room:message:`)).map((row) => row.dedup_key)).toEqual([messageKey]);
   for (const lifecycle of allInbound.filter((row) => row.dedup_key !== messageKey)) {
     expect(lifecycle.state).toBe('IGNORED');
     expect(lifecycle.session_id).toBeNull();

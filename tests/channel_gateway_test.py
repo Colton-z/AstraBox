@@ -79,6 +79,23 @@ def _message_event(**overrides: Any) -> dict[str, Any]:
     return payload
 
 
+def test_the_same_message_number_in_two_chats_is_two_messages() -> None:
+    # Telegram numbers messages per chat: message 42 of one group and message
+    # 42 of another are different messages, not a redelivery of one.
+    provider = GatewayChannelProvider(_definition("telegram"), gateway=_client(None))
+    keys = set()
+    for room in ("group-a", "group-b"):
+        payload = _message_event(
+            channel={"id": room, "type": 0},
+            message={"id": "42", "content": "hello"},
+        )
+        inbound = provider._resolve_event(
+            payload, raw_body=json.dumps(payload, sort_keys=True).encode()
+        )
+        keys.add(inbound.dedup_key)
+    assert len(keys) == 2
+
+
 async def test_complete_binding_is_checked_by_the_authoritative_adapter_schema() -> None:
     captured: dict[str, Any] = {}
 
@@ -134,9 +151,9 @@ def test_satori_event_projection_maps_into_the_channel_spine() -> None:
     )
 
     assert inbound.content == "hello [chart](https://files.example.test/chart.png)"
-    assert inbound.dedup_key == "telegram:bot-1:message:msg-1"
+    assert inbound.dedup_key == "telegram:bot-1:channel:room-1:message:msg-1"
     assert inbound.conversation_key == "telegram:bot-1:channel:room-1"
-    assert inbound.reference == "telegram:bot-1:message:prior-1"
+    assert inbound.reference == "telegram:bot-1:channel:room-1:message:prior-1"
     assert inbound.participant == "telegram:user-1"
     assert inbound.attention is not None
     assert inbound.attention.is_direct_message is True
@@ -145,9 +162,44 @@ def test_satori_event_projection_maps_into_the_channel_spine() -> None:
     assert inbound.reply_context == {
         "platform": "telegram",
         "self_id": "bot-1",
+        "guild_id": "",
         "channel_id": "room-1",
+        "direct": True,
+        "user_id": "user-1",
         "message_id": "msg-1",
     }
+
+    # A message is named by the room it lives in, and replied to where the
+    # platform expects: a Telegram forum topic or a Zulip stream topic is a
+    # channel inside its guild, and a Slack thread reply is answered under the
+    # thread's parent.
+    rooms = [
+        ("telegram", {"guild": {"id": "-100"}, "channel": {"id": "42", "type": 0}},
+         '<quote id="7"/>topic question', "-100/42", "7", "msg-1"),
+        ("zulip", {"guild": {"id": "5"}, "channel": {"id": "release", "type": 0}},
+         "stream question", "5/release", None, "msg-1"),
+        ("discord", {"guild": {"id": "900"}, "channel": {"id": "300", "type": 0}},
+         "channel question", "300", None, "msg-1"),
+        ("slack", {"guild": {"id": "T1"}, "channel": {"id": "C1", "type": 0}},
+         '<quote id="1700.1"/>thread question', "C1", "1700.1", "1700.1"),
+    ]
+    for platform, overrides, content, room, quoted, reply_to in rooms:
+        event = _message_event(
+            login={"sn": 1, "platform": platform, "user": {"id": "bot-1"}},
+            message={"id": "msg-1", "content": content},
+            **overrides,
+        )
+        resolved = provider._resolve_event(event, raw_body=json.dumps(event).encode())
+        assert resolved.conversation_key == f"{platform}:bot-1:channel:{room}", platform
+        assert resolved.dedup_key == f"{platform}:bot-1:channel:{room}:message:msg-1", platform
+        assert resolved.reference == (
+            f"{platform}:bot-1:channel:{room}:message:{quoted}" if quoted else None
+        ), platform
+        context = resolved.reply_context or {}
+        assert context["guild_id"] == overrides.get("guild", {}).get("id", ""), platform
+        assert context["channel_id"] == overrides["channel"]["id"], platform
+        assert context["direct"] is False and context["user_id"] == "user-1", platform
+        assert context["message_id"] == reply_to, platform
 
 
 def test_control_events_and_bot_echoes_are_terminally_ignored() -> None:
@@ -232,14 +284,23 @@ async def test_delivery_returns_namespaced_platform_receipts() -> None:
         reply_context={
             "platform": "telegram",
             "self_id": "bot-1",
-            "channel_id": "room-1",
+            "guild_id": "-100",
+            "channel_id": "42",
+            "direct": False,
+            "user_id": "user-1",
             "message_id": "msg-1",
         },
         text="answer",
         binding={"deployment_id": "channel-1"},
     )
-    assert receipt.message_ids == ["telegram:bot-1:message:reply-9"]
+    # A forum-topic reply is named by its chat and topic, as the inbound
+    # message that quotes it will be, and the gateway receives the addressing
+    # the official encoder needs to reach that chat.
+    assert receipt.message_ids == ["telegram:bot-1:channel:-100/42:message:reply-9"]
     assert captured["text"] == "answer"
+    assert {key: captured[key] for key in ("guild_id", "channel_id", "direct", "user_id")} == {
+        "guild_id": "-100", "channel_id": "42", "direct": False, "user_id": "user-1",
+    }
 
 
 async def test_callback_response_is_forwarded_byte_for_byte() -> None:

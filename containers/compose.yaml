@@ -209,6 +209,25 @@ services:
       # lifecycle server instead and the bundled one does not start. See
       # astrabox/deploy/onebox.py.
       ASTRABOX_SANDBOX_BACKEND: ${ASTRABOX_SANDBOX_BACKEND:-open_sandbox}
+      # Installed sandbox backends this deployment enables, comma-separated and
+      # including the one above. Empty enables only ASTRABOX_SANDBOX_BACKEND.
+      ASTRABOX_SANDBOX_BACKENDS: ${ASTRABOX_SANDBOX_BACKENDS:-}
+      # The size of a conversation's own box and of an Agent's shared box, as
+      # Kubernetes quantities. Empty keeps the defaults.
+      ASTRABOX_SANDBOX_CPU_LIMIT: ${ASTRABOX_SANDBOX_CPU_LIMIT:-}
+      ASTRABOX_SANDBOX_MEMORY_LIMIT: ${ASTRABOX_SANDBOX_MEMORY_LIMIT:-}
+      ASTRABOX_SANDBOX_CPU_REQUEST: ${ASTRABOX_SANDBOX_CPU_REQUEST:-}
+      ASTRABOX_SANDBOX_MEMORY_REQUEST: ${ASTRABOX_SANDBOX_MEMORY_REQUEST:-}
+      ASTRABOX_SHARED_SANDBOX_CPU_LIMIT: ${ASTRABOX_SHARED_SANDBOX_CPU_LIMIT:-}
+      ASTRABOX_SHARED_SANDBOX_MEMORY_LIMIT: ${ASTRABOX_SHARED_SANDBOX_MEMORY_LIMIT:-}
+      ASTRABOX_SHARED_SANDBOX_CPU_REQUEST: ${ASTRABOX_SHARED_SANDBOX_CPU_REQUEST:-}
+      ASTRABOX_SHARED_SANDBOX_MEMORY_REQUEST: ${ASTRABOX_SHARED_SANDBOX_MEMORY_REQUEST:-}
+      # Ceilings on everything one sandbox backend runs; empty keeps the
+      # default (on this Docker host, a memory ceiling of its memory less 4Gi).
+      ASTRABOX_SANDBOX_QUOTA_BOXES: ${ASTRABOX_SANDBOX_QUOTA_BOXES:-}
+      ASTRABOX_SANDBOX_QUOTA_MEMORY: ${ASTRABOX_SANDBOX_QUOTA_MEMORY:-}
+      ASTRABOX_SANDBOX_QUOTA_CPU: ${ASTRABOX_SANDBOX_QUOTA_CPU:-}
+      ASTRABOX_SANDBOX_QUOTA_CONCURRENT_CREATES: ${ASTRABOX_SANDBOX_QUOTA_CONCURRENT_CREATES:-}
       # The provider selects backing storage, not the platform's directory
       # routing. Every configured workspace volume uses the mount helper;
       # an empty backing volume needs no helper.
@@ -223,6 +242,11 @@ services:
       # defaults; a reverse proxy or private test address must be named
       # explicitly rather than silently accepted.
       ASTRABOX_ALLOWED_HOSTS: ${ASTRABOX_ALLOWED_HOSTS:-}
+      # The path a gateway publishes AstraBox under when it shares the host
+      # with other applications, such as /astrabox; the gateway removes it
+      # before forwarding. Empty publishes AstraBox at the root of its host
+      # (docs/deploy.md, "Publish AstraBox under a path").
+      ASTRABOX_PUBLIC_PATH_PREFIX: ${ASTRABOX_PUBLIC_PATH_PREFIX:-}
       # Credential Vault is optional but on by default. Setting false is an
       # explicit request to hand the model/gateway credential to the Agent
       # process instead of keeping it in the egress sidecar.
@@ -259,6 +283,10 @@ services:
       ASTRABOX_SANDBOX_EGRESS_DNS_UPSTREAM_DEFAULT: ""
       ASTRABOX_DB_BACKEND: postgresql
       ASTRABOX_DB_URL: ${ASTRABOX_DB_URL:-}
+      # The engine that runs scheduled Deployments. The built-in dbos keeps its
+      # state in the SQL database above; with a mongodb:// ASTRABOX_DB_URL set
+      # none, which turns scheduled Deployments off.
+      ASTRABOX_SCHEDULER_PROVIDER: ${ASTRABOX_SCHEDULER_PROVIDER:-dbos}
       ASTRABOX_DB_PASSWORD_FILE: /run/secrets/astrabox_database_password
       ASTRABOX_DB_HOST: postgres
       ASTRABOX_DB_PORT: "5432"
@@ -316,6 +344,10 @@ services:
       # The team-gateway overlay sets this to true. The base local stack keeps
       # its private HTTP gateway and leaves the requirement off.
       ASTRABOX_MODEL_GATEWAY_REQUIRE_HTTPS: ${ASTRABOX_MODEL_GATEWAY_REQUIRE_HTTPS:-false}
+      # The MCP server and Skill catalog Agents and Assistants select from.
+      # Empty is the gateway's own catalog (litellm); none runs no catalog, and
+      # Agents use only the MCP servers, Skills and packages written on them.
+      ASTRABOX_EXTENSION_PROVIDER: ${ASTRABOX_EXTENSION_PROVIDER:-}
       # Provider keys the config.yaml entries reference (unset ones simply
       # leave that model family unavailable). ANTHROPIC_API_KEY is already
       # forwarded above.

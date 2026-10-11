@@ -18,6 +18,7 @@ from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.user_context import UserContext
 from astrabox.core.service.orchestrator.platform_service import AgentPlatformService
 from astrabox.core.service.orchestrator.deployment_service import DeploymentService
+from astrabox.providers import channel_generic  # noqa: F401  (registers generic_json)
 
 
 class _AtomicWebhookRepo:
@@ -261,16 +262,19 @@ async def test_duplicate_delete_is_the_same_not_found_boundary() -> None:
     assert deployment_repo.soft_delete_for_deployment.await_count == 2
 
 
-@pytest.mark.parametrize("replacement", ["bob", ""])
-async def test_agent_owner_cannot_change_an_administrator_delegated_execution_account(replacement) -> None:
+@pytest.mark.parametrize("patch", [
+    {"execution_user_id": "bob"},
+    {"execution_mode": "owner"},
+    {"execution_mode": "linked"},
+])
+async def test_agent_owner_cannot_change_an_administrator_delegated_execution_account(patch) -> None:
     service, repo = _service({
         "deployment_id": "dep", "agent_id": "agent", "scene": "channel:generic_json",
         "execution_user_id": "alice",
     })
     with pytest.raises(APIError) as error:
         await service.update(
-            "dep", agent_id="agent", patch={"execution_user_id": replacement},
-            actor=UserContext(user_id="owner"),
+            "dep", agent_id="agent", patch=patch, actor=UserContext(user_id="owner"),
         )
     assert error.value.status_code == 403
     assert repo.webhook["execution_user_id"] == "alice"
@@ -306,18 +310,22 @@ async def test_platform_passes_execution_account_authority_to_the_deployment_ser
         platform._channel_source_host.reconcile.assert_not_awaited()
 
 
-@pytest.mark.parametrize("replacement", ["bob", ""])
-async def test_administrator_can_assign_or_clear_a_channel_execution_account(replacement) -> None:
+@pytest.mark.parametrize(("patch", "mode", "account"), [
+    ({"execution_user_id": "bob"}, "account", "bob"),
+    ({"execution_mode": "owner"}, "owner", ""),
+    ({"execution_mode": "linked"}, "linked", ""),
+])
+async def test_administrator_can_assign_or_clear_a_channel_execution_account(patch, mode, account) -> None:
     service, repo = _service({
         "deployment_id": "dep", "agent_id": "agent", "scene": "channel:generic_json",
         "execution_user_id": "alice",
     })
     result = await service.update(
-        "dep", agent_id="agent", patch={"execution_user_id": replacement},
+        "dep", agent_id="agent", patch=patch,
         actor=UserContext(user_id="admin", roles=["admin"]),
     )
-    assert result["execution_user_id"] == replacement
-    assert repo.webhook["execution_user_id"] == replacement
+    assert (result["execution_mode"], result["execution_user_id"]) == (mode, account)
+    assert (repo.webhook["execution_mode"], repo.webhook["execution_user_id"]) == (mode, account)
 
 
 @pytest.mark.parametrize("value", [None, 7, "alice\nbob"])

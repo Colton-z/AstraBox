@@ -97,6 +97,7 @@ const sidebars: SidebarsConfig = {
         'embedding',
         'writing-an-engine-adapter',
         'writing-a-channel-provider',
+        'writing-a-scheduler-provider',
       ],
     },
   ],

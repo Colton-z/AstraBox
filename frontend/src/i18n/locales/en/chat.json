@@ -273,6 +273,8 @@
     "nothing_inherited": "Nothing set up for every Assistant.",
     "catalog_tools_one": "Plus {{count}} tool server from the catalog.",
     "catalog_tools_other": "Plus {{count}} tool servers from the catalog.",
+    "catalog_unavailable_one": "{{count}} selection from an extension catalog is unavailable: this deployment runs no catalog.",
+    "catalog_unavailable_other": "{{count}} selections from an extension catalog are unavailable: this deployment runs no catalog.",
     "its_own": "Its own Skills and tools",
     "nothing_own": "None yet.",
     "advanced": "Edit in the console",

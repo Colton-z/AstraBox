@@ -207,7 +207,9 @@ async def test_the_occupancy_check_sees_a_joiner_behind_five_hundred_newer_alloc
     manager = RemoteAgentRuntimeManager()
 
     class _EmptyBox:
-        async def count_live_isolated_sessions(self, sandbox_id: str) -> int:
+        supports_isolated_sessions = True
+
+        async def count_active_isolated_sessions(self, sandbox_id: str) -> int:
             return 0
 
     async def _provider(sandbox_id: str) -> Any:

@@ -66,7 +66,7 @@
  * THE DOMAIN OF ACT 2 is read off the rail and split in two, so the walk cannot
  * shrink without saying so. `RETURN_FRESH_ROUTES` are the pages that carry the
  * return-freshness convention (`useKeepCurrent`), and they are the verdict.
- * `SELF_PACED_ROUTES` are the two rail routes that do not carry it, each with
+ * `SELF_PACED_ROUTES` are the rail routes that do not carry it, each with
  * the reason it is out; they are not walked and not judged. A route in neither
  * list fails the classification, because a page added to the console is a page
  * whose freshness nobody has decided.
@@ -147,8 +147,10 @@ const RETURN_FRESH_ROUTES = [
  * The rail routes that carry no return handler, each with what its page does
  * instead. They are enumerated so that the walk below cannot silently shrink,
  * and they are not walked: on `/manage/system` a re-read on its own cadence is
- * indistinguishable from one caused by the return, and `/manage/logs` would be
- * measuring a page whose window is the operator's choice.
+ * indistinguishable from one caused by the return, `/manage/logs` would be
+ * measuring a page whose window is the operator's choice, and the two
+ * configuration forms offer no Refresh to calibrate against and change only
+ * through the operator's own saves.
  */
 const SELF_PACED_ROUTES: Record<string, string> = {
   '/manage/system': 'SystemPage re-reads every 10s of its own accord (SystemPage.tsx:42,121-137)',
@@ -156,6 +158,15 @@ const SELF_PACED_ROUTES: Record<string, string> = {
     'LogsPage reads the tail its filters name, once per mount and then on Apply or '
     + 'Refresh (LogsPage.tsx:100-104), so its window is the operator\'s choice rather '
     + 'than a listing of what exists',
+  '/manage/assistant-defaults':
+    'AssistantDefaultsPage is one edit form over the deployment\'s Assistant defaults: it '
+    + 'reads them at mount and takes the saved record back after each Save '
+    + '(AssistantDefaultsPage.tsx:150,169,216), and a background re-read would reseed the '
+    + 'draft the operator is editing',
+  '/manage/connectors':
+    'ConnectorsPage configures each connector\'s OAuth client: it reads at mount and again '
+    + 'after every Save or Deploy the operator runs (ConnectorsPage.tsx:51-60), and the state '
+    + 'it shows changes only through those actions',
 };
 
 /** Everything this deployment's API answers on, as a request pathname prefix. */

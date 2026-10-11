@@ -1356,11 +1356,13 @@ def _parse_skill_descriptor(descriptor: str) -> tuple[str, str, str, str]:
     ``(repo, ref, path, name)``.
 
     ``<repo>`` is required; ``@<ref>`` (branch/tag/commit) and ``#<path>`` (skill
-    dir inside the repo) are optional. The ref split is authority-aware so an SSH
-    URL (``git@host:org/repo``) or an embedded-credential URL
-    (``https://x:tok@host/org/repo``) is not mistaken for a ref delimiter. Fails
-    loud on a malformed descriptor so a bad Agent entry never reaches a sandbox
-    exec.
+    dir inside the repo) are optional. The ref split is authority-aware so the
+    user in an SSH URL (``git@host:org/repo``) is not mistaken for a ref
+    delimiter. An HTTP(S) URL carrying credentials is refused: the descriptor is
+    stored in the Agent and its cache manifest and echoed in clone errors, so a
+    private HTTPS source authenticates through an ``http_basic`` Vault
+    credential that the egress sidecar adds outside the sandbox. Fails loud on a
+    malformed descriptor so a bad Agent entry never reaches a sandbox exec.
     """
     raw = descriptor.strip()
     if not raw:
@@ -1378,6 +1380,18 @@ def _parse_skill_descriptor(descriptor: str) -> tuple[str, str, str, str]:
         if authority_end == -1:
             authority_end = len(repo_ref)
         userinfo_at = repo_ref.rfind("@", authority_start, authority_end)
+        scheme = scheme_match.group(0)[:-3].lower()
+        if userinfo_at != -1 and scheme in {"http", "https"}:
+            host = repo_ref[userinfo_at + 1:authority_end]
+            raise APIError(
+                code="AGENT_RUNTIME_SKILL_CACHE_FAILED",
+                message=(
+                    f"skill source {scheme}://{host}/… embeds credentials in its URL; "
+                    "keep the URL clean and assign an HTTP Basic (Git HTTPS) Vault "
+                    "credential for the repository to the Agent instead"
+                ),
+                status_code=500,
+            )
         search_from = userinfo_at + 1 if userinfo_at != -1 else authority_start
     else:
         colon = repo_ref.find(":")

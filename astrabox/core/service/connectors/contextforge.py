@@ -28,12 +28,13 @@ import time
 import uuid
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import httpx
 import jwt
 
 from astrabox.common.utils.errors import APIError
+from astrabox.deploy.public_path import public_path
 
 _ISSUER = "mcpgateway"
 _AUDIENCE = "mcpgateway-api"
@@ -43,6 +44,38 @@ API_URL_ENV = "ASTRABOX_CONTEXTFORGE_API_URL"
 PUBLIC_URL_ENV = "ASTRABOX_CONTEXTFORGE_PUBLIC_URL"
 JWT_SECRET_ENV = "ASTRABOX_CONTEXTFORGE_JWT_SECRET"
 ADMIN_EMAIL_ENV = "ASTRABOX_CONTEXTFORGE_ADMIN_EMAIL"
+
+#: Where AstraBox serves the hub's browser-facing callback, below the public
+#: path prefix (``astrabox/api/routes/connectors.py``).
+#: ``ASTRABOX_CONTEXTFORGE_PUBLIC_URL`` is the console's origin followed by the
+#: prefix and this path.
+HUB_PUBLIC_PATH = "/connector-hub"
+
+
+def require_public_url_at_hub_path() -> None:
+    """Refuse a hub public URL whose path is not where AstraBox serves the hub.
+
+    Each vendor returns the browser to ``<ASTRABOX_CONTEXTFORGE_PUBLIC_URL>/oauth/callback``
+    after a consent, and AstraBox answers that only below the public path
+    prefix. A URL with any other path, such as one written before the
+    deployment was published under a prefix, would end every consent at an
+    address that leads nowhere. ``create_app`` calls this, so the server does
+    not start with such a URL.
+
+    Raises:
+        ValueError: the URL is set and its path is not the prefix followed by
+            ``/connector-hub``.
+    """
+
+    public_url = str(os.environ.get(PUBLIC_URL_ENV) or "").strip()
+    if not public_url:
+        return
+    expected = public_path(HUB_PUBLIC_PATH)
+    if urlsplit(public_url).path.rstrip("/") != expected:
+        raise ValueError(
+            f"{PUBLIC_URL_ENV} must be the console's origin followed by {expected}, "
+            f"where AstraBox serves the hub's callback; got {public_url}"
+        )
 
 
 def _hub_password() -> str:

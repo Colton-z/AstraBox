@@ -482,7 +482,7 @@ class VaultServiceTest(unittest.TestCase):
             vault = await self.service.create_vault(_USER, display_name="env")
             vault_id = vault["vault_id"]
             with unittest.mock.patch(
-                "astrabox.seams.sandbox.any_backend_supports_egress_credential_injection",
+                "astrabox.seams.sandbox.any_enabled_backend_supports_egress_credential_injection",
                 return_value=False,
             ):
                 with self.assertRaises(APIError) as ctx:
@@ -509,7 +509,7 @@ class VaultServiceTest(unittest.TestCase):
             vault_id = vault["vault_id"]
             # An egress-capable backend exists at create time (plugin installed)…
             with unittest.mock.patch(
-                "astrabox.seams.sandbox.any_backend_supports_egress_credential_injection",
+                "astrabox.seams.sandbox.any_enabled_backend_supports_egress_credential_injection",
                 return_value=True,
             ):
                 await self.service.create_credential(
@@ -579,7 +579,7 @@ class VaultServiceTest(unittest.TestCase):
             vault = await self.service.create_vault(_USER, display_name="request limits")
             vault_id = vault["vault_id"]
             with unittest.mock.patch(
-                "astrabox.seams.sandbox.any_backend_supports_egress_credential_injection",
+                "astrabox.seams.sandbox.any_enabled_backend_supports_egress_credential_injection",
                 return_value=True,
             ):
                 created = await self.service.create_credential(
@@ -641,7 +641,7 @@ class VaultServiceTest(unittest.TestCase):
                     _USER, display_name=f"bad request limits {index}"
                 )
                 with unittest.mock.patch(
-                    "astrabox.seams.sandbox.any_backend_supports_egress_credential_injection",
+                    "astrabox.seams.sandbox.any_enabled_backend_supports_egress_credential_injection",
                     return_value=True,
                 ):
                     with self.assertRaises(APIError):

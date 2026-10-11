@@ -18,6 +18,7 @@ from typing import Any, Callable
 
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.user_context import UserContext
+from astrabox.core.service.orchestrator.agent_access import can_view_agent
 from astrabox.persistence.repository.assistant_catalog_repository import (
     AssistantCatalogRepository,
 )
@@ -104,6 +105,20 @@ class ConversationTargets:
             owner_user_id=str(assistant.get("owner_id") or "").strip(),
             name=str(assistant.get("display_name") or target_id),
         )
+
+    async def may_start_as(self, target: ConversationTarget, user_id: str) -> bool:
+        """Whether ``user_id`` may start a conversation on ``target`` by its own rule.
+
+        An Agent applies its access rule to the account without platform
+        roles: a messaging participant has not signed in, so only the Agent's
+        own audience counts — everyone for a public Agent, otherwise its
+        creator, its administrators and its allow-list. An Assistant is its
+        owner's alone.
+        """
+        if target.kind == TARGET_AGENT:
+            agent = await self._agent_repo.get_agent(target.target_id)
+            return bool(agent) and can_view_agent(agent, user_id, [])
+        return user_id == target.owner_user_id
 
     async def start_conversation(
         self,

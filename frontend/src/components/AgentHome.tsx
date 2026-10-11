@@ -7,7 +7,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button, buttonVariants } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 
-import { listAgents, startAgentConversation } from '../api';
+import { MODULE_BASE, listAgents, startAgentConversation } from '../api';
 import type { AgentConfig } from '../types';
 import { keepsLastRead, useKeepCurrent, type ReloadContext } from '@/hooks/useKeepCurrent';
 
@@ -101,7 +101,7 @@ export function AgentHome({
                  `@base-ui/react/button` imposes button semantics on whatever it
                  renders — `role="button"` on a non-native element — which its
                  own documentation rules out for an `<a>`. */
-              <a className={buttonVariants({ variant: 'outline' })} href="/manage/agents">
+              <a className={buttonVariants({ variant: 'outline' })} href={`${MODULE_BASE}/manage/agents`}>
                 {t('agents:home_empty_cta')}
               </a>
             }

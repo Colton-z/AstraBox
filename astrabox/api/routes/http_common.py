@@ -89,34 +89,26 @@ def extract_trace_headers(request: Any) -> dict[str, str]:
 
 
 def map_storage_api_error(exc: Exception) -> APIError | None:
-    """Map known storage/backend exceptions to explicit API errors."""
-    try:
-        from pymongo.errors import (
-            AutoReconnect,
-            ConnectionFailure,
-            NetworkTimeout,
-            OperationFailure,
-            PyMongoError,
-            ServerSelectionTimeoutError,
-        )
+    """Map known storage/backend exceptions to explicit API errors.
 
-        data = {"detail": str(exc)} if is_local_mode() else None
-        if isinstance(
-            exc,
-            (
-                AutoReconnect,
-                NetworkTimeout,
-                ServerSelectionTimeoutError,
-                ConnectionFailure,
-            ),
-        ):
-            return APIError(
-                code="PERSISTENCE_UNAVAILABLE",
-                message="mongodb timeout/unavailable, please retry",
-                status_code=503,
-                data=data,
-                evidence=data if isinstance(data, dict) else None,
-            )
+    Whether a failure is the record store being unreachable is the active
+    repository backend's own classification (``is_transient_error``), so a
+    PostgreSQL or SQLite outage answers the same retryable 503 as a MongoDB one.
+    """
+    from astrabox.persistence.repository.backend import is_mongo_transient_error
+
+    data = {"detail": str(exc)} if is_local_mode() else None
+    if is_mongo_transient_error(exc):
+        return APIError(
+            code="PERSISTENCE_UNAVAILABLE",
+            message="the record store is unavailable, please retry",
+            status_code=503,
+            data=data,
+            evidence=data if isinstance(data, dict) else None,
+        )
+    try:
+        from pymongo.errors import OperationFailure, PyMongoError
+
         if isinstance(exc, OperationFailure):
             return APIError(
                 code="PERSISTENCE_OPERATION_FAILED",

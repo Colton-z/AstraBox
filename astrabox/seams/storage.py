@@ -29,6 +29,12 @@ from typing import Any, NamedTuple
 #: Entry-point group an external package registers a storage backend under.
 ENTRY_POINT_GROUP = "astrabox.providers.storage"
 
+#: Sandbox metadata key carrying the storage assignment a box's persistent
+#: workspace mounts were provisioned for. The platform writes it into the create
+#: metadata and finds a box by it; a route may label its own per-box resources
+#: with the same key.
+WORKSPACE_ASSIGNMENT_METADATA_KEY = "astrabox.storage-assignment"
+
 
 @dataclass(frozen=True)
 class StorageMountPlan:
@@ -262,6 +268,7 @@ def storage_provider(name: str | None = None) -> StorageProvider:
 
 __all__ = [
     "ENTRY_POINT_GROUP",
+    "WORKSPACE_ASSIGNMENT_METADATA_KEY",
     "StorageProvider",
     "StorageMountPlan",
     "WorkspaceRef",

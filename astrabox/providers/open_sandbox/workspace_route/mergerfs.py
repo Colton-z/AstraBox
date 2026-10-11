@@ -17,9 +17,13 @@ from astrabox.core.service.orchestrator.runtime.storage._command_result import (
     _extract_command_output_text,
 )
 from astrabox.seams.sandbox import SANDBOX_INSTALLATION_METADATA_KEY, sandbox_installation_id
-from astrabox.seams.storage import StorageMountPlan, WorkspaceRef, WorkspaceRoute
+from astrabox.seams.storage import (
+    WORKSPACE_ASSIGNMENT_METADATA_KEY,
+    StorageMountPlan,
+    WorkspaceRef,
+    WorkspaceRoute,
+)
 
-OWNER = "astrabox.storage-assignment"
 INPUT = "astrabox.storage-input"
 MANAGED = "astrabox.storage-managed"
 #: Receipt fields. The helper carries the first three from the moment it is
@@ -85,7 +89,9 @@ class MountAssignment:
         """Ownership labels use a digest because arbitrary assignment IDs are not labels."""
         return {
             MANAGED: "mergerfs",
-            OWNER: hashlib.sha256(self.assignment_id.encode()).hexdigest()[:63],
+            WORKSPACE_ASSIGNMENT_METADATA_KEY: hashlib.sha256(
+                self.assignment_id.encode()
+            ).hexdigest()[:63],
         }
 
     def labels(self) -> dict[str, str]:
@@ -201,10 +207,12 @@ class MergerfsWorkspaceRouter(WorkspaceRoute):
         from astrabox.deploy.sandbox_server import sandbox_runtime
 
         if sandbox_runtime() == "kubernetes":
-            from astrabox.core.service.orchestrator.runtime.storage._mergerfs_kubernetes import KubernetesMounts
+            from astrabox.providers.open_sandbox.workspace_route._mergerfs_kubernetes import (
+                KubernetesMounts,
+            )
 
             return KubernetesMounts()
-        from astrabox.core.service.orchestrator.runtime.storage._mergerfs_docker import DockerMounts
+        from astrabox.providers.open_sandbox.workspace_route._mergerfs_docker import DockerMounts
 
         return DockerMounts()
 

@@ -858,7 +858,11 @@ export function ConsoleJsonField({
         const raw = e.target.value.trim();
         if (raw === '') {
           report(true);
-          return onChange(undefined);
+          // Emptying a saved value is an explicit clear, sent as null; leaving
+          // an untouched field empty changes nothing. Undefined would read as
+          // "not edited" and the update would keep the stored value.
+          if (value != null) onChange(null);
+          return;
         }
         try {
           onChange(JSON.parse(raw));

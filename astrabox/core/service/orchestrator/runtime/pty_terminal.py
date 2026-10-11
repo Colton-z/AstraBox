@@ -36,6 +36,8 @@ from typing import Any
 
 import httpx
 import websockets
+from websockets.asyncio.client import ClientConnection
+from websockets.frames import Frame, Opcode
 
 from astrabox.common.utils.errors import APIError
 from astrabox.common.logger.logger_factory import get_logger
@@ -60,6 +62,34 @@ _CONNECT_TIMEOUT_SECONDS = 15.0
 _EXIT_DRAIN_SECONDS = 0.5
 
 _STDOUT, _STDERR, _REPLAY, _INPUT = 0x01, 0x02, 0x03, 0x00
+
+
+class ExecdClientConnection(ClientConnection):
+    """A client connection that ends TCP itself once the closing handshake is done.
+
+    RFC 6455 §7.1.1 has the server close the TCP connection first once both
+    Close frames have been exchanged, and lets the client close it when the
+    server has not. execd answers a Close frame but never closes its side, and
+    websockets' ``close()`` otherwise waits its whole ``close_timeout`` for
+    that FIN on every connection it leaves. The handshake itself is still
+    awaited: nothing here closes the socket before the peer's Close frame has
+    answered the one this side sent, so every frame sent before it has been
+    read by execd.
+    """
+
+    def process_event(self, event: Any) -> None:
+        super().process_event(event)
+        protocol = self.protocol
+        if (
+            isinstance(event, Frame)
+            and event.opcode is Opcode.CLOSE
+            and protocol.close_sent is not None
+            and protocol.close_rcvd is not None
+            and not self.transport.is_closing()
+        ):
+            # The Close this side sent, or the echo the protocol just
+            # queued, is flushed before the transport closes.
+            self.transport.close()
 
 
 def websocket_header_kwargs(headers: dict[str, str]) -> dict[str, Any]:
@@ -260,6 +290,37 @@ class PtyTerminal:
             response.raise_for_status()
             return int((response.json() or {}).get("output_offset") or 0)
 
+    async def signal(self, pty_session_id: str, name: str) -> None:
+        """Send signal ``name`` to the session's shell and the command it is running.
+
+        execd takes a signal only as a control frame on the connection that
+        holds the session, so this attaches with ``takeover=1``, which closes
+        the connection streaming the command's output, sends the frame and
+        leaves. In pipe mode the shell runs its commands in its own process
+        group, so the signal reaches the shell as well; a shell it ends is
+        started again by execd on the session's next attach. A session whose
+        shell is not running has nothing to signal.
+        """
+        async with httpx.AsyncClient(
+            transport=self._transport,
+            timeout=_CONNECT_TIMEOUT_SECONDS,
+            headers=self._headers,
+        ) as client:
+            response = await client.get(f"{self._origin}/pty/{pty_session_id}")
+            response.raise_for_status()
+            status = response.json() or {}
+        if not status.get("running"):
+            return
+        since = int(status.get("output_offset") or 0)
+        url = f"{self._ws_origin}/pty/{pty_session_id}/ws?pty=0&takeover=1&since={since}"
+        async with websockets.connect(
+            url,
+            open_timeout=_CONNECT_TIMEOUT_SECONDS,
+            create_connection=ExecdClientConnection,
+            **websocket_header_kwargs(self._headers),
+        ) as ws:
+            await ws.send(json.dumps({"type": "signal", "signal": name}))
+
     async def session_exists(self, pty_session_id: str) -> bool:
         try:
             async with httpx.AsyncClient(
@@ -295,6 +356,7 @@ class PtyTerminal:
         async with websockets.connect(
             url,
             open_timeout=_CONNECT_TIMEOUT_SECONDS,
+            create_connection=ExecdClientConnection,
             **websocket_header_kwargs(self._headers),
         ) as ws:
             await ws.send(bytes([_INPUT]) + _sentinel_command(command, marker).encode())
@@ -354,29 +416,35 @@ class PtyTerminal:
                 if found is not None:
                     exit_code = int(found.group(1))
                     cwd = found.group(2).strip()
-                    emit = pending[: found.start()].strip("\n")
+                    # Trailing newlines only: the sentinel's own ends the
+                    # output, and a leading one separates this from the line
+                    # already sent.
+                    emit = pending[: found.start()].rstrip("\n")
                     if emit:
                         yield {"type": "stdout", "text": emit}
                     break
 
-                # Emit only complete lines. The echo is removed line by line, so
-                # a stream cut at an arbitrary byte boundary would hand out the
-                # first half of a line the filter was going to drop — letting
-                # the echoed command reach the user. Whatever follows the last
-                # newline stays buffered until the rest of it arrives.
-                # Hold back only enough that a sentinel split across frames is
-                # not handed out as output before it can be recognised.
-                keep = len(marker) + 64
-                if len(pending) > keep:
-                    emit, pending = pending[:-keep], pending[-keep:]
-                    if emit:
-                        yield {"type": "stdout", "text": emit}
+                # The sentinel is printed on a line of its own, so only the line
+                # still being written can turn out to be it. Everything before
+                # that line goes out as it arrives, while the command runs. The
+                # line is held back, with the newline before it, which is the
+                # sentinel's own when the sentinel follows, only while it could
+                # still be the start of a sentinel split across frames.
+                head = pending.rfind("\n")
+                tail = pending[head + 1:]
+                if marker.startswith(tail) or tail.startswith(marker):
+                    cut = head
+                else:
+                    cut = len(pending)
+                if cut > 0:
+                    emit, pending = pending[:cut], pending[cut:]
+                    yield {"type": "stdout", "text": emit}
 
         if shell_exited or exit_code is None:
             # Either the shell died mid-command, or the deadline passed before
             # the sentinel arrived. Both leave real output in the buffer, and
             # dropping it would report a command as silent when it was not.
-            trailing = pending.strip("\n")
+            trailing = pending.rstrip("\n")
             if trailing:
                 yield {"type": "stdout", "text": trailing}
 
@@ -385,6 +453,7 @@ class PtyTerminal:
 
 __all__ = [
     "EXECD_PORT",
+    "ExecdClientConnection",
     "PtyTerminal",
     "ResolvedExecdEndpoint",
     "resolve_execd_endpoint",

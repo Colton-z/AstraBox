@@ -34,9 +34,6 @@ from astrabox.common.utils.user_context import (
     reset_current_user_context,
     set_current_user_context,
 )
-from astrabox.core.service.orchestrator.agent_extension_service import (
-    AgentExtensionService,
-)
 from astrabox.core.service.orchestrator.transcript_capability import (
     mint_sandbox_box_capability_token,
     mint_transcript_capability_token,
@@ -44,7 +41,6 @@ from astrabox.core.service.orchestrator.transcript_capability import (
 from astrabox.persistence.repository.transcript_entry_repository import (
     TranscriptEntryRepository,
 )
-from astrabox.providers import litellm_extensions
 
 _SIGNING_KEY = "response-typing-test-signing-key"
 _PLATFORM_SESSION = "session-1"
@@ -243,19 +239,6 @@ def user_client() -> Iterator[TestClient]:
             yield client
     finally:
         reset_current_user_context(token)
-
-
-@pytest.fixture
-def extension_console_client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
-    monkeypatch.setenv("ASTRABOX_AUTH_SESSION_SECRET", "extension-console-test-secret")
-    monkeypatch.setattr(litellm_extensions, "_registered_on", None)
-    monkeypatch.setattr(
-        AgentExtensionService, "assert_can_manage", _returns({"agent_id": "agent-1"})
-    )
-    app = FastAPI()
-    litellm_extensions.register_litellm_extension_routes(app)
-    with TestClient(app) as client:
-        yield client
 
 
 def _capability_base(session_id: str = _PLATFORM_SESSION) -> str:
@@ -461,23 +444,3 @@ def test_the_current_user_keeps_the_fields_an_idp_did_not_fill(
             "is_admin": True,
         }
     )
-
-
-def test_an_extension_console_session_answers_where_to_open_it(
-    extension_console_client: TestClient,
-) -> None:
-    """The documented body is the body: this route answers a Response object.
-
-    A ``JSONResponse`` bypasses ``response_model`` entirely, so nothing but this
-    comparison keeps the schema honest about what the route sends.
-    """
-    response = extension_console_client.post(
-        "/api/v1/agents/agent-1/extension-console/session", json={"section": "mcp"}
-    )
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body == _envelope(
-        {"open_url": "/extension-console/open", "expires_in": body["data"]["expires_in"]}
-    )
-    assert isinstance(body["data"]["expires_in"], int)

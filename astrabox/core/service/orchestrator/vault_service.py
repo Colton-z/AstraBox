@@ -239,23 +239,23 @@ class VaultService:
         if auth_type in _EGRESS_AUTH_TYPES:
             # Capability-gate the API surface: this credential type only works
             # on a backend with egress credential substitution. With none
-            # registered, creating it could never lead to a working session —
+            # enabled, creating it could never lead to a working session —
             # fail at create with the reason, not later at session attach.
             from astrabox.seams.sandbox import (
-                any_backend_supports_egress_credential_injection,
+                any_enabled_backend_supports_egress_credential_injection,
             )
 
-            if not any_backend_supports_egress_credential_injection():
+            if not any_enabled_backend_supports_egress_credential_injection():
                 raise APIError(
                     code="VAULT_ENV_CREDENTIAL_UNSUPPORTED",
                     message=(
                         "environment_variable/http_basic credentials need a sandbox backend "
                         "with egress credential substitution "
                         "(SandboxProvider.supports_egress_credential_injection), "
-                        "and no registered backend supports it in this deployment. "
+                        "and no enabled backend supports it in this deployment. "
                         "Use mcp_oauth/static_bearer/mcp_static_header credentials "
-                        "with an egress-capable sandbox backend, or install a "
-                        "backend plugin with an egress credential proxy."
+                        "with an egress-capable sandbox backend, or enable a "
+                        "backend with an egress credential proxy."
                     ),
                     status_code=400,
                 )

@@ -15,7 +15,7 @@ import SharePage from './SharePage';
 import LoginPage from './LoginPage';
 import { RequireAuth } from '@/components/RequireAuth';
 import { MODULE_BASE } from './api';
-import { isMongoTransientError } from './utils/format';
+import { isPersistenceUnavailableError } from './utils/format';
 import { startFrontendReleaseGuard } from './frontendRelease';
 import { isNetworkRequestError } from './networkRecovery';
 
@@ -45,7 +45,7 @@ ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
         dedupingInterval: 2000,
         errorRetryCount: 10,
         shouldRetryOnError: (error) => isNetworkRequestError(error)
-          || isMongoTransientError((error as Error).message),
+          || isPersistenceUnavailableError((error as Error).message),
       }}
     >
       <TooltipProvider>

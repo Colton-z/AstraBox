@@ -102,6 +102,7 @@ def configured_management_links() -> list[dict[str, str]]:
         os.getenv("ASTRABOX_LITELLM_ADMIN_URL"),
     )
     from astrabox.deploy.onebox import needs_litellm_gateway
+    from astrabox.deploy.public_path import public_path_prefix
 
     if needs_litellm_gateway():
         if litellm_admin_url:
@@ -109,14 +110,18 @@ def configured_management_links() -> list[dict[str, str]]:
                 f"{LITELLM_ADMIN_URL_ENV} is only for an external LiteLLM; "
                 "the bundled gateway is managed at /litellm"
             )
-        services.append(
-            {
-                "id": "litellm",
-                "name": "LiteLLM",
-                "category": "model_gateway",
-                "admin_url": "/litellm",
-            }
-        )
+        # The bundled gateway's console is proxied through AstraBox, and
+        # LiteLLM's pages cannot be served below a public path prefix
+        # (astrabox/providers/litellm_extensions.py).
+        if not public_path_prefix():
+            services.append(
+                {
+                    "id": "litellm",
+                    "name": "LiteLLM",
+                    "category": "model_gateway",
+                    "admin_url": "/litellm",
+                }
+            )
     elif model_provider == "litellm" and external_litellm:
         if litellm_admin_url:
             services.append(

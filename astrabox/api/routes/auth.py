@@ -29,6 +29,7 @@ from jwt import PyJWKClient
 
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
+from astrabox.deploy.public_path import public_path, public_path_prefix, public_url
 from astrabox.identity.oidc import OidcIdentityRejected, require_casdoor_organization
 from astrabox.providers.identity_oidc import (
     FLOW_COOKIE,
@@ -47,15 +48,28 @@ logger = get_logger(__name__)
 
 _registered_on: int | None = None
 
+_LOGIN_PATH = "/api/v1/auth/login"
+_CALLBACK_PATH = "/api/v1/auth/callback"
+# The flow cookie is sent only to the login and callback routes.
+_FLOW_COOKIE_PATH = "/api/v1/auth/"
+# What a browser resolves as a "." or ".." path segment, percent-encoded or not
+# (the WHATWG URL standard's single-dot and double-dot segments).
+_DOT_SEGMENTS = frozenset({".", "%2e", "..", ".%2e", "%2e.", "%2e%2e"})
+
 
 def _safe_next(raw: str | None) -> str:
-    """Return ``raw`` only when it is a same-origin absolute path, else ``/``.
+    """Return ``raw`` only when it is a console route, else ``/``.
 
-    Anything else — an absolute URL, or a protocol-relative ``//host`` path —
-    would turn the post-login redirect into an open redirect.
+    ``next`` is a path inside the console; the callback puts the public path
+    prefix in front of it. Anything else would let the post-login redirect
+    leave the console: an absolute URL or a protocol-relative ``//host`` path
+    leaves the site, and a ``.`` or ``..`` segment is resolved by the browser
+    out of the prefix, into another application on the same host.
     """
     value = str(raw or "").strip()
-    if value.startswith("/") and not value.startswith("//"):
+    path = value.split("?", 1)[0].split("#", 1)[0]
+    segments = {segment.lower() for segment in path.split("/")}
+    if value.startswith("/") and not value.startswith("//") and not segments & _DOT_SEGMENTS:
         return value
     return "/"
 
@@ -63,7 +77,27 @@ def _safe_next(raw: str | None) -> str:
 def _redirect_uri(request: Request, config: OidcProviderConfig) -> str:
     if config.redirect_url_override:
         return config.redirect_url_override
-    return str(request.base_url).rstrip("/") + "/api/v1/auth/callback"
+    return public_url(request, _CALLBACK_PATH)
+
+
+def _require_callback_at_public_path(config: OidcProviderConfig) -> None:
+    """Refuse an ``ASTRABOX_OIDC_REDIRECT_URL`` the callback route cannot receive.
+
+    The identity provider returns the browser to this URL, and the route
+    answers it below the public path prefix. An override whose path is anything
+    else, such as one written before the deployment was published under a
+    prefix, would send every sign-in to an address that leads nowhere.
+    """
+
+    if not config.redirect_url_override:
+        return
+    expected = public_path(_CALLBACK_PATH)
+    if urlsplit(config.redirect_url_override).path.rstrip("/") != expected:
+        raise RuntimeError(
+            f"ASTRABOX_OIDC_REDIRECT_URL must name {expected}, where AstraBox receives "
+            "the sign-in callback below ASTRABOX_PUBLIC_PATH_PREFIX="
+            f"{public_path_prefix() or '(empty)'}; got {config.redirect_url_override}"
+        )
 
 
 def _cookie_secure(request: Request, config: OidcProviderConfig) -> bool:
@@ -99,8 +133,9 @@ def register_auth_routes(app: FastAPI) -> None:
     # resolver: a deployment that selects oidc but misconfigures it breaks at
     # boot, not at first login.
     config = OidcProviderConfig.load()
+    _require_callback_at_public_path(config)
 
-    @app.get("/api/v1/auth/login")
+    @app.get(_LOGIN_PATH)
     async def auth_login(request: Request) -> Response:
         document = await discover(config)
         state = secrets.token_urlsafe(24)
@@ -124,11 +159,11 @@ def register_auth_routes(app: FastAPI) -> None:
             httponly=True,
             samesite="lax",
             secure=_cookie_secure(request, config),
-            path="/api/v1/auth/",
+            path=public_path(_FLOW_COOKIE_PATH),
         )
         return response
 
-    @app.get("/api/v1/auth/callback")
+    @app.get(_CALLBACK_PATH)
     async def auth_callback(request: Request) -> Response:
         error = str(request.query_params.get("error") or "").strip()
         if error:
@@ -138,14 +173,15 @@ def register_auth_routes(app: FastAPI) -> None:
         code = str(request.query_params.get("code") or "").strip()
         state = str(request.query_params.get("state") or "").strip()
         flow_cookie = str(request.cookies.get(FLOW_COOKIE) or "").strip()
+        restart = public_path(_LOGIN_PATH)
         if not code or not state or not flow_cookie:
-            return _auth_error(400, "auth callback missing code/state/flow cookie — restart at /api/v1/auth/login")
+            return _auth_error(400, f"auth callback missing code/state/flow cookie — restart at {restart}")
         try:
             flow = verify_flow_token(flow_cookie)
         except jwt.PyJWTError as exc:
-            return _auth_error(401, f"login flow expired or invalid ({exc}) — restart at /api/v1/auth/login")
+            return _auth_error(401, f"login flow expired or invalid ({exc}) — restart at {restart}")
         if not hmac.compare_digest(str(flow.get("state") or ""), state):
-            return _auth_error(401, "state mismatch — restart at /api/v1/auth/login")
+            return _auth_error(401, f"state mismatch — restart at {restart}")
 
         document = await discover(config)
         token_endpoint = config.to_internal(str(document["token_endpoint"]))
@@ -218,22 +254,27 @@ def register_auth_routes(app: FastAPI) -> None:
                 else ""
             ),
         )
-        response = RedirectResponse(_safe_next(str(flow.get("next") or "/")), status_code=302)
+        response = RedirectResponse(
+            public_path(_safe_next(str(flow.get("next") or "/"))), status_code=302
+        )
         response.set_cookie(
             SESSION_COOKIE,
             session_token,
             httponly=True,
             samesite="lax",
             secure=_cookie_secure(request, config),
-            path="/",
+            # Scoped to the console, so the session is not sent to other
+            # applications on the same host, and a second deployment below
+            # another prefix keeps its own session.
+            path=public_path_prefix() or "/",
         )
-        response.delete_cookie(FLOW_COOKIE, path="/api/v1/auth/")
+        response.delete_cookie(FLOW_COOKIE, path=public_path(_FLOW_COOKIE_PATH))
         return response
 
     @app.post("/api/v1/auth/logout")
     async def auth_logout(request: Request) -> Response:
         response = Response(status_code=204)
-        response.delete_cookie(SESSION_COOKIE, path="/")
+        response.delete_cookie(SESSION_COOKIE, path=public_path_prefix() or "/")
         return response
 
     @app.get("/api/v1/auth/session")

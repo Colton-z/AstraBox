@@ -50,6 +50,7 @@ from astrabox.seams.egress_credentials import (
 from astrabox.seams.model import ResolvedModelAccess
 from astrabox.seams.sandbox import (
     SandboxClientPoolMember,
+    SandboxClientPoolReadiness,
     SandboxClientPoolSpec,
     SandboxClientPoolStatus,
 )
@@ -583,8 +584,11 @@ class _PlatformProvider:
     name = "open_sandbox"
     supports_client_pool = True
 
+    def client_pool_readiness(self) -> SandboxClientPoolReadiness:
+        return SandboxClientPoolReadiness(available=True)
+
     def workspace_route(self) -> Any:
-        from astrabox.core.service.orchestrator.runtime.storage.mergerfs import workspace_router
+        from astrabox.providers.open_sandbox.workspace_route.mergerfs import workspace_router
 
         return workspace_router
 
@@ -593,6 +597,9 @@ class _PlatformProvider:
         self.events: list[str] = []
         self.acquired: Any = None
         self.confirmed: list[str] = []
+
+    def fit_resources(self, limits: Any, requests: Any) -> tuple[dict[str, str], dict[str, str]]:
+        return dict(limits), dict(requests)
 
     async def create_sandbox(self, spec: Any) -> OpenSandboxHandle:
         self.created_specs.append(spec)
@@ -673,9 +680,10 @@ async def test_disabled_agent_has_no_sdk_base_pool(
 async def test_agent_client_pool_requires_distributed_state(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(client_pool, "load_astrabox_settings", lambda: _settings())
+    # The backend says whether its pool can run; this deployment gives it no Redis.
     monkeypatch.setattr(
-        client_pool,
-        "load_astrabox_settings",
+        "astrabox.providers.open_sandbox.sandbox.load_astrabox_settings",
         lambda: _settings(agent_prewarm_redis_url=""),
     )
 
@@ -738,7 +746,7 @@ def _real_credential_plan() -> SandboxEgressCredentialPlan:
 
 @pytest.fixture
 def _storage_routes(monkeypatch: pytest.MonkeyPatch) -> None:
-    from astrabox.core.service.orchestrator.runtime.storage import mergerfs
+    from astrabox.providers.open_sandbox.workspace_route import mergerfs
     from astrabox.core.service.orchestrator.runtime.storage import mounts as storage_mounts
 
     async def backing(_assignment: str, mounts: Any) -> StorageMountPlan:
@@ -840,8 +848,10 @@ async def test_platform_creator_mounts_storage_and_applies_the_complete_credenti
     assert create_spec.workspace_mounts == mounts
     assert create_spec.workspace_volume == "routed-volume"
     assert create_spec.permission_level == "advanced"
-    assert create_spec.resource_limits == provisioning.sandbox_create_resources()[0]
-    assert create_spec.resource_requests == {"cpu": "200m", "memory": "768Mi"}
+    shared = client_pool.resolve_sandbox_tenancy(template) != client_pool.SANDBOX_TENANCY_CONVERSATION
+    assert (create_spec.resource_limits, create_spec.resource_requests) == (
+        provisioning.sandbox_create_resources(shared=shared)
+    )
     plan_mounts.assert_awaited_once_with(
         subject_kind="deployment_runtime",
         session_id="",

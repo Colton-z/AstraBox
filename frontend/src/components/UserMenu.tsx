@@ -12,7 +12,7 @@ import {
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { SidebarMenuButton } from '@/components/ui/sidebar';
 import { LanguageSwitcher, Segmented } from '@/components/LanguageSwitcher';
-import { probeAuthSession } from '@/api';
+import { MODULE_BASE, endAuthSession, probeAuthSession } from '@/api';
 import type { UserInfo } from '@/types';
 
 /**
@@ -49,12 +49,12 @@ export function UserMenu({
   }, []);
   const signOut = async () => {
     try {
-      await fetch('/api/v1/auth/logout', { method: 'POST', credentials: 'include' });
+      await endAuthSession();
     } finally {
       window.sessionStorage.removeItem('astrabox:signin-redirect');
       // Back to the console root, where the gate sends an ended session to the
       // sign-in page rather than leaving the reader on a blank shell.
-      window.location.assign('/');
+      window.location.assign(`${MODULE_BASE}/`);
     }
   };
 
@@ -138,8 +138,10 @@ export function UserMenu({
             {/* The menu's one item, declared as one: Base UI's roving focus
                 walks its own item collection, so a plain button here would
                 leave a `role="menu"` that announces no items and whose arrow
-                keys reach nothing. */}
-            <DropdownMenuItem onSelect={() => { void signOut(); }}>
+                keys reach nothing. Base UI items activate through `onClick`;
+                `onSelect` on one is the DOM text-selection event and never
+                fires when the item is chosen. */}
+            <DropdownMenuItem onClick={() => { void signOut(); }}>
               <LogOut className="size-3.5" strokeWidth={1.7} />
               {t('shell:sign_out')}
             </DropdownMenuItem>

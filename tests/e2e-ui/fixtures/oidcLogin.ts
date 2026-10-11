@@ -2,6 +2,8 @@ import fs from 'node:fs';
 
 import type { Browser, BrowserContext, Page } from '@playwright/test';
 
+import { apiPath } from './env';
+
 type LoginResult = {
   context: BrowserContext;
   page: Page;
@@ -29,16 +31,14 @@ function readSecret(path: string): string {
   return value;
 }
 
-export async function loginViaOidc(browser: Browser): Promise<LoginResult> {
-  const consoleUrl = required('ASTRABOX_E2E_CONSOLE_URL').replace(/\/$/, '');
-  const issuer = required('ASTRABOX_E2E_OIDC_ISSUER').replace(/\/$/, '');
+/**
+ * Fill in and submit the identity provider's sign-in form that *page* shows,
+ * as the suite's account. The caller waits for wherever the provider sends the
+ * browser next.
+ */
+export async function submitIssuerSignIn(page: Page): Promise<void> {
   const username = required('ASTRABOX_E2E_OIDC_USERNAME');
   const password = readSecret(required('ASTRABOX_E2E_OIDC_PASSWORD_FILE'));
-  const context = await browser.newContext({ baseURL: consoleUrl });
-  const page = await context.newPage();
-
-  await page.goto('/api/v1/auth/login?next=/');
-  await page.waitForURL((url) => url.origin === issuer, { timeout: 30_000 });
   const usernameInput = page.locator(
     'input[name="username"], input[placeholder*="username" i], input[type="text"]',
   ).first();
@@ -51,15 +51,28 @@ export async function loginViaOidc(browser: Browser): Promise<LoginResult> {
     'button[type="submit"], input[type="submit"], button:has-text("Sign In"), button:has-text("Login")',
   ).first();
   await submit.click();
+}
+
+export async function loginViaOidc(browser: Browser): Promise<LoginResult> {
+  const consoleUrl = required('ASTRABOX_E2E_CONSOLE_URL').replace(/\/$/, '');
+  const issuer = required('ASTRABOX_E2E_OIDC_ISSUER').replace(/\/$/, '');
+  const context = await browser.newContext({ baseURL: consoleUrl });
+  const page = await context.newPage();
+
+  // Below ASTRABOX_E2E_APP_PREFIX when the deployment is published under a
+  // path; `next` is a console route, which the server places below it.
+  await page.goto(`${apiPath('/auth/login')}?next=/`);
+  await page.waitForURL((url) => url.origin === issuer, { timeout: 30_000 });
+  await submitIssuerSignIn(page);
   await page.waitForURL(
-    (url) => url.origin === consoleUrl && !url.pathname.startsWith('/api/v1/auth/'),
+    (url) => url.origin === consoleUrl && !url.pathname.startsWith(apiPath('/auth/')),
     { timeout: 30_000 },
   );
-  const session = await page.evaluate(async () => {
-    const response = await fetch('/api/v1/auth/session', { credentials: 'same-origin' });
+  const session = await page.evaluate(async (sessionPath) => {
+    const response = await fetch(sessionPath, { credentials: 'same-origin' });
     if (!response.ok) throw new Error(`auth session returned HTTP ${response.status}`);
     return response.json();
-  }) as LoginResult['session'];
+  }, apiPath('/auth/session')) as LoginResult['session'];
   if (!session.authenticated || !session.user?.user_id) {
     throw new Error(`browser OIDC login did not create an AstraBox session: ${JSON.stringify(session)}`);
   }

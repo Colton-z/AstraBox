@@ -1,7 +1,7 @@
 import type { UIMessage as SDKUIMessage } from 'ai';
 import { MODULE_BASE } from '../../api';
 import type { MessageRecord, SessionRecord } from '../../types';
-import { isMongoTransientError } from '../../utils/format';
+import { isPersistenceUnavailableError } from '../../utils/format';
 import { isTurnSettledInSessionSnapshot } from '../messageSettlement';
 import { getMessageTurnId } from '../messageIdentity';
 
@@ -127,7 +127,7 @@ export function isNotFoundOrPermissionError(message: string | null | undefined):
 export function isTransientSessionLoadError(message: string | null | undefined): boolean {
   const normalized = String(message ?? '').trim().toLowerCase();
   return (
-    isMongoTransientError(message ?? undefined) ||
+    isPersistenceUnavailableError(message ?? undefined) ||
     normalized.includes('network_error') ||
     normalized.includes('failed to fetch') ||
     normalized.includes('network error') ||

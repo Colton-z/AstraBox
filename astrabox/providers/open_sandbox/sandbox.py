@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import contextlib
+import os
 import time
 import re
 import shlex
@@ -71,6 +72,9 @@ from astrabox.seams.sandbox import (
     SANDBOX_ASSIGNMENT_ID_METADATA_KEY,
     SANDBOX_DIAGNOSTIC_SCOPES,
     SANDBOX_INSTALLATION_METADATA_KEY,
+    SANDBOX_DATA_PLANE_ALIVE,
+    SANDBOX_DATA_PLANE_DEAD,
+    SANDBOX_DATA_PLANE_UNKNOWN,
     SANDBOX_LIFECYCLE_PROBE_FAILED,
     SANDBOX_LIFECYCLE_PROBE_NOT_FOUND,
     SANDBOX_LIFECYCLE_PROBE_OK,
@@ -83,10 +87,12 @@ from astrabox.seams.sandbox import (
     SandboxBrowserEndpoint,
     SandboxClientPoolCreator,
     SandboxClientPoolPreparer,
+    SandboxClientPoolReadiness,
     SandboxClientPoolSpec,
     SandboxClientPoolStatus,
     SandboxCreateSpec,
     SandboxDataPlane,
+    SandboxDataPlaneAssessment,
     SandboxDescriptor,
     SandboxDiagnostics,
     SandboxHttpResponse,
@@ -95,7 +101,10 @@ from astrabox.seams.sandbox import (
     SandboxPage,
     SandboxIsolatedSession,
     SandboxIsolationCapability,
+    SandboxMemoryHeadroom,
+    SandboxProbeFailed,
     SandboxSecurityPosture,
+    SandboxUnreachable,
     SandboxProvider,
     SandboxRuntimeDefaults,
     claim_from_metadata,
@@ -971,6 +980,21 @@ class OpenSandboxSandboxProvider(SandboxProvider):
     supports_create_network_policy = True
     supports_pause = True
     supports_client_pool = True
+    # The lifecycle API pages its sandbox list and describes one by id
+    # (:meth:`list_sandboxes`, :meth:`describe_sandbox`).
+    supports_inventory_listing = True
+    # Settings that configure only this backend's lifecycle client and client
+    # pool; they do nothing in a deployment that does not enable it.
+    owned_settings = (
+        "ASTRABOX_SANDBOX_OPENAPI_BASE_URL",
+        "ASTRABOX_SANDBOX_API_KEY_SECRET_NAME",
+        "ASTRABOX_SANDBOX_ENDPOINT_SCHEME",
+        "ASTRABOX_SANDBOX_ENDPOINT_VIA_SERVER_PROXY",
+        "ASTRABOX_AGENT_PREWARM_REDIS_URL",
+        # Read only by this backend's workspace route.
+        "ASTRABOX_WORKSPACE_MOUNTER_IMAGE",
+        "ASTRABOX_WORKSPACE_MOUNT_ROOT",
+    )
     # Isolated sessions (OSEP-0013) are an execd feature this backend reaches
     # through the SDK's `sandbox.isolation` adapter. Declaring it says the
     # BACKEND can; whether a given box can is `read_isolation_capability`, and
@@ -1057,6 +1081,23 @@ class OpenSandboxSandboxProvider(SandboxProvider):
 
     async def retire_client_pool(self, pool_name: str) -> None:
         await self._client_pool_registry().retire(pool_name)
+
+    def client_pool_readiness(self) -> SandboxClientPoolReadiness:
+        """The SDK's distributed pool keeps its shared state in Redis.
+
+        Every replica's scheduler coordinates through that store, so a pool
+        without ``ASTRABOX_AGENT_PREWARM_REDIS_URL`` cannot start at all.
+        """
+
+        if str(getattr(self._settings(), "agent_prewarm_redis_url", "") or "").strip():
+            return SandboxClientPoolReadiness(available=True)
+        return SandboxClientPoolReadiness(
+            available=False,
+            detail=(
+                "OpenSandbox client pools keep their shared state in Redis; set "
+                "ASTRABOX_AGENT_PREWARM_REDIS_URL"
+            ),
+        )
 
     def created_with_current_network_wiring(self, descriptor: SandboxDescriptor) -> bool:
         return recorded_network_wiring_is_current(descriptor.metadata, self._settings())
@@ -1249,7 +1290,7 @@ class OpenSandboxSandboxProvider(SandboxProvider):
 
     def workspace_route(self) -> Any:
         """Host mergerfs helpers beside this backend's Docker or Kubernetes runtime."""
-        from astrabox.core.service.orchestrator.runtime.storage.mergerfs import workspace_router
+        from astrabox.providers.open_sandbox.workspace_route.mergerfs import workspace_router
 
         return workspace_router
 
@@ -1592,6 +1633,78 @@ class OpenSandboxSandboxProvider(SandboxProvider):
             agent_command=IN_BOX_CLI,
         )
 
+    def per_box_overhead(self) -> tuple[float, int]:
+        """The egress sidecar's ceiling beside each box the bundled server runs.
+
+        On Docker the bundled server applies it to the sidecar. On Kubernetes
+        OpenSandbox 0.2.3 gives the sidecar no resources, and the sandbox
+        namespace's LimitRange applies the same ceiling (docs/deploy.md).
+        An existing service's sidecar is that service's.
+        """
+        from astrabox.providers.open_sandbox.workspace_route.mergerfs import (
+            existing_lifecycle_service_url,
+        )
+
+        if existing_lifecycle_service_url():
+            return (0.0, 0)
+        from astrabox.deploy.sandbox_server import (
+            EGRESS_SIDECAR_CPU,
+            EGRESS_SIDECAR_MEMORY_BYTES,
+        )
+
+        return (EGRESS_SIDECAR_CPU, EGRESS_SIDECAR_MEMORY_BYTES)
+
+    def paused_box_releases_resources(self) -> bool:
+        """The bundled server on Kubernetes commits a paused box and releases its Pod.
+
+        Docker's pause freezes the container in place, and an existing service's
+        runtime is not known here, so both keep charging a paused box.
+        """
+        from astrabox.deploy.sandbox_server import RUNTIME_KUBERNETES, sandbox_runtime
+        from astrabox.providers.open_sandbox.workspace_route.mergerfs import (
+            existing_lifecycle_service_url,
+        )
+
+        return not existing_lifecycle_service_url() and sandbox_runtime() == RUNTIME_KUBERNETES
+
+    async def host_memory_bytes(self) -> int | None:
+        """This host's memory, when the bundled server runs every box on this host's Docker.
+
+        The same host ``fit_resources`` reads its CPU count from; reading it
+        needs neither the Docker SDK nor a reachable daemon at startup.
+        """
+        if not self._bundled_docker():
+            return None
+        return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+
+    @staticmethod
+    def _bundled_docker() -> bool:
+        from astrabox.deploy.sandbox_server import RUNTIME_DOCKER, sandbox_runtime
+        from astrabox.providers.open_sandbox.workspace_route.mergerfs import (
+            existing_lifecycle_service_url,
+        )
+
+        return not existing_lifecycle_service_url() and sandbox_runtime() == RUNTIME_DOCKER
+
+    def fit_resources(
+        self, limits: Mapping[str, str], requests: Mapping[str, str]
+    ) -> tuple[dict[str, str], dict[str, str]]:
+        """Lower the CPU limit to the host's CPUs when this server drives local Docker.
+
+        Docker refuses ``containers/create`` when the CPU limit exceeds the
+        host's CPU count, so an envelope above a small machine's count would
+        fail every create. Only the bundled lifecycle server on
+        the Docker runtime runs boxes on this host, so only there is this
+        host's count the right ceiling. A Kubernetes limit may exceed one node,
+        and an existing OpenSandbox service runs on hosts this one cannot see:
+        both keep the recipe.
+        """
+        fitted = dict(limits)
+        cpu = str(fitted.get("cpu") or "")
+        if cpu.isdigit() and self._bundled_docker():
+            fitted["cpu"] = str(min(int(cpu), os.cpu_count() or 1))
+        return fitted, dict(requests)
+
     # --- in-box transport (data plane) ------------------------------------
     def build_dataplane(
         self,
@@ -1760,8 +1873,25 @@ class OpenSandboxSandboxProvider(SandboxProvider):
         is False; a probe that could not be answered is no evidence either way
         and raises rather than inventing one.
 
+        The box's snapshots go first (:meth:`discard_snapshots`), and only in
+        this order: deleting a sandbox drops its snapshot records with it,
+        while the images they named stay in the registry. A snapshot that
+        cannot be reclaimed never keeps the box alive: leaking an image costs
+        disk, leaking a running box costs money and privacy.
+
         Any other delete failure raises.
         """
+        try:
+            await self.discard_snapshots(str(sandbox_id))
+        except Exception as exc:  # noqa: BLE001 - reclaiming snapshots is best-effort
+            logger.warning(
+                "open_sandbox kill: the snapshots of sandbox %s could not be "
+                "reclaimed before its delete: %s",
+                sandbox_id,
+                _config.scrub_secret(
+                    str(exc), secret=_config.resolve_api_key(self._settings())
+                ),
+            )
         settings = self._settings()
         secret = _config.resolve_api_key(settings)
         manager = await SandboxManager.create(
@@ -2526,156 +2656,151 @@ class OpenSandboxSandboxProvider(SandboxProvider):
             with contextlib.suppress(Exception):
                 await handle.close()
 
-    async def read_memory_headroom(self, sandbox_id: str) -> tuple[int, int]:
-        """The box's own memory limit and current use, in bytes.
+    async def _connect_for_probe(self, sandbox_id: str) -> OpenSandboxHandle:
+        """Connect to a box for a read-only probe.
 
-        Asked of the BOX for the same reason its isolation capability is: the
-        limit belongs to the Pod template a deployment wrote, and a second copy
-        of the number here would be a second source of truth for a fact the
-        kernel already holds.
-
-        `(0, 0)` when the box will not answer. A caller deciding admission on
-        that reads it as "no headroom proven", which is the safe direction: the
-        cost of refusing a conversation is one refusal, and the cost of admitting
-        one too many is the whole container.
+        A vendor not-found keeps its own error, which callers already read as a
+        gone box. Every other failure to reach the box is
+        :class:`SandboxUnreachable`: the probe proves nothing about whether the
+        box exists.
         """
 
         try:
-            handle = await self.connect(sandbox_id)
-        except Exception as exc:  # noqa: BLE001 — an unreachable box has no room
-            logger.info(
-                "open_sandbox: box %s did not answer the memory probe: %s",
+            return await self.connect(sandbox_id)
+        except APIError as exc:
+            if str(getattr(exc, "code", "")) == "SANDBOX_GONE":
+                raise
+            raise SandboxUnreachable(sandbox_id, exc.message) from exc
+        except Exception as exc:
+            raise SandboxUnreachable(
                 sandbox_id,
-                exc,
-            )
-            return (0, 0)
+                _config.scrub_secret(
+                    str(exc), secret=_config.resolve_api_key(self._settings())
+                ),
+            ) from exc
+
+    async def _probe_output(
+        self, sandbox_id: str, *, probe: str, cmd: list[str]
+    ) -> tuple[int, str]:
+        """Run one read-only command in the box; return its exit code and stdout.
+
+        Through ``exec_collect``, whose result carries the output: the SDK's
+        ``commands.run`` returns an execution whose bytes sit behind
+        ``logs.stdout``, and reading ``result.stdout`` instead yields nothing on
+        every box.
+        """
+
+        handle = await self._connect_for_probe(sandbox_id)
         try:
-            # Through `exec_collect`, like every other in-box probe here. The
-            # SDK's `commands.run` does not return the output on the result: it
-            # returns an execution whose bytes are behind `logs.stdout`, and
-            # `exec_collect` is where this module already knows to drain it.
-            # Reading `result.stdout` / `result.output` instead yields None from
-            # both, so the box "answered" with the empty string — reported as no
-            # headroom, so the mistake showed up as "never packs" rather than as
-            # an error, on every box, for the whole run.
-            _code, stdout, _stderr = await handle.exec_collect(
-                ["cat", "/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory.current"]
+            code, stdout, _stderr = await handle.exec_collect(cmd)
+        except Exception as exc:
+            detail = _config.scrub_secret(
+                str(exc), secret=_config.resolve_api_key(self._settings())
             )
-            text = stdout.decode("utf-8", "replace")
-            # `memory.max` is the literal `max` when the template set no limit.
-            # Not a number, so this reads as no headroom proven and the box is
-            # not packed — deliberate: without a limit the container cannot be
-            # reasoned about, and the node, not the container, would pay.
-            numbers = [
-                int(line.strip())
-                for line in text.splitlines()
-                if line.strip().isdigit()
-            ]
-            if len(numbers) < 2:
-                logger.info(
-                    "open_sandbox: box %s answered the memory probe with %r",
-                    sandbox_id,
-                    text[:200],
-                )
-                return (0, 0)
-            return (numbers[0], numbers[1])
-        except Exception as exc:  # noqa: BLE001
-            logger.info(
-                "open_sandbox: box %s memory probe failed: %s", sandbox_id, exc
-            )
-            return (0, 0)
+            if box_is_unreachable(exc):
+                raise SandboxUnreachable(sandbox_id, detail) from exc
+            raise SandboxProbeFailed(sandbox_id, probe=probe, detail=detail) from exc
         finally:
             with contextlib.suppress(Exception):
                 await handle.close()
+        return code, stdout.decode("utf-8", "replace")
 
-    async def read_listening_ports(self, sandbox_id: str) -> set[int]:
+    async def read_memory_headroom(self, sandbox_id: str) -> SandboxMemoryHeadroom | None:
+        """The box's memory limit and current use, read from its cgroup.
+
+        ``memory.max`` is the literal ``max`` when the template set no limit,
+        which is ``None``: a box with no limit cannot be reasoned about and is
+        not packed. Any other answer that is not two byte counts is
+        :class:`SandboxProbeFailed`, so a reading defect fails the placement
+        that relied on it instead of quietly turning packing off.
+        """
+
+        code, text = await self._probe_output(
+            sandbox_id,
+            probe="memory",
+            cmd=["cat", "/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory.current"],
+        )
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        if code == 0 and len(lines) == 2 and lines[1].isdigit():
+            if lines[0] == "max":
+                return None
+            if lines[0].isdigit():
+                return SandboxMemoryHeadroom(
+                    limit_bytes=int(lines[0]), current_bytes=int(lines[1])
+                )
+        raise SandboxProbeFailed(
+            sandbox_id,
+            probe="memory",
+            detail=f"exit {code}, cgroup v2 memory.max and memory.current read as {text[:200]!r}",
+        )
+
+    async def read_listening_ports(self, sandbox_id: str) -> frozenset[int]:
         """The TCP ports something in this box is already listening on.
 
-        Asked of the box for the same reason its memory limit is: what is
-        bound inside it is the kernel's fact, not a number the platform can
-        keep a second copy of. Read from ``/proc/net/tcp`` rather than a tool
-        (``ss``/``netstat`` are not in every engine image), where state ``0A``
-        is LISTEN and the local address is ``HEX_IP:HEX_PORT``.
-
-        Connection and probe failures return an empty set. The caller then
-        proceeds without a collision precheck; this result does not prove that
-        the sandbox has no listeners.
+        Read from ``/proc/net/tcp`` rather than a tool (``ss``/``netstat`` are
+        not in every engine image), where state ``0A`` is LISTEN and the local
+        address is ``HEX_IP:HEX_PORT``. ``/proc/net/tcp6`` is absent on a box
+        without IPv6, which makes ``cat`` exit non-zero after printing the IPv4
+        table, so the table's own header, not the exit code, decides whether
+        the box answered.
         """
 
-        try:
-            handle = await self.connect(sandbox_id)
-        except Exception as exc:  # noqa: BLE001 — probe failure permits placement
-            logger.info(
-                "open_sandbox: box %s did not answer the listen probe: %s",
+        _code, text = await self._probe_output(
+            sandbox_id,
+            probe="listening ports",
+            cmd=["cat", "/proc/net/tcp", "/proc/net/tcp6"],
+        )
+        if "local_address" not in text:
+            raise SandboxProbeFailed(
                 sandbox_id,
-                exc,
+                probe="listening ports",
+                detail=f"/proc/net/tcp read as {text[:200]!r}",
             )
-            return set()
-        try:
-            _code, stdout, _stderr = await handle.exec_collect(
-                ["cat", "/proc/net/tcp", "/proc/net/tcp6"]
-            )
-            ports: set[int] = set()
-            for line in stdout.decode("utf-8", "replace").splitlines():
-                fields = line.split()
-                if len(fields) < 4 or fields[3] != "0A":
-                    continue
-                local = fields[1].rsplit(":", 1)
-                if len(local) != 2:
-                    continue
-                try:
-                    ports.add(int(local[1], 16))
-                except ValueError:
-                    continue
-            return ports
-        except Exception as exc:  # noqa: BLE001
-            logger.info(
-                "open_sandbox: box %s listen probe failed: %s", sandbox_id, exc
-            )
-            return set()
-        finally:
-            with contextlib.suppress(Exception):
-                await handle.close()
+        ports: set[int] = set()
+        for line in text.splitlines():
+            fields = line.split()
+            if len(fields) < 4 or fields[3] != "0A":
+                continue
+            local = fields[1].rsplit(":", 1)
+            if len(local) != 2:
+                continue
+            try:
+                ports.add(int(local[1], 16))
+            except ValueError:
+                continue
+        return frozenset(ports)
 
-    async def count_live_isolated_sessions(self, sandbox_id: str) -> int:
-        """How many isolated sessions the box itself still holds.
+    async def count_active_isolated_sessions(self, sandbox_id: str) -> int:
+        """How many isolated sessions execd itself holds active in this box.
 
-        The last word before a box is destroyed. Every platform-side lens on
-        occupancy is a ledger written at some point in a placement, so each
-        one has a window where a conversation is real and not yet visible
-        there; the box's own session table has no such window, because a
-        session exists exactly when execd holds it.
-
-        ``-1`` when the box cannot be asked, which a caller reads as "no
-        answer" and must not treat as empty: the whole point is that this is
-        the check standing between a live conversation and a deleted box.
+        Read from execd's own session table, which has no window in which a
+        live conversation is not yet recorded. A box that cannot be reached
+        raises :class:`SandboxUnreachable` and a listing execd answers but
+        cannot complete raises :class:`SandboxProbeFailed`; neither is read
+        as an empty box.
         """
 
-        try:
-            handle = await self.connect(sandbox_id)
-        except Exception as exc:  # noqa: BLE001
-            logger.info(
-                "open_sandbox: box %s did not answer the session census: %s",
-                sandbox_id,
-                exc,
-            )
-            return -1
+        handle = await self._connect_for_probe(sandbox_id)
         try:
             underlying: Any = getattr(handle, "sidecar_faces", None) or handle
             sessions = await underlying.isolation.list()
-            return sum(
-                1
-                for item in sessions or []
-                if str(getattr(item, "status", "") or "").strip().lower() == "active"
+        except Exception as exc:
+            detail = _config.scrub_secret(
+                str(exc), secret=_config.resolve_api_key(self._settings())
             )
-        except Exception as exc:  # noqa: BLE001
-            logger.info(
-                "open_sandbox: box %s session census failed: %s", sandbox_id, exc
-            )
-            return -1
+            if box_is_unreachable(exc):
+                raise SandboxUnreachable(sandbox_id, detail) from exc
+            raise SandboxProbeFailed(
+                sandbox_id, probe="isolated session census", detail=detail
+            ) from exc
         finally:
             with contextlib.suppress(Exception):
                 await handle.close()
+        return sum(
+            1
+            for item in sessions or []
+            if str(getattr(item, "status", "") or "").strip().lower() == "active"
+        )
 
     async def find_isolated_sessions_by_workspace(
         self,
@@ -2766,44 +2891,49 @@ class OpenSandboxSandboxProvider(SandboxProvider):
             with contextlib.suppress(Exception):
                 await handle.close()
 
-    async def data_plane_unreachable(self, sandbox_id: str) -> bool:
-        """Is the box's data plane dead while its control-plane record lives?
+    async def assess_data_plane(self, sandbox_id: str) -> SandboxDataPlaneAssessment:
+        """One short HTTP touch of execd, the daemon every engine image carries.
 
-        The false-Ready shape: a Pod killed out-of-band leaves its sandbox
-        record answering GET (still `running`) while nothing behind the
-        endpoint exists any more. The control-plane probe cannot see that, so
-        an engine whose transport times out against such a box would retry
-        against it forever. One short HTTP touch of execd — the daemon every
-        engine image carries, on the same host→box route every port shares —
-        answers the question: any HTTP status is a live box, a connection
-        error is a dead one. A vendor not-found on connect is already the
-        definitive gone.
+        The false-Ready shape: a Pod killed out of band leaves its sandbox
+        record answering GET (still ``running``) while nothing behind the
+        endpoint exists. The touch goes over the same host-to-box route every
+        port shares: any HTTP status is a live box, a refused connection a dead
+        one, and a vendor not-found on connect is already the definitive gone.
+        Anything else proves nothing.
         """
 
         from astrabox.providers.open_sandbox.executor import EXECD_PORT
 
         target = str(sandbox_id or "").strip()
         if not target:
-            return False
+            return SandboxDataPlaneAssessment(
+                state=SANDBOX_DATA_PLANE_UNKNOWN, detail="no sandbox id to assess"
+            )
         try:
             handle = await self.connect(target)
         except APIError as exc:
-            return str(getattr(exc, "code", "")) in (
-                "SANDBOX_GONE",
-                "SANDBOX_NOT_FOUND",
+            if str(getattr(exc, "code", "")) in ("SANDBOX_GONE", "SANDBOX_NOT_FOUND"):
+                return SandboxDataPlaneAssessment(
+                    state=SANDBOX_DATA_PLANE_DEAD, detail=exc.message
+                )
+            return SandboxDataPlaneAssessment(
+                state=SANDBOX_DATA_PLANE_UNKNOWN, detail=exc.message
             )
         try:
             plane = OpenSandboxDataPlane(handle=handle, port=EXECD_PORT)
             try:
-                await plane.request(
-                    "GET", "/astrabox-route-probe", timeout=5.0
+                await plane.request("GET", "/astrabox-route-probe", timeout=5.0)
+            except ConnectionError as exc:
+                return SandboxDataPlaneAssessment(
+                    state=SANDBOX_DATA_PLANE_DEAD,
+                    detail=f"execd refused the connection: {exc}",
                 )
-            except ConnectionError:
-                return True
-            except Exception:
-                # A non-connection failure proves nothing about liveness.
-                return False
-            return False
+            except Exception as exc:  # noqa: BLE001 - not a liveness answer
+                return SandboxDataPlaneAssessment(
+                    state=SANDBOX_DATA_PLANE_UNKNOWN,
+                    detail=f"execd could not be asked: {type(exc).__name__}",
+                )
+            return SandboxDataPlaneAssessment(state=SANDBOX_DATA_PLANE_ALIVE)
         finally:
             close = getattr(handle, "close", None)
             if callable(close):

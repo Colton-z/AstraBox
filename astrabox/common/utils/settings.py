@@ -301,7 +301,8 @@ class AstraBoxRuntimeSettings(BaseSettings):
         ),
     )
     # Which ExtensionProvider supplies the catalog and runtime bindings.
-    # Empty selects the provider that explicitly declares itself the default.
+    # Empty selects the provider that explicitly declares itself the default;
+    # `none` runs no extension catalog (astrabox.seams.extensions).
     extension_provider: str = Field(
         default="",
         validation_alias=AliasChoices(

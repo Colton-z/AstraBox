@@ -40,7 +40,7 @@ from __future__ import annotations
 #: class; the entry-point loaders compare it against this value at registration
 #: and fail loud on mismatch, so an incompatible plugin is rejected at bootstrap
 #: instead of failing mid-turn with an AttributeError.
-SEAMS_API_VERSION = 4
+SEAMS_API_VERSION = 5
 
 from astrabox.seams.extensions import ExtensionProvider
 from astrabox.seams.identity import WebIdentityResolver

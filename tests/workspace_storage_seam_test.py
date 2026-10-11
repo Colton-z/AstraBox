@@ -32,7 +32,7 @@ class _OpenSandboxRoute:
     name = "open_sandbox"
 
     def workspace_route(self) -> Any:
-        from astrabox.core.service.orchestrator.runtime.storage.mergerfs import workspace_router
+        from astrabox.providers.open_sandbox.workspace_route.mergerfs import workspace_router
 
         return workspace_router
 
@@ -74,7 +74,7 @@ def provider(monkeypatch: pytest.MonkeyPatch) -> _RecordingProvider:
 
     # The platform's mergerfs view is confirmed per mount as well;
     # this double records that check instead of running findmnt in a box.
-    from astrabox.core.service.orchestrator.runtime.storage.mergerfs import workspace_router
+    from astrabox.providers.open_sandbox.workspace_route.mergerfs import workspace_router
 
     async def _route_confirmed(ref: WorkspaceRef, *, box: Any, box_path: str, **_: Any) -> None:
         recording.routed.append((ref.key(), box_path))

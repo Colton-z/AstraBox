@@ -7,6 +7,8 @@ Boot-time sweep plus a periodic scan over durable channel work:
   survives the loss of a worker process and is lost only with the database;
 * abandoned outbox rows (PENDING, or SENDING with an expired lease) are
   re-leased and re-delivered against the exact bound turn;
+* authorizations whose observation never arrived die with evidence, and the
+  participant who invoked the agent is told;
 * Session output subscriptions create delivery records for new main-agent
   responses, independently of input dispatch.
 
@@ -95,4 +97,8 @@ class ChannelSpineReconciler:
         projected = await self._ingress.project_session_outputs()
         recovered = await self._ingress.recover_inbound()
         swept = await self._ingress.sweep_pending_outbox()
-        return {"output_projected": projected, "inbound_recovered": recovered, "outbox_swept": swept}
+        expired = await self._ingress.expire_authorizations()
+        return {
+            "output_projected": projected, "inbound_recovered": recovered,
+            "outbox_swept": swept, "authorizations_expired": expired,
+        }

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "astrabox"
-version = "0.1.5"
+version = "0.1.6"
 description = "AstraBox Community — an open, self-hosted agent runtime that streams a sandboxed coding agent to your frontend over the AI-SDK Data-Stream-Protocol."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -217,6 +217,19 @@ aws_kms = "astrabox.providers.secret_store_aws_kms:AwsKmsSecretStore"
 generic_json = "astrabox.providers.channel_generic:GenericJsonChannelProvider"
 gateway = "astrabox.providers.channel_satori:GatewayChannelProvider"
 
+# Which AstraBox account a messaging participant runs as when a binding runs
+# as linked accounts (see astrabox/seams/channel_accounts.py). `links` reads
+# the per-binding links platform administrators maintain; a directory-backed
+# resolver registers here and is selected by ASTRABOX_CHANNEL_ACCOUNT_RESOLVER.
+[project.entry-points."astrabox.providers.channel_accounts"]
+links = "astrabox.providers.channel_account_links:LinkTableChannelAccountResolver"
+
+# Scheduler providers (cron dispatch, Run ledger, retries and recovery for
+# scheduled Deployments — see astrabox/seams/scheduler.py). `dbos` keeps its
+# state in the repository's SQL database; ASTRABOX_SCHEDULER_PROVIDER selects one.
+[project.entry-points."astrabox.providers.scheduler"]
+dbos = "astrabox.providers.scheduler_dbos:DbosSchedulerProvider"
+
 # Admission controllers (deployment quota / rate / concurrency policy — see
 # astrabox/seams/admission.py). No built-in ships (the base admits everything);
 # a downstream registers its controller here (self-registers on import via
@@ -334,6 +347,16 @@ disable_error_code = [
 [[tool.mypy.overrides]]
 module = ["astrabox.*"]
 ignore_missing_imports = false
+
+# The Kubernetes client arrives only with the sandbox-server extra, which the CI
+# unit lane does not install, so there mypy has always read it as untyped. The
+# release `make install` resolves (37.0.1) ships type information, and following
+# it makes the typecheck result depend on which extras are installed: `make
+# install` adds the extra and `make typecheck` then failed where CI passed. Read
+# it as untyped everywhere.
+[[tool.mypy.overrides]]
+module = ["kubernetes", "kubernetes.*"]
+follow_imports = "skip"
 
 [[tool.mypy.overrides]]
 module = [

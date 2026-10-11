@@ -6,6 +6,7 @@ import { EmptyState } from '@/components/shell';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { listAssistantConnectors, listConnectors } from '../api';
+import { useExtensionProvider } from '@/hooks/useExtensionProvider';
 
 import { getAssistant } from './api';
 
@@ -30,13 +31,15 @@ function Names({ label, names }: { label: string; names: string[] }) {
  * that is what the page lists, read from the Assistant and the connector
  * catalog: the apps connected for it, the ones the owner could connect, and
  * the Skills and tools it has, its own and inherited. Nothing here suggests
- * an app the deployment does not offer.
+ * an app the deployment does not offer, nor a Skill the defaults select from
+ * an extension catalog the deployment does not run.
  */
 export function AssistantWelcome({ assistantId }: { assistantId: string }) {
   const { t } = useTranslation();
   const assistant = useSWR(['assistant', assistantId], () => getAssistant(assistantId));
   const connectors = useSWR('connectors', listConnectors);
   const enabled = useSWR(['assistant-connectors', assistantId], () => listAssistantConnectors(assistantId));
+  const extensionProvider = useExtensionProvider();
 
   const record = assistant.data;
   const on = new Set(enabled.data ?? []);
@@ -48,12 +51,19 @@ export function AssistantWelcome({ assistantId }: { assistantId: string }) {
     .filter((c) => c.available && c.status !== 'connected')
     .map((c) => c.name);
   const unique = (names: string[]) => Array.from(new Set(names));
-  const skills = unique([...(record?.inherited?.skills ?? []), ...(record?.skills ?? [])]);
+  const skills = unique([
+    ...(record?.inherited?.skills ?? []),
+    // Undefined until read, null without a catalog: listed only once a catalog is known to run.
+    ...(extensionProvider.provider ? record?.inherited?.catalog_skills ?? [] : []),
+    ...(record?.skills ?? []),
+  ]);
   const tools = unique([
     ...(record?.inherited?.mcp_servers ?? []),
     ...Object.keys(record?.mcp_servers ?? {}),
   ]);
-  const error = (assistant.error ?? connectors.error ?? enabled.error) as Error | undefined;
+  const error = (
+    assistant.error ?? connectors.error ?? enabled.error ?? extensionProvider.error
+  ) as Error | undefined;
   const name = record?.display_name ?? '';
 
   return (

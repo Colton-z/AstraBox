@@ -18,6 +18,7 @@ from astrabox.core.service.orchestrator.agent import prepared_slots
 from astrabox.core.service.orchestrator.agent import runtime_generation as runtime_generation_module
 from astrabox.core.service.orchestrator.agent.agent_service import AgentService
 from astrabox.seams.egress_credentials import EgressCredential
+from astrabox.seams.sandbox import SandboxClientPoolReadiness
 
 
 class _Repo:
@@ -382,6 +383,9 @@ async def test_an_agent_edit_during_a_pass_leaves_no_client_pool_unnamed(
         def __init__(self) -> None:
             self.started: list[str] = []
             self.retired: list[str] = []
+
+        def client_pool_readiness(self) -> SandboxClientPoolReadiness:
+            return SandboxClientPoolReadiness(available=True)
 
         async def ensure_client_pool(self, spec: Any, *, creator: Any, preparer: Any) -> None:
             self.started.append(spec.pool_name)

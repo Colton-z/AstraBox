@@ -46,7 +46,7 @@ Select **Run now** to start the same task immediately without changing its
 schedule. Select **Replay** on an earlier Run to create a new Run with that
 Run's saved input.
 
-See [Schedule tasks](schedules.md) for setup and examples.
+See [Schedule tasks](schedules.md) for prerequisites, setup and examples.
 
 ## Receive a webhook
 

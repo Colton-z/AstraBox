@@ -31,7 +31,6 @@ the browser hits the real backend with no CORS setup. Open
 |---|---|
 | `npm run dev` | Vite dev server (HMR) on `:5173`, `/api` proxied to `:8000`. |
 | `npm run build` | `tsc --noEmit` typecheck **then** `vite build` → `dist/`. |
-| `npm run preview` | Serve the built `dist/` locally. |
 | `npm run test` | Vitest unit tests. |
 | `npm run e2e` | Playwright browser e2e (uses `../e2e/playwright.config.ts`). |
 
@@ -40,6 +39,15 @@ There is no separate `typecheck` script — the type check runs inside `build`
 `make dev` boots the backend and this console together. To point the client at a
 backend without the dev proxy, set `VITE_API_BASE` to an absolute origin (default
 empty = use the proxy / same origin).
+
+The built console is served only by the AstraBox server, which publishes it at
+the root of its host or below `ASTRABOX_PUBLIC_PATH_PREFIX`. Built files refer to
+each other relatively (`base: './'` in `vite.config.ts`). `index.html` names its
+own assets and the `astrabox-base-path` meta element through the token
+`__ASTRABOX_BASE_PATH__`, which the server replaces with the prefix on every
+request; the console reads the meta element for its router basename and API
+base. A static file server cannot fill in that token, so `dist/` does not open
+on its own.
 
 Use the pinned Node.js toolchain (`scripts/node-toolchain.py`) rather than an
 ambient installation: `make build-web` runs the typecheck and the production

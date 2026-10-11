@@ -1,9 +1,44 @@
-import type { ChannelFieldDescriptor } from '@/types';
+import type { ChannelExecutionMode, ChannelFieldDescriptor } from '@/types';
 import type { TFunction } from 'i18next';
 
 import type { EditFieldSpec, EditFieldType } from './console';
 
 export type ChannelDraftSection = 'channel_config' | 'credentials';
+
+const EXECUTION_MODES: ChannelExecutionMode[] = ['owner', 'account', 'linked'];
+
+/** The modes a platform's triggers may run in; every mode when it declares none. */
+export function channelExecutionModes(modes: ChannelExecutionMode[] | undefined): ChannelExecutionMode[] {
+  return modes?.length ? modes : EXECUTION_MODES;
+}
+
+/** The mode a new trigger starts in: the Agent's creator, when the platform allows it. */
+export function defaultExecutionMode(modes: ChannelExecutionMode[] | undefined): ChannelExecutionMode {
+  const allowed = channelExecutionModes(modes);
+  return allowed.includes('owner') ? 'owner' : allowed[0];
+}
+
+/** Who a trigger's messages run as. Only an administrator chooses or changes it. */
+export function channelExecutionModeField(
+  t: TFunction,
+  modes: ChannelExecutionMode[] | undefined,
+  editable: boolean,
+): EditFieldSpec {
+  return {
+    key: 'execution_mode',
+    label: t('manage:deployments.field_execution_mode'),
+    type: 'select',
+    editable,
+    idTag: 'execution_mode',
+    options: channelExecutionModes(modes).map((mode) => ({
+      value: mode,
+      label: t(`manage:deployments.execution_mode_${mode}`),
+    })),
+    help: t('manage:deployments.execution_mode_help'),
+    get: (draft) => draft.execution_mode ?? '',
+    set: (draft, value) => ({ ...draft, execution_mode: value }),
+  };
+}
 
 export function channelExecutionUserField(t: TFunction, editable: boolean): EditFieldSpec {
   return {

@@ -79,6 +79,10 @@ ASTRABOX_OIDC_CLIENT_SECRET=<oidc-client-secret>
 https://<astrabox-host>/api/v1/auth/callback
 ```
 
+AstraBox 发布在子路径下时，回调地址要包含该路径，例如
+`https://<astrabox-host>/astrabox/api/v1/auth/callback`，见
+[在子路径下发布 AstraBox](deploy.md#publish-under-a-path)。
+
 AstraBox 默认从 `groups` Claim 读取用户组，并为 `astrabox-admin` 组成员授予管理员角色。如果身份提供商使用其他值，请修改 Claim 和用户组名称：
 
 ```bash
@@ -88,7 +92,7 @@ ASTRABOX_OIDC_ADMIN_GROUP=platform-admins
 
 身份提供商是 Casdoor 时，还要把 `ASTRABOX_CASDOOR_ORGANIZATION` 设置为允许登录的组织。Casdoor 允许其 `built-in` 组织的管理员登录所有应用，而 AstraBox 从 Casdoor 签发的 JWT 的 `owner` Claim 中读取账号所属组织。
 
-公网回调地址与 AstraBox 从代理请求中取得的地址不同时，请设置 `ASTRABOX_OIDC_REDIRECT_URL`。如果 AstraBox 服务通过内网地址访问身份提供商，请在 `ASTRABOX_OIDC_ISSUER` 中保留公网 Issuer，并把内网地址写入 `ASTRABOX_OIDC_INTERNAL_ISSUER`。
+公网回调地址与 AstraBox 从代理请求中取得的地址不同时，请设置 `ASTRABOX_OIDC_REDIRECT_URL`。它的路径必须是 `ASTRABOX_PUBLIC_PATH_PREFIX` 下的回调路径，在主机根路径时为 `/api/v1/auth/callback`；路径不符时服务端会拒绝启动。如果 AstraBox 服务通过内网地址访问身份提供商，请在 `ASTRABOX_OIDC_ISSUER` 中保留公网 Issuer，并把内网地址写入 `ASTRABOX_OIDC_INTERNAL_ISSUER`。
 
 浏览器登录 Cookie 为 HttpOnly，默认有效期为 7 天，可以通过 `ASTRABOX_AUTH_SESSION_TTL_SECONDS` 修改。运行多个 AstraBox 副本时，请在所有副本中设置相同的 `ASTRABOX_AUTH_SESSION_SECRET`，保证请求切换副本后登录仍然有效。
 
@@ -163,12 +167,19 @@ ASTRABOX_OIDC_REDIRECT_URL=https://astrabox.example.com/api/v1/auth/callback
 ASTRABOX_ALLOWED_HOSTS=astrabox.example.com,localhost,127.0.0.1,[::1]
 ```
 
-从仓库源码运行时，在 `scripts/compose.sh` 的环境中设置这四项。
+控制台发布在子路径下时，还要设置 `ASTRABOX_PUBLIC_PATH_PREFIX`，例如 `/astrabox`，见
+[在子路径下发布 AstraBox](deploy.md#publish-under-a-path)。安装脚本随后会把回调地址写在该
+路径下，即 `https://astrabox.example.com/astrabox/api/v1/auth/callback`，Casdoor 也登记
+同一个地址。
+
+从仓库源码运行时，在 `scripts/compose.sh` 的环境中设置这四项；控制台发布在子路径下时，
+还要设置 `ASTRABOX_PUBLIC_PATH_PREFIX`。
 
 | 设置 | 为什么需要 |
 |---|---|
 | `ASTRABOX_OIDC_ISSUER` | Casdoor 把它作为自己的 Issuer 发布，并在它下面提供登录页。AstraBox 用它校验每个 ID Token 的 Issuer。 |
 | `ASTRABOX_CONSOLE_ORIGIN` | Casdoor 在它下面登记控制台的回调地址。 |
+| `ASTRABOX_PUBLIC_PATH_PREFIX` | 仅在控制台发布在子路径下时设置。Casdoor 登记的控制台回调地址和 AstraBox 使用的回调地址都位于该路径下。 |
 | `ASTRABOX_OIDC_REDIRECT_URL` | 代理通过普通 HTTP 访问 AstraBox，AstraBox 无法从请求推导出公网 HTTPS 回调地址。设置后，AstraBox 会把 Casdoor 登记的回调地址发给 Casdoor，并把登录 Cookie 标记为 Secure。 |
 | `ASTRABOX_ALLOWED_HOSTS` | AstraBox 只响应列表中的 Host。该列表会替换默认列表，因此其中要保留安装脚本和 CLI 使用的回环名称。安装脚本会保留你写入的列表；列表缺少控制台主机名或 `127.0.0.1` 时，安装脚本会拒绝继续。 |
 

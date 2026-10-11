@@ -737,13 +737,17 @@ function dockerText(args: string[], timeoutMs = 30_000): string {
 }
 
 /**
- * Restart the backend server container and wait for it to come back healthy.
+ * Restart the backend server container and wait until the restarted process
+ * is ready.
  *
  * Recovery specs use this to simulate an instance replacement (serverless
  * deploy / crash): the sandbox compute keeps running (survive-disconnect),
- * only the platform process restarts. Waits on BOTH the docker healthcheck and
- * the e2e base URL actually answering, so the next API call cannot race the
- * listener.
+ * only the platform process restarts. The wait asks the restarted process
+ * itself: the container must run a process started after the restart, and the
+ * e2e base URL must answer `/readyz` with 200, so the next API call cannot race
+ * the listener. Docker's health status is not the signal: the image probes
+ * every 30 s once its 10 s start period ends, so a server ready ~14 s after it
+ * starts reads healthy only ~42 s after it.
  * A stop/inject/start caller passes the container resolved before stopping it;
  * ordinary restart callers resolve a running service on entry.
  */
@@ -752,25 +756,28 @@ export async function restartServerContainer(
   timeoutMs = 120_000,
   serverContainer = requireServiceContainer(SERVER_CONTAINER_HANDLE),
 ): Promise<void> {
+  const startedBefore = dockerText(['inspect', serverContainer, '--format', '{{.State.StartedAt}}']).trim();
   dockerText(['restart', serverContainer], 60_000);
   const deadline = Date.now() + timeoutMs;
   let lastError = '';
   while (Date.now() < deadline) {
     try {
-      const health = dockerText([
-        'inspect', serverContainer, '--format', '{{.State.Health.Status}}',
-      ]).trim();
-      if (health === 'healthy') {
-        const response = await fetch(`${baseUrl.replace(/\/$/, '')}/healthz`).catch(() => null);
-        if (response && response.ok) return;
-        lastError = `base URL not answering (health=${health})`;
+      const [running, startedAt] = dockerText([
+        'inspect', serverContainer, '--format', '{{.State.Running}} {{.State.StartedAt}}',
+      ]).trim().split(' ');
+      if (running !== 'true' || startedAt === startedBefore) {
+        lastError = `container running=${running} started=${startedAt}`;
       } else {
-        lastError = `container health=${health}`;
+        const response = await fetch(`${baseUrl.replace(/\/$/, '')}/readyz`, {
+          signal: AbortSignal.timeout(2_000),
+        }).catch(() => null);
+        if (response?.status === 200) return;
+        lastError = `base URL readyz answered ${response ? response.status : 'nothing'}`;
       }
     } catch (error) {
       lastError = (error as Error).message;
     }
-    await new Promise((r) => setTimeout(r, 2_000));
+    await new Promise((r) => setTimeout(r, 500));
   }
-  throw new Error(`sandboxOps: server container did not come back healthy within ${timeoutMs}ms: ${lastError}`);
+  throw new Error(`sandboxOps: server container did not come back ready within ${timeoutMs}ms: ${lastError}`);
 }

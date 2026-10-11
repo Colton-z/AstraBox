@@ -34,6 +34,16 @@ export function sandboxStateLabel(state?: string): string {
   return String(state || '').trim() || '—';
 }
 
+/**
+ * States of a box the backend is removing, or has removed without its listing
+ * dropping it yet. OpenSandbox reports `Stopping` and `Terminated`.
+ */
+export function sandboxStateIsEnding(state?: string): boolean {
+  return ['STOPPING', 'TERMINATING', 'TERMINATED', 'DELETING'].includes(
+    String(state || '').trim().toUpperCase(),
+  );
+}
+
 /** States that should breathe in the list (a box actively serving a turn). */
 export function sandboxStateIsLive(state?: string): boolean {
   return String(state || '').trim().toUpperCase() === 'RUNNING';

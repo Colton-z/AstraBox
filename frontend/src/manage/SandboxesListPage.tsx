@@ -17,8 +17,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { adminListSandboxes } from '@/api';
-import type { AdminSandboxPage, AdminSandboxSummary } from '@/types';
+import { adminListSandboxes, adminSandboxQuota } from '@/api';
+import type { AdminSandboxPage, AdminSandboxQuota, AdminSandboxSummary } from '@/types';
 
 import {
   ConsolePageHeader,
@@ -42,6 +42,7 @@ import {
   sandboxStateTone,
   shortId,
 } from './sandboxConfig';
+import { SandboxQuotaCard } from './SandboxQuotaCard';
 import { keepsLastRead, useKeepCurrent, type ReloadContext } from '@/hooks/useKeepCurrent';
 
 const ALL = '__all__';
@@ -56,7 +57,8 @@ const PAGE_SIZE = 50;
  * Read-only by construction: a sandbox is created and destroyed by a session's
  * lifecycle, and this page never offers a second authority over that. It asks
  * the backend three questions (list, detail, diagnostics) and shows the answers
- * as given.
+ * as given. Above the inventory, `SandboxQuotaCard` shows the deployment's
+ * sandbox quota: each ceiling and what is held against it.
  *
  * Three behaviours are deliberate and worth keeping:
  *
@@ -91,6 +93,12 @@ export default function SandboxesListPage() {
   const backgroundRead = useRef(false);
   // True after any successful read, an empty page included (see keepsLastRead).
   const loaded = useRef(false);
+  const [quota, setQuota] = useState<AdminSandboxQuota | null>(null);
+  const [quotaError, setQuotaError] = useState('');
+  // The quota read's own copy of the hook's flag: the inventory read consumes
+  // `backgroundRead`, and a page turn re-reads the inventory without the quota.
+  const quotaBackgroundRead = useRef(false);
+  const quotaLoaded = useRef(false);
 
   useEffect(() => {
     let alive = true;
@@ -119,8 +127,32 @@ export default function SandboxesListPage() {
       alive = false;
     };
   }, [page, reloadKey]);
+  // Keyed on the reload alone: the quota covers the whole backend, so turning
+  // the inventory's page does not change it.
+  useEffect(() => {
+    let alive = true;
+    const context: ReloadContext = { background: quotaBackgroundRead.current };
+    quotaBackgroundRead.current = false;
+    void (async () => {
+      try {
+        const result = await adminSandboxQuota();
+        if (!alive) return;
+        setQuota(result);
+        setQuotaError('');
+        quotaLoaded.current = true;
+      } catch (e) {
+        if (!alive || keepsLastRead(e, context, quotaLoaded.current)) return;
+        setQuotaError((e as Error).message);
+        setQuota(null);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [reloadKey]);
   useKeepCurrent(useCallback((context?: ReloadContext) => {
     backgroundRead.current = context?.background === true;
+    quotaBackgroundRead.current = context?.background === true;
     setReloadKey((k) => k + 1);
   }, []));
 
@@ -285,6 +317,8 @@ export default function SandboxesListPage() {
       />
 
       <div className="flex flex-1 flex-col gap-4">
+        <SandboxQuotaCard quota={quota} error={quotaError} />
+
         <ConsoleToolbar>
           <ConsoleSearch
             value={search}

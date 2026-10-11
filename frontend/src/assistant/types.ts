@@ -45,6 +45,10 @@ export interface AssistantRecord {
   skills?: string[] | null;
   packages?: Record<string, unknown>[] | null;
   engine_options?: Record<string, unknown> | null;
+  /** MCP servers selected from extension catalogs, as stored: `{provider, item_id}` rows. */
+  mcp_assignments?: Record<string, unknown>[] | null;
+  /** Skills selected from the extension catalog, as stored: `skill_ids` and their Git `skills`. */
+  extension_catalog?: Record<string, unknown> | null;
   workspace_state?: AssistantWorkspaceState | string;
   current_sandbox_id?: string | null;
   /** The one Assistant the platform keeps for its owner. */

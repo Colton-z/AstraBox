@@ -121,7 +121,7 @@ sandbox.
 
 ![Configure MCP servers, Skills, and Plugin repositories in the AstraBox console](./img/agent-create-console-en.png)
 
-For an existing Agent, **MCP configuration** and **Skill configuration** each group a LiteLLM-managed multi-select with a custom configuration field. The two sources are combined; MCP server names must be unique, and identical Skill sources are deduplicated. Empty fields show examples without storing them. Press Tab in an empty field to accept its example, then edit and explicitly save it. Shift+Tab or Tab in a filled field keeps normal keyboard navigation. The custom configuration fields use these formats:
+When the deployment runs an [extension catalog](#extension-catalog), **MCP configuration** and **Skill configuration** on an existing Agent each group the catalog's multi-select, named after the catalog (for example **MCP servers from LiteLLM**), with a custom configuration field. The two sources are combined; MCP server names must be unique, and identical Skill sources are deduplicated. Without a catalog, the fields stand alone as **MCP servers** and **Skills**. Empty fields show examples without storing them. Press Tab in an empty field to accept its example, then edit and explicitly save it. Shift+Tab or Tab in a filled field keeps normal keyboard navigation. The custom configuration fields use these formats:
 
 ```json
 {
@@ -206,6 +206,49 @@ inside the Plugin needs its own service credential; see
 }
 ```
 
+## The extension catalog {#extension-catalog}
+
+An extension catalog is a list of MCP servers and Skills that a deployment
+maintains once and that Agents and Assistants select from, instead of writing
+each definition on every record. The catalog comes from the extension provider
+the deployment selects with `ASTRABOX_EXTENSION_PROVIDER`:
+
+| Value | Catalog |
+| --- | --- |
+| empty (the default) or `litellm` | The MCP servers and Skills registered in the bundled LiteLLM gateway. Agent managers open its pages with **Manage MCP servers in LiteLLM** and **Manage Skills in LiteLLM** on the Agent page. |
+| `builtin` | The MCP servers an administrator registers in AstraBox through `/api/v1/admin/mcp-servers`. It has no Skills and no management page. |
+| `none` | No catalog. Agents and Assistants use only the MCP servers, Skills and packages written on them. |
+| another name | A provider an installed package registers at the `astrabox.providers.extensions` entry point. |
+
+The console names the catalog after the provider and offers a management page
+only when the provider has one. Startup refuses a value that no installed
+provider registers. In a Compose installation, set the variable in
+`containers/.env`.
+
+### Run without an extension catalog
+
+With `ASTRABOX_EXTENSION_PROVIDER=none`, an Agent page, an Assistant page and
+the Assistant defaults show only the record's own MCP, Skill and package
+fields, and send no request to a catalog. The catalog API routes
+(`GET /api/v1/agents/{agent_id}/extensions` and their Assistant and defaults
+counterparts) answer `409 EXTENSION_CATALOG_DISABLED`.
+
+A record can still hold a catalog selection saved while a catalog ran. AstraBox
+does not drop it and does not run without it:
+
+- Startup logs each enabled Agent, each Assistant and the Assistant defaults
+  that still hold one.
+- Starting work for such an Agent or Assistant (a new conversation, a prepared
+  runtime, an Assistant workspace) fails with `EXTENSION_CATALOG_DISABLED`
+  instead of starting with fewer tools than the record names, and while the
+  Assistant defaults hold one, so does every Assistant's. Creating an Agent
+  conversation answers `409`. Existing conversations stay readable.
+- The record's page lists the selection, the provider and entry of each MCP
+  server and the Git source of each Skill, with **Remove selections**. Removing
+  it saves an empty selection, the only one accepted without a catalog. To
+  keep a catalog Skill, add its listed Git source to the **Skills** field
+  before removing the selection.
+
 ## Update extension configuration
 
 Open the Agent in **Console > Agents**. Change the selected MCP servers or Skills in the extension card, or edit the direct MCP, Skill, and Plugin repository fields, then click **Save** for that section.
@@ -216,7 +259,7 @@ Saving does not reconfigure a task already running. AstraBox uses the latest sav
 
 ## Inspect current extension configuration
 
-Open the Agent in **Console > Agents**. Administrator-managed MCP servers and Skills appear in the **MCP servers and Skills** card. Direct MCP definitions, Skill sources, and Plugin repositories appear in the **MCP, Skills and Plugins** section.
+Open the Agent in **Console > Agents**. The **MCP, Skills and Plugins** section shows the direct MCP definitions, Skill sources, and Plugin repositories, and, when the deployment runs an extension catalog, the MCP servers and Skills selected from it.
 
 ## FAQ
 

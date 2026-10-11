@@ -63,7 +63,7 @@ class ChildRunProjectionMixin:
 
         base_session = await self._owned_child_run_session(user, session_id, session)
         effective_session_id = str(base_session.get("session_id") or session_id)
-        await self._turn_service.reconcile_engine_child_resources(base_session)
+        await self._turn_service.reconcile_engine_child_resources(base_session, read=True)
         child_runs = await self._call_child_run_view(
             self._child_run_view.list_child_runs,
             effective_session_id,
@@ -83,7 +83,7 @@ class ChildRunProjectionMixin:
         clean_child_run_id = self._require_child_run_id(child_run_id)
         base_session = await self._owned_child_run_session(user, session_id, session)
         effective_session_id = str(base_session.get("session_id") or session_id)
-        await self._turn_service.reconcile_engine_child_resources(base_session)
+        await self._turn_service.reconcile_engine_child_resources(base_session, read=True)
         messages = await self._call_child_run_view(
             self._child_run_view.get_child_run_messages,
             effective_session_id,

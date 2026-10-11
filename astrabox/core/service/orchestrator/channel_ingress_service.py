@@ -59,10 +59,16 @@ from astrabox.core.service.orchestrator.conversation_targets import (
     ConversationTargets,
 )
 from astrabox.persistence.repository.channel_repository import (
+    CLAIM_OUTCOME_AUTHORIZED,
     CLAIM_OUTCOME_CLAIMED,
     CLAIM_OUTCOME_DUPLICATE,
     CLAIM_OUTCOME_IGNORED,
+    CLAIM_OUTCOME_IN_PROGRESS,
+    CLAIM_OUTCOME_OBSERVED,
+    INBOUND_AUTHORIZED,
     INBOUND_DEAD,
+    INBOUND_IGNORED,
+    INBOUND_OBSERVED,
     INBOUND_RECEIVED,
     INBOUND_SETTLED,
     INTERACTION_ANSWERED,
@@ -76,6 +82,11 @@ from astrabox.seams.channel import (
     EVENT_PROGRESS,
     EVENT_SETTLED,
     EVENT_TURN_STARTED,
+    EXECUTION_ACCOUNT,
+    EXECUTION_LINKED,
+    EXECUTION_OWNER,
+    SIGNAL_AUTHORIZATION,
+    SIGNAL_OBSERVATION,
     ChannelDeliveryReceipt,
     ChannelEvent,
     ChannelInbound,
@@ -83,6 +94,7 @@ from astrabox.seams.channel import (
     channel_scene_name,
     get_channel,
 )
+from astrabox.seams.channel_accounts import channel_account_resolver
 
 logger = get_logger(__name__)
 
@@ -128,6 +140,70 @@ ATTENTION_POLICY_MENTIONS = "mentions"
 VALID_ATTENTION_POLICIES = (ATTENTION_POLICY_ALL, ATTENTION_POLICY_MENTIONS)
 
 
+#: Fields of an inbound record that describe the message itself. The first
+#: signal that records them wins; a later signal for the same message admits
+#: it without replacing them.
+_MESSAGE_FACTS = (
+    "reply_text", "conversation_key", "reference", "participant",
+    "retain_context", "message_timestamp", "provider_ignore_reason", "conversation",
+)
+
+#: Identity fields a later signal must agree on with the recorded message.
+_IDENTITY_FIELDS = ("participant", "conversation_key")
+
+#: Refusals the participant can act on, with what they are told. The message
+#: is recorded as refused and leaves retained context; it never runs as
+#: another account.
+_REFUSAL_NOTICES = {
+    "CHANNEL_REFERENCE_OWNER_MISMATCH": (
+        "This message was not answered because it continues a conversation you "
+        "cannot continue. Send a new message to start your own."
+    ),
+    "CHANNEL_PARTICIPANT_REQUIRED": (
+        "This message was not answered because the platform did not say who sent it."
+    ),
+    "CHANNEL_PARTICIPANT_NOT_LINKED": (
+        "This message was not answered because your account here is not linked "
+        "to an AstraBox account. Ask an administrator to link it."
+    ),
+    "CHANNEL_ACCOUNT_NOT_AUTHORIZED": (
+        "This message was not answered because your linked AstraBox account "
+        "cannot use this agent."
+    ),
+}
+
+#: Why a message is refused when its binding's execution mode is not one its
+#: provider supports: running it in any other mode would run it as an account
+#: nobody chose.
+_EXECUTION_MODE_UNSUPPORTED = "CHANNEL_EXECUTION_MODE_UNSUPPORTED"
+
+
+def binding_execution_mode(binding: dict[str, Any]) -> str:
+    """The execution mode a channel binding runs its messages in.
+
+    A binding saved before execution modes existed stores none; its
+    ``execution_user_id`` already said which of the two fixed modes it runs
+    in.
+    """
+    mode = str(binding.get("execution_mode") or "").strip()
+    if mode:
+        return mode
+    if str(binding.get("execution_user_id") or "").strip():
+        return EXECUTION_ACCOUNT
+    return EXECUTION_OWNER
+
+
+#: What the participant is told when a message is not answered for a reason
+#: they can act on. A participant who recalled a message is not told.
+_IDENTITY_CONFLICT_NOTICE = (
+    "This message could not be matched to the message it names, so it was not "
+    "answered. Send it again."
+)
+_AUTHORIZATION_EXPIRED_NOTICE = (
+    "This message was not answered because its content never arrived. Send it again."
+)
+
+
 @dataclass
 class ChannelIngressReceipt:
     """What ``ingest`` durably promised the source.
@@ -135,7 +211,9 @@ class ChannelIngressReceipt:
     ``accepted`` — the work item is owned and will drive a turn;
     ``duplicate`` — this message already settled (idempotent redelivery ack);
     ``in_progress`` — a live owner is driving it;
-    ``ignored`` — a provider or platform policy terminally classified it.
+    ``ignored`` — a provider or platform policy terminally classified it;
+    ``observed`` — it is retained context and nothing runs for it now;
+    ``authorized`` — it is admitted and runs when its observation arrives.
     Whatever the status, the source may acknowledge upstream: the outcome is
     durable (invariant A).
     """
@@ -144,6 +222,15 @@ class ChannelIngressReceipt:
     item_id: str
     session_id: str | None = None
     ack_extra: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class _Classification:
+    """The state an inbound is recorded in, decided before the write."""
+
+    state: str
+    reason: str | None = None
+    excluded: bool = False
 
 
 def _dispatch_token(item: dict[str, Any]) -> str:
@@ -276,25 +363,41 @@ class ChannelIngressService:
             raise APIError(
                 code="NOT_FOUND", message="bound agent not found", status_code=404
             )
-        execution_user_id = str(binding.get("execution_user_id") or "").strip()
-        creator_user_id = execution_user_id or target.owner_user_id
-        if not creator_user_id:
-            raise APIError(
-                code="DEPLOYMENT_NO_OWNER",
-                message="bound agent has no creator to run as",
-                status_code=409,
+        execution_mode = binding_execution_mode(binding)
+        if execution_mode == EXECUTION_LINKED:
+            # Each message runs as its participant's linked account, which is
+            # resolved once, at the message's first drive.
+            execution_user_id = creator_user_id = ""
+        else:
+            execution_user_id = (
+                str(binding.get("execution_user_id") or "").strip()
+                if execution_mode == EXECUTION_ACCOUNT else ""
             )
+            if execution_mode == EXECUTION_ACCOUNT and not execution_user_id:
+                raise RuntimeError(
+                    f"channel binding {deployment_id} runs as a chosen account but names none"
+                )
+            creator_user_id = execution_user_id or target.owner_user_id
+            if not creator_user_id:
+                raise APIError(
+                    code="DEPLOYMENT_NO_OWNER",
+                    message="bound agent has no creator to run as",
+                    status_code=409,
+                )
 
-        content = self._apply_prompt_prefix(binding, inbound.content)
         if inbound.retain_context and not all((
             inbound.dedup_key, inbound.conversation_key,
             inbound.message_timestamp, inbound.participant, binding.get("updated_at"),
         )):
             raise RuntimeError("retained channel message lacks ordering identity")
+        prompt_prefix = str(binding.get("prompt_prefix") or "").strip()
+        authorization = inbound.signal == SIGNAL_AUTHORIZATION
         payload = {
-            "content": content,
+            # An authorization carries no text: its turn input is built from
+            # the observed message when the two meet (_admit_recorded).
+            "content": "" if authorization else self._prefixed(prompt_prefix, inbound.content),
             # What the participant typed, before any binding prompt prefix: a
-            # reply to a question is read from this.
+            # reply to a question and retained context are read from this.
             "reply_text": inbound.content,
             "action": inbound.action,
             "conversation_key": inbound.conversation_key,
@@ -305,68 +408,82 @@ class ChannelIngressService:
             "provider_ignore_reason": inbound.ignore_reason,
             "creator_user_id": creator_user_id,
             "execution_user_id": execution_user_id,
+            "execution_mode": execution_mode,
             "retain_context": inbound.retain_context,
             "message_timestamp": inbound.message_timestamp,
             "binding_revision": binding.get("updated_at"),
+            "prompt_prefix": prompt_prefix,
+            "signal": inbound.signal,
         }
+        decision = await self._classify(binding, inbound, deployment_id)
+        if decision.state in (INBOUND_RECEIVED, INBOUND_AUTHORIZED) and (
+            execution_mode not in get_channel(channel_name).describe().execution_modes
+        ):
+            logger.error(
+                "channel binding %s runs as %s, which provider %s does not support: "
+                "its messages are refused until the binding's execution mode is changed",
+                deployment_id, execution_mode, channel_name,
+            )
+            decision = _Classification(INBOUND_IGNORED, _EXECUTION_MODE_UNSUPPORTED, excluded=True)
+        if decision.state != INBOUND_IGNORED:
+            payload["conversation"] = await self._message_conversation(
+                inbound, deployment_id=deployment_id,
+                wait=decision.state == INBOUND_RECEIVED,
+            )
         item, outcome = await self._channel_repo.claim_inbound(
             deployment_id=deployment_id,
             dedup_key=inbound.dedup_key,
             channel_name=channel_name,
             payload=payload,
+            state=decision.state,
+            ignored_reason=decision.reason,
+            context_excluded=decision.excluded,
             **target.fields,
         )
-        if outcome != CLAIM_OUTCOME_CLAIMED:
-            logger.info(
-                "channel ingest suppressed: binding=%s outcome=%s dedup_key=%s",
-                deployment_id, outcome, inbound.dedup_key,
+        ack_extra = dict(inbound.ack_extra)
+        if outcome == CLAIM_OUTCOME_CLAIMED:
+            return await self._admit(item, target=target, ack_extra=ack_extra)
+        admits = decision.state in (INBOUND_RECEIVED, INBOUND_AUTHORIZED)
+        if outcome == CLAIM_OUTCOME_OBSERVED and admits:
+            # The message was recorded as context only; this signal admits it.
+            return await self._admit_recorded(
+                item, signal_payload=payload, target=target, ack_extra=ack_extra,
             )
-            return ChannelIngressReceipt(
-                status=outcome,
-                item_id=str(item["_id"]),
-                session_id=str(item.get("session_id") or "") or None,
-                ack_extra=dict(inbound.ack_extra),
-            )
-
-        # Attention policy (core-owned, deterministic): an ignore is a durable
-        # terminal classification, not a dropped message.
-        refused = self._participant_refusal(binding, inbound)
-        ignore_reason = refused or self._attention_ignore_reason(binding, inbound)
-        if ignore_reason is not None:
-            await self._channel_repo.mark_inbound_ignored(
-                item_id=str(item["_id"]),
-                owner_token=str(item["owner_token"]),
-                generation=int(item["generation"]),
-                reason=ignore_reason,
-                exclude_from_context=refused is not None,
-            )
-            return ChannelIngressReceipt(
-                status=CLAIM_OUTCOME_IGNORED,
-                item_id=str(item["_id"]),
-                ack_extra=dict(inbound.ack_extra),
-            )
-
-        pressed = parse_action(str(inbound.action or ""))
-        if inbound.action and (
-            pressed is None
-            or await self._channel_repo.get_channel_interaction(
-                deployment_id=deployment_id, ref=pressed.ref,
-            ) is None
+        if (
+            outcome == CLAIM_OUTCOME_AUTHORIZED
+            and not authorization
+            and decision.state != INBOUND_IGNORED
         ):
-            # A press on a button this platform never showed has no question
-            # to answer and must not start a conversation.
-            await self._channel_repo.mark_inbound_ignored(
-                item_id=str(item["_id"]),
-                owner_token=str(item["owner_token"]),
-                generation=int(item["generation"]),
-                reason="unknown_interaction_action",
+            # The message an earlier authorization admitted has arrived.
+            return await self._admit_recorded(
+                item, signal_payload=payload, target=target, ack_extra=ack_extra,
             )
-            return ChannelIngressReceipt(
-                status=CLAIM_OUTCOME_IGNORED,
-                item_id=str(item["_id"]),
-                ack_extra=dict(inbound.ack_extra),
-            )
+        status = outcome
+        if decision.state == INBOUND_OBSERVED:
+            # Whatever record the message already has, nothing runs for an
+            # inbound that only reports it.
+            status = CLAIM_OUTCOME_OBSERVED
+        elif decision.state == INBOUND_IGNORED and outcome in (
+            CLAIM_OUTCOME_OBSERVED, CLAIM_OUTCOME_AUTHORIZED,
+        ):
+            # A refused signal neither admits nor completes the record.
+            status = CLAIM_OUTCOME_IGNORED
+        logger.info(
+            "channel ingest suppressed: binding=%s outcome=%s dedup_key=%s",
+            deployment_id, outcome, inbound.dedup_key,
+        )
+        return ChannelIngressReceipt(
+            status=status,
+            item_id=str(item["_id"]),
+            session_id=str(item.get("session_id") or "") or None,
+            ack_extra=ack_extra,
+        )
 
+    async def _admit(
+        self, item: dict[str, Any], *, target: ConversationTarget, ack_extra: dict[str, Any],
+    ) -> ChannelIngressReceipt:
+        """Resolve an owned RECEIVED item's session and spawn its drive."""
+        deployment_id = str(item.get("deployment_id") or "")
         # Resolve the target session inline so the ack carries it (and so
         # redeliveries get a session in their in_progress/duplicate acks).
         # Idempotent under crash: the session binds onto the item via CAS and
@@ -374,17 +491,11 @@ class ChannelIngressService:
         try:
             session_id = await self._resolve_item_session(item)
         except APIError as exc:
-            if exc.code == "CHANNEL_REFERENCE_OWNER_MISMATCH":
-                recorded = await self._channel_repo.mark_inbound_ignored(
-                    item_id=str(item["_id"]), owner_token=str(item["owner_token"]),
-                    generation=int(item["generation"]), reason=exc.code,
-                    exclude_from_context=True,
+            if exc.code in _REFUSAL_NOTICES and await self._refuse_item(item, exc.code):
+                return ChannelIngressReceipt(
+                    status=CLAIM_OUTCOME_IGNORED, item_id=str(item["_id"]),
+                    ack_extra={**ack_extra, "reason": exc.code},
                 )
-                if recorded:
-                    return ChannelIngressReceipt(
-                        status=CLAIM_OUTCOME_IGNORED, item_id=str(item["_id"]),
-                        ack_extra={**inbound.ack_extra, "reason": exc.code},
-                    )
             raise
         self._spawn_background_task(
             self._drive_work_item(item),
@@ -398,15 +509,202 @@ class ChannelIngressService:
             status="accepted",
             item_id=str(item["_id"]),
             session_id=session_id or None,
-            ack_extra=dict(inbound.ack_extra),
+            ack_extra=ack_extra,
         )
 
+    async def _admit_recorded(
+        self,
+        item: dict[str, Any],
+        *,
+        signal_payload: dict[str, Any],
+        target: ConversationTarget,
+        ack_extra: dict[str, Any],
+        attempts: int = 3,
+    ) -> ChannelIngressReceipt:
+        """Admit an OBSERVED or AUTHORIZED message once both halves are known.
+
+        An OBSERVED record holds the message's content and ``signal_payload``
+        admits it; an AUTHORIZED record holds the admission and
+        ``signal_payload`` brings the content. The turn runs the recorded
+        content with the admitting signal's destination, attention, execution
+        account and binding revision. A signal naming another sender or
+        conversation than the record holds is refused visibly; a recalled
+        message is never admitted. A record another signal or a recall changed
+        between the read and the write is evaluated again as it is now.
+        """
+        item_id = str(item["_id"])
+        state = str(item["state"])
+        generation = int(item.get("generation") or 0)
+        recorded = dict(item.get("payload") or {})
+        facts, admission = (
+            (recorded, signal_payload) if state == INBOUND_OBSERVED
+            else (signal_payload, recorded)
+        )
+        conflicts = [
+            name for name in _IDENTITY_FIELDS
+            if facts.get(name) and admission.get(name) and facts[name] != admission[name]
+        ]
+        if conflicts:
+            reason = f"CHANNEL_SIGNAL_IDENTITY_CONFLICT: {', '.join(conflicts)}"
+            if await self._channel_repo.refuse_unadmitted_inbound(
+                item_id=item_id, expected_state=state,
+                expected_generation=generation, reason=reason,
+            ):
+                logger.error(
+                    "channel signals disagree on one message: item=%s fields=%s",
+                    item_id, conflicts,
+                )
+                try:
+                    await self._notify({**item, "payload": admission}, _IDENTITY_CONFLICT_NOTICE)
+                except Exception:
+                    # The refusal is durable; a notice the platform rejects
+                    # must not turn it into a redelivered, re-refused message.
+                    logger.exception("channel conflict notice failed: item=%s", item_id)
+            return ChannelIngressReceipt(
+                status=CLAIM_OUTCOME_IGNORED, item_id=item_id,
+                ack_extra={**ack_extra, "reason": "CHANNEL_SIGNAL_IDENTITY_CONFLICT"},
+            )
+        if item.get("recall") is not None:
+            if state == INBOUND_OBSERVED:
+                return ChannelIngressReceipt(
+                    status=CLAIM_OUTCOME_IGNORED, item_id=item_id,
+                    ack_extra={**ack_extra, "reason": "recalled"},
+                )
+            # The authorization never runs a recalled message, but the content
+            # its observation brings still has a place in retained context.
+            observed = await self._channel_repo.observe_authorized_inbound(
+                item_id=item_id, expected_generation=generation, payload=facts,
+            )
+            if observed is not None:
+                return ChannelIngressReceipt(
+                    status=CLAIM_OUTCOME_OBSERVED, item_id=item_id, ack_extra=ack_extra,
+                )
+        else:
+            promoted = await self._channel_repo.promote_inbound(
+                item_id=item_id,
+                expected_state=state,
+                expected_generation=generation,
+                payload=self._admitted_payload(facts, admission),
+            )
+            if promoted is not None:
+                return await self._admit(promoted, target=target, ack_extra=ack_extra)
+        current = await self._channel_repo.get_inbound(item_id) or item
+        if current.get("state") == state and attempts > 1:
+            return await self._admit_recorded(
+                current, signal_payload=signal_payload, target=target,
+                ack_extra=ack_extra, attempts=attempts - 1,
+            )
+        return ChannelIngressReceipt(
+            status=self._receipt_status(str(current.get("state") or "")),
+            item_id=item_id,
+            session_id=str(current.get("session_id") or "") or None,
+            ack_extra=ack_extra,
+        )
+
+    @classmethod
+    def _admitted_payload(
+        cls, facts: dict[str, Any], admission: dict[str, Any]
+    ) -> dict[str, Any]:
+        """The input an admitted message runs with: its first recorded content."""
+        admitted = dict(admission)
+        admitted.update({name: facts.get(name) for name in _MESSAGE_FACTS})
+        admitted["content"] = cls._prefixed(
+            str(admission.get("prompt_prefix") or ""), str(facts.get("reply_text") or ""),
+        )
+        return admitted
+
     @staticmethod
-    def _apply_prompt_prefix(binding: dict[str, Any], content: str) -> str:
-        prefix = str(binding.get("prompt_prefix") or "").strip()
-        if prefix:
-            return f"{prefix}\n\n{content}"
-        return content
+    def _receipt_status(state: str) -> str:
+        return {
+            INBOUND_SETTLED: CLAIM_OUTCOME_DUPLICATE,
+            INBOUND_IGNORED: CLAIM_OUTCOME_IGNORED,
+            INBOUND_OBSERVED: CLAIM_OUTCOME_OBSERVED,
+            INBOUND_AUTHORIZED: CLAIM_OUTCOME_AUTHORIZED,
+        }.get(state, CLAIM_OUTCOME_IN_PROGRESS)
+
+    async def _classify(
+        self, binding: dict[str, Any], inbound: ChannelInbound, deployment_id: str,
+    ) -> _Classification:
+        """Decide the state an inbound is recorded in, before it is written.
+
+        The decision is persisted with the record, so a process lost between
+        the write and any later step cannot leave an unaddressed message for
+        recovery to drive.
+        """
+        refused = self._participant_refusal(binding, inbound)
+        if refused is not None:
+            return _Classification(INBOUND_IGNORED, refused, excluded=True)
+        provider_reason = str(inbound.ignore_reason or "").strip()
+        if provider_reason:
+            return _Classification(INBOUND_IGNORED, provider_reason)
+        if inbound.signal == SIGNAL_OBSERVATION:
+            return _Classification(INBOUND_OBSERVED)
+        if inbound.signal == SIGNAL_AUTHORIZATION:
+            return _Classification(INBOUND_AUTHORIZED)
+        if inbound.action:
+            pressed = parse_action(str(inbound.action))
+            if pressed is None or await self._channel_repo.get_channel_interaction(
+                deployment_id=deployment_id, ref=pressed.ref,
+            ) is None:
+                # A press on a button this platform never showed has no
+                # question to answer and must not start a conversation.
+                return _Classification(INBOUND_IGNORED, "unknown_interaction_action")
+            return _Classification(INBOUND_RECEIVED)
+        if self._attention_ignore_reason(binding, inbound) is not None:
+            return _Classification(INBOUND_OBSERVED)
+        return _Classification(INBOUND_RECEIVED)
+
+    async def _message_conversation(
+        self, inbound: ChannelInbound, *, deployment_id: str, wait: bool,
+    ) -> str | None:
+        """The conversation a message continues, decided before its record is written.
+
+        It is the message's ``conversation_key``, unless the provider asked it
+        to continue the conversation of the message its reference names
+        (``conversation_from_reference``) and core recorded that message. An
+        authorization takes the conversation its observation recorded, and a
+        button press the conversation that showed it, so neither has one of
+        its own. ``wait`` lets a reply that will run wait briefly for the
+        receipt of the delivery it quotes.
+        """
+        if inbound.signal == SIGNAL_AUTHORIZATION or inbound.action:
+            return None
+        if inbound.conversation_from_reference:
+            joined = await self._referenced_conversation(
+                deployment_id, str(inbound.reference), wait=wait,
+            )
+            if joined:
+                return joined
+        return inbound.conversation_key
+
+    async def _referenced_conversation(
+        self, deployment_id: str, reference: str, *, wait: bool,
+    ) -> str | None:
+        """The conversation of a message core recorded, or ``None``.
+
+        A reply core delivered names its conversation through its alias, and
+        an inbound message through the conversation recorded with it.
+        """
+        attempts = _REFERENCE_RESOLVE_ATTEMPTS if wait else 1
+        for attempt in range(attempts):
+            alias = await self._channel_repo.resolve_alias(
+                deployment_id=deployment_id, alias=reference,
+            )
+            if alias is not None and alias.get("conversation_key"):
+                return str(alias["conversation_key"])
+            recorded = await self._channel_repo.get_message_record(
+                deployment_id=deployment_id, dedup_key=reference,
+            )
+            conversation = ((recorded or {}).get("payload") or {}).get("conversation")
+            if conversation:
+                return str(conversation)
+            if attempt + 1 < attempts:
+                await asyncio.sleep(_REFERENCE_RESOLVE_WAIT_SECONDS)
+        return None
+
+    @staticmethod
+    def _prefixed(prefix: str, content: str) -> str:
+        return f"{prefix}\n\n{content}" if prefix else content
 
     @staticmethod
     def _participant_refusal(
@@ -431,14 +729,9 @@ class ChannelIngressService:
         ``all`` (default) responds to everything. ``mentions`` requires the
         provider to have reported at least one attention signal — the Claude
         Tag "a mention starts the thread" behavior. Providers signal; core
-        decides.
+        decides. A message the policy does not address is kept as retained
+        context, so a later signal that addresses it can still run it.
         """
-        provider_reason = str(inbound.ignore_reason or "").strip()
-        if provider_reason:
-            return provider_reason
-        if inbound.action:
-            # A button exists only on the agent's own message.
-            return None
         policy = str(binding.get("attention_policy") or ATTENTION_POLICY_ALL).strip().lower()
         if policy != ATTENTION_POLICY_MENTIONS:
             return None
@@ -462,14 +755,18 @@ class ChannelIngressService:
         if bound:
             return bound
         payload = dict(item.get("payload") or {})
-        user = UserContext(user_id=str(payload.get("creator_user_id") or ""))
         target = await self._targets.resolve(item)
         if target is None:
             raise APIError(
                 code="NOT_FOUND", message="bound agent not found", status_code=404
             )
+        if payload.get("execution_mode") == EXECUTION_LINKED and not payload.get(
+            "execution_user_id"
+        ):
+            payload = await self._capture_linked_account(item, payload, target)
+        user = UserContext(user_id=str(payload.get("creator_user_id") or ""))
         deployment_id = str(item.get("deployment_id") or "")
-        conversation_key = str(payload.get("conversation_key") or "")
+        conversation_key = str(payload.get("conversation") or "")
         execution_user_id = str(payload.get("execution_user_id") or "")
         referenced_session = ""
         pressed = parse_action(str(payload.get("action") or ""))
@@ -480,29 +777,32 @@ class ChannelIngressService:
             )
             if record is not None:
                 referenced_session = str(record.get("session_id") or "")
-                conversation_key = conversation_key or str(record.get("conversation_key") or "")
-        if str(payload.get("reference") or ""):
+                conversation_key = str(record.get("conversation_key") or "")
+                await self._require_account_of(referenced_session, user)
+        reference = str(payload.get("reference") or "")
+        if reference:
             if conversation_key:
                 # An explicit channel key already selects the conversation;
                 # only known delivered aliases need an ownership check here.
                 resolved = await self._channel_repo.resolve_alias(
-                    deployment_id=deployment_id, alias=str(payload["reference"]),
+                    deployment_id=deployment_id, alias=reference,
                 )
             else:
-                resolved = await self._resolve_reference(
-                    deployment_id, str(payload["reference"]),
-                )
+                resolved = await self._resolve_reference(deployment_id, reference)
             if resolved is not None:
                 if not conversation_key:
                     conversation_key = str(resolved.get("conversation_key") or "")
                 referenced_session = str(resolved.get("session_id") or "")
-                referenced = await self._sessions_repo.get_session(referenced_session)
-                if referenced is None or str(referenced.get("user_id") or "") != user.user_id:
-                    raise APIError(
-                        code="CHANNEL_REFERENCE_OWNER_MISMATCH",
-                        message="the referenced conversation belongs to another execution account",
-                        status_code=409,
-                    )
+                await self._require_account_of(referenced_session, user)
+            else:
+                # A reply to another participant's message that ran continues
+                # the conversation it ran in; that conversation has an account.
+                recorded = await self._channel_repo.get_message_record(
+                    deployment_id=deployment_id, dedup_key=reference,
+                )
+                ran_in = str((recorded or {}).get("session_id") or "")
+                if ran_in:
+                    await self._require_account_of(ran_in, user)
         if conversation_key:
             session_id = await self._resolve_conversation_session(
                 user=user,
@@ -532,11 +832,89 @@ class ChannelIngressService:
                 owner_token=str(item["owner_token"]),
                 generation=int(item["generation"]),
                 session_id=session_id,
+                conversation_key=conversation_key or None,
             )
             item["session_id"] = session_id
             if conversation_key:
                 item["resolved_conversation_key"] = conversation_key
         return session_id
+
+    async def _capture_linked_account(
+        self, item: dict[str, Any], payload: dict[str, Any], target: ConversationTarget,
+    ) -> dict[str, Any]:
+        """Resolve and keep the account a linked binding's message runs as.
+
+        It is resolved once, at the message's first drive, and written onto
+        the record before any session is chosen; recovery, a steal and a
+        redelivery run the message as that account. A message whose
+        participant has no linked account, or whose account cannot use the
+        Agent, is refused: it never runs as the Agent's owner instead.
+        """
+        participant = str(payload.get("participant") or "").strip()
+        if not participant:
+            raise APIError(
+                code="CHANNEL_PARTICIPANT_REQUIRED",
+                message="a message runs as its participant's linked account, and it names none",
+                status_code=409,
+            )
+        account = str(await channel_account_resolver().resolve(
+            deployment_id=str(item.get("deployment_id") or ""),
+            channel=str(item.get("channel_name") or ""),
+            participant=participant,
+        ) or "").strip()
+        if not account:
+            raise APIError(
+                code="CHANNEL_PARTICIPANT_NOT_LINKED",
+                message=f"participant {participant!r} is linked to no account on this binding",
+                status_code=403,
+            )
+        if not await self._targets.may_start_as(target, account):
+            raise APIError(
+                code="CHANNEL_ACCOUNT_NOT_AUTHORIZED",
+                message="the participant's linked account cannot use this agent",
+                status_code=403,
+            )
+        captured = await self._channel_repo.capture_inbound_account(
+            item_id=str(item["_id"]), owner_token=str(item["owner_token"]),
+            generation=int(item["generation"]), user_id=account,
+        )
+        if captured is None:
+            raise RuntimeError(
+                f"channel item {item['_id']} lost its dispatch ownership before "
+                "its account was kept"
+            )
+        item["payload"] = captured
+        return dict(captured)
+
+    async def _require_account_of(self, session_id: str, user: UserContext) -> None:
+        """Refuse input that would continue another account's conversation."""
+        referenced = await self._sessions_repo.get_session(session_id)
+        if referenced is None or str(referenced.get("user_id") or "") != user.user_id:
+            raise APIError(
+                code="CHANNEL_REFERENCE_OWNER_MISMATCH",
+                message="the referenced conversation belongs to another execution account",
+                status_code=409,
+            )
+
+    async def _refuse_item(self, item: dict[str, Any], code: str) -> bool:
+        """Record a refusal the participant can act on, and tell them why.
+
+        The message leaves retained context. Only the worker whose write
+        records the refusal sends the notice, so a redelivery is not told
+        twice. Returns whether this worker recorded it.
+        """
+        recorded = await self._channel_repo.mark_inbound_ignored(
+            item_id=str(item["_id"]), owner_token=str(item["owner_token"]),
+            generation=int(item["generation"]), reason=code, exclude_from_context=True,
+        )
+        if recorded:
+            try:
+                await self._notify(item, _REFUSAL_NOTICES[code])
+            except Exception:
+                # The refusal is durable; a notice the platform rejects must
+                # not turn it into a redelivered, re-refused message.
+                logger.exception("channel refusal notice failed: item=%s reason=%s", item["_id"], code)
+        return recorded
 
     async def _resolve_reference(
         self, deployment_id: str, reference: str
@@ -573,17 +951,22 @@ class ChannelIngressService:
                 item_id=item_id, owner_token=owner, generation=generation
             ):
                 return  # lost ownership before starting — successor owns it
-            session_id = await self._resolve_item_session(item)
+            try:
+                session_id = await self._resolve_item_session(item)
+            except APIError as exc:
+                if exc.code not in _REFUSAL_NOTICES:
+                    raise
+                await self._refuse_item(item, exc.code)
+                return
+            # A linked binding's message keeps its account on the record now.
+            payload = dict(item.get("payload") or {})
             if not session_id:
                 await self._fail_item(item, "conversation start returned no session")
                 return
-            # Serialize on the effective conversation — a reply-chain
-            # reference resolves into its alias's conversation, so the lock
-            # key comes from resolution, not just the raw payload.
-            conversation_key = (
-                str(item.get("resolved_conversation_key") or "")
-                or str(payload.get("conversation_key") or "")
-            ) or None
+            # Serialize on the conversation the session was resolved for. A
+            # re-drive finds its session already bound and reads that key from
+            # the item, so it takes the same lock as the first drive.
+            conversation_key = str(item.get("resolved_conversation_key") or "") or None
             if conversation_key is not None:
                 lock_generation = await self._acquire_conversation_lock_blocking(
                     deployment_id, conversation_key, owner,
@@ -1526,7 +1909,6 @@ class ChannelIngressService:
         """
         outbox_id = str(entry.get("_id") or "")
         channel_name = str(entry.get("channel_name") or "")
-        command_id = str(entry.get("command_id") or "")
         turn_id = str(entry.get("turn_id") or "")
         reply_context = dict(entry.get("reply_context") or {})
         known_aliases = [str(a) for a in (entry.get("delivery_aliases") or [])]
@@ -1558,8 +1940,7 @@ class ChannelIngressService:
             if cursor < 0:
                 receipt = await handle.emit(
                     ChannelEvent(
-                        type=EVENT_TURN_STARTED, seq=seq,
-                        command_id=command_id, turn_id=turn_id,
+                        type=EVENT_TURN_STARTED, seq=seq, turn_id=turn_id,
                         response_id=str(entry["response_id"]),
                     )
                 )
@@ -1582,7 +1963,7 @@ class ChannelIngressService:
                     receipt = await handle.emit(
                         ChannelEvent(
                             type=EVENT_PROGRESS, seq=seq, text=text_so_far,
-                            command_id=command_id, turn_id=turn_id,
+                            turn_id=turn_id,
                             response_id=str(entry["response_id"]),
                         )
                     )
@@ -1603,7 +1984,7 @@ class ChannelIngressService:
                     receipt = await handle.emit(
                         ChannelEvent(
                             type=EVENT_SETTLED, seq=seq, text=final_text,
-                            command_id=command_id, turn_id=turn_id,
+                            turn_id=turn_id,
                             response_id=str(entry["response_id"]),
                             interaction=(
                                 shown if provider.supports_interaction_actions else None
@@ -1625,8 +2006,7 @@ class ChannelIngressService:
                         await handle.emit(
                             ChannelEvent(
                                 type=EVENT_FAILED, seq=seq,
-                                error=response.error,
-                                command_id=command_id, turn_id=turn_id,
+                                error=response.error, turn_id=turn_id,
                                 response_id=str(entry["response_id"]),
                             )
                         )
@@ -1706,7 +2086,7 @@ class ChannelIngressService:
             await self._channel_repo.create_outbox_entry(
                 deployment_id=str(subscription["deployment_id"]),
                 channel_name=str(subscription["channel_name"]), session_id=session_id,
-                command_id="", turn_id=response.turn_id,
+                turn_id=response.turn_id,
                 response_id=response.response_id, response_seq=response.response_seq,
                 start_after_seq=response.start_after_seq,
                 reply_context=dict(subscription["reply_context"]),
@@ -1749,6 +2129,33 @@ class ChannelIngressService:
         if recovered:
             logger.info("channel inbound recovery re-drove %d items", recovered)
         return recovered
+
+    async def expire_authorizations(
+        self, *, limit: int = 50, now: float | None = None,
+    ) -> int:
+        """Retire authorizations whose observation never arrived.
+
+        The record dies with evidence and the participant who invoked the
+        agent is told the message was not answered. A notice the platform
+        rejects is logged; the durable DEAD record stays the operator's
+        evidence. Returns how many authorizations expired.
+        """
+        expired = await self._channel_repo.expire_authorizations(limit=limit, now=now)
+        for record in expired:
+            logger.error(
+                "channel authorization expired without its observation: item=%s binding=%s",
+                record["_id"], record.get("deployment_id"),
+            )
+            if record.get("recall") is not None:
+                # The participant withdrew the message; nothing is owed to them.
+                continue
+            try:
+                await self._notify(record, _AUTHORIZATION_EXPIRED_NOTICE)
+            except Exception:
+                logger.exception(
+                    "channel authorization expiry notice failed: item=%s", record["_id"],
+                )
+        return len(expired)
 
     async def sweep_pending_outbox(self, *, limit: int = 50) -> int:
         """Re-deliver abandoned outbox rows (boot + periodic recovery)."""

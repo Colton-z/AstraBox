@@ -2,15 +2,14 @@
 
 The default is written into the record at create time because the capacity
 sweep selects Agents whose stored ``prepared_capacity`` is positive: a create that
-leaves the key out would read as off everywhere. It follows the deployment,
-since prewarming needs ``ASTRABOX_AGENT_PREWARM_REDIS_URL`` and an Agent
-created with it on where that store is missing could only record
-``AGENT_PREWARM_CONFIG_INVALID``.
+leaves the key out would read as off everywhere. It follows the Agent's sandbox
+backend, which says whether its client pool can run here: the OpenSandbox pool
+needs ``ASTRABOX_AGENT_PREWARM_REDIS_URL``, and an Agent created with capacity
+where that store is missing could only record ``AGENT_PREWARM_CONFIG_INVALID``.
 """
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -22,18 +21,29 @@ from astrabox.common.utils.user_context import UserContext
 from astrabox.core.service.orchestrator.agent_config_service import AgentConfigService
 from astrabox.core.service.orchestrator.agent_schema import get_agent_schema
 from astrabox.providers import register_builtin_providers
+from astrabox.seams import sandbox as sandbox_seam
 
 _REDIS_URL = "redis://redis:6379/0"
 
 
+def _open_sandbox_deployment(monkeypatch: pytest.MonkeyPatch, redis_url: str | None) -> None:
+    """A deployment whose default sandbox backend is OpenSandbox."""
+    register_builtin_providers()
+    monkeypatch.setattr(sandbox_seam, "_DEFAULT_BACKEND", "open_sandbox")
+    if redis_url is None:
+        monkeypatch.delenv("ASTRABOX_AGENT_PREWARM_REDIS_URL", raising=False)
+    else:
+        monkeypatch.setenv("ASTRABOX_AGENT_PREWARM_REDIS_URL", redis_url)
+
+
 @pytest.fixture
 def deployment_can_prewarm(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("ASTRABOX_AGENT_PREWARM_REDIS_URL", _REDIS_URL)
+    _open_sandbox_deployment(monkeypatch, _REDIS_URL)
 
 
 @pytest.fixture
 def deployment_cannot_prewarm(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("ASTRABOX_AGENT_PREWARM_REDIS_URL", raising=False)
+    _open_sandbox_deployment(monkeypatch, None)
 
 
 class _User:
@@ -156,13 +166,15 @@ async def test_an_update_leaves_an_existing_agents_prewarm_alone() -> None:
 
 @pytest.mark.parametrize(
     ("redis_url", "expected"),
-    [(_REDIS_URL, 1), ("", 0)],
+    [(_REDIS_URL, 1), (None, 0)],
     ids=["deployment-can-prewarm", "deployment-cannot-prewarm"],
 )
 def test_the_form_schema_serves_the_deployments_default(
-    redis_url: str, expected: int
+    monkeypatch: pytest.MonkeyPatch, redis_url: str | None, expected: int
 ) -> None:
-    schema = get_agent_schema(SimpleNamespace(agent_prewarm_redis_url=redis_url))
+    _open_sandbox_deployment(monkeypatch, redis_url)
+
+    schema = get_agent_schema()
 
     defaults = {f["key"]: f["default"] for f in schema["fields"] if "default" in f}
     assert defaults["prepared_capacity"] == expected
@@ -177,10 +189,7 @@ def test_the_schema_route_carries_the_default_to_the_console(
     monkeypatch: pytest.MonkeyPatch, redis_url: str | None, expected: int
 ) -> None:
     """The response model must not drop ``default`` on the way out."""
-    if redis_url is None:
-        monkeypatch.delenv("ASTRABOX_AGENT_PREWARM_REDIS_URL", raising=False)
-    else:
-        monkeypatch.setenv("ASTRABOX_AGENT_PREWARM_REDIS_URL", redis_url)
+    _open_sandbox_deployment(monkeypatch, redis_url)
 
     async def _user(_request: object) -> UserContext:
         return UserContext(user_id="author")

@@ -647,7 +647,11 @@ class AssistantService:
         """What the layers above an Assistant provide, for its owner to read.
 
         Names and sources only: a Credential Vault the deployment binds is
-        mentioned by count, and nothing a layer stores is writable here.
+        mentioned by count, and nothing a layer stores is writable here. The
+        Skills a layer writes itself and those it selects from the extension
+        catalog are reported apart, as ``skills`` and ``catalog_skills``,
+        because a deployment that runs no catalog provides only the first; a
+        reader learns which is the case from ``/api/v1/extension-provider``.
         """
 
         from astrabox.core.service.orchestrator.assistant.assistant_layers import inherited_layers
@@ -657,6 +661,7 @@ class AssistantService:
         summary: dict[str, Any] = {
             "instructions": False,
             "skills": [],
+            "catalog_skills": [],
             "mcp_servers": [],
             "catalog_mcp_servers": 0,
             "packages": [],
@@ -665,9 +670,10 @@ class AssistantService:
         for _label, layer in layers:
             summary["instructions"] = summary["instructions"] or bool(str(layer.get("instructions") or "").strip())
             catalog = layer.get("extension_catalog") if isinstance(layer.get("extension_catalog"), dict) else {}
-            for skill in [*(layer.get("skills") or []), *(catalog.get("skills") or [])]:
-                if skill not in summary["skills"]:
-                    summary["skills"].append(skill)
+            for key, skills in (("skills", layer.get("skills")), ("catalog_skills", catalog.get("skills"))):
+                for skill in skills or []:
+                    if skill not in summary[key]:
+                        summary[key].append(skill)
             summary["mcp_servers"].extend(
                 name for name in (layer.get("mcp_servers") or {}) if name not in summary["mcp_servers"]
             )
@@ -975,10 +981,13 @@ class AssistantService:
         from astrabox.core.service.orchestrator.agent_extension_service import (
             configured_extension_provider,
             extension_catalog_view,
+            refuse_catalog_read,
         )
 
         assistant = await self._must_use_assistant(user, assistant_id)
         provider = configured_extension_provider()
+        if provider is None:
+            raise refuse_catalog_read()
         catalog = await provider.list_catalog(org_id=_assistant_org_id(user, assistant))
         return {
             "assistant_id": assistant_id,
@@ -997,11 +1006,15 @@ class AssistantService:
 
         The Assistant stores what an Agent stores: this provider's MCP
         assignment rows and the Skill descriptors. Both are part of its
-        revision, so the runtime is prepared again.
+        revision, so the runtime is prepared again. Without an extension
+        catalog only an empty selection is accepted, and it removes every
+        catalog selection the Assistant holds.
         """
 
         from astrabox.core.service.orchestrator.agent_extension_service import (
             AGENT_EXTENSION_CATALOG_FIELD,
+            catalog_selection,
+            clear_catalog_selection,
             compile_extension_selection,
             configured_extension_provider,
             extension_catalog_view,
@@ -1010,9 +1023,21 @@ class AssistantService:
             AGENT_MCP_ASSIGNMENTS_FIELD,
             replace_provider_assignments,
         )
+        from astrabox.seams.extensions import ExtensionCatalog
 
         assistant = await self._must_use_assistant(user, assistant_id)
         provider = configured_extension_provider()
+        if provider is None:
+            cleared = clear_catalog_selection(mcp_server_ids=mcp_server_ids, skill_ids=skill_ids)
+            if catalog_selection(assistant):
+                await self._catalog_repo.update_assistant(
+                    assistant_id, {**cleared, "updated_at": utcnow_iso()}
+                )
+            refreshed = await self._catalog_repo.get_assistant(assistant_id) or assistant
+            return {
+                "assistant_id": assistant_id,
+                **extension_catalog_view(refreshed, ExtensionCatalog(), ""),
+            }
         catalog, snapshot, selected_mcp = await compile_extension_selection(
             provider,
             org_id=_assistant_org_id(user, assistant),

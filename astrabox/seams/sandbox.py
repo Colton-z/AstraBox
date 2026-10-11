@@ -45,6 +45,16 @@ process-wide default backend, which is deployment configuration: the composition
 root calls :func:`set_default_sandbox_backend` once at bootstrap (from settings);
 no backend name is hardcoded anywhere in the dispatch path.
 
+Installed is not enabled. Registration says a provider is installed in this
+process; the composition root then publishes the deployment's enabled set
+(:func:`set_enabled_sandbox_backends`), and every lookup and aggregation reads
+only that set: name resolution, the backend and permission enums an Environment
+form offers, capability questions, reverse lookup of a live handle, background
+inventory, and shutdown. A record that names an installed backend this
+deployment has not enabled fails with :class:`SandboxBackendDisabled` instead of
+being served by another backend. A process that never ran the composition root
+(a script, a unit test) has no enabled set, and every installed provider answers.
+
 This module imports only the standard library plus import-light sibling seams and
 ``astrabox.common.utils.errors`` (the transport-neutral error type) — never the
 orchestrator core, so a provider distribution can depend on the seam without
@@ -61,7 +71,7 @@ import json as _json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from typing import TYPE_CHECKING
 from typing import Any, Literal, Mapping, Protocol, cast, runtime_checkable
 
@@ -270,6 +280,19 @@ class SandboxClientPoolSpec:
             )
         object.__setattr__(self, "pool_name", name)
         object.__setattr__(self, "creation_image", image)
+
+
+@dataclass(frozen=True, slots=True)
+class SandboxClientPoolReadiness:
+    """Whether this deployment gives the backend's client pool what it needs.
+
+    ``detail`` names the missing piece when ``available`` is False, in the
+    backend's own terms (a coordination store, a credential), so a refusal
+    can say what to configure.
+    """
+
+    available: bool
+    detail: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -852,6 +875,106 @@ class SandboxIsolatedSession:
     workspace_source_dir: str | None = None
 
 
+#: What one data-plane assessment found (:meth:`SandboxProvider.assess_data_plane`).
+SANDBOX_DATA_PLANE_ALIVE = "ALIVE"
+SANDBOX_DATA_PLANE_DEAD = "DEAD"
+SANDBOX_DATA_PLANE_UNKNOWN = "UNKNOWN"
+
+
+@dataclass(frozen=True, slots=True)
+class SandboxDataPlaneAssessment:
+    """Whether a box's data plane is there, as its provider can tell.
+
+    ``DEAD`` is evidence the box is gone even though its control-plane record
+    may still answer; only it licenses replacing the box. ``UNKNOWN`` is no
+    evidence either way, and ``detail`` says why.
+    """
+
+    #: One of :data:`SANDBOX_DATA_PLANE_ALIVE`, :data:`SANDBOX_DATA_PLANE_DEAD`
+    #: and :data:`SANDBOX_DATA_PLANE_UNKNOWN`.
+    state: str
+    detail: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class SandboxMemoryHeadroom:
+    """A box's own memory limit and current use, in bytes, as the box reports them.
+
+    Asked of the box rather than kept by the platform: the limit is whatever the
+    box's template set, and the kernel already holds it.
+    """
+
+    limit_bytes: int
+    current_bytes: int
+
+
+class SandboxUnreachable(APIError):
+    """The box could not be reached; nothing is proved about whether it exists.
+
+    A failed connection is not evidence that a box is gone. Only its control
+    plane, or the provider's data-plane assessment, may say that. A caller
+    treats the box as unusable for this operation and leaves its records alone.
+    """
+
+    def __init__(self, sandbox_id: str, detail: str) -> None:
+        super().__init__(
+            code="SANDBOX_UNREACHABLE",
+            message=f"sandbox {sandbox_id!r} could not be reached: {detail}",
+            status_code=503,
+        )
+        self.sandbox_id = sandbox_id
+
+
+class SandboxProbeFailed(APIError):
+    """The box answered a probe with something its provider cannot read.
+
+    Raised rather than read as "no answer": a probe that quietly degraded would
+    turn a reading defect into a capacity decision nobody sees.
+    """
+
+    def __init__(self, sandbox_id: str, *, probe: str, detail: str) -> None:
+        super().__init__(
+            code="SANDBOX_PROBE_FAILED",
+            message=(
+                f"sandbox {sandbox_id!r} answered the {probe} probe with "
+                f"something that cannot be read: {detail}"
+            ),
+            status_code=502,
+        )
+        self.sandbox_id = sandbox_id
+        self.probe = probe
+
+
+class SandboxResourcesUnsupported(APIError):
+    """The backend cannot create a box with the deployment's resource envelope.
+
+    Raised by a provider's ``fit_resources`` before anything is allocated, in
+    place of creating a box of another shape: a backend that offers fixed
+    shapes refuses an envelope it has none for, and the deployment chooses one
+    of its shapes with ``ASTRABOX_SANDBOX_*_LIMIT`` / ``*_REQUEST``.
+    """
+
+    def __init__(
+        self,
+        backend: str,
+        limits: Mapping[str, str],
+        requests: Mapping[str, str],
+        *,
+        detail: str,
+    ) -> None:
+        super().__init__(
+            code="SANDBOX_RESOURCES_UNSUPPORTED",
+            message=(
+                f"sandbox backend {backend!r} cannot create a box with limits "
+                f"{dict(limits)} and requests {dict(requests)}: {detail}"
+            ),
+            status_code=409,
+        )
+        self.backend = backend
+        self.limits = dict(limits)
+        self.requests = dict(requests)
+
+
 @dataclass(frozen=True, slots=True)
 class SandboxDiagnostics:
     """One PLAIN-TEXT diagnostic report about one sandbox.
@@ -1038,6 +1161,17 @@ class SandboxProvider(ABC):
     #: guard exactly as a failed initial preparation does. ``None`` (the
     #: default) means the prepared state never expires — no refresh runs.
     turn_preparation_validity_seconds: float | None = None
+    #: Whether the control plane can enumerate and describe this backend's
+    #: sandboxes (:meth:`list_sandboxes` / :meth:`describe_sandbox`). The
+    #: background sweeps that reclaim ownerless boxes and retire boxes with
+    #: stale network wiring read only backends that declare it; a backend that
+    #: cannot list leaves its abandoned boxes to its own expiry, and startup
+    #: says so. Registration checks that both reads are implemented.
+    supports_inventory_listing: bool = False
+    #: Environment variables only this provider reads. When the provider is
+    #: installed but not enabled, setting one does nothing, so startup warns
+    #: about each one that is set.
+    owned_settings: tuple[str, ...] = ()
 
     def workspace_route(self) -> "WorkspaceRoute | None":
         """How this backend brings persistent workspace storage into its boxes.
@@ -1207,6 +1341,20 @@ class SandboxProvider(ABC):
             status_code=501,
         )
 
+    def client_pool_readiness(self) -> SandboxClientPoolReadiness:
+        """Whether this deployment configures what the client pool needs.
+
+        Asked before an Agent is given prepared capacity, so a pool that cannot
+        start is refused when it is configured instead of recorded as a failure
+        after every attempt.
+        """
+
+        raise APIError(
+            code="SANDBOX_CLIENT_POOL_UNSUPPORTED",
+            message=f"sandbox backend {self.name!r} has no client-side pool",
+            status_code=501,
+        )
+
     def created_with_current_network_wiring(self, descriptor: SandboxDescriptor) -> bool:
         """Whether this resource still carries the deployment's sandbox-facing addresses.
 
@@ -1237,6 +1385,52 @@ class SandboxProvider(ABC):
     def runtime_defaults(self) -> SandboxRuntimeDefaults:
         """Deploy-time defaults (seed image / agent command). Default: no opinion."""
         return SandboxRuntimeDefaults()
+
+    def fit_resources(
+        self, limits: Mapping[str, str], requests: Mapping[str, str]
+    ) -> tuple[dict[str, str], dict[str, str]]:
+        """Return the resources this runtime creates the box with.
+
+        The input is the deployment's envelope, and the result is what a
+        :class:`SandboxCreateSpec` carries, so the spec states the box that is
+        actually created. The default honours the envelope as given. A runtime
+        that cannot honour it raises :class:`SandboxResourcesUnsupported`
+        before anything is allocated rather than creating a box of another
+        shape; the deployment then selects one it offers. The one narrowing a
+        runtime may do is a hard host ceiling that would fail every create:
+        Docker refuses a CPU limit above its host's CPU count, so the bundled
+        Docker server lowers it to that count.
+        """
+        return dict(limits), dict(requests)
+
+    def per_box_overhead(self) -> tuple[float, int]:
+        """CPU cores and memory bytes each box costs beyond its own limits.
+
+        A runtime that starts a companion beside every box under a ceiling of
+        its own (the bundled Docker server's egress sidecar) reports that
+        ceiling, and the sandbox quota charges it with the box. The default is
+        nothing.
+        """
+        return (0.0, 0)
+
+    def paused_box_releases_resources(self) -> bool:
+        """Whether a paused box gives its CPU and memory back to the host.
+
+        A runtime that pauses by saving the box and removing its process (a
+        Kubernetes pause commits the box and releases its Pod) answers True,
+        and the sandbox quota stops charging a paused box. The default, False,
+        is a pause that only freezes the box in place, still holding its memory.
+        """
+        return False
+
+    async def host_memory_bytes(self) -> int | None:
+        """Memory of the single host this backend runs every box on.
+
+        The sandbox quota derives its memory default from it when the operator
+        sets none. ``None`` — the default — means the backend's boxes may run on
+        hosts this deployment cannot see, so nothing is derived.
+        """
+        return None
 
     async def prepare_turn(self, *, context: SandboxTurnContext) -> None:
         """Prepare provider-owned state for one imminent engine write.
@@ -1905,6 +2099,69 @@ class SandboxProvider(ABC):
             status_code=501,
         )
 
+    async def assess_data_plane(self, sandbox_id: str) -> SandboxDataPlaneAssessment:
+        """Whether the box's data plane is there while its control plane may say so.
+
+        The false-Ready shape: a box killed out of band can leave a control-plane
+        record that still answers as running while nothing behind its endpoint
+        exists. A provider that can touch the data plane answers ``DEAD`` or
+        ``ALIVE``; the default has no way to look and answers ``UNKNOWN``,
+        which is no evidence.
+        """
+        _ = sandbox_id
+        return SandboxDataPlaneAssessment(
+            state=SANDBOX_DATA_PLANE_UNKNOWN,
+            detail=f"sandbox backend {self.name!r} cannot assess a box's data plane",
+        )
+
+    async def count_active_isolated_sessions(self, sandbox_id: str) -> int:
+        """How many isolated sessions the box itself holds active.
+
+        The last word before a shared box is destroyed. Every platform record of
+        occupancy is written at some point during a placement, so each has a
+        window in which a conversation is real but not yet recorded; the box's
+        own session table has none. Raises when there is no answer
+        (:class:`SandboxUnreachable` for a box that cannot be reached), and a
+        caller never reads a failure as an empty box.
+        """
+        _ = sandbox_id
+        raise APIError(
+            code="SANDBOX_ISOLATION_UNSUPPORTED",
+            message=(
+                f"sandbox backend {self.name!r} cannot count a box's isolated sessions"
+            ),
+            status_code=501,
+        )
+
+    async def read_memory_headroom(self, sandbox_id: str) -> SandboxMemoryHeadroom | None:
+        """The box's memory limit and current use; ``None`` when it has no limit.
+
+        A box without a memory limit is never packed with another conversation,
+        so ``None`` is an answer, not a failure. Raises
+        :class:`SandboxUnreachable` when the box cannot be reached and
+        :class:`SandboxProbeFailed` when its answer cannot be read.
+        """
+        _ = sandbox_id
+        raise APIError(
+            code="SANDBOX_ISOLATION_UNSUPPORTED",
+            message=f"sandbox backend {self.name!r} cannot read a box's memory",
+            status_code=501,
+        )
+
+    async def read_listening_ports(self, sandbox_id: str) -> frozenset[int]:
+        """The TCP ports something in the box is listening on.
+
+        Raises :class:`SandboxUnreachable` when the box cannot be reached, so a
+        placement into a box that cannot answer is refused instead of being made
+        without its port-collision check.
+        """
+        _ = sandbox_id
+        raise APIError(
+            code="SANDBOX_ISOLATION_UNSUPPORTED",
+            message=f"sandbox backend {self.name!r} cannot read a box's listening ports",
+            status_code=501,
+        )
+
     async def describe_sandbox(self, sandbox_id: str) -> SandboxDescriptor:
         """The control plane's description of one sandbox by id."""
         _ = sandbox_id
@@ -1933,11 +2190,130 @@ class SandboxProvider(ABC):
             status_code=501,
         )
 
+
+@dataclass(frozen=True, slots=True)
+class SandboxCapabilityRule:
+    """What declaring one capability flag obliges a provider to implement.
+
+    ``obliges`` are the :class:`SandboxProvider` methods the provider must
+    override when the flag is True; ``requires`` are other flags that must be
+    True with it.
+    """
+
+    flag: str
+    obliges: tuple[str, ...]
+    requires: tuple[str, ...] = ()
+
+
+#: Every capability flag and its obligations, checked by :func:`register_sandbox`.
+#: A flag added to :class:`SandboxProvider` gets a row here, and with it the
+#: registration check; a flag without a row is checked by nothing.
+SANDBOX_CAPABILITY_RULES: tuple[SandboxCapabilityRule, ...] = (
+    SandboxCapabilityRule(
+        "supports_isolated_sessions",
+        (
+            "read_isolation_capability",
+            "prepare_isolated_workspace",
+            "open_isolated_session",
+            "run_in_isolated_session",
+            "stream_in_isolated_session",
+            "close_isolated_session",
+            "count_active_isolated_sessions",
+            "read_memory_headroom",
+            "read_listening_ports",
+        ),
+    ),
+    SandboxCapabilityRule(
+        "supports_isolated_session_recovery",
+        ("find_isolated_sessions_by_workspace",),
+        requires=("supports_isolated_sessions",),
+    ),
+    SandboxCapabilityRule("supports_pause", ("pause", "resume")),
+    SandboxCapabilityRule(
+        "supports_client_pool",
+        (
+            "ensure_client_pool",
+            "acquire_client_pool",
+            "describe_client_pool",
+            "retire_client_pool",
+            "owns_unclaimed_sandbox",
+            "client_pool_readiness",
+        ),
+    ),
+    SandboxCapabilityRule("supports_correlated_create", ("find_sandbox_by_assignment",)),
+    SandboxCapabilityRule("supports_egress_credential_injection", ("apply_credential_vault",)),
+    SandboxCapabilityRule("supports_create_network_policy", ("admit_runtime_egress",)),
+    SandboxCapabilityRule("supports_inventory_listing", ("list_sandboxes", "describe_sandbox")),
+    SandboxCapabilityRule(
+        "supports_turn_preparation",
+        ("prepare_turn", "owns_sandbox"),
+        requires=("sandbox_is_profile_exclusive",),
+    ),
+)
+
+
+def _overrides(provider: Any, method: str) -> bool:
+    """Whether ``provider``'s class implements ``method`` itself.
+
+    A class that does not subclass :class:`SandboxProvider` and lacks the
+    method does not implement it either.
+    """
+
+    own = getattr(type(provider), method, None)
+    return own is not None and own is not getattr(SandboxProvider, method, None)
+
+
+def unsupported_sandbox_feature(
+    provider: SandboxProvider, *, feature: str, flags: Sequence[str]
+) -> str | None:
+    """The refusal for ``feature`` on ``provider``, or ``None`` when it can run.
+
+    ``flags`` are the capabilities the feature needs. A caller raises its own
+    error with the sentence (a 400 on a write path, ``BootstrapConfigError`` at
+    startup), so a configuration the backend cannot carry is refused where it
+    is set instead of failing at the first conversation that needs it.
+    """
+
+    missing = [flag for flag in flags if getattr(provider, flag, False) is not True]
+    if not missing:
+        return None
+    return (
+        f"sandbox backend {provider.name!r} cannot provide {feature}: it does not "
+        f"declare {', '.join(missing)}"
+    )
+
+
+class SandboxBackendDisabled(APIError):
+    """A record names a sandbox backend this deployment installed but did not enable.
+
+    The record is not served by another backend: a box created by one backend
+    is not addressable through another, and quietly substituting the default
+    would act on the wrong sandbox. The operator either enables the backend
+    again or retires the records that still name it.
+    """
+
+    def __init__(self, backend: str, enabled: list[str]) -> None:
+        super().__init__(
+            code="SANDBOX_BACKEND_DISABLED",
+            message=(
+                f"sandbox backend {backend!r} is installed but not enabled in this "
+                f"deployment (enabled: {enabled}); add it to "
+                "ASTRABOX_SANDBOX_BACKENDS to serve records that name it"
+            ),
+            status_code=409,
+        )
+        self.backend = backend
+
+
 _BACKENDS: dict[str, SandboxProvider] = {}
 
 #: Deployment-configured default backend name. Set once at bootstrap from
 #: settings; never hardcoded to a concrete provider here.
 _DEFAULT_BACKEND: str = ""
+
+#: The deployment's enabled backend names, published by the composition root.
+#: ``None`` until then, which leaves every installed provider answering.
+_ENABLED_BACKENDS: tuple[str, ...] | None = None
 
 #: Reads this installation's id from wherever the composition root keeps it,
 #: and the id once read. The id never changes for a database, so one read per
@@ -1947,10 +2323,21 @@ _INSTALLATION_ID: str = ""
 
 
 def register_sandbox(provider: SandboxProvider) -> None:
-    """Register a provider under its ``name``. Last registration wins."""
+    """Register a provider under its ``name``. Last registration wins.
+
+    Every flag in :data:`SANDBOX_CAPABILITY_RULES` must be a bool, and a flag
+    declared True must come with the methods and flags its rule names: a
+    half-declared capability would otherwise fail at the moment a conversation
+    needs it.
+    """
     name = str(getattr(provider, "name", "") or "").strip().lower()
     if not name:
         raise RuntimeError("sandbox provider must have a non-empty name")
+    for rule in SANDBOX_CAPABILITY_RULES:
+        if not isinstance(getattr(provider, rule.flag, False), bool):
+            raise RuntimeError(
+                f"sandbox provider {name!r} capability {rule.flag} must be bool"
+            )
     permission_levels = getattr(
         provider,
         "supported_permission_levels",
@@ -1987,53 +2374,7 @@ def register_sandbox(provider: SandboxProvider) -> None:
         raise RuntimeError(
             f"sandbox provider {name!r} capability sandbox_is_profile_exclusive must be bool"
         )
-    isolates_sessions = getattr(provider, "supports_isolated_sessions", False)
-    if not isinstance(isolates_sessions, bool):
-        raise RuntimeError(
-            f"sandbox provider {name!r} capability supports_isolated_sessions must be bool"
-        )
-    if isolates_sessions:
-        # All three or none. A backend that reports the capability but cannot
-        # open a session fails at the moment a conversation needs a box, which
-        # is the worst possible time to discover a half-declared capability.
-        for op in (
-            "read_isolation_capability",
-            "prepare_isolated_workspace",
-            "open_isolated_session",
-            "run_in_isolated_session",
-            "close_isolated_session",
-        ):
-            if getattr(type(provider), op, None) is getattr(SandboxProvider, op):
-                raise RuntimeError(
-                    f"sandbox provider {name!r} declares supports_isolated_sessions "
-                    f"but does not override {op}"
-                )
-    recovers_isolated_sessions = getattr(
-        provider, "supports_isolated_session_recovery", False
-    )
-    if not isinstance(recovers_isolated_sessions, bool):
-        raise RuntimeError(
-            f"sandbox provider {name!r} capability "
-            "supports_isolated_session_recovery must be bool"
-        )
-    if recovers_isolated_sessions and not isolates_sessions:
-        raise RuntimeError(
-            f"sandbox provider {name!r} cannot recover isolated sessions "
-            "without supporting them"
-        )
-    if recovers_isolated_sessions and (
-        getattr(type(provider), "find_isolated_sessions_by_workspace", None)
-        is getattr(SandboxProvider, "find_isolated_sessions_by_workspace")
-    ):
-        raise RuntimeError(
-            f"sandbox provider {name!r} declares isolated-session recovery "
-            "but does not override find_isolated_sessions_by_workspace"
-        )
     prepares_turns = getattr(provider, "supports_turn_preparation", False)
-    if not isinstance(prepares_turns, bool):
-        raise RuntimeError(
-            f"sandbox provider {name!r} capability supports_turn_preparation must be bool"
-        )
     if prepares_turns:
         contract_version = getattr(provider, "turn_preparation_contract_version", None)
         if (
@@ -2086,6 +2427,28 @@ def register_sandbox(provider: SandboxProvider) -> None:
                 f"sandbox provider {name!r} turn_preparation_validity_seconds "
                 "must be a positive number of seconds"
             )
+    for rule in SANDBOX_CAPABILITY_RULES:
+        if not getattr(provider, rule.flag, False):
+            continue
+        for required in rule.requires:
+            if getattr(provider, required, False) is not True:
+                raise RuntimeError(
+                    f"sandbox provider {name!r} declares {rule.flag}, which "
+                    f"requires {required}"
+                )
+        for op in rule.obliges:
+            if not _overrides(provider, op):
+                raise RuntimeError(
+                    f"sandbox provider {name!r} declares {rule.flag} but does not "
+                    f"override {op}"
+                )
+    owned_settings = getattr(provider, "owned_settings", ())
+    if not isinstance(owned_settings, tuple) or any(
+        type(setting) is not str or not setting.strip() for setting in owned_settings
+    ):
+        raise RuntimeError(
+            f"sandbox provider {name!r} owned_settings must be a tuple of variable names"
+        )
     _BACKENDS[name] = provider
 
 
@@ -2097,6 +2460,31 @@ def set_default_sandbox_backend(name: str | None) -> None:
     exactly one provider is registered — the unambiguous case)."""
     global _DEFAULT_BACKEND
     _DEFAULT_BACKEND = str(name or "").strip().lower()
+
+
+def set_enabled_sandbox_backends(names: Sequence[str]) -> None:
+    """Publish the backends this deployment enables (deployment configuration).
+
+    Called by the composition root at bootstrap. Every name must already be
+    installed: enabling a backend this process cannot construct would only fail
+    later, at the first record that names it. Registering a provider afterwards
+    installs it without enabling it, so neither an entry point loaded late nor a
+    direct :func:`register_sandbox` call widens the set.
+    """
+    global _ENABLED_BACKENDS
+    normalized = tuple(str(name or "").strip().lower() for name in names)
+    if not normalized or any(not name for name in normalized):
+        raise RuntimeError("the enabled sandbox backends must be a non-empty list of names")
+    duplicates = sorted({name for name in normalized if normalized.count(name) > 1})
+    if duplicates:
+        raise RuntimeError(f"sandbox backends enabled more than once: {duplicates}")
+    missing = [name for name in normalized if name not in _BACKENDS]
+    if missing:
+        raise RuntimeError(
+            f"sandbox backends {missing} are enabled but not installed "
+            f"(installed: {sorted(_BACKENDS)})"
+        )
+    _ENABLED_BACKENDS = normalized
 
 
 def set_sandbox_installation_loader(loader: Callable[[], Awaitable[str]]) -> None:
@@ -2145,17 +2533,34 @@ def default_sandbox_backend() -> str:
     return ""
 
 
-def registered_sandbox_names() -> list[str]:
-    """The registered backend names, sorted (for schemas/diagnostics)."""
+def installed_sandbox_names() -> list[str]:
+    """Every installed backend name, sorted. Only for diagnostics and errors:
+    whatever a deployment may use comes from :func:`enabled_sandbox_names`."""
     return sorted(_BACKENDS)
 
 
-def registered_sandbox_permission_levels() -> list[str]:
-    """Permission levels at least one registered backend can attest."""
+def enabled_sandbox_names() -> list[str]:
+    """The backends this deployment enables, sorted.
+
+    Every installed backend when the composition root has not published a set
+    (see :func:`set_enabled_sandbox_backends`).
+    """
+    if _ENABLED_BACKENDS is None:
+        return sorted(_BACKENDS)
+    return sorted(_ENABLED_BACKENDS)
+
+
+def enabled_sandbox_providers() -> list[tuple[str, SandboxProvider]]:
+    """``(name, provider)`` for every enabled backend that is installed, sorted."""
+    return [(name, _BACKENDS[name]) for name in enabled_sandbox_names() if name in _BACKENDS]
+
+
+def enabled_sandbox_permission_levels() -> list[str]:
+    """Permission levels at least one enabled backend can attest."""
 
     supported = {
         level
-        for provider in _BACKENDS.values()
+        for _name, provider in enabled_sandbox_providers()
         for level in getattr(
             provider,
             "supported_permission_levels",
@@ -2166,9 +2571,13 @@ def registered_sandbox_permission_levels() -> list[str]:
 
 
 async def shutdown_sandbox_providers_for_current_loop() -> None:
-    """Release every registered provider's resources for this event loop."""
+    """Release every enabled provider's resources for this event loop.
+
+    A provider that is installed but not enabled never served a request, so it
+    holds nothing to release.
+    """
     errors: list[Exception] = []
-    for name, provider in list(_BACKENDS.items()):
+    for name, provider in enabled_sandbox_providers():
         try:
             await provider.shutdown_current_loop_resources()
         except asyncio.CancelledError:
@@ -2180,19 +2589,20 @@ async def shutdown_sandbox_providers_for_current_loop() -> None:
         raise ExceptionGroup("sandbox provider shutdown failed", errors)
 
 
-def any_backend_supports_egress_credential_injection() -> bool:
-    """True iff any registered sandbox backend can substitute secrets at its
+def any_enabled_backend_supports_egress_credential_injection() -> bool:
+    """True iff an enabled sandbox backend can substitute secrets at its
     egress boundary (``supports_egress_credential_injection``).
 
     Gate for features that only work with such a backend — most importantly the
     vault ``environment_variable`` credential type, whose structural-secrecy
-    guarantee requires egress substitution. The answer is derived from every
-    registered backend; the built-in OpenSandbox backend advertises support.
-    Callers use it to fail loud at CONFIGURE time rather than exposing a feature
-    that can only fail later at session attach.
+    guarantee requires egress substitution. A backend that is installed but not
+    enabled cannot run the Session that would use the credential, so it does
+    not count. Callers use it to fail loud at CONFIGURE time rather than
+    exposing a feature that can only fail later at session attach.
     """
     return any(
-        bool(getattr(p, "supports_egress_credential_injection", False)) for p in _BACKENDS.values()
+        bool(getattr(provider, "supports_egress_credential_injection", False))
+        for _name, provider in enabled_sandbox_providers()
     )
 
 
@@ -2204,27 +2614,32 @@ def sandbox_if_registered(backend: str | None) -> SandboxProvider | None:
 
 
 def sandbox_for_name(backend: str | None, *, default: str | None = None) -> SandboxProvider:
-    """Resolve a provider by name, or raise listing the registered names.
+    """Resolve an enabled provider by name, or raise.
 
     An empty ``backend`` falls back to ``default`` and then to the configured
-    process default (:func:`default_sandbox_backend`)."""
+    process default (:func:`default_sandbox_backend`). An unknown name raises
+    ``RuntimeError`` listing the installed names; an installed name this
+    deployment did not enable raises :class:`SandboxBackendDisabled`."""
     name = str(backend or default or "").strip().lower() or default_sandbox_backend()
     if not name:
         raise RuntimeError(
             "sandbox provider name missing and no default backend configured "
-            f"(registered: {sorted(_BACKENDS)})"
+            f"(enabled: {enabled_sandbox_names()})"
         )
     provider = _BACKENDS.get(name)
     if provider is None:
         raise RuntimeError(
-            f"no SandboxProvider registered for backend={name!r} (registered: {sorted(_BACKENDS)})"
+            f"no SandboxProvider registered for backend={name!r} "
+            f"(installed: {sorted(_BACKENDS)})"
         )
+    if _ENABLED_BACKENDS is not None and name not in _ENABLED_BACKENDS:
+        raise SandboxBackendDisabled(name, enabled_sandbox_names())
     return provider
 
 
 def sandbox_for_sandbox(sandbox: Any) -> SandboxProvider | None:
-    """Reverse-map a live sandbox object to its owning provider, or None."""
-    for provider in _BACKENDS.values():
+    """Reverse-map a live sandbox object to its owning enabled provider, or None."""
+    for _name, provider in enabled_sandbox_providers():
         if provider.owns_sandbox(sandbox):
             return provider
     return None
@@ -2287,16 +2702,33 @@ __all__ = [
     "TURN_PREPARATION_FAILED",
     "TURN_PREPARATION_USER_ACTION_REQUIRED",
     "TurnPreparationUserActionRequired",
+    "SANDBOX_CAPABILITY_RULES",
+    "SandboxBackendDisabled",
+    "SANDBOX_DATA_PLANE_ALIVE",
+    "SANDBOX_DATA_PLANE_DEAD",
+    "SANDBOX_DATA_PLANE_UNKNOWN",
+    "SandboxCapabilityRule",
+    "SandboxClientPoolReadiness",
+    "SandboxDataPlaneAssessment",
+    "SandboxMemoryHeadroom",
+    "SandboxProbeFailed",
+    "SandboxResourcesUnsupported",
+    "SandboxUnreachable",
     "register_sandbox",
     "set_default_sandbox_backend",
+    "set_enabled_sandbox_backends",
     "default_sandbox_backend",
     "set_sandbox_installation_loader",
     "sandbox_installation_id",
-    "registered_sandbox_names",
-    "registered_sandbox_permission_levels",
+    "installed_sandbox_names",
+    "enabled_sandbox_names",
+    "enabled_sandbox_providers",
+    "enabled_sandbox_permission_levels",
+    "any_enabled_backend_supports_egress_credential_injection",
     "shutdown_sandbox_providers_for_current_loop",
     "sandbox_for_name",
     "sandbox_for_sandbox",
+    "unsupported_sandbox_feature",
     "sandbox_name_for_template",
     "sandbox_for_template",
 ]

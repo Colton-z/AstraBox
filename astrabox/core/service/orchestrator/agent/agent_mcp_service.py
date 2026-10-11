@@ -29,6 +29,7 @@ from astrabox.core.service.orchestrator.engine.interaction_contract import (
     PRESENTATION_FORM,
 )
 from astrabox.core.service.orchestrator.agent.agent_service import _AGENT_STARTUP_TIMEOUT_SECONDS
+from astrabox.deploy.public_path import public_path
 
 logger = get_logger(__name__)
 
@@ -591,5 +592,5 @@ def _platform_session_payload(session_id: str) -> dict[str, str]:
     return {
         "session_id": session_id,
         "platform_session_id": session_id,
-        "session_url_path": f"/sessions/{session_id}",
+        "session_url_path": public_path(f"/sessions/{session_id}"),
     }

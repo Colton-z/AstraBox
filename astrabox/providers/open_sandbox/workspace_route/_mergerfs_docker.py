@@ -8,11 +8,10 @@ import time
 from datetime import datetime
 from typing import Any
 
-from astrabox.core.service.orchestrator.runtime.storage.mergerfs import (
+from astrabox.providers.open_sandbox.workspace_route.mergerfs import (
     CLI,
     INSTALLATION,
     MANAGED,
-    OWNER,
     RECEIPT,
     SANDBOX_BACKEND,
     SANDBOX_ID,
@@ -21,6 +20,7 @@ from astrabox.core.service.orchestrator.runtime.storage.mergerfs import (
     verify_labels,
     verify_status,
 )
+from astrabox.seams.storage import WORKSPACE_ASSIGNMENT_METADATA_KEY
 
 
 def _docker_timestamp(value: str) -> datetime:
@@ -179,7 +179,7 @@ class DockerMounts:
         """
         digest = hashlib.sha256(assignment_id.encode()).hexdigest()
         name = "astrabox-view-" + digest[:32]
-        labels = {MANAGED: "mergerfs", OWNER: digest[:63]}
+        labels = {MANAGED: "mergerfs", WORKSPACE_ASSIGNMENT_METADATA_KEY: digest[:63]}
         volume = self._get(self.client.volumes, name)
         if volume is not None:
             verify_labels(volume.attrs.get("Labels"), labels, name)
@@ -206,11 +206,13 @@ class DockerMounts:
                 f"cannot attach sandbox to missing workspace volume/{name.removesuffix('-receipt')}"
             )
         verify_labels(
-            view.attrs.get("Labels"), {MANAGED: "mergerfs", OWNER: digest[:63]}, view.name
+            view.attrs.get("Labels"),
+            {MANAGED: "mergerfs", WORKSPACE_ASSIGNMENT_METADATA_KEY: digest[:63]},
+            view.name,
         )
         labels = {
             MANAGED: "mergerfs",
-            OWNER: digest[:63],
+            WORKSPACE_ASSIGNMENT_METADATA_KEY: digest[:63],
             RECEIPT: "true",
             STORAGE_ID: assignment_id,
             SANDBOX_ID: sandbox_id,

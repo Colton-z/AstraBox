@@ -45,12 +45,22 @@ __all__ = [
     "get_async_collection",
     "is_transient_error",
     "close_for_current_loop",
+    "sql_database_url",
 ]
 
 
 # --------------------------------------------------------------------------- #
 # Uniform provider surface (mirrors ``..mongo``'s shape)                        #
 # --------------------------------------------------------------------------- #
+def sql_database_url() -> str:
+    """The SQLAlchemy URL of this backend's SQLite file.
+
+    Declared for components that keep their own state in the repository's SQL
+    database, such as the built-in DBOS scheduler provider.
+    """
+    return resolve_sqlite_url(None)
+
+
 async def get_async_collection(collection_name: str) -> Any:
     """Return an :class:`AsyncCollection` bound to ``collection_name``.
 

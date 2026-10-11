@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { ErrorNote, PageShell } from '@/components/shell';
 import { CodeBlock, CodeBlockCopyButton } from '@/components/ai-elements/code-block';
 import {
+  MODULE_BASE,
   issueMcpClientToken,
   listMcpClientTokens,
   revokeMcpClientToken,
@@ -35,7 +36,7 @@ function clientConfig(secret: string): string {
       mcpServers: {
         astrabox: {
           type: 'http',
-          url: `${window.location.origin}/api/v1/mcp`,
+          url: `${window.location.origin}${MODULE_BASE}/api/v1/mcp`,
           headers: { Authorization: `Bearer ${secret}` },
         },
       },

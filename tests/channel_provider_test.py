@@ -28,6 +28,8 @@ from astrabox.core.service.orchestrator.channel_ingress_service import (
 from astrabox.core.service.orchestrator.deployment_service import DeploymentService
 from astrabox.providers.channel_generic import GenericJsonChannelProvider
 from astrabox.seams.channel import (
+    EXECUTION_LINKED,
+    ChannelDescriptor,
     ChannelInbound,
     ChannelProvider,
     channel_scene_name,
@@ -353,3 +355,64 @@ async def test_channel_secret_is_returned_once_and_never_listed() -> None:
 
     assert created["secret"] == "do-not-list-this"
     assert "secret" not in listed[0]
+
+
+class _TicketChannel(_RecordingChannel):
+    """A platform whose work belongs to a person: it runs only as linked accounts."""
+
+    name = "tickets"
+
+    def describe(self) -> ChannelDescriptor:
+        return ChannelDescriptor(
+            name=self.name, label="Tickets", execution_modes=(EXECUTION_LINKED,),
+        )
+
+
+async def test_who_a_channel_binding_runs_as_is_validated_against_its_provider() -> None:
+    """A binding runs its messages as the Agent's owner, one chosen account, or
+    each participant's linked account. Only an administrator chooses anything
+    but the owner; a provider whose work belongs to a person allows only
+    linked accounts, so no binding of it can run as the owner; and an
+    Assistant always runs as its owner."""
+    from astrabox.common.utils.user_context import UserContext
+
+    register_channel(_RecordingChannel())
+    register_channel(_TicketChannel())
+    service = _service()
+    service._deployment_repo.upsert = AsyncMock(side_effect=lambda _id, doc: doc)
+    admin = UserContext(user_id="admin", roles=["admin"])
+    owner = UserContext(user_id="owner")
+
+    async def create(scene: str, actor: UserContext, **identity: Any) -> dict[str, Any]:
+        return await service.create(
+            agent_id="dep-1", creator_user_id=actor.user_id, scene=scene, actor=actor,
+            **identity,
+        )
+
+    plain = await create("channel:recorder", owner)
+    assert (plain["execution_mode"], plain["execution_user_id"]) == ("owner", "")
+    chosen = await create(
+        "channel:recorder", admin, execution_mode="account", execution_user_id="alice",
+    )
+    assert (chosen["execution_mode"], chosen["execution_user_id"]) == ("account", "alice")
+    tickets = await create("channel:tickets", admin, execution_mode="linked")
+    assert (tickets["execution_mode"], tickets["execution_user_id"]) == ("linked", "")
+    refused = [
+        ("channel:recorder", owner, {"execution_mode": "linked"}, 403),
+        ("channel:recorder", admin, {"execution_mode": "account"}, 400),
+        ("channel:recorder", admin, {"execution_user_id": "alice"}, 400),
+        ("channel:recorder", admin, {"execution_mode": "linked", "execution_user_id": "a"}, 400),
+        ("channel:recorder", admin, {"execution_mode": "everyone"}, 400),
+        ("channel:tickets", admin, {}, 400),
+        ("channel:tickets", admin, {"execution_mode": "owner"}, 400),
+    ]
+    for scene, actor, identity, status in refused:
+        with pytest.raises(APIError) as error:
+            await create(scene, actor, **identity)
+        assert error.value.status_code == status, (scene, identity)
+    with pytest.raises(APIError) as on_assistant:
+        await service.create(
+            assistant_id="as-1", creator_user_id="admin", scene="channel:recorder",
+            actor=admin, execution_mode="linked", allowed_participants=["im:me"],
+        )
+    assert on_assistant.value.status_code == 400

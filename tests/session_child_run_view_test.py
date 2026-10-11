@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -1049,6 +1051,68 @@ async def test_child_run_view_closes_from_a_post_turn_durable_terminal() -> None
     assert child_runs[0]["engine_event"] == "task_updated"
     assert child_runs[0]["engine_status"] == "completed"
     assert child_runs[0]["operations"] == []
+
+
+@pytest.mark.asyncio
+async def test_a_reattach_replaying_older_progress_does_not_reopen_a_recovered_child() -> None:
+    """A child recovery closed stays closed while the runner's backlog replays.
+
+    The rows are one real conversation's journal (tests/data/claude_code).
+    Before the restart it held the child's task_started and the launching
+    turn's Result. After it, with no reader attached, recovery materialized
+    the child's terminal from the SessionStore mirror. The first engine attach
+    then journaled what the runner retained while the host was away: a
+    task_progress the CLI emitted before the child finished, the child's own
+    Bash task, and the child's terminal task messages. Every read from the
+    materialization on, including one that lands between those replayed rows,
+    must find the child closed.
+    """
+    recorded = json.loads(
+        (Path(__file__).parent / "data" / "claude_code" / "background-child-reattach.json")
+        .read_text(encoding="utf-8")
+    )
+    by_seq = {int(row["event_seq"]): row for row in recorded["journal"]}
+    before_restart = [by_seq[seq] for seq in (31, 33, 47)]
+    # Recovery's materialization (86 in the recording) precedes the rows the
+    # attach replays (48 to 58), as when no reader attaches before recovery.
+    after_restart = [
+        {**by_seq[recorded_seq], "event_seq": event_seq}
+        for event_seq, recorded_seq in enumerate((86, 48, 49, 50, 57, 58), start=48)
+    ]
+    journal = before_restart + after_restart
+    session_id = str(journal[0]["session_id"])
+
+    class _Repo:
+        def __init__(self, rows: list[dict]) -> None:
+            self._rows = rows
+
+        async def list_events(self, _session_id: str, **kwargs: object) -> list[dict]:
+            after_seq = int(kwargs.get("after_seq") or 0)
+            event_types = kwargs.get("event_types")
+            return [
+                dict(row)
+                for row in self._rows
+                if int(row["event_seq"]) > after_seq
+                and (
+                    not isinstance(event_types, (set, frozenset))
+                    or row["event_type"] in event_types
+                )
+            ]
+
+        async def list_frames(self, _session_id: str, **_kwargs: object) -> list[dict]:
+            return []
+
+    for length in range(len(before_restart) + 1, len(journal) + 1):
+        child_runs = await SessionChildRunView(_Repo(journal[:length])).list_child_runs(
+            session_id
+        )
+        last_row = journal[length - 1]
+        read = f"read after {last_row['event_type']} seq={last_row['event_seq']}"
+        assert len(child_runs) == 1, read
+        assert child_runs[0]["closed"] is True, read
+        assert child_runs[0]["engine_status"] == "completed", read
+        assert child_runs[0]["operations"] == [], read
+        assert child_runs[0]["active"] is False, read
 
 
 @pytest.mark.asyncio

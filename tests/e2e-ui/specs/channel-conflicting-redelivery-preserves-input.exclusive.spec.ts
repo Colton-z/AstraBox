@@ -29,12 +29,12 @@ function inboundRows() {
 
 function messageRows() {
   return inboundRows().filter((row) => String(row.dedup_key)
-    .startsWith(`e2e:${source!.botId}:message:`));
+    .startsWith(`e2e:${source!.botId}:channel:room:message:`));
 }
 
 function messageRow(messageId: string) {
   const matches = messageRows().filter((row) => row.dedup_key
-    === `e2e:${source!.botId}:message:${messageId}`);
+    === `e2e:${source!.botId}:channel:room:message:${messageId}`);
   expect(matches, `one durable source message ${messageId}`).toHaveLength(1);
   return matches[0];
 }
@@ -67,7 +67,7 @@ async function waitAccepted(messageId: string) {
   await expect.poll(() => {
     source!.healthy();
     const row = messageRows().find((item) => item.dedup_key
-      === `e2e:${source!.botId}:message:${messageId}`);
+      === `e2e:${source!.botId}:channel:room:message:${messageId}`);
     if (row?.session_id && !sessionId) {
       sessionId = String(row.session_id);
       sessions.push(sessionId);
@@ -151,8 +151,8 @@ test('conflicting redelivery preserves ignored context and settled input while l
   await expect.poll(() => {
     source!.healthy();
     return messageRows().find((row) => row.dedup_key
-      === `e2e:${source!.botId}:message:${contextId}`)?.state;
-  }).toBe('IGNORED');
+      === `e2e:${source!.botId}:channel:room:message:${contextId}`)?.state;
+  }).toBe('OBSERVED');
   const originalContext = messageRow(contextId);
   expect(object(originalContext.payload).content).toBe(contextText);
   expect(originalContext.session_id).toBeNull();
@@ -189,10 +189,10 @@ test('conflicting redelivery preserves ignored context and settled input while l
   await expect.poll(() => nativeInputs(laterText).length).toBe(1);
 
   expect(messageRows().map((row) => row.dedup_key).sort()).toEqual(
-    [contextId, firstId, laterId].map((messageId) => `e2e:${source!.botId}:message:${messageId}`).sort(),
+    [contextId, firstId, laterId].map((messageId) => `e2e:${source!.botId}:channel:room:message:${messageId}`).sort(),
   );
   expect(messageRow(contextId).payload).toEqual(originalContext.payload);
-  expect(messageRow(contextId).state).toBe('IGNORED');
+  expect(messageRow(contextId).state).toBe('OBSERVED');
   expect(messageRow(contextId).session_id).toBeNull();
   expect(messageRow(contextId).command_id).toBeNull();
   expect(messageRow(contextId).context_submitted).toBe(true);
@@ -211,7 +211,7 @@ test('conflicting redelivery preserves ignored context and settled input while l
 
   // The official adapter also emits login events. They are not user messages.
   const lifecycle = inboundRows().filter((row) => !String(row.dedup_key)
-    .startsWith(`e2e:${source!.botId}:message:`));
+    .startsWith(`e2e:${source!.botId}:channel:room:message:`));
   for (const row of lifecycle) {
     expect(row.state).toBe('IGNORED');
     expect(row.session_id).toBeNull();

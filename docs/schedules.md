@@ -15,8 +15,11 @@ Schedules.
 - Create the Agent or Assistant that should handle each invocation.
 - Sign in as the Agent's owner or an AstraBox administrator. Only an
   Assistant's owner can schedule it.
-- The AstraBox installation must use PostgreSQL or SQLite. Schedules are
-  unavailable with other database backends.
+- The AstraBox installation must run a scheduler provider. The built-in one
+  keeps Schedules and their Run history in the PostgreSQL or SQLite database
+  AstraBox already uses. An installation that sets
+  `ASTRABOX_SCHEDULER_PROVIDER=none` cannot create, enable, or run Schedules; a
+  MongoDB installation without another scheduler provider must set it.
 
 Open **Console → Triggers → New trigger**, then choose **Schedule**. The form
 contains the complete Schedule definition:
@@ -121,8 +124,8 @@ another.
 
 - The built-in Schedule is recurring. It accepts exactly five cron fields and
   a valid IANA timezone; its minimum granularity is one minute.
-- Schedules require PostgreSQL or SQLite, and one AstraBox installation
-  supports at most 64 active Schedules.
+- With the built-in scheduler provider, one AstraBox installation supports at
+  most 64 active Schedules.
 - Times that pass while AstraBox is offline are skipped. A Schedule also cannot
   be changed to another trigger type; create a new trigger configuration
   instead.

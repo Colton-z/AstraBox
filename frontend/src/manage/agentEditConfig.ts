@@ -67,7 +67,7 @@ function accessors(field: FormFieldSchema): Pick<EditFieldSpec, 'get' | 'set'> {
         field.type === 'integer' && value !== '' && value != null ? Number(value) : value;
       if (field.path) {
         if (field.path.startsWith('engine_options.')) {
-          if (v === undefined) {
+          if (v == null) {
             const bag = draft.engine_options;
             if (!bag || typeof bag !== 'object' || Array.isArray(bag)) return draft;
             const next = { ...bag } as Record<string, unknown>;
@@ -103,7 +103,24 @@ export type AgentEditOpts = {
    * the engine takes no bag and the engine_options control does not render.
    */
   engineOptionsSchema?: FormFieldSchema[];
+  /**
+   * The display name of the extension catalog whose pickers stand beside the
+   * MCP and Skills fields (`CatalogExtensionField`). Absent where no picker
+   * renders — a create page, or a deployment that runs no catalog — and the two
+   * fields then read as the Agent's MCP servers and Skills, not as additions to
+   * a catalog selection.
+   */
+  catalogName?: string;
 };
+
+/** Label and help of the Agent's own MCP and Skills fields, which depend on a catalog beside them. */
+function ownExtensionCopy(key: string, catalogName: string | undefined): { label: string; help: string } | null {
+  if (key !== 'mcp_servers' && key !== 'skills') return null;
+  const base = `misc:agent_form.fields.${key}`;
+  return catalogName
+    ? { label: i18n.t(`${base}.label`), help: i18n.t(`${base}.help`, { catalog: catalogName }) }
+    : { label: i18n.t(`${base}.label_alone`), help: i18n.t(`${base}.help_alone`) };
+}
 
 const AGENT_JSON_EXAMPLES: Record<string, unknown> = {
   mcp_servers: { docs: { type: 'http', url: 'https://mcp.example.com/mcp' } },
@@ -139,6 +156,7 @@ function fieldExample(field: FormFieldSchema, type: EditFieldType): string | und
 
 function toFieldSpec(field: FormFieldSchema, opts: AgentEditOpts): EditFieldSpec {
   const isModel = field.key === 'model';
+  const ownCopy = ownExtensionCopy(field.key, opts.catalogName);
   const type: EditFieldType = isModel ? 'search_select' : editType(field);
   const example = fieldExample(field, type);
 
@@ -164,7 +182,7 @@ function toFieldSpec(field: FormFieldSchema, opts: AgentEditOpts): EditFieldSpec
     key: field.key,
     // An engine-declared field carries its own copy (the engine author's
     // voice); platform schema fields keep copy in the i18n catalogue.
-    label: field.label ?? i18n.t(`misc:agent_form.fields.${field.key}.label`),
+    label: field.label ?? ownCopy?.label ?? i18n.t(`misc:agent_form.fields.${field.key}.label`),
     type,
     ...accessors(field),
     // `name` is the identity key: editable only while creating; locked in edit.
@@ -175,6 +193,7 @@ function toFieldSpec(field: FormFieldSchema, opts: AgentEditOpts): EditFieldSpec
       ? createElement(Fragment, null,
           i18n.t('misc:agent_form.fields.model.help'), ' ', createElement(ModelGatewayLink))
       : field.help
+      ?? ownCopy?.help
       ?? (i18n.exists(`misc:agent_form.fields.${field.key}.help`)
         ? i18n.t(`misc:agent_form.fields.${field.key}.help`)
         : undefined),

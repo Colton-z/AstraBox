@@ -5,6 +5,302 @@ All notable changes to AstraBox are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [0.1.6] - 2026-10-10
+
+**Upgrading:**
+
+- a conversation's own box is limited to 1 CPU and 1Gi (requests 250m and 1Gi),
+  and an Agent's shared box to 4 CPU and 4Gi (requests 1 CPU and 4Gi); every
+  box was limited to 4 CPU and 4Gi with 200m and 768Mi requests.
+  `ASTRABOX_SANDBOX_*` and `ASTRABOX_SHARED_SANDBOX_*` set them. Running boxes
+  keep their size until they are replaced.
+- the bundled sandbox server on a Docker host refuses a box that would take the
+  memory limits of the boxes it runs, and their egress sidecars', past the
+  host's memory less 4 GiB. `ASTRABOX_SANDBOX_QUOTA_MEMORY` sets another
+  ceiling, and `unlimited` removes it.
+- each box's egress sidecar is limited to 1 CPU and 128Mi on a Docker host. On
+  Kubernetes, give the sandbox namespace a LimitRange with that container
+  default; OpenSandbox 0.2.3 creates the sidecar without resources. See
+  [Size sandboxes and cap what they use](docs/deploy.md#size-sandboxes-and-cap-what-they-use).
+- an extension provider package must declare
+  `features = ExtensionProviderFeatures(display_name=..., management_console=...)`
+  on its `ExtensionProvider`, and implement `open_management_console` if it
+  declares a console; registration refuses one that does not. The seam contract
+  version (`SEAMS_API_VERSION`) is now 5.
+- a deployment on the MongoDB repository backend must set
+  `ASTRABOX_SCHEDULER_PROVIDER=none` (in `containers/.env` for a Compose
+  installation), or install a scheduler provider that supports MongoDB, before
+  upgrading. The built-in `dbos` scheduler keeps its
+  schedules and Run history in the repository's SQL database, and startup now
+  refuses it on a backend without one instead of starting with Schedule creation
+  refused. With `none`, startup also refuses while an enabled scheduled Deployment
+  is stored, because it would never run: disable or delete such Deployments
+  before switching to `none`.
+
+### Added
+
+- A messaging provider can report a message and the permission to answer it as
+  two signals with the same `dedup_key`, in either order:
+  `ChannelInbound.signal="observation"` records the message as context only,
+  and `"authorization"` runs it. AstraBox keeps one record per message, never
+  runs an observation, runs an authorized message at most once with the text
+  first recorded for it, refuses a signal that names another sender or
+  conversation, never runs a message recalled before its authorization, and
+  tells the participant when an authorization's message has not arrived after
+  a day. See "Separate context and trigger feeds" in the provider guide.
+- A messaging provider can group messages into conversations by reply chain.
+  With `ChannelInbound.conversation_from_reference=True`, a reply continues the
+  conversation of the message its `reference` names when AstraBox recorded
+  that message, as an inbound message or as a reply it delivered; otherwise
+  the reply's own `conversation_key` applies. Retained context follows the
+  same conversations. See "Group messages into conversations" in the provider
+  guide.
+- A messaging trigger on an Agent can run each sender's messages as that
+  sender's own AstraBox account (`execution_mode: "linked"`). Administrators
+  link a sender (`platform:user-id`) to a user ID under **Linked accounts** on
+  the trigger's page, or through
+  `/api/v1/admin/agents/{agent_id}/deployments/{deployment_id}/account-links`.
+  The account is resolved once per message and kept with it. A sender
+  without a link, or whose account may not use the Agent, is refused with a
+  notice and never answered as anyone else. `ASTRABOX_CHANNEL_ACCOUNT_RESOLVER`
+  selects another resolver, such as one backed by a directory and registered
+  at the `astrabox.providers.channel_accounts` entry point. A provider lists
+  the modes its triggers may use in `ChannelDescriptor.execution_modes`; one
+  whose work belongs to a person lists only `linked`.
+- A deployment can run without an extension catalog:
+  `ASTRABOX_EXTENSION_PROVIDER=none` (in `containers/.env` for a Compose
+  installation, which now forwards the variable). Agent, Assistant and
+  Assistant-defaults pages then show only the record's own MCP servers, Skills
+  and packages and send no catalog request, and the catalog routes answer
+  `409 EXTENSION_CATALOG_DISABLED`. A catalog selection a record already holds
+  is not dropped: startup names each enabled Agent, Assistant and the Assistant
+  defaults that hold one, new work for such a record fails with
+  `EXTENSION_CATALOG_DISABLED` while its existing conversations stay readable,
+  and its page lists the selection with **Remove selections**. Startup refuses
+  an `ASTRABOX_EXTENSION_PROVIDER` that no installed provider registers. See
+  [The extension catalog](docs/adding-tools.md#extension-catalog).
+- `GET /api/v1/extension-provider` returns the selected extension provider's
+  name, display name and whether it has a management console, or `null` when
+  the deployment runs no catalog.
+- AstraBox can be published below a path of a host it shares with other
+  applications, such as `https://example.com/astrabox/`. Set
+  `ASTRABOX_PUBLIC_PATH_PREFIX` to the path. A reverse proxy removes the path
+  before forwarding, or a Python application mounts AstraBox at it. The
+  prebuilt console, its API calls and event streams, the sign-in callback,
+  cookie paths, share and file links, the MCP server URL and channel callback
+  URLs all follow the path. A proxy that forwards the path instead of removing
+  it is refused with an error that names the setting. LiteLLM's management
+  pages cannot be served below a path. See
+  [Publish AstraBox under a path](docs/deploy.md#publish-under-a-path).
+- A deployment can enable several installed sandbox backends with
+  `ASTRABOX_SANDBOX_BACKENDS` (comma-separated). The list must include
+  `ASTRABOX_SANDBOX_BACKEND`, which stays the default; left empty, it enables
+  only the default. Environments offer only enabled backends, and a record that
+  names an installed backend the deployment does not enable fails with
+  `409 SANDBOX_BACKEND_DISABLED` instead of being served by another backend;
+  startup logs each enabled Environment that selects such a backend.
+  A sandbox provider lists the variables only it reads in `owned_settings`, and
+  startup warns when one is set while that backend is not enabled.
+- A deployment sets the size of a conversation's own box with
+  `ASTRABOX_SANDBOX_CPU_LIMIT`, `ASTRABOX_SANDBOX_MEMORY_LIMIT`,
+  `ASTRABOX_SANDBOX_CPU_REQUEST` and `ASTRABOX_SANDBOX_MEMORY_REQUEST`, and of an
+  Agent's shared box with `ASTRABOX_SHARED_SANDBOX_CPU_LIMIT`,
+  `ASTRABOX_SHARED_SANDBOX_MEMORY_LIMIT`, `ASTRABOX_SHARED_SANDBOX_CPU_REQUEST`
+  and `ASTRABOX_SHARED_SANDBOX_MEMORY_REQUEST` (Kubernetes quantities; in
+  `containers/.env` for a Compose installation, which now forwards them).
+  Prepared and replacement boxes take their kind's size. Startup refuses a value
+  that is not a quantity and a request above its limit. A sandbox provider that
+  cannot create a box of that shape raises `SandboxResourcesUnsupported`
+  (`409 SANDBOX_RESOURCES_UNSUPPORTED`, naming the backend and the envelope)
+  from `fit_resources` before anything is allocated.
+- A deployment caps what each sandbox backend runs with
+  `ASTRABOX_SANDBOX_QUOTA_BOXES`, `ASTRABOX_SANDBOX_QUOTA_MEMORY`,
+  `ASTRABOX_SANDBOX_QUOTA_CPU` and `ASTRABOX_SANDBOX_QUOTA_CONCURRENT_CREATES`
+  (in `containers/.env` for a Compose installation, which forwards them). Every
+  box the backend runs for the deployment counts, across all replicas, at its
+  limits plus its egress sidecar's: conversations' boxes, shared boxes,
+  prepared boxes, boxes being created and boxes whose removal is unconfirmed. A
+  box past a ceiling is not created; the conversation that needed it ends at
+  once with an error naming the ceiling, the use and the limit.
+  `GET /api/v1/admin/sandbox-quota` and the console's **Sandboxes** page show
+  each ceiling, its use, and how many boxes are in use, prepared, starting and
+  being cleaned up. A sandbox provider reports what runs beside each
+  box through `per_box_overhead`, and whether a paused box releases its
+  resources through `paused_box_releases_resources`. See
+  [Cap what a sandbox backend runs](docs/deploy.md#cap-what-a-sandbox-backend-runs).
+- Scheduled Deployments run through a scheduler provider selected with
+  `ASTRABOX_SCHEDULER_PROVIDER`: `dbos` (the default, DBOS Transact embedded in
+  the server process, as before) or `none`, which turns scheduled Deployments
+  off — creating or enabling one then answers `409 SCHEDULE_UNAVAILABLE`. A
+  package can add another engine at the `astrabox.providers.scheduler` entry
+  point and check it with `astrabox.testing.scheduler_conformance`; see
+  [Add a scheduler](docs/writing-a-scheduler-provider.md).
+
+### Changed
+
+- A channel message the Deployment's attention policy does not address is
+  recorded as `OBSERVED` retained context and acknowledged with status
+  `observed` (it was `ignored`), so a later signal for the same message that
+  addresses the agent can run it. Refused senders and provider-classified
+  events stay `IGNORED`.
+- `execution_mode` (`owner`, `account` or `linked`) states whose account a
+  messaging trigger's messages run as. `execution_user_id` applies only with
+  `execution_mode: "account"`: send both to delegate, and
+  `execution_mode: "owner"` to return to the Agent's creator; an
+  `execution_user_id` without that mode is refused. Existing triggers keep
+  running as before: one with an execution account runs as `account`, any
+  other as `owner`. A replacement deployment service receives
+  `execution_mode` on `create` when a request names it.
+- A reply, quote or button press that would continue another account's
+  conversation is refused with a notice to the sender. Before, a quote of the
+  agent's reply there was refused silently, and a reply to a message that ran
+  there, or a press of its button, was not refused at all.
+- Retained context no longer depends on the account a message runs as: what
+  was said in a room is context for whoever the agent answers there.
+- `ChannelEvent.command_id` is removed and `CHANNEL_EVENT_VERSION` is 2. A
+  streaming provider identifies the reply by `response_id`, with `turn_id`
+  naming the Session turn that produced it.
+- WeChat Official Account replies are refused with an explicit error before
+  anything is sent. These replies already failed inside the adapter; inbound
+  messages still reach the agent.
+- The console names the extension catalog after its provider ("MCP servers
+  from LiteLLM") instead of calling every catalog LiteLLM-managed, and an
+  Agent's **Manage … in** buttons appear only when the provider declares a
+  management console; the built-in registry declares none. The console
+  session route (`POST /api/v1/agents/{agent_id}/extension-console/session`)
+  keeps its path and body and opens the selected provider's console, answering
+  `409 EXTENSION_CONSOLE_UNSUPPORTED` for a provider without one.
+- An Agent read returns its catalog Skill selection (`extension_catalog`), as
+  an Assistant read already did, and the Assistant defaults return the layer's
+  catalog selection.
+- An Assistant read's `inherited` summary lists the Skills the Assistant
+  defaults select from the extension catalog as `catalog_skills`, apart from
+  the Skills they write themselves (`skills`, which no longer includes them).
+  The Assistant's profile and first-conversation welcome list catalog Skills,
+  and the profile its catalog tool servers, only while the deployment runs a
+  catalog; without one the profile says those selections are unavailable.
+- A sandbox provider answers a box's memory and listening ports through
+  declared `SandboxProvider` methods: `read_memory_headroom` returns a
+  `SandboxMemoryHeadroom`, or `None` for a box without a memory limit, and
+  `read_listening_ports` a `frozenset`. Both raise `SandboxUnreachable` (503)
+  for a box that cannot be reached and `SandboxProbeFailed` (502) for an
+  answer that cannot be read, instead of answering as if the box had no
+  headroom or no listeners. A shared placement now fails, naming the probe,
+  when either probe cannot be read, where it used to stop packing boxes or
+  skip its port-collision check without a trace.
+- `register_sandbox` checks every capability flag against one rule table,
+  `SANDBOX_CAPABILITY_RULES`. A provider that declares a flag must implement
+  every method the flag obliges (`supports_pause` brings `pause` and `resume`,
+  `supports_client_pool` the pool methods and the new `client_pool_readiness`)
+  and declare the flags it requires, or it is refused when it is installed.
+  Saving an Environment or an Agent refuses what the selected backend has not
+  declared: shared tenancy without isolated sessions, an Environment on a
+  backend that cannot create boxes under a network policy, and prepared
+  capacity where the backend's client pool cannot run here
+  (`409 AGENT_PREWARM_UNSUPPORTED`). A new Agent's default prepared capacity is
+  its backend's answer about that pool, where it was the presence of
+  `ASTRABOX_AGENT_PREWARM_REDIS_URL`.
+- Whether a box whose control plane still answers is really gone is the
+  declared `assess_data_plane`, answering `ALIVE`, `DEAD` or `UNKNOWN`. Only
+  `DEAD` replaces the box; a backend that cannot look answers `UNKNOWN`.
+- The platform's box resource recipe is fitted by the backend that creates the
+  box, through the declared `fit_resources`, and the create spec carries the
+  fitted values. The OpenSandbox backend lowers the CPU limit to the host's
+  CPU count only when its bundled server runs boxes on this host's Docker; an
+  existing OpenSandbox service on Docker now receives the recipe as is, where
+  it was clamped to the CPU count of the host running AstraBox.
+- Core no longer asks a provider to discard a box's snapshots before
+  destroying it. A provider whose pause leaves snapshots reclaims them in its
+  own `kill`, as the OpenSandbox provider now does, so every destroy through
+  the seam reclaims them, not only the one path that used to ask.
+- The census of a shared box's active isolated sessions, consulted before the
+  box is destroyed, is the declared `count_active_isolated_sessions`. It
+  raises when the box cannot answer, where `count_live_isolated_sessions`
+  returned -1; an unanswered census still leaves the decision to the
+  ownership records.
+
+### Fixed
+
+- **Sign out** in the console's settings menu signs the user out; it did
+  nothing.
+- Interrupting a command in a conversation box's terminal stops it; the
+  command ran on. The interrupt is now the terminal session's own `SIGINT`.
+- A command in a conversation box's terminal shows its output while it runs
+  and reports its exit as soon as it ends; short output appeared only when the
+  command finished, and the exit about 10 s later.
+- A PostgreSQL or SQLite outage answers `503 PERSISTENCE_UNAVAILABLE`
+  (retryable) like a MongoDB one, instead of `500 UNEXPECTED_SERVER_ERROR`; the
+  error's `owner` is `store` for every repository backend (it read `mongo`),
+  and the console recognises the outage by its code.
+- `ASTRABOX_DB_BACKEND` naming an installed repository plugin is used even when
+  `ASTRABOX_DB_URL` has a `mongodb://` or `postgresql://` scheme; the URL used to
+  select the builtin backend of that scheme and the plugin never loaded.
+- Emptying a saved JSON block in the Agent, Assistant or Environment editor
+  (custom MCP servers, packages, engine options) and saving clears it; the
+  server kept the old value while the page showed none.
+- A messaging Deployment whose bot is in several chats no longer drops a message
+  whose platform number repeats one from another chat, and a quote reply no
+  longer resolves into the wrong chat. Message identities now include the chat;
+  replies to messages recorded before upgrading no longer find their
+  conversation.
+- A channel redelivery that takes over an expired or dead message runs the
+  input and execution account the message was admitted with; it replaced them
+  with the redelivered body and the Deployment's current execution account.
+- Crash recovery no longer runs a channel message the attention policy did not
+  address.
+- Crash recovery of a channel message that reached its conversation only
+  through the reply it quotes waits for that conversation's turn lock; it ran
+  the turn without the lock.
+- Retained group context quotes what each participant wrote; with a
+  Deployment prompt prefix, every quoted message repeated the prefix.
+- Slack: the agent's reply to a message in a thread is posted in that thread.
+- Telegram forum topics: topics of different groups that share a topic number
+  are separate conversations, and a reply reaches its topic's group instead of
+  a chat named by the topic number. A forum topic's conversation starts a new
+  Session after upgrading.
+- Zulip: a stream topic is identified by its stream as well as its name, so
+  same-named topics in two streams are separate conversations, and replies
+  reach their stream or direct recipient; they were sent with neither. A
+  stream topic's conversation starts a new Session after upgrading.
+- Every concrete messaging platform now receives the addressing of the message
+  a reply answers, which the official DingTalk and WeCom adapters read to send
+  a direct reply one-to-one and to name the recipient.
+- The background sweeps that reclaim sandboxes no record owns and retire
+  sandboxes created with stale network wiring read only the `open_sandbox`
+  backend. They now run for every enabled backend that can list its sandboxes,
+  each on its own, so a deployment whose sandboxes come from another provider
+  has them swept too, and one backend's failing control plane no longer stops
+  another's sweep; workspace-view reconciliation reads each enabled backend's
+  route the same way. A sandbox provider joins the sweeps by declaring
+  `supports_inventory_listing = True` (registration checks that it implements
+  `list_sandboxes` and `describe_sandbox`), and startup warns about each enabled
+  backend that does not.
+- A Claude background Agent that recovery closed after a server restart stays
+  closed when the engine's retained progress reports reach the journal later;
+  it reopened, with a stop operation and its earlier usage, until the replayed
+  completion arrived.
+- Reading a Claude conversation's child runs or a child's transcript no longer
+  attaches the engine. When a server that held no runtime for the conversation
+  (after a restart, or on another replica) served such a read, a finished
+  background Agent's completion record was held until the parent's own
+  continuation ended. Such a read now serves what the journal holds; a
+  viewer's or channel's subscription attaches the engine as before.
+
+### Security
+
+- A Skill source whose HTTP(S) URL embeds a username or token
+  (`https://user:token@host/repo`) is refused when the Agent or Assistant is
+  saved and when its runtime is prepared. The URL was stored with the Agent,
+  written to the Skill cache manifest and repeated in download errors. Keep the
+  URL clean and assign an HTTP Basic (Git HTTPS) Vault credential for the
+  repository, as private Plugin sources already require.
+- An admission controller or secret store published as a class at its
+  `astrabox.providers.admission` / `astrabox.providers.secrets` entry point is
+  installed at startup. It was skipped, so a deployment's quota controller
+  silently left every request admitted.
+
 ## [0.1.5] - 2026-10-09
 
 This release gives every user an Assistant without setting one up, connects

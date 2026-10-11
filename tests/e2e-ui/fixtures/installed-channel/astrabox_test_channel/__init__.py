@@ -5,13 +5,22 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import uuid
 from collections.abc import Mapping
 from typing import Any
 
 import httpx
 
 from astrabox.common.utils.errors import APIError
-from astrabox.seams.channel import ChannelDescriptor, ChannelInbound, ChannelProvider
+from astrabox.seams.channel import (
+    SIGNAL_MESSAGE,
+    ChannelAttention,
+    ChannelDeliveryReceipt,
+    ChannelDescriptor,
+    ChannelInbound,
+    ChannelProvider,
+    ChannelRecall,
+)
 
 
 class InstalledChannel(ChannelProvider):
@@ -28,17 +37,31 @@ class InstalledChannel(ChannelProvider):
         if not secret or not hmac.compare_digest(headers.get("x-installed-signature", ""), expected):
             raise APIError(code="CHANNEL_UNAUTHORIZED", message="invalid package signature", status_code=401)
         payload = json.loads(raw_body)
+        callback_url = payload.get("callback_url")
+        recall = payload.get("recall")
         return ChannelInbound(
-            content=payload["utterance"], dedup_key=payload["event_id"],
-            conversation_key=payload["room_id"],
-            reply_context={"callback_url": payload["callback_url"]},
+            content=str(payload.get("utterance") or ""), dedup_key=payload["event_id"],
+            conversation_key=payload.get("room_id"),
+            reply_context={"callback_url": callback_url} if callback_url else None,
+            participant=payload.get("sender"),
+            message_timestamp=payload.get("sent_at"),
+            retain_context=bool(payload.get("retain")),
+            attention=ChannelAttention(is_mention=True) if payload.get("mention") else None,
+            recall=(
+                ChannelRecall(message_id=recall["message_id"], timestamp=recall["timestamp"])
+                if recall else None
+            ),
+            signal=str(payload.get("signal") or SIGNAL_MESSAGE),
         )
 
     async def deliver_outbound(
         self, *, reply_context: dict[str, Any], text: str, binding: Mapping[str, Any],
-    ) -> None:
+    ) -> ChannelDeliveryReceipt:
+        message_id = f"installed-{uuid.uuid4().hex}"
         async with httpx.AsyncClient(timeout=15) as client:
             response = await client.post(
-                reply_context["callback_url"], json={"text": "[installed-package] " + text},
+                reply_context["callback_url"],
+                json={"text": "[installed-package] " + text, "message_id": message_id},
             )
             response.raise_for_status()
+        return ChannelDeliveryReceipt(message_ids=[message_id])

@@ -193,18 +193,8 @@ async def build_agent_client_pool_plan(
             status_code=500,
         )
     settings = load_astrabox_settings()
-    if not str(getattr(settings, "agent_prewarm_redis_url", "") or "").strip():
-        raise APIError(
-            code="AGENT_PREWARM_CONFIG_INVALID",
-            message=(
-                "Agent prewarming requires ASTRABOX_AGENT_PREWARM_REDIS_URL "
-                "for the sandbox client's distributed pool"
-            ),
-            status_code=500,
-        )
-
     provider = sandbox_for_template(template)
-    if not bool(getattr(provider, "supports_client_pool", False)):
+    if not provider.supports_client_pool:
         raise APIError(
             code="AGENT_PREWARM_UNSUPPORTED",
             message=(
@@ -212,6 +202,16 @@ async def build_agent_client_pool_plan(
                 "client-side pool for Agent prewarming"
             ),
             status_code=409,
+        )
+    readiness = provider.client_pool_readiness()
+    if not readiness.available:
+        raise APIError(
+            code="AGENT_PREWARM_CONFIG_INVALID",
+            message=(
+                f"sandbox backend {provider.name!r} cannot run its client pool in "
+                f"this deployment: {readiness.detail}"
+            ),
+            status_code=500,
         )
     adapter = get_engine_adapter(engine_kind)
     creation_image = str(_value(template, "runtime_template_name", "") or "").strip()
@@ -326,7 +326,9 @@ async def build_agent_client_pool_plan(
             if adapter.capabilities.session_log is not None
             else {}
         )
-        resource_limits, resource_requests = sandbox_create_resources()
+        resource_limits, resource_requests = provider.fit_resources(
+            *sandbox_create_resources(shared=not conversation_owned)
+        )
         create_spec = SandboxCreateSpec(
             session_id=member.session_id,
             assignment_id=member.assignment_id,
@@ -376,7 +378,11 @@ async def build_agent_client_pool_plan(
                 sandbox_id="", sandbox_backend=str(provider.name),
             )
         try:
-            handle = await create_sandbox_with_storage(provider, create_spec)
+            handle = await create_sandbox_with_storage(
+                provider,
+                create_spec,
+                reason="prepared-conversation" if conversation_owned else "prepared-shared",
+            )
         except BaseException:
             if conversation_owned:
                 with _suppress_and_log("pool create binding delete", workload_id):

@@ -35,6 +35,9 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['src/**/*.{test,spec}.{ts,tsx}'],
+    // Gives every jsdom document the base-path meta element the console reads
+    // at load (see the file).
+    setupFiles: ['./src/test/setup.ts'],
     globals: false,
   },
 });

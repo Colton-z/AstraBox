@@ -30,11 +30,14 @@ type Schemas = components['schemas'];
 
 export type UserInfo = Schemas['CurrentUser'];
 export type AgentExtensionCatalog = Schemas['AgentExtensionCatalog'];
+export type ExtensionProviderView = Schemas['ExtensionProviderView'];
 export type AgentMcpCatalogItem = Schemas['AgentExtensionItem'];
 export type AgentSkillCatalogItem = Schemas['AgentExtensionItem'];
 export type AdminSandboxSecurity = Schemas['AdminSandboxSecurity'];
 export type AdminSandboxDiagnostics = Schemas['AdminSandboxDiagnostics'];
 export type AdminSandboxIdleAction = Schemas['AdminSandboxIdleAction'];
+export type AdminSandboxQuota = Schemas['AdminSandboxQuota'];
+export type AdminSandboxQuotaBackend = Schemas['AdminSandboxQuotaBackend'];
 export type AdminLogsPage = Schemas['AdminLogsPage'];
 export type SessionFileEntry = Schemas['SessionFileEntry'];
 export type WebshellResult = Schemas['WebshellAccess'];
@@ -217,8 +220,21 @@ export interface ChannelFieldDescriptor {
   help?: string;
 }
 
+/** Who a messaging trigger's messages run as. */
+export type ChannelExecutionMode = 'owner' | 'account' | 'linked';
+
+/** One participant of a trigger and the account its messages run as. */
+export interface ChannelAccountLink {
+  participant: string;
+  user_id: string;
+  linked_by: string;
+  linked_at: string;
+}
+
 export interface ChannelProviderDescriptor {
   can_configure_execution_user?: boolean;
+  /** The modes a trigger of this platform may run its messages in. */
+  execution_modes?: ChannelExecutionMode[];
   name: string;
   label: string;
   scene: `channel:${string}`;
@@ -234,6 +250,7 @@ export interface ChannelProviderDescriptor {
 // A Deployment is one internal or external trigger binding on an Agent or an
 // Assistant; exactly one of agent_id and assistant_id is set.
 export interface AgentDeployment {
+  execution_mode?: ChannelExecutionMode;
   execution_user_id?: string;
   deployment_id: string;
   agent_id?: string;

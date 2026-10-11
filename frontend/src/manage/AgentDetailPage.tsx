@@ -41,9 +41,15 @@ import {
 } from './console';
 import { CatalogExtensionField, sameIds } from './CatalogExtensionField';
 import { ConnectorsCard } from './ConnectorsCard';
+import {
+  UnavailableCatalogSelection,
+  catalogSelectionOf,
+  hasCatalogSelection,
+} from './UnavailableCatalogSelection';
 import { agentDisplayName, agentModelLabel, formatDateTime } from './agentConfig';
 import { buildAgentEditSections } from './agentEditConfig';
 import { useFrontendReleaseHold } from '@/hooks/useFrontendReleaseHold';
+import { useExtensionProvider } from '@/hooks/useExtensionProvider';
 import { AgentPrewarmStatus } from './AgentPrewarmStatus';
 
 /** The edit helpers speak plain records; a typed draft is one. */
@@ -59,6 +65,11 @@ const draftRecordOf = (v: unknown) => (v ?? null) as Record<string, unknown> | n
  *
  * Each schema group is a card that owns its own save (§4). Nothing here has a
  * view mode: the fields are the controls from the moment the page opens.
+ *
+ * The extension catalog is whatever the deployment's provider declares, read
+ * before anything asks a catalog. A deployment that runs none gets the Agent's
+ * own MCP, Skills and package fields alone, sends no catalog request, and sees
+ * a selection the Agent still holds from an earlier catalog as unavailable.
  */
 export default function AgentDetailPage() {
   const { agentId = '' } = useParams();
@@ -80,7 +91,13 @@ export default function AgentDetailPage() {
   const [extensionMcpIds, setExtensionMcpIds] = useState<string[]>([]);
   const [extensionSkillIds, setExtensionSkillIds] = useState<string[]>([]);
   const [extensionLoading, setExtensionLoading] = useState(false);
+  const [removingSelection, setRemovingSelection] = useState(false);
   const savedTimer = useRef<number | null>(null);
+  const {
+    provider: extensionProvider,
+    error: extensionProviderError,
+    retry: retryExtensionProvider,
+  } = useExtensionProvider();
 
   const [environments, setEnvironments] = useState<EnvironmentConfig[]>([]);
   const [models, setModels] = useState<string[]>([]);
@@ -159,8 +176,9 @@ export default function AgentDetailPage() {
         engineOptionsSchema: environments.find((e) => e.name === environmentName)
           ?.engine_options_schema,
         models,
+        catalogName: extensionProvider?.display_name,
       }).sections,
-    [schema, draft, environments, models, t],
+    [schema, draft, environments, models, extensionProvider, t],
   );
 
   const isDirty = (fields: EditFieldSpec[]) =>
@@ -193,8 +211,23 @@ export default function AgentDetailPage() {
   }, [agentId]);
 
   useEffect(() => {
-    if (canManage) void loadExtensions();
-  }, [canManage, loadExtensions]);
+    if (canManage && extensionProvider) void loadExtensions();
+  }, [canManage, extensionProvider, loadExtensions]);
+
+  /** Drop a selection no catalog can serve; the server accepts only this then. */
+  const removeCatalogSelection = async () => {
+    if (!record) return;
+    setRemovingSelection(true);
+    setExtensionError('');
+    try {
+      await setAgentExtensions(record.agent_id, { mcp_server_ids: [], skill_ids: [] });
+      await load();
+    } catch (e) {
+      setExtensionError((e as Error).message);
+    } finally {
+      setRemovingSelection(false);
+    }
+  };
 
   const extensionsDirty = Boolean(extensionCatalog) && (
     !sameIds(extensionMcpIds, extensionCatalog!.selected_mcp_server_ids)
@@ -323,16 +356,37 @@ export default function AgentDetailPage() {
     );
   }
 
+  // Which catalog the fields stand beside decides how they are laid out, so the
+  // page waits for that answer rather than redrawing the card once it lands.
+  if (extensionProvider === undefined) {
+    return (
+      <ConsoleRecordPage title={agentDisplayName(record)}>
+        {extensionProviderError ? (
+          <ConsoleErrorState
+            title={t('manage:agents.error_title')}
+            detail={extensionProviderError.message}
+            onRetry={retryExtensionProvider}
+          />
+        ) : (
+          <ConsoleRecordLoading />
+        )}
+      </ConsoleRecordPage>
+    );
+  }
+
   const draftRecord = draft as unknown as Record<string, unknown> | undefined;
+  const staleSelection = extensionProvider === null ? catalogSelectionOf(record) : null;
 
   const extensionField = (field: EditFieldSpec, customField: React.ReactNode) => {
     if (field.key !== 'mcp_servers' && field.key !== 'skills') return customField;
+    if (!extensionProvider) return customField;
     const isMcp = field.key === 'mcp_servers';
     const kind = isMcp ? 'mcp' : 'skills';
     return (
       <CatalogExtensionField
         kind={kind}
         id={`agent-extension-${kind}`}
+        provider={extensionProvider}
         catalog={extensionCatalog}
         value={isMcp ? extensionMcpIds : extensionSkillIds}
         onChange={isMcp ? setExtensionMcpIds : setExtensionSkillIds}
@@ -374,6 +428,13 @@ export default function AgentDetailPage() {
     >
       {saveError && <ErrorNote>{saveError}</ErrorNote>}
       {extensionError && <ErrorNote>{extensionError}</ErrorNote>}
+      {canManage && staleSelection && hasCatalogSelection(staleSelection) && (
+        <UnavailableCatalogSelection
+          selection={staleSelection}
+          removing={removingSelection}
+          onRemove={() => void removeCatalogSelection()}
+        />
+      )}
       {canManage && (
         <AgentPrewarmStatus key={agentId} agentId={agentId}
           savedAt={String(record.updated_at || '')}

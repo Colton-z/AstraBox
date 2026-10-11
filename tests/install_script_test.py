@@ -535,9 +535,12 @@ def test_public_urls_reach_the_server_and_casdoor_as_one_login(
     config = OidcProviderConfig.load()
     request = Request(arriving("astrabox.example.com"))
     template = (_REPO_ROOT / "containers/casdoor/init_data.json").read_text(encoding="utf-8")
-    seeded = json.loads(
-        template.replace("__ASTRABOX_CONSOLE_ORIGIN__", written["ASTRABOX_CONSOLE_ORIGIN"])
+    # The Casdoor entrypoint seeds the console's URL: its origin followed by
+    # the public path prefix, which this installation does not set.
+    console_url = written["ASTRABOX_CONSOLE_ORIGIN"] + written.get(
+        "ASTRABOX_PUBLIC_PATH_PREFIX", ""
     )
+    seeded = json.loads(template.replace("__ASTRABOX_CONSOLE_URL__", console_url))
     registered = next(
         application["redirectUris"]
         for application in seeded["applications"]

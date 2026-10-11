@@ -9,6 +9,14 @@
  * a completed Bash card can only come from the mirrored child transcript, not
  * from the page's pre-restart registry.
  *
+ * Nothing reads the conversation live between the restart and that append:
+ * the page leaves before the restart, and until the materialization exists
+ * the spec reads only the Session row, workspace files and the journal. A
+ * live reader would change the scene: an engine attach publishes the held
+ * continuation as an engine-owned response, and that response keeps the
+ * conversation out of IDLE until its Result, which is the state
+ * `_materialize_background_continuation_event` waits for.
+ *
  * This is exclusive because restarting the shared server disrupts every other
  * session on that host. `run-round.mjs` detects restartServerContainer callers
  * and puts them in their own serial pass.
@@ -128,6 +136,25 @@ function materializationsForOpenedEvent(
   ));
 }
 
+/**
+ * Parent Results journaled after the manifest, other than the launcher's own.
+ *
+ * The manifest is journaled at the `async_launched` receipt, so the launching
+ * turn's own Result follows it. That Result settles the launch while the child
+ * is still running; only a later parent Result could flush child facts.
+ */
+function laterParentCompletions(
+  events: Record<string, unknown>[],
+  openedEventSeq: number,
+  launcherTurnId: string,
+): Record<string, unknown>[] {
+  return events.filter((event) => (
+    Number(event.event_seq) > openedEventSeq
+    && String(event.event_type || '') === 'turn.completed'
+    && String(event.turn_id || '').trim() !== launcherTurnId
+  ));
+}
+
 async function waitForOpenBackgroundWindow(
   api: AstraApi,
   sessionId: string,
@@ -220,14 +247,8 @@ async function waitForRecoveredMaterialization(
   let lastEvents: Record<string, unknown>[] = [];
 
   while (Date.now() < deadline) {
-    const [session, messagePage, childRunPage] = await Promise.all([
-      api.getSession(sessionId),
-      api.getMessages(sessionId, 50),
-      api.listChildRuns(sessionId),
-    ]);
+    const session = await api.getSession(sessionId);
     lastSession = session;
-    lastMessages = messagePage.messages || [];
-    lastChildRuns = childRunPage.child_runs;
     lastEvents = sessionEvents(sessionId);
     if (TERMINAL_SESSION_STATES.has(String(session.state || ''))) {
       throw new Error(
@@ -235,12 +256,18 @@ async function waitForRecoveredMaterialization(
         + `last_error=${session.last_error || '<none>'}`,
       );
     }
-    if (
-      materializationsForOpenedEvent(lastEvents, openedEventSeq).length > 0
-      && !session.background_task_state
-      && lastChildRuns.some((childRun) => childRun.closed)
-    ) {
-      return { session, messages: lastMessages, childRuns: lastChildRuns, events: lastEvents };
+    // Messages and child runs are read once recovery has materialized; the
+    // poll continues until the child reads closed.
+    if (materializationsForOpenedEvent(lastEvents, openedEventSeq).length > 0) {
+      const [messagePage, childRunPage] = await Promise.all([
+        api.getMessages(sessionId, 50),
+        api.listChildRuns(sessionId),
+      ]);
+      lastMessages = messagePage.messages || [];
+      lastChildRuns = childRunPage.child_runs;
+      if (!session.background_task_state && lastChildRuns.some((childRun) => childRun.closed)) {
+        return { session, messages: lastMessages, childRuns: lastChildRuns, events: lastEvents };
+      }
     }
     await new Promise((resolve) => setTimeout(resolve, 2_000));
   }
@@ -248,6 +275,7 @@ async function waitForRecoveredMaterialization(
   throw new Error(
     `background manifest ${openedEventSeq} did not materialize after instance recovery `
     + `within ${timeoutMs}ms (session_state=${lastSession?.state || '<none>'}, `
+    + `materialized=${materializationsForOpenedEvent(lastEvents, openedEventSeq).length}, `
     + `background_task_state=${JSON.stringify(lastSession?.background_task_state || null)}, `
     + `child_runs=${JSON.stringify(lastChildRuns)}, `
     + `journal_event_types=${JSON.stringify(lastEvents.map((event) => event.event_type))})`,
@@ -329,9 +357,8 @@ test('background Agent recovery replays its durable transcript drawer', async ({
     'the browser must show the launch instruction it dispatched',
   ).toContainText(childMarker, { timeout: 30_000 });
 
-  // Background work opens from the engine's `async_launched` receipt at the
-  // launching Result. Keeping the parent turn open would prevent this manifest
-  // from existing and exercise a different contract.
+  // Background work opens from the engine's `async_launched` receipt, so the
+  // manifest is journaled before the launching turn's own Result.
   const probe = await waitForOpenBackgroundWindow(
     api,
     sessionId,
@@ -433,10 +460,7 @@ test('background Agent recovery replays its durable transcript drawer', async ({
     'recovery must materialize from durable detached-child evidence',
   ).toBe('engine_detached_child');
   expect(
-    settled.events.filter((event) => (
-      Number(event.event_seq) > openedEventSeq
-      && String(event.event_type || '') === 'turn.completed'
-    )),
+    laterParentCompletions(settled.events, openedEventSeq, parentTurnId),
     'no later parent Result may be available to flush the recovered child facts',
   ).toHaveLength(0);
   const privateLifecycleFacts = lifecycleFacts(matchingMaterializations[0]);
@@ -541,8 +565,7 @@ test('background Agent recovery replays its durable transcript drawer', async ({
   ).toContainText(childMarker, { timeout: 15_000 });
 
   expect(
-    sessionEvents(sessionId).filter((event) => Number(event.event_seq) > openedEventSeq
-      && String(event.event_type || '') === 'turn.completed'),
+    laterParentCompletions(sessionEvents(sessionId), openedEventSeq, parentTurnId),
     'the cold child drawer must recover before releasing the parent Result',
   ).toHaveLength(0);
   await api.uploadFileText(sessionId, '/workspace', releasePath.split('/').at(-1)!, 'release', 10_000);

@@ -64,18 +64,41 @@ class SandboxProviderContractSuite:
             )
 
     def test_capability_flags_are_booleans(self) -> None:
+        from astrabox.seams.sandbox import SANDBOX_CAPABILITY_RULES
+
         provider = self.make_provider()
         for flag in (
             "requires_sandbox_object_for_ws",
             "uses_create_oss_mounts",
             "endpoint_is_authoritative",
-            "supports_egress_credential_injection",
             "sandbox_is_profile_exclusive",
-            "supports_turn_preparation",
+            *(rule.flag for rule in SANDBOX_CAPABILITY_RULES),
         ):
             assert isinstance(getattr(provider, flag, False), bool), (
                 f"capability flag {flag} must be a bool"
             )
+
+    def test_declared_capabilities_carry_their_obligations(self) -> None:
+        """Every flag declared True comes with what its rule names.
+
+        The same table registration enforces, asserted here so a provider
+        distribution sees a failing test before it ships rather than a server
+        that refuses to start.
+        """
+        from astrabox.seams.sandbox import SANDBOX_CAPABILITY_RULES, SandboxProvider
+
+        provider = self.make_provider()
+        for rule in SANDBOX_CAPABILITY_RULES:
+            if not getattr(provider, rule.flag, False):
+                continue
+            for required in rule.requires:
+                assert getattr(provider, required, False) is True, (
+                    f"{rule.flag} requires {required}"
+                )
+            for method in rule.obliges:
+                assert _is_overridden(provider, SandboxProvider, method), (
+                    f"providers declaring {rule.flag} must override {method}"
+                )
 
     def test_turn_preparation_capability_is_safe_and_implemented(self) -> None:
         from astrabox.seams.sandbox import SandboxProvider

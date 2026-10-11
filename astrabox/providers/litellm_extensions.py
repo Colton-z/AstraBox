@@ -10,19 +10,16 @@ import os
 import secrets
 import time
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any
 from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 
 import httpx
 import jwt
 from fastapi import Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
-from pydantic import BaseModel, ConfigDict
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from astrabox.api.extensions import register_extension_router
-from astrabox.api.routes.response_envelope import ApiEnvelope
 from astrabox.common.logger.logger_factory import get_logger
-from astrabox.common.utils.api_response import success_response
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.user_context import (
     PLATFORM_ADMIN_ROLE,
@@ -31,7 +28,10 @@ from astrabox.common.utils.user_context import (
 )
 from astrabox.core.service.orchestrator.agent_extension_service import (
     AgentExtensionService,
+    configured_extension_provider,
+    extension_catalog_disabled,
 )
+from astrabox.deploy.public_path import PUBLIC_PATH_PREFIX_ENV, public_path_prefix
 from astrabox.identity.session_signing import session_signing_secret
 from astrabox.providers.litellm_shared_auth import (
     ADMIN_UI_PURPOSE,
@@ -44,8 +44,12 @@ from astrabox.seams.extensions import (
     ExtensionCatalog,
     ExtensionCatalogItem,
     ExtensionProvider,
+    ExtensionProviderFeatures,
     ExtensionRuntimeSelection,
     MCPGatewayCredential,
+    ManagementConsoleCookie,
+    ManagementConsoleSection,
+    ManagementConsoleSession,
     RuntimeMCPServer,
     register_extension_provider,
 )
@@ -104,6 +108,30 @@ def _failure(code: str, message: str, status: int) -> APIError:
     return APIError(code=code, message=message, status_code=status)
 
 
+def _refuse_below_public_path_prefix() -> None:
+    """Refuse to open LiteLLM's management pages below a public path prefix.
+
+    LiteLLM's prebuilt UI loads its files from ``/litellm-asset-prefix/_next/``
+    and navigates to ``/ui/`` at the root of the host. LiteLLM rewrites those
+    paths only on its own disk, for one ``SERVER_ROOT_PATH`` per process, so
+    below AstraBox's prefix the pages would request addresses outside it.
+    Raises ``PUBLIC_PATH_PREFIX_UNSUPPORTED`` when a prefix is configured.
+    """
+
+    prefix = public_path_prefix()
+    if prefix:
+        raise APIError(
+            code="PUBLIC_PATH_PREFIX_UNSUPPORTED",
+            message=(
+                "LiteLLM's management pages load their files from the root of the "
+                "host, so AstraBox cannot open them below "
+                f"{PUBLIC_PATH_PREFIX_ENV}={prefix}; open the model gateway's own "
+                "console at its address instead"
+            ),
+            status_code=409,
+        )
+
+
 def _provider_base_url() -> str:
     """Return this provider family's canonical server-side address."""
 
@@ -154,9 +182,14 @@ def _skill_descriptor(item: ExtensionCatalogItem) -> str:
 
 
 class LiteLLMExtensionProvider(ExtensionProvider):
-    """Normalize LiteLLM's catalog and authorize its MCP gateway hop."""
+    """Normalize LiteLLM's catalog and authorize its MCP gateway hop.
+
+    Its management console is LiteLLM's own MCP server and Skill pages, opened
+    for one Agent through the restricted adapter at the end of this module.
+    """
 
     name = "litellm"
+    features = ExtensionProviderFeatures(display_name="LiteLLM", management_console=True)
     is_default = True
 
     async def list_catalog(self, *, org_id: str) -> ExtensionCatalog:
@@ -282,6 +315,35 @@ class LiteLLMExtensionProvider(ExtensionProvider):
             header="Authorization",
             value=key,
             base_url=_provider_base_url(),
+        )
+
+    async def open_management_console(
+        self,
+        *,
+        user: UserContext,
+        agent_id: str,
+        section: ManagementConsoleSection,
+    ) -> ManagementConsoleSession:
+        """A grant for LiteLLM's MCP server or Skill page, scoped to one Agent.
+
+        The two cookies are the grant every proxied page request is checked
+        against (``extension-console`` claims, which name the Agent) and the
+        wrapper LiteLLM's UI reads its route-limited capability from.
+        """
+
+        _refuse_below_public_path_prefix()
+        session = _ManagementSessionService().create_agent_session(user, agent_id, section)
+        return ManagementConsoleSession(
+            open_url=session.open_url,
+            expires_in=session.expires_in,
+            cookies=(
+                ManagementConsoleCookie(
+                    EXTENSION_GRANT_COOKIE, session.grant_token, max_age=session.expires_in
+                ),
+                ManagementConsoleCookie(
+                    EXTENSION_UI_COOKIE, session.ui_token, max_age=session.expires_in
+                ),
+            ),
         )
 
 
@@ -559,27 +621,6 @@ class _ManagementSessionService:
         return claims
 
 
-class _CreateSessionRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    section: Literal["mcp", "skills"] = "mcp"
-
-
-class ExtensionConsoleSession(BaseModel):
-    """Where to send the browser, and how long the grant lasts.
-
-    The session itself lives in the two cookies the route sets; the body carries
-    no token, so a client that logs or forwards it discloses nothing. The
-    obligations that come with declaring a response model are in
-    :mod:`astrabox.api.routes.response_envelope`.
-    """
-
-    model_config = ConfigDict(extra="allow")
-
-    open_url: str
-    expires_in: int
-
-
 def _secure_cookie(request: Request) -> bool:
     return request.url.scheme == "https"
 
@@ -621,6 +662,23 @@ def register_litellm_extension_routes(app: Any) -> None:
     provider = _PROVIDER
     agent_extensions = AgentExtensionService(provider=provider)
     sessions = _ManagementSessionService()
+    if public_path_prefix():
+        logger.warning(
+            "LiteLLM's management pages are unavailable below %s=%s: the bundled "
+            "gateway's console and an Agent's MCP server and Skill catalogue "
+            "answer PUBLIC_PATH_PREFIX_UNSUPPORTED",
+            PUBLIC_PATH_PREFIX_ENV,
+            public_path_prefix(),
+        )
+
+    def _require_selected() -> None:
+        """Serve the catalog's management pages only while it is the deployment's."""
+
+        if configured_extension_provider() is not provider:
+            raise extension_catalog_disabled(
+                "LiteLLM is not this deployment's extension catalog "
+                "(ASTRABOX_EXTENSION_PROVIDER), so its management pages are closed"
+            )
 
     async def _grant(
         request: Request,
@@ -628,6 +686,7 @@ def register_litellm_extension_routes(app: Any) -> None:
         require_capability: bool,
         recheck_agent: bool = True,
     ) -> dict[str, Any]:
+        _require_selected()
         claims = sessions.authorize_grant(
             str(request.cookies.get(EXTENSION_GRANT_COOKIE) or ""),
             authorization=request.headers.get("authorization"),
@@ -645,58 +704,9 @@ def register_litellm_extension_routes(app: Any) -> None:
             )
         return claims
 
-    # The handler answers a JSONResponse because the session is carried by the
-    # cookies it sets, and a Response object bypasses ``response_model``: the
-    # declaration below documents the body without validating it, so it has to
-    # be read against ``success_response(...)`` at the return statement.
-    @app.post(
-        "/api/v1/agents/{agent_id}/extension-console/session",
-        response_model=ApiEnvelope[ExtensionConsoleSession],
-        response_model_exclude_unset=True,
-    )
-    async def create_extension_console_session(
-        agent_id: str,
-        request: Request,
-        body: _CreateSessionRequest,
-    ) -> JSONResponse:
-        from astrabox.common.utils.user_context import get_current_user_context
-
-        user = await get_current_user_context(request)
-        agent = await agent_extensions.assert_can_manage(user, agent_id)
-        normalized_agent_id = str(agent.get("agent_id") or agent_id)
-        session = sessions.create_agent_session(
-            user,
-            normalized_agent_id,
-            body.section,
-        )
-        response = JSONResponse(
-            success_response(
-                {"open_url": session.open_url, "expires_in": session.expires_in}
-            )
-        )
-        response.set_cookie(
-            EXTENSION_GRANT_COOKIE,
-            session.grant_token,
-            max_age=session.expires_in,
-            httponly=True,
-            secure=_secure_cookie(request),
-            samesite="lax",
-            path="/",
-        )
-        response.set_cookie(
-            EXTENSION_UI_COOKIE,
-            session.ui_token,
-            max_age=session.expires_in,
-            httponly=True,
-            secure=_secure_cookie(request),
-            samesite="lax",
-            path="/",
-        )
-        response.headers["Cache-Control"] = "no-store"
-        return response
-
     @app.get("/extension-console/open", include_in_schema=False)
     async def open_extension_console(request: Request) -> HTMLResponse:
+        _refuse_below_public_path_prefix()
         grant = await _grant(request, require_capability=False)
         ui_token = str(request.cookies.get(EXTENSION_UI_COOKIE) or "")
         sessions.verify_agent_ui_token(ui_token, grant)
@@ -882,6 +892,7 @@ def register_litellm_extension_routes(app: Any) -> None:
         return user
 
     async def _admin_proxy(upstream_path: str, request: Request) -> Response:
+        _refuse_below_public_path_prefix()
         identity = await _direct_admin_user(request)
         if isinstance(identity, RedirectResponse):
             return identity

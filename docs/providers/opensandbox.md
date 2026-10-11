@@ -130,8 +130,11 @@ The [Container Reference](../container-reference.md) describes the image and
 workspace layout. Every AstraBox-created sandbox carries the platform's measured
 box envelope: limits of `4` CPU and `4Gi` memory, and requests of `200m` CPU and
 `768Mi` memory. This is one platform recipe for both cold and prewarmed creation,
-not a per-Session Environment setting. Disk, GPU access, and cluster admission
-remain OpenSandbox deployment concerns.
+not a per-Session Environment setting. When the bundled lifecycle server runs
+sandboxes on this host's Docker, the CPU limit is lowered to the host's CPU
+count, because Docker refuses a limit above it; on Kubernetes, and with an
+existing OpenSandbox service, the recipe is sent as is. Disk, GPU access, and
+cluster admission remain OpenSandbox deployment concerns.
 
 ## Use prewarmed capacity
 

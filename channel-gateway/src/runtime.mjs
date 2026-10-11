@@ -217,7 +217,10 @@ export class BindingRuntime {
   async deliver({
     platform,
     self_id: selfId,
+    guild_id: guildId,
     channel_id: channelId,
+    direct = false,
+    user_id: userId,
     message_id: messageId,
     text,
     buttons = [],
@@ -228,6 +231,14 @@ export class BindingRuntime {
       )
       if (!bot) throw new Error(`connected login ${platform}/${selfId} is unavailable`)
       if (!channelId || typeof text !== 'string') throw new Error('delivery routing is incomplete')
+      // The official WeChat Official Account adapter sends a reply either as
+      // the callback's own HTTP response, which must come within seconds of
+      // the message, or through the customer-service API without reporting the
+      // sent message or the API's error code. Such a delivery can be neither
+      // confirmed nor safely retried, so it is refused before anything is sent.
+      if (this.provider.name === 'wechat-official') {
+        throw new Error('the WeChat Official Account adapter cannot confirm a reply, so none is sent')
+      }
       if (
         !Array.isArray(buttons)
         || buttons.some((button) => typeof button?.id !== 'string' || typeof button?.label !== 'string')
@@ -240,7 +251,21 @@ export class BindingRuntime {
         text,
         ...buttons.map((button) => h('button', { id: button.id, type: 'action' }, button.label)),
       ]
-      const messages = await bot.createMessage(channelId, content)
+      // The official encoders address a reply from the session of the message
+      // it answers, passed as core's SendOptions.session: Telegram sends a
+      // forum-topic reply to the session's guild (the chat), Zulip posts to the
+      // session's stream or direct user, and DingTalk and WeCom pick their
+      // one-to-one send from it. Without it those replies fail or reach the
+      // wrong chat.
+      const session = bot.session({
+        channel: {
+          id: channelId,
+          type: direct ? Universal.Channel.Type.DIRECT : Universal.Channel.Type.TEXT,
+        },
+        ...(guildId ? { guild: { id: guildId } } : {}),
+        ...(userId ? { user: { id: userId } } : {}),
+      })
+      const messages = await bot.createMessage(channelId, content, undefined, { session })
       const ids = messages.map((message) => String(message?.id || '')).filter(Boolean)
       if (!ids.length) throw new Error('adapter returned no message receipt')
       return ids

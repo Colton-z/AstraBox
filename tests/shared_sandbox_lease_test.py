@@ -39,7 +39,12 @@ from astrabox.core.service.orchestrator.runtime.shared_sandbox_lease import (
     SharedSandboxBinding,
     SharedSandboxLease,
 )
-from astrabox.seams.sandbox import SandboxIsolatedSession, SandboxIsolationCapability
+from astrabox.seams.sandbox import (
+    SandboxIsolatedSession,
+    SandboxIsolationCapability,
+    SandboxMemoryHeadroom,
+    SandboxUnreachable,
+)
 from astrabox.providers import register_builtin_providers
 
 # start_runner resolves the launch line from the engine registry, so the
@@ -112,8 +117,8 @@ class _FakeProvider:
         self.listening: set[int] = set()
         self._next = 0
 
-    async def read_memory_headroom(self, sandbox_id: str) -> tuple[int, int]:
-        return self.memory
+    async def read_memory_headroom(self, sandbox_id: str) -> SandboxMemoryHeadroom:
+        return SandboxMemoryHeadroom(*self.memory)
 
     async def read_listening_ports(self, sandbox_id: str) -> set[int]:
         return set(self.listening)
@@ -874,9 +879,12 @@ def test_a_box_that_will_not_report_its_memory_is_not_packed() -> None:
     one too many is every conversation in the box.
     """
 
+    class _SilentProvider(_FakeProvider):
+        async def read_memory_headroom(self, sandbox_id: str) -> SandboxMemoryHeadroom:
+            raise SandboxUnreachable(sandbox_id, "connection refused")
+
     repo = _FakeAgentRepo({"agent_id": "a1", "sandbox_id": "box-1"})
-    provider = _FakeProvider()
-    provider.memory = (0, 0)
+    provider = _SilentProvider()
     lease = SharedSandboxLease(agent_repo=repo, provider=provider)
 
     assert _acquire(lease, "box-1") is None
@@ -893,7 +901,7 @@ def test_an_agent_pointing_at_a_destroyed_box_takes_one_of_its_own() -> None:
     """
 
     class _GoneProvider(_FakeProvider):
-        async def read_memory_headroom(self, sandbox_id: str) -> tuple[int, int]:
+        async def read_memory_headroom(self, sandbox_id: str) -> SandboxMemoryHeadroom:
             raise APIError(
                 code="SANDBOX_GONE",
                 message=f"sandbox {sandbox_id!r} does not answer",
@@ -916,7 +924,7 @@ def test_a_broken_memory_probe_is_raised_rather_than_read_as_no_room() -> None:
     """
 
     class _BrokenProvider(_FakeProvider):
-        async def read_memory_headroom(self, sandbox_id: str) -> tuple[int, int]:
+        async def read_memory_headroom(self, sandbox_id: str) -> SandboxMemoryHeadroom:
             _ = sandbox_id
             raise AttributeError("'OpenSandboxHandle' object has no attribute 'output'")
 
@@ -1152,23 +1160,6 @@ def test_a_free_port_takes_the_first_uid_offered() -> None:
 
     repo, provider = _FakeAgentRepo(), _FakeProvider()
     provider.listening = {12345}
-    lease = SharedSandboxLease(agent_repo=repo, provider=provider)
-
-    binding = _acquire(lease, "box-1")
-
-    assert binding is not None
-    assert binding.uid == CONVERSATION_UID_BASE
-
-
-def test_a_box_that_cannot_answer_the_probe_still_places() -> None:
-    """An unanswered probe degrades to the old behaviour, never to a refusal."""
-
-    repo, provider = _FakeAgentRepo(), _FakeProvider()
-
-    async def _silent(sandbox_id: str) -> set[int]:
-        return set()
-
-    provider.read_listening_ports = _silent  # type: ignore[assignment]
     lease = SharedSandboxLease(agent_repo=repo, provider=provider)
 
     binding = _acquire(lease, "box-1")

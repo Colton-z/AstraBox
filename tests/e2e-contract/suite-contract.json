@@ -30,7 +30,7 @@
       }
     },
     "tests": {
-      "no_volume_core": 536,
+      "no_volume_core": 546,
       "persistent_files": 19
     }
   },
@@ -42,7 +42,7 @@
   ],
   "playwright": {
     "exclusive": {
-      "files": 165,
+      "files": 167,
       "parallel_files": 105,
       "parallel_tests": 191,
       "serial_files": [
@@ -73,7 +73,9 @@
         "specs/channel-completed-before-receipt-survives-server-restart.exclusive.spec.ts",
         "specs/channel-completed-outbox-survives-server-and-sandbox-loss.exclusive.spec.ts",
         "specs/channel-execution-account-isolates-conversations.exclusive.spec.ts",
+        "specs/channel-linked-accounts-run-as-their-own.exclusive.spec.ts",
         "specs/channel-message-supersedes-exited-question.exclusive.spec.ts",
+        "specs/channel-observed-message-runs-once-after-authorization.exclusive.spec.ts",
         "specs/console-axe.exclusive.spec.ts",
         "specs/console-extension-save-reschedules-prewarm.exclusive.spec.ts",
         "specs/cross-host-backend-claim.exclusive.spec.ts",
@@ -107,9 +109,9 @@
         "specs/subagent-replay-recovery.exclusive.spec.ts",
         "specs/untouched-tab-catches-up-after-backend-restart.exclusive.spec.ts"
       ],
-      "serial_tests": 103,
+      "serial_tests": 105,
       "serial_workers": 1,
-      "tests": 294,
+      "tests": 296,
       "workers": 5
     },
     "parallel": {
@@ -155,7 +157,7 @@
         "codex",
         "pi"
       ],
-      "matrix_tests": 210,
+      "matrix_tests": 218,
       "parallel_node_ids": [
         "tests/e2e/agent_instruction_install_test.py::test_authored_instructions_reach_the_first_reply[cold-conversation]",
         "tests/e2e/agent_instruction_install_test.py::test_authored_instructions_reach_the_first_reply[cold-agent]",
@@ -196,6 +198,7 @@
         "tests/e2e/test_mcp_client_journey.py::test_a_revoked_key_stops_working_against_the_deployment",
         "tests/e2e/test_messages.py::test_messages_transcript_has_user_and_assistant",
         "tests/e2e/test_native_config.py::test_native_json_configuration_reaches_supplier",
+        "tests/e2e/test_own_box_size.py::test_a_conversation_own_box_at_the_default_size_finishes_a_working_turn",
         "tests/e2e/test_permission_mode.py::test_accept_edits_writes_without_a_prompt",
         "tests/e2e/test_prepared_runtime_activation.py::test_claim_activates_the_already_prepared_engine[conversation]",
         "tests/e2e/test_prepared_runtime_activation.py::test_claim_activates_the_already_prepared_engine[agent]",
@@ -210,6 +213,7 @@
         "tests/e2e/test_stream_close_admits_next_send.py::test_a_send_during_a_running_turn_queues_behind_it",
         "tests/e2e/test_stream_close_admits_next_send.py::test_the_session_is_usable_after_the_no_gap_pair",
         "tests/e2e/test_terminal.py::test_terminal_nonzero_exit_propagates",
+        "tests/e2e/test_terminal.py::test_an_interrupt_stops_the_command_in_a_conversation_box_terminal",
         "tests/e2e/test_tool_permission.py::test_tool_permission_approve_runs_the_write",
         "tests/e2e/test_tool_permission.py::test_tool_permission_deny_blocks_the_write",
         "tests/e2e/test_transcript_mirror.py::test_a_replacement_box_answers_from_the_restored_transcript",
@@ -220,11 +224,11 @@
         "tests/e2e/test_reattach.py::test_sandbox_and_session_survive_backend_restart",
         "tests/e2e/test_reattach.py::test_reattach_turn_reuses_sandbox_without_rebuild"
       ],
-      "tests": 60,
+      "tests": 62,
       "workers": 5
     },
-    "matrix_tests": 220,
-    "tests": 70
+    "matrix_tests": 224,
+    "tests": 71
   },
   "suites": {
     "exclusive": {
@@ -235,9 +239,25 @@
       "entry": "ASTRABOX_E2E_EXTERNAL_ACCOUNTS=1 npm --prefix tests/e2e-ui run e2e -- <file>.external.spec.ts",
       "role": "external"
     },
+    "no-extension-catalog": {
+      "entry": "ASTRABOX_E2E_EXTENSION_PROVIDER=none npm --prefix tests/e2e-ui run e2e -- <file>.no-extension-catalog.spec.ts",
+      "role": "deployment-shape"
+    },
     "parallel": {
       "entry": "run-playwright.sh --lane parallel",
       "role": "e2e"
+    },
+    "path-prefix": {
+      "entry": "ASTRABOX_E2E_APP_PREFIX=/astrabox npm --prefix tests/e2e-ui run e2e -- <file>.path-prefix.spec.ts",
+      "role": "deployment-shape"
+    },
+    "sandbox-envelope": {
+      "entry": "ASTRABOX_E2E_SANDBOX_ENVELOPE='<json>' npm --prefix tests/e2e-ui run e2e -- <file>.sandbox-envelope.spec.ts",
+      "role": "deployment-shape"
+    },
+    "sandbox-quota": {
+      "entry": "ASTRABOX_E2E_SANDBOX_QUOTA=1 npm --prefix tests/e2e-ui run e2e -- <file>.sandbox-quota.spec.ts",
+      "role": "deployment-shape"
     },
     "tooling": {
       "entry": "make screenshots",

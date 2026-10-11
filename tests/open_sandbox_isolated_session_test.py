@@ -34,6 +34,11 @@ from astrabox.providers.open_sandbox.sandbox import (
     OpenSandboxHandle,
     OpenSandboxSandboxProvider,
 )
+from astrabox.seams.sandbox import (
+    SandboxMemoryHeadroom,
+    SandboxProbeFailed,
+    SandboxUnreachable,
+)
 
 
 class _FakeIsolation:
@@ -496,24 +501,39 @@ def test_the_memory_probe_reads_the_bytes_the_vendor_actually_returns() -> None:
     Measured on a real pooled box: `memory.max` 2 GiB, `memory.current` ~600 MB.
     """
 
-    limit, current = asyncio.run(
+    headroom = asyncio.run(
         _headroom_provider(b"2147483648\n632737792\n").read_memory_headroom("sbx-1")
     )
-    assert (limit, current) == (2147483648, 632737792)
+    assert headroom == SandboxMemoryHeadroom(
+        limit_bytes=2147483648, current_bytes=632737792
+    )
 
 
-def test_an_unparseable_memory_answer_proves_no_headroom() -> None:
-    """`memory.max` is the literal `max` when the template set no limit.
+def test_the_memory_probe_tells_no_limit_from_no_answer() -> None:
+    """Three answers a caller has to tell apart.
 
-    Refusing to pack there is deliberate rather than an oversight: with no
-    limit the container cannot be reasoned about, and the node would pay for a
-    wrong guess instead of the container.
+    `memory.max` is the literal `max` when the template set no limit: an
+    answer, and the box is not packed. An answer that is not two byte counts
+    is a reading defect, and a box that cannot be reached proves nothing about
+    its memory. Read as "no limit", either would turn packing off with nothing
+    to show why.
     """
 
-    assert asyncio.run(
-        _headroom_provider(b"max\n632737792\n").read_memory_headroom("sbx-1")
-    ) == (0, 0)
-    assert asyncio.run(_headroom_provider(b"").read_memory_headroom("sbx-1")) == (0, 0)
+    assert (
+        asyncio.run(_headroom_provider(b"max\n632737792\n").read_memory_headroom("sbx-1"))
+        is None
+    )
+    with pytest.raises(SandboxProbeFailed):
+        asyncio.run(_headroom_provider(b"").read_memory_headroom("sbx-1"))
+
+    provider = _headroom_provider(b"")
+
+    async def _dead_route(sandbox_id: str) -> Any:
+        raise httpx.ConnectError("All connection attempts failed")
+
+    provider.connect = _dead_route  # type: ignore[method-assign]
+    with pytest.raises(SandboxUnreachable):
+        asyncio.run(provider.read_memory_headroom("sbx-1"))
 
 
 def test_an_unreachable_box_reports_gone_rather_than_a_missing_session() -> None:

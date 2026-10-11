@@ -27,6 +27,7 @@ from astrabox.common.utils.errors import APIError
 from astrabox.seams.sandbox import (
     SandboxIsolatedSession,
     SandboxIsolationCapability,
+    SandboxMemoryHeadroom,
     SandboxProvider,
     register_sandbox,
 )
@@ -190,6 +191,26 @@ def test_a_fully_implemented_backend_registers() -> None:
             self, sandbox_id: str, session_id: str
         ) -> None:
             return None
+
+        async def stream_in_isolated_session(
+            self,
+            sandbox_id: str,
+            session_id: str,
+            *,
+            code: str,
+            envs: Any = None,
+            timeout_s: float | None = 300.0,
+        ) -> Any:
+            yield {"type": "__done__", "exit_code": 0}
+
+        async def count_active_isolated_sessions(self, sandbox_id: str) -> int:
+            return 0
+
+        async def read_memory_headroom(self, sandbox_id: str) -> SandboxMemoryHeadroom | None:
+            return SandboxMemoryHeadroom(limit_bytes=2 * 1024**3, current_bytes=0)
+
+        async def read_listening_ports(self, sandbox_id: str) -> frozenset[int]:
+            return frozenset()
 
     register_sandbox(_Whole())  # must not raise
     opened = asyncio.run(

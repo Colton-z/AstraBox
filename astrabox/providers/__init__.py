@@ -35,8 +35,10 @@ ENGINE_GROUP = "astrabox.providers.engine"
 MODEL_GROUP = "astrabox.providers.model"
 SECRETS_GROUP = "astrabox.providers.secrets"
 CHANNEL_GROUP = "astrabox.providers.channel"
+CHANNEL_ACCOUNTS_GROUP = "astrabox.providers.channel_accounts"
 ADMISSION_GROUP = "astrabox.providers.admission"
 EXTENSIONS_GROUP = "astrabox.providers.extensions"
+SCHEDULER_GROUP = "astrabox.providers.scheduler"
 
 # Groups whose members are eagerly loaded at bootstrap so their register_* side
 # effects (or class registrations) run without the host importing the plugin
@@ -50,8 +52,10 @@ _EAGER_GROUPS = (
     MODEL_GROUP,
     SECRETS_GROUP,
     CHANNEL_GROUP,
+    CHANNEL_ACCOUNTS_GROUP,
     ADMISSION_GROUP,
     EXTENSIONS_GROUP,
+    SCHEDULER_GROUP,
 )
 
 # The single built-in provider name (every seam registers under it).
@@ -166,8 +170,9 @@ def register_builtin_providers() -> None:
     Each built-in seam module, on import, calls the matching ``register_*``:
     the ``open_sandbox`` sandbox provider and the ``local`` storage provider ->
     ``register_sandbox`` / ``register_storage`` (:mod:`astrabox.seams`), the model + secret-store
-    modules register their providers, and the two built-in engine adapters
-    (``claude_code`` / ``assistant``) call ``register_engine_adapter``
+    modules register their providers, the ``dbos`` scheduler provider calls
+    ``register_scheduler``, and the built-in engine adapters call
+    ``register_engine_adapter``
     (:mod:`astrabox.core.service.orchestrator.engine.registry`). Together these
     populate the in-process registries that ``runtime_manager`` and the turn
     pipeline read. The sandbox provider also owns the in-box transport
@@ -197,8 +202,10 @@ def register_builtin_providers() -> None:
     from astrabox.providers import secret_store_aws_kms as _aws_kms_secret_store  # noqa: F401
     from astrabox.providers import channel_generic as _channel_generic  # noqa: F401
     from astrabox.providers import channel_satori as _channel_gateway  # noqa: F401
+    from astrabox.providers import channel_account_links as _channel_account_links  # noqa: F401
     from astrabox.providers import builtin_extensions as _builtin_extensions  # noqa: F401
     from astrabox.providers import litellm_extensions as _extensions  # noqa: F401
+    from astrabox.providers import scheduler_dbos as _dbos_scheduler  # noqa: F401
 
     # Engines: importing each adapter module runs its bottom-line
     # ``register_engine_adapter(...)``. This is the in-tree fallback so the
@@ -234,18 +241,23 @@ def register_builtin_providers() -> None:
 def load_entry_point_providers() -> None:
     """Eagerly load every provider advertised at the eager entry-point groups.
 
-    This is what makes the PEP 621 plugin story REAL for sandbox / storage /
-    engine / model providers: a third-party distribution that declares an entry
-    point in one of those groups is loaded here at bootstrap — its import runs
-    its ``register_*`` side effect, and a target that is a class with a ``name``
-    not yet registered is instantiated and registered explicitly. Without this
-    call only in-tree imports would populate the registries, and an installed
-    plugin would silently never activate.
+    This is what makes the PEP 621 plugin story REAL for every eager group: a
+    third-party distribution that declares an entry point in one of them is
+    loaded here at bootstrap — its import runs its ``register_*`` side effect,
+    and a target that is a class not yet registered is instantiated and
+    registered explicitly (an admission controller by its class, every other
+    provider by its ``name``). Without this call only in-tree imports would
+    populate the registries, and an installed plugin would silently never
+    activate — for an admission controller, every request would be admitted.
 
     Fail-loud: a broken entry point raises with the group + name in the message
     rather than being skipped.
     """
     from astrabox.seams.channel import channel_if_registered, register_channel
+    from astrabox.seams.channel_accounts import (
+        register_channel_account_resolver,
+        registered_channel_account_resolver_names,
+    )
     from astrabox.seams.extensions import (
         register_extension_provider,
         registered_extension_provider_names,
@@ -254,7 +266,14 @@ def load_entry_point_providers() -> None:
         register_model_endpoint,
         registered_model_endpoint_names,
     )
+    from astrabox.seams.admission import (
+        AdmissionController,
+        get_admission_controller,
+        register_admission_controller,
+    )
     from astrabox.seams.sandbox import register_sandbox, sandbox_if_registered
+    from astrabox.seams.scheduler import register_scheduler, registered_scheduler_names
+    from astrabox.seams.secrets import register_secret_store, registered_secret_store_names
     from astrabox.seams.storage import _PROVIDERS as _STORAGE_PROVIDERS  # registry view
     from astrabox.seams.storage import register_storage
 
@@ -292,6 +311,16 @@ def load_entry_point_providers() -> None:
                     )
                 register_engine_adapter(adapter_kind, adapter)
                 continue
+            if group == ADMISSION_GROUP:
+                # A controller has no name: the deployment installs one.
+                if not issubclass(target, AdmissionController):
+                    raise RuntimeError(
+                        f"admission entry point name={ep_name!r} must target an "
+                        "AdmissionController class"
+                    )
+                if not isinstance(get_admission_controller(), target):
+                    register_admission_controller(target())
+                continue
             provider_name = str(getattr(target, "name", "") or "").strip().lower()
             if not provider_name:
                 continue
@@ -299,6 +328,14 @@ def load_entry_point_providers() -> None:
                 register_sandbox(target())
             elif group == STORAGE_GROUP and provider_name not in _STORAGE_PROVIDERS:
                 register_storage(provider_name, target())
+            elif group == SECRETS_GROUP and (
+                provider_name not in registered_secret_store_names()
+            ):
+                register_secret_store(target())
+            elif group == SCHEDULER_GROUP and (
+                provider_name not in registered_scheduler_names()
+            ):
+                register_scheduler(target())
             elif group == CHANNEL_GROUP and channel_if_registered(provider_name) is None:
                 # Same contract as the sandbox/storage groups: a class target
                 # is instantiated + registered here (register_channel fails
@@ -312,6 +349,10 @@ def load_entry_point_providers() -> None:
                 provider_name not in registered_extension_provider_names()
             ):
                 register_extension_provider(target())
+            elif group == CHANNEL_ACCOUNTS_GROUP and (
+                provider_name not in registered_channel_account_resolver_names()
+            ):
+                register_channel_account_resolver(target())
 
 
 __all__ = [
@@ -320,7 +361,9 @@ __all__ = [
     "ENGINE_GROUP",
     "MODEL_GROUP",
     "SECRETS_GROUP",
+    "CHANNEL_ACCOUNTS_GROUP",
     "EXTENSIONS_GROUP",
+    "SCHEDULER_GROUP",
     "OPEN_SANDBOX",
     "load_provider",
     "get_sandbox_provider",

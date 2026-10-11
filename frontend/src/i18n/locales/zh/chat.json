@@ -273,6 +273,8 @@
     "nothing_inherited": "没有为所有助手配置的内容。",
     "catalog_tools_one": "另有目录中的 {{count}} 个工具服务。",
     "catalog_tools_other": "另有目录中的 {{count}} 个工具服务。",
+    "catalog_unavailable_one": "从扩展目录中选择的 {{count}} 项不可用：本部署未启用扩展目录。",
+    "catalog_unavailable_other": "从扩展目录中选择的 {{count}} 项不可用：本部署未启用扩展目录。",
     "its_own": "它自己的 Skill 与工具",
     "nothing_own": "暂无。",
     "advanced": "在控制台中编辑",

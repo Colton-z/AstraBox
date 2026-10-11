@@ -101,16 +101,48 @@ FastAPI runs lifespan events only for the main application, not automatically
 for a mounted subapplication. Enter the AstraBox lifespan exactly once as shown
 above; otherwise migrations, recovery, scheduled work, and shutdown do not run.
 
-## Keep AstraBox at the origin root
+## Mount AstraBox under a path {#mount-astrabox-under-a-path}
 
-The AstraBox console uses root-relative asset, API, authentication, and console
-routes such as `/assets`, `/api`, and `/manage`. Mounting the application at a
-path such as `/astrabox` is therefore not supported.
+To keep the parent application's own pages at the root, mount AstraBox below a
+path instead, and set `ASTRABOX_PUBLIC_PATH_PREFIX` to the same path in the
+process environment before `create_app()` runs:
 
-The parent application can register its own routes before the root mount. If
-both applications need independent root routes or browser interfaces, give
-AstraBox its own hostname or route a separate virtual host to the ASGI
-application. Path-prefix hosting is not supported for the bundled console.
+```python
+# host_app.py
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
+
+from astrabox.api.app import create_app
+
+astrabox_app = create_app()
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    async with astrabox_app.router.lifespan_context(astrabox_app):
+        yield
+
+
+app = FastAPI(lifespan=lifespan)
+app.mount("/astrabox", astrabox_app)
+```
+
+```bash
+ASTRABOX_PUBLIC_PATH_PREFIX=/astrabox \
+  uvicorn host_app:app --host 127.0.0.1 --port 8088
+```
+
+The mount passes AstraBox the path as the request's `root_path`, and AstraBox
+routes each request by the part of its path below it. The console, its API, and
+every address AstraBox gives out are then served below `/astrabox`, as described
+in [Publish AstraBox under a path](deploy.md#publish-under-a-path). The setting
+and the mount path must agree: AstraBox answers a request from a mount at any
+other path with `PUBLIC_PATH_PREFIX_MISMATCH`.
+
+Sandboxes call AstraBox back at `ASTRABOX_MCP_PROXY_BASE_URL`. When they reach
+it through the parent application, that address includes the mount path, such
+as `http://<host-address>:8088/astrabox`.
 
 ## What the lifespan starts
 
@@ -157,10 +189,11 @@ finally:
     await run_lifecycle_shutdown(reason="host_shutdown")
 ```
 
-`bootstrap()` is idempotent. It loads built-in and installed Providers, selects
-the configured sandbox service, and rejects incompatible deployment settings.
-It does not prepare storage, run migrations, start Deployment scheduling, enter
-application lifespan hooks, or arrange shutdown.
+`bootstrap()` is idempotent. It loads built-in and installed Providers,
+publishes the default and enabled sandbox backends, selects the scheduler
+provider and checks it against the database backend, and rejects incompatible
+deployment settings. It does not prepare storage, run migrations, start
+Deployment scheduling, enter application lifespan hooks, or arrange shutdown.
 
 The example starts the recovery lifecycle used by AstraBox services, but it is
 not a substitute for the full application lifespan. Use `create_app()` when the
@@ -191,8 +224,9 @@ on the parent ASGI app.
 
 See [Architecture](architecture.md#plugin-interfaces) for the available Provider
 interfaces. The adapter-specific guides cover
-[Agent programs](writing-an-engine-adapter.md) and
-[messaging platforms](writing-a-channel-provider.md).
+[Agent programs](writing-an-engine-adapter.md),
+[messaging platforms](writing-a-channel-provider.md), and
+[schedulers](writing-a-scheduler-provider.md).
 
 ## Process and security requirements
 

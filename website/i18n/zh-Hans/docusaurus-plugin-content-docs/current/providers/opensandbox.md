@@ -106,7 +106,9 @@ AstraBox 使用 OpenSandbox 原生命令、文件系统和端点 API。内置镜
 [容器参考](../container-reference.md)说明镜像与工作区约定。AstraBox 创建的每个沙箱都使用
 平台统一的资源规格：运行上限为 `4` CPU 和 `4Gi` 内存，调度请求为 `200m` CPU 和
 `768Mi` 内存。冷创建和预备容量使用同一份配方，而不是为单个 Session 设置 Environment
-资源。磁盘、GPU 和集群准入仍由 OpenSandbox 部署管理。
+资源。内置 Lifecycle 服务在本机 Docker 上运行沙箱时，CPU 上限会降到本机的 CPU 数，
+因为 Docker 拒绝超过它的上限；在 Kubernetes 上或连接已有 OpenSandbox 服务时，配方按原样
+发送。磁盘、GPU 和集群准入仍由 OpenSandbox 部署管理。
 
 ## 使用预热容量
 

@@ -235,6 +235,27 @@ TEST_SANDBOX_INSTALLATION_ID = "unit-test-installation"
 
 
 @pytest.fixture(autouse=True)
+def _composed_selections_are_restored() -> Iterator[None]:
+    """Undo the enabled backend set and scheduler a test's ``bootstrap()`` selected.
+
+    Both are process-wide. Left in place, a test that composed the default
+    deployment would make every later test that registers a stand-in backend
+    meet ``SANDBOX_BACKEND_DISABLED``, and every later test of an unselected
+    scheduler see the default one.
+    """
+    from astrabox.seams import sandbox as sandbox_seam
+    from astrabox.seams import scheduler as scheduler_seam
+
+    enabled = sandbox_seam._ENABLED_BACKENDS
+    scheduler = scheduler_seam._CONFIGURED
+    try:
+        yield
+    finally:
+        sandbox_seam._ENABLED_BACKENDS = enabled
+        scheduler_seam._CONFIGURED = scheduler
+
+
+@pytest.fixture(autouse=True)
 def _sandbox_installation_id() -> Iterator[None]:
     """Answer :func:`sandbox_installation_id` with the suite's id, then restore."""
     from astrabox.seams import sandbox as sandbox_seam

@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 
 import { Button } from '@/components/ui/button';
 import {
+  MODULE_BASE,
   deleteDeployment,
   listChannelProviders,
   listDeployments,
@@ -14,6 +15,7 @@ import {
 } from '@/api';
 import type {
   AgentDeployment,
+  ChannelExecutionMode,
   ChannelProviderDescriptor,
   DeploymentRun,
 } from '@/types';
@@ -42,11 +44,13 @@ import {
 } from './console';
 import {
   channelEditField,
+  channelExecutionModeField,
   channelExecutionUserField,
   channelFieldValues,
   firstMissingChannelField,
   hasChannelFieldValue,
 } from './channelProviderFields';
+import DeploymentAccountLinks from './DeploymentAccountLinks';
 import { keepsLastRead, useKeepCurrent, type ReloadContext } from '@/hooks/useKeepCurrent';
 import { useFrontendReleaseHold } from '@/hooks/useFrontendReleaseHold';
 
@@ -139,6 +143,7 @@ export default function DeploymentDetailPage() {
           timezone: found.schedule?.timezone ?? '',
         });
         setChannelDraft({
+          execution_mode: found.execution_mode ?? 'owner',
           execution_user_id: found.execution_user_id ?? '',
           allowed_participants: (found.allowed_participants ?? []).join('\n'),
           channel_config: { ...(found.channel_config ?? {}) },
@@ -185,6 +190,7 @@ export default function DeploymentDetailPage() {
     || scheduleDraft.cron !== (deployment?.schedule?.cron ?? '')
     || scheduleDraft.timezone !== (deployment?.schedule?.timezone ?? '')
     || JSON.stringify(channelDraft) !== JSON.stringify({
+      execution_mode: deployment?.execution_mode ?? 'owner',
       execution_user_id: deployment?.execution_user_id ?? '',
       allowed_participants: (deployment?.allowed_participants ?? []).join('\n'),
       channel_config: { ...(deployment?.channel_config ?? {}) },
@@ -230,7 +236,7 @@ export default function DeploymentDetailPage() {
   const channelProvider = channelProviders.find(
     (provider) => provider.scene === deployment.scene,
   );
-  const triggerUrl = `/api/v1/deployments/${deployment.deployment_id}/trigger`;
+  const triggerUrl = `${MODULE_BASE}/api/v1/deployments/${deployment.deployment_id}/trigger`;
   const callbackUrl =
     channelProvider?.callback_path && deployment.callback_base_url
       ? `${deployment.callback_base_url}${channelProvider.callback_path}`
@@ -295,7 +301,15 @@ export default function DeploymentDetailPage() {
           fields: [
             ...(deployment.assistant_id
               ? []
-              : [channelExecutionUserField(t, channelProvider.can_configure_execution_user === true)]),
+              : [
+                  channelExecutionModeField(
+                    t, channelProvider.execution_modes,
+                    channelProvider.can_configure_execution_user === true,
+                  ),
+                  ...(channelDraft.execution_mode === 'account'
+                    ? [channelExecutionUserField(t, channelProvider.can_configure_execution_user === true)]
+                    : []),
+                ]),
             {
               key: 'allowed_participants',
               label: t('manage:deployments.field_allowed_participants'),
@@ -344,11 +358,14 @@ export default function DeploymentDetailPage() {
         : undefined)
     : undefined;
   const channelBaseline = {
+    execution_mode: deployment.execution_mode ?? 'owner',
     execution_user_id: deployment.execution_user_id ?? '',
     allowed_participants: (deployment.allowed_participants ?? []).join('\n'),
     channel_config: { ...(deployment.channel_config ?? {}) },
     credentials: {},
   };
+  const missingExecutionUser =
+    channelDraft.execution_mode === 'account' && !String(channelDraft.execution_user_id ?? '').trim();
   const refreshRuns = async () => {
     setRuns(await listDeploymentRuns(deployment, deployment.deployment_id));
     setRunsError('');
@@ -700,12 +717,15 @@ export default function DeploymentDetailPage() {
             dirty: sectionIsDirty(section.fields, channelDraft, channelBaseline),
             blocked:
               section.fields.some((field) => invalidKeys.has(field.key)) ||
-              missingChannelField !== undefined,
-            blockedReason: missingChannelField
-              ? t('manage:deployments.err_channel_field_required', {
-                  field: missingChannelField.label,
-                })
-              : undefined,
+              missingChannelField !== undefined ||
+              missingExecutionUser,
+            blockedReason: missingExecutionUser
+              ? t('manage:deployments.err_execution_user_required')
+              : missingChannelField
+                ? t('manage:deployments.err_channel_field_required', {
+                    field: missingChannelField.label,
+                  })
+                : undefined,
             saving: busy,
             saveLabel: t('common:save'),
             revertLabel: t('common:revert'),
@@ -716,9 +736,13 @@ export default function DeploymentDetailPage() {
                   deployment,
                   deployment.deployment_id,
                   {
-                    execution_user_id:
-                      channelProvider.can_configure_execution_user && !deployment.assistant_id
-                        ? String(channelDraft.execution_user_id ?? '').trim() : undefined,
+                    ...(channelProvider.can_configure_execution_user && !deployment.assistant_id
+                      ? {
+                          execution_mode: channelDraft.execution_mode as ChannelExecutionMode,
+                          execution_user_id: channelDraft.execution_mode === 'account'
+                            ? String(channelDraft.execution_user_id ?? '').trim() : undefined,
+                        }
+                      : {}),
                     allowed_participants: changedParticipants(
                       channelDraft.allowed_participants,
                       deployment.allowed_participants,
@@ -743,6 +767,15 @@ export default function DeploymentDetailPage() {
               }),
             onRevert: () => setChannelDraft(channelBaseline),
           })}
+        />
+      )}
+
+      {deployment.execution_mode === 'linked'
+        && deployment.agent_id
+        && channelProvider?.can_configure_execution_user && (
+        <DeploymentAccountLinks
+          agentId={deployment.agent_id}
+          deploymentId={deployment.deployment_id}
         />
       )}
 

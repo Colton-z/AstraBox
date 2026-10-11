@@ -126,7 +126,7 @@ class DeploymentRepository:
         return await run_mongo_with_retry("deployments.list_active", _list)
 
     async def list_scheduled(self) -> list[dict[str, Any]]:
-        """Return every live scheduled Deployment for DBOS projection sync."""
+        """Return every live scheduled Deployment, for the scheduler's startup reconcile."""
 
         async def _list() -> list[dict[str, Any]]:
             collection = await get_async_collection(self._collection_name)

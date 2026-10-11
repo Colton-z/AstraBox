@@ -163,6 +163,25 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/admin/agents/{agent_id}/deployments/{deployment_id}/account-links": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Agent Deployment Account Links */
+        get: operations["list_agent_deployment_account_links_api_v1_admin_agents__agent_id__deployments__deployment_id__account_links_get"];
+        /** Put Agent Deployment Account Link */
+        put: operations["put_agent_deployment_account_link_api_v1_admin_agents__agent_id__deployments__deployment_id__account_links_put"];
+        post?: never;
+        /** Delete Agent Deployment Account Link */
+        delete: operations["delete_agent_deployment_account_link_api_v1_admin_agents__agent_id__deployments__deployment_id__account_links_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/admin/agents/{agent_id}/deployments/{deployment_id}/runs": {
         parameters: {
             query?: never;
@@ -657,6 +676,30 @@ export interface paths {
          *     means neither sweep found a candidate.
          */
         post: operations["run_sandbox_idle_sweep_api_v1_admin_sandbox_idle_sweep_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/sandbox-quota": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Describe Sandbox Quota
+         * @description Each enabled backend's quota ceilings, what is held against them, and its boxes.
+         *
+         *     Usage is the backend's last inventory plus the reservations for boxes
+         *     it does not show yet, as the quota itself counts it; ``inventory_at``
+         *     says when that inventory was taken.
+         */
+        get: operations["describe_sandbox_quota_api_v1_admin_sandbox_quota_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1250,7 +1293,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Create Extension Console Session */
+        /**
+         * Create Extension Console Session
+         * @description Open the selected provider's management console for one Agent.
+         */
         post: operations["create_extension_console_session_api_v1_agents__agent_id__extension_console_session_post"];
         delete?: never;
         options?: never;
@@ -2285,6 +2331,26 @@ export interface paths {
          *     leave ``response_model`` describing this route without checking it.
          */
         get: operations["refresh_exposed_port_url_api_v1_exposed_ports__deployment_id___port__url_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/extension-provider": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Extension Provider
+         * @description What the console offers for extension catalogs; reads no catalog.
+         */
+        get: operations["get_extension_provider_api_v1_extension_provider_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -3750,6 +3816,110 @@ export interface components {
             [key: string]: unknown;
         };
         /**
+         * AdminSandboxQuota
+         * @description The sandbox quota of every enabled backend.
+         */
+        AdminSandboxQuota: {
+            /** Backends */
+            backends: components["schemas"]["AdminSandboxQuotaBackend"][];
+        } & {
+            [key: string]: unknown;
+        };
+        /**
+         * AdminSandboxQuotaBackend
+         * @description One enabled backend's quota, usage and boxes.
+         */
+        AdminSandboxQuotaBackend: {
+            /** Backend */
+            backend: string;
+            /** Boxes */
+            boxes: components["schemas"]["AdminSandboxQuotaBox"][];
+            /** Inventory At */
+            inventory_at: string | null;
+            quota: components["schemas"]["AdminSandboxQuotaCeilings"];
+            /** Reservations */
+            reservations: components["schemas"]["AdminSandboxQuotaReservation"][];
+            usage: components["schemas"]["AdminSandboxQuotaUsage"];
+        } & {
+            [key: string]: unknown;
+        };
+        /**
+         * AdminSandboxQuotaBox
+         * @description One box of the backend's last inventory, with what it is charged.
+         */
+        AdminSandboxQuotaBox: {
+            /** Cpu */
+            cpu: number;
+            /** Memory */
+            memory: number;
+            /** Sandbox Id */
+            sandbox_id: string;
+            /** Session Id */
+            session_id: string | null;
+            /** State */
+            state: string;
+        } & {
+            [key: string]: unknown;
+        };
+        /**
+         * AdminSandboxQuotaCeilings
+         * @description A backend's quota ceilings; ``null`` is no ceiling.
+         */
+        AdminSandboxQuotaCeilings: {
+            /** Boxes */
+            boxes: number | null;
+            /** Concurrent Creates */
+            concurrent_creates: number | null;
+            /** Cpu */
+            cpu: number | null;
+            /** Memory Bytes */
+            memory_bytes: number | null;
+            /** Sources */
+            sources: {
+                [key: string]: string;
+            };
+        } & {
+            [key: string]: unknown;
+        };
+        /**
+         * AdminSandboxQuotaReservation
+         * @description Room taken for a box the inventory does not show yet.
+         */
+        AdminSandboxQuotaReservation: {
+            /** Cpu */
+            cpu: number | null;
+            /** Memory */
+            memory: number | null;
+            /** Reason */
+            reason: string | null;
+            /** Reserved At */
+            reserved_at: string | null;
+            /** Sandbox Id */
+            sandbox_id: string | null;
+            /** Session Id */
+            session_id: string | null;
+            /** State */
+            state: string | null;
+        } & {
+            [key: string]: unknown;
+        };
+        /**
+         * AdminSandboxQuotaUsage
+         * @description What the backend's boxes and pending creates hold against the quota.
+         */
+        AdminSandboxQuotaUsage: {
+            /** Boxes */
+            boxes: number;
+            /** Cpu */
+            cpu: number;
+            /** Creating */
+            creating: number;
+            /** Memory Bytes */
+            memory_bytes: number;
+        } & {
+            [key: string]: unknown;
+        };
+        /**
          * AdminSandboxSecurity
          * @description What one sandbox reports about its own containment.
          */
@@ -4225,8 +4395,16 @@ export interface components {
             environment_name?: string | null;
             /** Exposure Mode */
             exposure_mode?: string | null;
+            /** Extension Catalog */
+            extension_catalog?: {
+                [key: string]: unknown;
+            } | null;
             /** Idle Hibernate Seconds */
             idle_hibernate_seconds?: number | null;
+            /** Mcp Assignments */
+            mcp_assignments?: {
+                [key: string]: unknown;
+            }[] | null;
             /** Mcp Servers */
             mcp_servers?: {
                 [key: string]: unknown;
@@ -4391,6 +4569,14 @@ export interface components {
             /** Code */
             code: string;
             data: components["schemas"]["AdminSandboxPage"];
+            /** Message */
+            message: string;
+        };
+        /** ApiEnvelope[AdminSandboxQuota] */
+        ApiEnvelope_AdminSandboxQuota_: {
+            /** Code */
+            code: string;
+            data: components["schemas"]["AdminSandboxQuota"];
             /** Message */
             message: string;
         };
@@ -4658,6 +4844,14 @@ export interface components {
             /** Message */
             message: string;
         };
+        /** ApiEnvelope[ChannelAccountLinkRecord] */
+        ApiEnvelope_ChannelAccountLinkRecord_: {
+            /** Code */
+            code: string;
+            data: components["schemas"]["ChannelAccountLinkRecord"];
+            /** Message */
+            message: string;
+        };
         /** ApiEnvelope[ChildRunMessagePage] */
         ApiEnvelope_ChildRunMessagePage_: {
             /** Code */
@@ -4706,11 +4900,27 @@ export interface components {
             /** Message */
             message: string;
         };
+        /** ApiEnvelope[DeletedChannelAccountLink] */
+        ApiEnvelope_DeletedChannelAccountLink_: {
+            /** Code */
+            code: string;
+            data: components["schemas"]["DeletedChannelAccountLink"];
+            /** Message */
+            message: string;
+        };
         /** ApiEnvelope[DeletedDeployment] */
         ApiEnvelope_DeletedDeployment_: {
             /** Code */
             code: string;
             data: components["schemas"]["DeletedDeployment"];
+            /** Message */
+            message: string;
+        };
+        /** ApiEnvelope[DeploymentExtensionProvider] */
+        ApiEnvelope_DeploymentExtensionProvider_: {
+            /** Code */
+            code: string;
+            data: components["schemas"]["DeploymentExtensionProvider"];
             /** Message */
             message: string;
         };
@@ -5163,6 +5373,15 @@ export interface components {
             /** Message */
             message: string;
         };
+        /** ApiEnvelope[list[ChannelAccountLinkRecord]] */
+        ApiEnvelope_list_ChannelAccountLinkRecord__: {
+            /** Code */
+            code: string;
+            /** Data */
+            data: components["schemas"]["ChannelAccountLinkRecord"][];
+            /** Message */
+            message: string;
+        };
         /** ApiEnvelope[list[Connector]] */
         ApiEnvelope_list_Connector__: {
             /** Code */
@@ -5540,11 +5759,19 @@ export interface components {
             } | null;
             /** Environment Name */
             environment_name?: string | null;
+            /** Extension Catalog */
+            extension_catalog?: {
+                [key: string]: unknown;
+            } | null;
             /** Icon */
             icon?: string | null;
             inherited?: components["schemas"]["InheritedExtensions"] | null;
             /** Main Session Id */
             main_session_id?: string | null;
+            /** Mcp Assignments */
+            mcp_assignments?: {
+                [key: string]: unknown;
+            }[] | null;
             /** Mcp Servers */
             mcp_servers?: {
                 [key: string]: unknown;
@@ -5600,8 +5827,16 @@ export interface components {
             } | null;
             /** Environment Name */
             environment_name?: string | null;
+            /** Extension Catalog */
+            extension_catalog?: {
+                [key: string]: unknown;
+            } | null;
             /** Instructions */
             instructions?: string | null;
+            /** Mcp Assignments */
+            mcp_assignments?: {
+                [key: string]: unknown;
+            }[] | null;
             /** Mcp Servers */
             mcp_servers?: {
                 [key: string]: unknown;
@@ -5852,6 +6087,20 @@ export interface components {
              * @default
              */
             path: string;
+        };
+        /**
+         * ChannelAccountLinkRecord
+         * @description One participant of a trigger and the AstraBox account its messages run as.
+         */
+        ChannelAccountLinkRecord: {
+            /** Linked At */
+            linked_at: string;
+            /** Linked By */
+            linked_by: string;
+            /** Participant */
+            participant: string;
+            /** User Id */
+            user_id: string;
         };
         /**
          * ChildRunMessagePage
@@ -6173,6 +6422,16 @@ export interface components {
             paths: string[];
         };
         /**
+         * DeletedChannelAccountLink
+         * @description The participant whose link is gone; ``deleted`` is false if it had none.
+         */
+        DeletedChannelAccountLink: {
+            /** Deleted */
+            deleted: boolean;
+            /** Participant */
+            participant: string;
+        };
+        /**
          * DeletedDeployment
          * @description The binding that is gone. ``deleted`` is the confirmed soft delete.
          */
@@ -6200,6 +6459,13 @@ export interface components {
             text?: string | null;
             /** Turn Id */
             turn_id?: string | null;
+        };
+        /**
+         * DeploymentExtensionProvider
+         * @description The deployment's extension provider; ``provider`` is null when it runs no catalog.
+         */
+        DeploymentExtensionProvider: {
+            provider: components["schemas"]["ExtensionProviderView"] | null;
         };
         /**
          * DeploymentRecord
@@ -6230,6 +6496,8 @@ export interface components {
             deployment_id: string;
             /** Enabled */
             enabled?: boolean | null;
+            /** Execution Mode */
+            execution_mode?: string | null;
             /** Execution User Id */
             execution_user_id?: string | null;
             /** Prompt Prefix */
@@ -6290,8 +6558,8 @@ export interface components {
          * ExtensionConsoleSession
          * @description Where to send the browser, and how long the grant lasts.
          *
-         *     The session itself lives in the two cookies the route sets; the body carries
-         *     no token, so a client that logs or forwards it discloses nothing. The
+         *     The session itself lives in the cookies the route sets; the body carries no
+         *     token, so a client that logs or forwards it discloses nothing. The
          *     obligations that come with declaring a response model are in
          *     :mod:`astrabox.api.routes.response_envelope`.
          */
@@ -6302,6 +6570,34 @@ export interface components {
             open_url: string;
         } & {
             [key: string]: unknown;
+        };
+        /**
+         * ExtensionConsoleSessionRequest
+         * @description Which kind of catalog entry the management console is opened for.
+         */
+        ExtensionConsoleSessionRequest: {
+            /**
+             * Section
+             * @default mcp
+             * @enum {string}
+             */
+            section: "mcp" | "skills";
+        };
+        /**
+         * ExtensionProviderView
+         * @description The extension provider whose catalog this deployment offers.
+         *
+         *     ``name`` is the ``ASTRABOX_EXTENSION_PROVIDER`` value that selects it;
+         *     ``display_name`` and ``management_console`` are what the provider declares
+         *     (``ExtensionProviderFeatures``).
+         */
+        ExtensionProviderView: {
+            /** Display Name */
+            display_name: string;
+            /** Management Console */
+            management_console: boolean;
+            /** Name */
+            name: string;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -6318,6 +6614,8 @@ export interface components {
         InheritedExtensions: {
             /** Catalog Mcp Servers */
             catalog_mcp_servers: number;
+            /** Catalog Skills */
+            catalog_skills: string[];
             /** Credential Vaults */
             credential_vaults: number;
             /** Instructions */
@@ -7460,15 +7758,6 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
-        /** _CreateSessionRequest */
-        _CreateSessionRequest: {
-            /**
-             * Section
-             * @default mcp
-             * @enum {string}
-             */
-            section: "mcp" | "skills";
-        };
     };
     responses: never;
     parameters: never;
@@ -7811,6 +8100,104 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_DeletedDeployment_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_agent_deployment_account_links_api_v1_admin_agents__agent_id__deployments__deployment_id__account_links_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                agent_id: string;
+                deployment_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_list_ChannelAccountLinkRecord__"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    put_agent_deployment_account_link_api_v1_admin_agents__agent_id__deployments__deployment_id__account_links_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                agent_id: string;
+                deployment_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_ChannelAccountLinkRecord_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_agent_deployment_account_link_api_v1_admin_agents__agent_id__deployments__deployment_id__account_links_delete: {
+        parameters: {
+            query: {
+                participant: string;
+            };
+            header?: never;
+            path: {
+                agent_id: string;
+                deployment_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_DeletedChannelAccountLink_"];
                 };
             };
             /** @description Validation Error */
@@ -8772,6 +9159,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_AdminSandboxIdleSweep_"];
+                };
+            };
+        };
+    };
+    describe_sandbox_quota_api_v1_admin_sandbox_quota_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_AdminSandboxQuota_"];
                 };
             };
         };
@@ -9879,7 +10286,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["_CreateSessionRequest"];
+                "application/json": components["schemas"]["ExtensionConsoleSessionRequest"];
             };
         };
         responses: {
@@ -12486,6 +12893,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_extension_provider_api_v1_extension_provider_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_DeploymentExtensionProvider_"];
                 };
             };
         };

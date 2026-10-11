@@ -119,7 +119,7 @@ async def test_reap_gives_back_only_this_installations_ownerless_box(
     monkeypatch.setattr(manager, "agent_box_has_other_occupants", _no_occupants)
 
     for _tick in range(3):
-        await manager.reap_ownerless_sandboxes()
+        await manager.reap_ownerless_sandboxes(backend="fake")
 
     assert control_plane.destroyed == ["ours"]
 
@@ -141,7 +141,7 @@ async def test_reap_reaches_its_own_box_behind_a_page_of_another_installations(
 
     monkeypatch.setattr(manager, "agent_box_has_other_occupants", _no_occupants)
 
-    await manager.reap_ownerless_sandboxes(page_size=2)
+    await manager.reap_ownerless_sandboxes(backend="fake", page_size=2)
 
     assert control_plane.destroyed == ["ours"]
 
@@ -170,7 +170,7 @@ async def test_reap_reaches_an_old_ownerless_box_behind_a_page_of_owned_ones(
 
     monkeypatch.setattr(manager, "agent_box_has_other_occupants", _no_occupants)
 
-    summary = await manager.reap_ownerless_sandboxes()
+    summary = await manager.reap_ownerless_sandboxes(backend="fake")
 
     assert sorted(control_plane.destroyed) == [box.sandbox_id for box in orphans]
     assert summary["ownerless_scanned"] == len(owned) + len(orphans)

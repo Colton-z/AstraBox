@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next';
 
 import { Button } from '@/components/ui/button';
 import { FieldLegend, FieldSet } from '@/components/ui/field';
-import type { AgentExtensionCatalog } from '@/types';
+import type { AgentExtensionCatalog, ExtensionProviderView } from '@/types';
 import { ConsoleFieldRow, ConsoleSearchMultiSelect } from './console';
 
 /** Whether two selections hold the same catalog ids, in any order. */
@@ -15,12 +15,17 @@ export const sameIds = (left: string[], right: string[]) =>
  * The deployment catalog's MCP servers or Skills, picked for one Agent or
  * Assistant, above the record's own field of the same kind.
  *
- * `manage` opens the catalog's own management console; it is offered where a
- * console session can be scoped to the record (Agents).
+ * Everything that names the catalog comes from `provider`, the declaration the
+ * selected extension provider makes: its display name, and whether it has a
+ * management console. `manage` opens that console; the button renders only
+ * when the provider declares one and the page can scope a console session to
+ * the record (Agents). A deployment that runs no catalog renders the record's
+ * own field without this wrapper.
  */
 export function CatalogExtensionField({
   kind,
   id,
+  provider,
   catalog,
   value,
   onChange,
@@ -31,6 +36,7 @@ export function CatalogExtensionField({
 }: {
   kind: 'mcp' | 'skills';
   id: string;
+  provider: ExtensionProviderView;
   catalog: Pick<AgentExtensionCatalog, 'mcp_servers' | 'skills'> | null;
   value: string[];
   onChange: (ids: string[]) => void;
@@ -41,13 +47,14 @@ export function CatalogExtensionField({
 }) {
   const { t } = useTranslation();
   const isMcp = kind === 'mcp';
+  const named = { catalog: provider.display_name };
   return (
     <FieldSet className="gap-4 rounded-lg border p-4">
       <FieldLegend variant="label" className="px-1">
         {t(isMcp ? 'manage:agents.mcp_configuration' : 'manage:agents.skill_configuration')}
       </FieldLegend>
       <ConsoleFieldRow
-        label={t(isMcp ? 'manage:agents.mcp_field_label' : 'manage:agents.skills_field_label')}
+        label={t(isMcp ? 'manage:agents.mcp_field_label' : 'manage:agents.skills_field_label', named)}
         htmlFor={id}
         help={t(isMcp ? 'manage:agents.mcp_field_help' : 'manage:agents.skills_field_help')}
       >
@@ -59,14 +66,15 @@ export function CatalogExtensionField({
               onChange={onChange}
               options={(isMcp ? catalog?.mcp_servers ?? [] : catalog?.skills ?? [])
                 .map((item) => ({ value: item.id, label: item.name }))}
-              placeholder={t(loading ? 'manage:agents.loading_extensions'
-                : isMcp ? 'manage:agents.select_mcp_placeholder' : 'manage:agents.select_skills_placeholder')}
+              placeholder={loading
+                ? t(isMcp ? 'manage:agents.loading_mcp_catalog' : 'manage:agents.loading_skills_catalog', named)
+                : t(isMcp ? 'manage:agents.select_mcp_placeholder' : 'manage:agents.select_skills_placeholder')}
               searchPlaceholder={t(isMcp ? 'manage:agents.search_mcp_placeholder' : 'manage:agents.search_skills_placeholder')}
               emptyLabel={t(isMcp ? 'manage:agents.no_mcp_servers' : 'manage:agents.no_skills')}
               disabled={loading || disabled}
             />
           </div>
-          {manage && (
+          {manage && provider.management_console && (
             <Button
               type="button"
               variant="outline"
@@ -75,8 +83,9 @@ export function CatalogExtensionField({
               className="shrink-0 gap-2"
             >
               {isMcp ? <PlugZap className="size-4" aria-hidden /> : <BookOpenText className="size-4" aria-hidden />}
-              {t(manage.opening ? 'manage:agents.opening_extensions'
-                : isMcp ? 'manage:agents.manage_mcp_catalog' : 'manage:agents.manage_skills_catalog')}
+              {manage.opening
+                ? t('manage:agents.opening_extensions')
+                : t(isMcp ? 'manage:agents.manage_mcp_catalog' : 'manage:agents.manage_skills_catalog', named)}
               <ArrowUpRight className="size-3.5" aria-hidden />
             </Button>
           )}

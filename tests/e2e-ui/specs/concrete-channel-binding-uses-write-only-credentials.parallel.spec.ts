@@ -298,7 +298,8 @@ test('all concrete channels render and a Matrix binding rotates its live credent
   }
 
   await page.goto(appPath('/manage/deployments/new'));
-  await page.getByLabel('Agent').selectOption(agentId);
+  // The target select names its kind since Triggers can bind an Assistant too.
+  await page.getByLabel('Agent').selectOption(`agent:${agentId}`);
   const trigger = page.getByLabel('Trigger');
   const optionLabels = await trigger.locator('option').allTextContents();
   expect(optionLabels).toEqual(expect.arrayContaining(concrete.map((provider) => provider.label)));

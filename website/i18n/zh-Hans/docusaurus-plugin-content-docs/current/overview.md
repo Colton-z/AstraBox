@@ -33,7 +33,7 @@ AstraBox 是开源、自托管的 Agent 运行平台，可将已安装的 Agent 
 ## 管理与扩展 AstraBox
 
 - **命令行与 MCP。** [AstraBox CLI](cli/overview.md) 在 `astrabox.yaml` 中声明 Environment 和 Agent，应用修改，并给 Agent 发送任务。命令结果可以输出为 JSON，每类失败都有各自的退出码，因此脚本和编程助手可以用它管理部署；`astrabox mcp serve` 还把同样的操作提供为 MCP 工具。
-- **Python 插件。** 安装的 Python 包可以接入 Agent 程序、沙箱后端、模型服务、消息平台、身份提供方、Secret Store、数据存储、工作区存储和远程 MCP 服务来源。详见[扩展接口](architecture.md#plugin-interfaces)。
+- **Python 插件。** 安装的 Python 包可以接入 Agent 程序、沙箱后端、模型服务、消息平台、身份提供方、Secret Store、数据存储、工作区存储、调度器和远程 MCP 服务来源。详见[扩展接口](architecture.md#plugin-interfaces)。
 
 ## 快速验证连通性
 

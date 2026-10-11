@@ -175,7 +175,7 @@ Content-Type: application/json
 AstraBox 在下载 Plugin 和 Skill 前就应用 Agent 的 Vault 分配，预热也使用这套配置。
 OpenSandbox 在网络出口为目标路径及其子路径的 `GET`、`HEAD`、`POST` 请求添加
 HTTP Basic 鉴权，不会应用到同一主机的其他仓库路径。无需把 Token 或占位符放进
-Git URL 或沙箱环境变量。直接配置和管理员目录中的 Git Skill 来源都使用这条路径。
+Git URL 或沙箱环境变量。直接配置的 Git Skill 来源和从扩展目录中选择的来源都使用这条路径。
 
 ### 3. 在 Session 中使用
 

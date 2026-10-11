@@ -9,6 +9,10 @@ from urllib.parse import urlsplit, urlunsplit
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.time_utils import utcnow_iso
 from astrabox.common.utils.user_context import UserContext, default_org_id
+from astrabox.core.service.orchestrator.agent_extension_service import (
+    extension_catalog_disabled,
+    extension_catalog_enabled,
+)
 from astrabox.core.service.orchestrator.mcp_assignments import (
     AGENT_MCP_ASSIGNMENTS_FIELD,
     assignments_for_provider,
@@ -160,7 +164,19 @@ class MCPRegistryService:
         agent_id: str,
         mcp_server_ids: list[str],
     ) -> dict[str, Any]:
+        """Replace the Agent's built-in-catalog rows with ``mcp_server_ids``.
+
+        A deployment that runs no extension catalog resolves no assignment, so
+        it accepts only an empty list here, which removes these rows; anything
+        else is refused with ``EXTENSION_CATALOG_DISABLED``.
+        """
         ids = self._normalize_ids(mcp_server_ids)
+        if ids and not extension_catalog_enabled():
+            raise extension_catalog_disabled(
+                "this deployment runs no extension catalog "
+                "(ASTRABOX_EXTENSION_PROVIDER=none), so no built-in MCP server "
+                "can be assigned; an empty list removes the assigned ones"
+            )
         org_id = self._org_id(user)
         servers = await self._repo.list_by_ids(ids, org_id=org_id)
         found = {str(doc.get("mcp_server_id") or "") for doc in servers}

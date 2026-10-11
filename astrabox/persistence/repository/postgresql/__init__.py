@@ -47,7 +47,17 @@ __all__ = [
     "get_sessionmaker",
     "is_transient_error",
     "resolve_database_url",
+    "sql_database_url",
 ]
+
+
+def sql_database_url() -> str:
+    """The SQLAlchemy URL of this backend's PostgreSQL database.
+
+    Declared for components that keep their own state in the repository's SQL
+    database, such as the built-in DBOS scheduler provider.
+    """
+    return resolve_database_url(None)
 
 
 async def get_async_collection(collection_name: str) -> AsyncCollection:

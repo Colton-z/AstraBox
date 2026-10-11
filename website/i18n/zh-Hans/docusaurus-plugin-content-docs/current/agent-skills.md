@@ -10,7 +10,7 @@ Skills 为 Agent 附加**领域专业知识**。一个 Skill 是一组结构化�
 
 | 方式 | 位置 | 说明 |
 | --- | --- | --- |
-| 管理员配置的 Skill | Agent 详情页的「MCP 服务与 Skill」 | 从管理员维护的列表中选择可复用的 Git Skill |
+| 目录 Skill | 部署启用[扩展目录](adding-tools.md#extension-catalog)时，Agent 详情页的「Skill 配置」 | 从部署的目录中选择可复用的 Git Skill |
 | 直接使用 Git 来源 | Agent 创建或编辑页的「MCP、Skill 与 Plugin」 | 添加仓库 URL，以及可选的版本和子目录 |
 
 ## 版本化模型
@@ -20,14 +20,16 @@ Skill 使用 Git 来源和可选版本：
 - **Skill 来源**：仓库 URL 加可选的 `@ref` 和 `#path`，例如 `https://github.com/example/skills.git@main#skills/code-review`。
 - **固定版本**：Skill 不应在修改 Agent 之前发生变化时，使用经过审核的 Commit SHA。
 - **未固定版本**：省略 ref 时跟随仓库默认分支；填写分支或 Tag 时，准备运行实例时跟随对应 ref。
-- **管理员配置的 Skill**：Skill 管理页面在目录条目中提供 Git 来源，Agent 保存选择结果。
+- **目录 Skill**：目录为每个条目提供 Git 来源，Agent 保存选择结果。
 
 AstraBox 不会创建另一套 Skill 内容格式，而是把 Skill 准备到所选 Agent 程序使用的原生 Skill 目录中。
 
 私有 HTTPS 来源需要平台管理员在下载前配置 **HTTP Basic（Git HTTPS）** 凭证，并将
 Vault 分配给 Agent。凭证的目标地址只填写仓库 URL，`@ref` 和 `#path` 保留在 Skill
-来源中。直接 Git 来源和管理员配置的 Skill 都适用，具体操作见
-[私有 Git 仓库鉴权](credentials.md#private-git-repositories)。
+来源中。直接 Git 来源和目录 Skill 都适用，具体操作见
+[私有 Git 仓库鉴权](credentials.md#private-git-repositories)。HTTP(S) URL 里带用户名或令牌的
+Skill 来源会被拒绝：来源会随 Agent 保存，并在下载错误里原样出现；Vault 凭证则在沙箱外注入，
+不会随 Agent 保存。
 
 ## Skill 的作用
 
@@ -72,15 +74,15 @@ description: 执行结构化代码审查，输出改进建议
 
 在 Git 仓库中创建 Skill 目录并提交完整内容，记录仓库 URL、版本和子目录。AstraBox 从 Git 加载 Skill，不接受单独的 zip 上传。
 
-Agent 详情页显示「管理 Skill」时，可以用它把 Git Skill 加入管理员配置的目录。
+目录的 provider 提供管理页面时，Agent 详情页的「在 … 中管理 Skill」会打开它，可以用它把 Git Skill 加入目录。
 
 ## 关联到 Agent
 
-在网页控制台中打开 Agent。要使用管理员配置的 Skill，在「MCP 服务与 Skill」中选择并保存；要直接使用 Git 来源，在「MCP、Skill 与 Plugin」的「Skill」中添加来源描述符，然后保存该部分。
+在网页控制台中打开 Agent。要使用目录 Skill，在「Skill 配置」中选择并保存；要直接使用 Git 来源，在「MCP、Skill 与 Plugin」的 Skill 字段中添加来源描述符，然后保存该部分。不启用扩展目录的部署只提供直接 Git 来源。
 
 ## 版本管理
 
-发布新 Skill 版本时，提交修改；需要使用该版本时，更新 Agent 的 Git ref 或管理员配置的目录记录。已经运行的 Agent 程序不会被原地改写；AstraBox 首次准备或重建 Session 运行实例时，会读取 Agent 当前配置的 Skill 来源。
+发布新 Skill 版本时，提交修改；需要使用该版本时，更新 Agent 的 Git ref 或目录条目。已经运行的 Agent 程序不会被原地改写；AstraBox 首次准备或重建 Session 运行实例时，会读取 Agent 当前配置的 Skill 来源。
 
 启用预热时，Skill 可能在 Session 启动前就已准备好。在 Agent 上使用「重新预热」，
 可按已保存的 Skill 来源重新拉取并替换待领取资源，不中断现有 Session；固定的
@@ -88,11 +90,11 @@ Commit 版本不会自动升级。
 
 ## 获取 Skill 详情
 
-打开 Agent 详情页。直接使用的 Git 来源显示在「MCP、Skill 与 Plugin」的「Skill」中；已经选择的管理员配置 Skill 显示在「MCP 服务与 Skill」中。
+打开 Agent 详情页。直接使用的 Git 来源显示在「MCP、Skill 与 Plugin」的 Skill 字段中；已经选择的目录 Skill 显示在旁边的目录选择框中。
 
 ## 列出所有 Skills
 
-打开 Agent 详情页。「MCP 服务与 Skill」选择器会列出该 Agent 可以使用的管理员配置 Skill。页面显示「管理 Skill」时，可以用它打开 Skill 目录管理页面。
+打开 Agent 详情页。「Skill 配置」中的目录选择框会列出该 Agent 可以使用的目录 Skill。provider 提供管理页面时，旁边的「在 … 中管理 Skill」按钮会打开它。
 
 ## Skill 编写建议
 

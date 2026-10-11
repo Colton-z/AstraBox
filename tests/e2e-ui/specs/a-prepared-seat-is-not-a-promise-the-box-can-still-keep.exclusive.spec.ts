@@ -89,12 +89,12 @@ async def main():
     given = json.loads(sys.argv[1])
     provider = sandbox_for_name(given['backend'])
     box = given['sandboxId']
-    limit, current = await provider.read_memory_headroom(box)
+    headroom = await provider.read_memory_headroom(box)
     lease = SharedSandboxLease(agent_repo=AgentRepository(), provider=provider)
     has_room = await lease._has_room(box)
     print('E2E_BOX_MEMORY=' + json.dumps({
-        'limit': int(limit),
-        'current': int(current),
+        'limit': int(headroom.limit_bytes) if headroom is not None else 0,
+        'current': int(headroom.current_bytes) if headroom is not None else 0,
         'reserve': int(CONVERSATION_MEMORY_RESERVE_BYTES),
         'hasRoom': bool(has_room),
     }))

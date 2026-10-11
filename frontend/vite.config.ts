@@ -3,8 +3,27 @@ import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 import { resolve } from 'path';
 
+// The prebuilt console is served below whatever path a deployment publishes it
+// under (ASTRABOX_PUBLIC_PATH_PREFIX), which no build can know. Every built file
+// therefore names the others relative to itself (`base: './'`), except the HTML
+// shell: it is answered at every console route, where a relative reference
+// would resolve against the route. The shell names its entry, preloads and
+// stylesheet, and the `astrabox-base-path` meta element in index.html, through
+// this token, which the AstraBox server replaces with the prefix on every
+// request (astrabox/api/frontend_cache.py) and refuses to serve without.
+const BASE_PATH_TOKEN = '__ASTRABOX_BASE_PATH__';
+
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [
+    react(),
+    tailwindcss(),
+    {
+      // The dev server answers the console at the root of its own origin.
+      name: 'astrabox-dev-base-path',
+      apply: 'serve',
+      transformIndexHtml: (html) => html.replaceAll(BASE_PATH_TOKEN, ''),
+    },
+  ],
   resolve: {
     alias: [
       // Exact match only: the shim itself imports `ansi-to-react/lib/index.js`,
@@ -17,7 +36,11 @@ export default defineConfig({
       { find: '@', replacement: resolve(__dirname, 'src') },
     ],
   },
-  base: '/',
+  base: './',
+  experimental: {
+    renderBuiltUrl: (filename, { hostType }) =>
+      hostType === 'html' ? `${BASE_PATH_TOKEN}/${filename}` : undefined,
+  },
   build: {
     outDir: 'dist',
     emptyOutDir: true,

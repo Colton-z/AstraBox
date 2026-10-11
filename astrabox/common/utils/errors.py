@@ -25,7 +25,7 @@ ERROR_OWNERS = frozenset(
     {
         "client",  # the caller's request or credential
         "session",  # the conversation's own state
-        "mongo",  # the record store
+        "store",  # the record store
         "runtime",  # the sandbox and what runs inside it
         "template",  # a value the Agent supplied
         "platform",  # AstraBox itself, including this deployment's configuration
@@ -193,6 +193,15 @@ for _code, _status, _category, _retryable, _owner in (
     ("CHANNEL_CALLBACK_PATH_REQUIRED", 404, "request", False, "client"),
     ("CHANNEL_REFERENCE_OWNER_MISMATCH", 409, "state", False, "client"),
     ("CHANNEL_SESSION_OWNER_MISMATCH", 409, "state", False, "client"),
+    # A trigger that runs as linked accounts received a message whose
+    # provider named no verified sender; the provider integration fixes it.
+    ("CHANNEL_PARTICIPANT_REQUIRED", 409, "state", False, "platform"),
+    # The sender has no linked account on the trigger; an administrator
+    # links it on the trigger's page.
+    ("CHANNEL_PARTICIPANT_NOT_LINKED", 403, "auth", False, "client"),
+    # The sender's linked account may not use the Agent; the Agent's
+    # administrators widen its access or the link is changed.
+    ("CHANNEL_ACCOUNT_NOT_AUTHORIZED", 403, "auth", False, "client"),
     ("NOT_A_CHANNEL", 409, "state", False, "client"),
     ("CONNECTOR_NOT_FOUND", 404, "request", False, "client"),
     # The connector is not registered with the hub or its tools are not
@@ -216,6 +225,18 @@ for _code, _status, _category, _retryable, _owner in (
     # raise site gives the status (400 for a bad response, 502 for an
     # unreachable or failing server).
     ("CONNECTOR_AUTHORIZATION_FAILED", 502, "auth", True, "platform"),
+    # An ASGI host mounted AstraBox at a path other than
+    # ASTRABOX_PUBLIC_PATH_PREFIX; the operator sets the variable to the mount
+    # path (astrabox/web/public_path_middleware.py).
+    ("PUBLIC_PATH_PREFIX_MISMATCH", 409, "configuration", False, "platform"),
+    # A reverse proxy forwarded the public path prefix instead of removing it;
+    # the operator changes the proxy. Raised 404: AstraBox serves nothing at
+    # the prefixed path.
+    ("PUBLIC_PATH_PREFIX_NOT_REMOVED", 404, "configuration", False, "platform"),
+    # A page AstraBox proxies from another application that cannot be served
+    # below the public path prefix, such as LiteLLM's management console; the
+    # operator opens that application at its own address.
+    ("PUBLIC_PATH_PREFIX_UNSUPPORTED", 409, "configuration", False, "platform"),
     ("DEPLOYMENT_UNAUTHORIZED", 401, "auth", False, "client"),
     ("DEPLOYMENT_MISCONFIGURED", 409, "state", False, "platform"),
     ("DEPLOYMENT_NO_OWNER", 409, "state", False, "platform"),
@@ -328,9 +349,9 @@ for _code, _status, _category, _retryable, _owner in (
     ("IDEMPOTENCY_KEY_RETIRED", 409, "state", False, "client"),
     ("REQUEST_CANCELLED", 499, "request", False, "client"),
     ("E2E_TRANSCRIPT_APPEND_FAULT", 503, "persistence", True, "platform"),
-    ("PERSISTENCE_UNAVAILABLE", 503, "persistence", True, "mongo"),
-    ("PERSISTENCE_OPERATION_FAILED", 500, "persistence", False, "mongo"),
-    ("PERSISTENCE_ERROR", 500, "persistence", False, "mongo"),
+    ("PERSISTENCE_UNAVAILABLE", 503, "persistence", True, "store"),
+    ("PERSISTENCE_OPERATION_FAILED", 500, "persistence", False, "store"),
+    ("PERSISTENCE_ERROR", 500, "persistence", False, "store"),
     ("ARTIFACT_SIGN_IN_REQUIRED", 401, "request", False, "client"),
     ("ARTIFACT_SHARE_AUDIENCE_RESTRICTED", 409, "request", False, "client"),
     ("ARTIFACT_AGENT_RUN_LIMITED", 429, "request", False, "client"),
@@ -470,6 +491,10 @@ for _code, _status, _category, _retryable, _owner in (
     ("SANDBOX_ASSIGNMENT_INVALID", 500, "runtime.startup", False, "platform"),
     ("SANDBOX_ASSIGNMENT_CONFLICT", 409, "runtime.startup", False, "runtime"),
     ("SANDBOX_ASSIGNMENT_AMBIGUOUS", 409, "runtime.startup", False, "runtime"),
+    # A record names an installed sandbox backend the deployment did not enable
+    # (ASTRABOX_SANDBOX_BACKENDS). Retrying cannot help; the operator enables
+    # the backend or retires the records that name it.
+    ("SANDBOX_BACKEND_DISABLED", 409, "state", False, "platform"),
     (
         "SANDBOX_CLIENT_POOL_UNSUPPORTED",
         501,
@@ -495,6 +520,21 @@ for _code, _status, _category, _retryable, _owner in (
     # box (404) keeps meeting it. A new message is what moves the conversation
     # to a new sandbox: its admission replaces the box.
     ("SANDBOX_GONE", 404, "runtime.sandbox", False, "runtime"),
+    # A transport failure to the box: it proves nothing about whether the box
+    # exists, and the same request may succeed once the box answers again.
+    ("SANDBOX_UNREACHABLE", 503, "runtime.sandbox", True, "runtime"),
+    # The box answered a probe in a form its provider cannot read; repeating
+    # the request reads the same answer.
+    ("SANDBOX_PROBE_FAILED", 502, "runtime.sandbox", False, "runtime"),
+    # The selected backend cannot create a box with the deployment's resource
+    # envelope (ASTRABOX_SANDBOX_*_LIMIT / *_REQUEST), and refused before
+    # allocating. Retrying cannot help; the operator selects a shape it offers.
+    ("SANDBOX_RESOURCES_UNSUPPORTED", 409, "configuration", False, "platform"),
+    # A box would take its backend past a sandbox quota ceiling
+    # (ASTRABOX_SANDBOX_QUOTA_*). The same request succeeds once boxes are
+    # released, so it is retryable; the message names the ceiling, its use and
+    # its limit.
+    ("SANDBOX_CAPACITY_EXHAUSTED", 429, "runtime.sandbox", True, "platform"),
     # Port 8080 is the sandbox's control API, not an application preview.
     ("EXPOSE_PORT_RESERVED", 400, "request", False, "client"),
     ("AGENT_RUNTIME_GENERATION_CONFLICT", 409, "state", True, "platform"),
@@ -515,6 +555,14 @@ for _code, _status, _category, _retryable, _owner in (
         False,
         "template",
     ),
+    # The deployment runs no extension catalog (ASTRABOX_EXTENSION_PROVIDER=none):
+    # a catalog read, a non-empty catalog selection, or a record still holding
+    # one when it starts work. Retrying cannot help; someone removes the
+    # selection or the operator selects a provider.
+    ("EXTENSION_CATALOG_DISABLED", 409, "configuration", False, "platform"),
+    # The selected extension provider declares no management console, so there
+    # is none to open; the console offers the entry only when one is declared.
+    ("EXTENSION_CONSOLE_UNSUPPORTED", 409, "configuration", False, "platform"),
     ("AGENT_RUNTIME_ERROR", 502, "runtime", True, "runtime"),
     (
         "SANDBOX_EGRESS_MUTATION_UNSUPPORTED",
@@ -646,7 +694,7 @@ register_error(
     status_code=503,
     category="persistence",
     retryable=True,
-    owner="mongo",
+    owner="store",
     user_message="Session cleanup state is temporarily unavailable; retry the operation.",
 )
 register_error(

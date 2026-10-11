@@ -37,7 +37,7 @@ AstraBox REST 资源接口使用以下 JSON 结构：
 | `error.status_code` | integer | 是 | 为错误码登记的状态；传输处理应使用实际 HTTP 响应状态码 |
 | `error.category` | string | 是 | 错误类别，例如 `request`、`auth`、`state` 或 `persistence` |
 | `error.retryable` | boolean | 是 | 不修改请求、等待一段时间后重试是否可能成功 |
-| `error.owner` | string | 是 | 需要采取行动的组件或一方：`client`、`session`、`mongo`、`runtime`、`template`、`platform` 或 `unknown` |
+| `error.owner` | string | 是 | 需要采取行动的组件或一方：`client`、`session`、`store`、`runtime`、`template`、`platform` 或 `unknown` |
 | `error.user_message` | string | 是 | 可以向调用方显示的消息 |
 | `error.debug_message` | string | 否 | 错误提供的补充诊断消息 |
 | `error.evidence` | object | 否 | 用于诊断的结构化证据 |
@@ -240,15 +240,15 @@ AstraBox、基础设施或上游依赖发生故障。
 ```json
 {
   "code": "PERSISTENCE_UNAVAILABLE",
-  "message": "mongodb timeout/unavailable, please retry",
+  "message": "the record store is unavailable, please retry",
   "data": null,
   "error": {
     "code": "PERSISTENCE_UNAVAILABLE",
     "status_code": 503,
     "category": "persistence",
     "retryable": true,
-    "owner": "mongo",
-    "user_message": "mongodb timeout/unavailable, please retry"
+    "owner": "store",
+    "user_message": "the record store is unavailable, please retry"
   }
 }
 ```

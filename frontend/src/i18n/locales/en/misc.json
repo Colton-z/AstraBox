@@ -230,7 +230,7 @@
       },
       "tools": {
         "label": "MCP, Skills and Plugins",
-        "description": "Agent runtime extensions; LiteLLM-managed and custom configuration are combined"
+        "description": "Extensions the Agent runtime loads"
       },
       "workspace": {
         "label": "Workspace configuration",
@@ -289,11 +289,15 @@
       },
       "skills": {
         "label": "Custom Skills",
-        "help": "Enter Skill sources to combine with LiteLLM-managed selections; identical sources are deduplicated"
+        "help": "Enter Skill sources to combine with the Skills selected from {{catalog}}; identical sources are deduplicated",
+        "label_alone": "Skills",
+        "help_alone": "Enter Skill sources; identical sources are deduplicated"
       },
       "mcp_servers": {
         "label": "Custom MCP",
-        "help": "Enter server definitions to combine with LiteLLM-managed selections; server names must be unique"
+        "help": "Enter server definitions to combine with the servers selected from {{catalog}}; server names must be unique",
+        "label_alone": "MCP servers",
+        "help_alone": "Enter server definitions; server names must be unique"
       },
       "default_repo": {
         "label": "Project repository"

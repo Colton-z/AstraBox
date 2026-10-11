@@ -45,6 +45,13 @@ React 控制台与其他客户端使用同一个 FastAPI 服务。生产镜像�
 沙箱 provider 接口使用 AstraBox 自己的请求类型传递生命周期、网络、权限和受保护凭证，
 不暴露 provider SDK。所选 provider 会转换自己支持的能力，并在任务开始前拒绝其他请求。
 
+一个部署可以安装多个沙箱 provider，并用 `ASTRABOX_SANDBOX_BACKENDS` 启用实际使用的
+那些；`ASTRABOX_SANDBOX_BACKEND` 是未指定后端的 Environment 使用的默认后端。
+Environment 只能选择已启用的后端。仍指向已安装但未启用后端的记录会返回
+`SANDBOX_BACKEND_DISABLED`，AstraBox 不会把它交给其他后端；启动时会在日志中列出选择了
+这类后端的已启用 Environment。后台的沙箱清点和工作区
+视图回收按已启用的后端分别进行，一个控制面不可达不会影响其他后端。
+
 内置 `open_sandbox` Plugin 调用 OpenSandbox Lifecycle 服务。服务镜像可以让它使用本机
 Docker，也可以连接到以 Kubernetes 为后端、单独维护的 OpenSandbox 部署。
 
@@ -93,6 +100,11 @@ Web 和消息适配器读取同一份 Session 输出。Agent 程序适配器解�
 AstraBox 记录默认保存在 PostgreSQL。通过 `mongo` extra 可以使用 MongoDB；SQLite 适合
 本地开发和测试。团队部署应使用共享 PostgreSQL 或 MongoDB。内置 LiteLLM 使用独立的
 数据库和数据库角色。
+
+定时 Deployment 通过 scheduler provider 运行。内置的 `dbos` provider 在每个服务进程中
+嵌入 DBOS Transact，把定时计划和运行记录保存在同一个 PostgreSQL 数据库（`dbos`
+schema）或 SQLite 文件中。它不能与 MongoDB 一起运行；这类部署需要设置
+`ASTRABOX_SCHEDULER_PROVIDER=none`，或安装支持其数据库的 provider。
 
 AstraBox Credential Vault 是组织级资源。`local` Secret Store 使用 AES-GCM 加密，
 `aws_kms` 使用 AWS KMS envelope encryption。管理员把 Vault 分配给 Agent 或 Assistant，
@@ -197,9 +209,9 @@ OpenTelemetry 配置，不经过出站 Vault 注入。参见 [tracing 配置说�
 
 ## 扩展接口 {#plugin-interfaces}
 
-安装 Provider 包后，可以接入其他 Agent 程序、沙箱后端、模型服务、数据存储、Secret Store、身份提供方、工作区存储、扩展来源或消息平台，不需要改变 Session API。AstraBox 会在启动时检查 Provider 兼容性，并拒绝未知或不兼容的配置。
+安装 Provider 包后，可以接入其他 Agent 程序、沙箱后端、模型服务、数据存储、Secret Store、身份提供方、工作区存储、扩展来源、调度器或消息平台，不需要改变 Session API。AstraBox 会在启动时检查 Provider 兼容性，并拒绝未知或不兼容的配置。
 
-扩展方式见[嵌入 AstraBox](embedding.md)、[接入新的 Agent 程序](writing-an-engine-adapter.md)和[接入新的消息平台](writing-a-channel-provider.md)。
+扩展方式见[嵌入 AstraBox](embedding.md)、[接入新的 Agent 程序](writing-an-engine-adapter.md)、[接入新的消息平台](writing-a-channel-provider.md)和[接入新的调度器](writing-a-scheduler-provider.md)。
 
 ## 相关文档
 

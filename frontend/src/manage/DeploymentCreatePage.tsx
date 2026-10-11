@@ -10,7 +10,7 @@ import {
 } from '@/api';
 import { listAssistants } from '@/assistant/api';
 import type { AssistantRecord } from '@/assistant/types';
-import type { AgentConfig, ChannelProviderDescriptor } from '@/types';
+import type { AgentConfig, ChannelExecutionMode, ChannelProviderDescriptor } from '@/types';
 
 import {
   ConsoleCreatePage,
@@ -22,8 +22,10 @@ import {
 } from './console';
 import {
   channelEditField,
+  channelExecutionModeField,
   channelExecutionUserField,
   channelFieldValues,
+  defaultExecutionMode,
   firstMissingChannelField,
 } from './channelProviderFields';
 
@@ -86,6 +88,7 @@ export default function DeploymentCreatePage() {
         prompt_prefix: '',
         cron: '0 9 * * *',
         timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+        execution_mode: '',
         execution_user_id: '',
         channel_config: {},
         credentials: {},
@@ -102,6 +105,7 @@ export default function DeploymentCreatePage() {
   }, [load]);
 
   const draftScene = String(draft?.scene ?? '');
+  const draftExecutionMode = String(draft?.execution_mode ?? '');
   const draftTarget = parseTarget(draft?.target);
   const onAssistant = draftTarget?.kind === 'assistant';
   const selectedProvider = channelProviders.find((provider) => provider.scene === draftScene);
@@ -147,6 +151,10 @@ export default function DeploymentCreatePage() {
         set: (value, next) => ({
           ...value,
           scene: next,
+          execution_mode: defaultExecutionMode(
+            channelProviders.find((provider) => provider.scene === next)?.execution_modes,
+          ),
+          execution_user_id: '',
           channel_config: {},
           credentials: {},
         }),
@@ -213,10 +221,16 @@ export default function DeploymentCreatePage() {
       { label: t('manage:deployments.create_section'), fields },
     ];
     if (selectedProvider) {
+      const canConfigure = selectedProvider.can_configure_execution_user === true;
       const providerFields = [
         ...(onAssistant
           ? []
-          : [channelExecutionUserField(t, selectedProvider.can_configure_execution_user === true)]),
+          : [
+              channelExecutionModeField(t, selectedProvider.execution_modes, canConfigure),
+              ...(draftExecutionMode === 'account'
+                ? [channelExecutionUserField(t, canConfigure)]
+                : []),
+            ]),
         {
           key: 'allowed_participants',
           label: t('manage:deployments.field_allowed_participants'),
@@ -261,7 +275,10 @@ export default function DeploymentCreatePage() {
       }
     }
     return output;
-  }, [agents, assistants, channelProviders, draftScene, onAssistant, selectedProvider, t]);
+  }, [
+    agents, assistants, channelProviders, draftExecutionMode, draftScene, onAssistant,
+    selectedProvider, t,
+  ]);
 
   if (loading) {
     return (
@@ -306,6 +323,11 @@ export default function DeploymentCreatePage() {
     blockedReason = t('manage:deployments.err_cron_required');
   else if (scene === 'schedule' && !timezone)
     blockedReason = t('manage:deployments.err_timezone_required');
+  else if (
+    selectedProvider && target?.kind === 'agent' && draftExecutionMode === 'account'
+    && !String(draft.execution_user_id ?? '').trim()
+  )
+    blockedReason = t('manage:deployments.err_execution_user_required');
   else if (missingChannelField)
     blockedReason = t('manage:deployments.err_channel_field_required', {
       field: missingChannelField.label,
@@ -341,9 +363,13 @@ export default function DeploymentCreatePage() {
         if (!target) return;
         const payload = {
           scene,
-          execution_user_id:
-            selectedProvider?.can_configure_execution_user && target.kind === 'agent'
-              ? String(draft.execution_user_id ?? '').trim() : undefined,
+          ...(selectedProvider?.can_configure_execution_user && target.kind === 'agent'
+            ? {
+                execution_mode: (draftExecutionMode || undefined) as ChannelExecutionMode | undefined,
+                execution_user_id: draftExecutionMode === 'account'
+                  ? String(draft.execution_user_id ?? '').trim() : undefined,
+              }
+            : {}),
           allowed_participants: selectedProvider && participants.length ? participants : undefined,
           name: scene === 'schedule' ? name : undefined,
           prompt_prefix: prompt || undefined,

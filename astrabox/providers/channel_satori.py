@@ -116,8 +116,24 @@ def _field(raw: Mapping[str, Any], *, secret: bool) -> ChannelField:
     )
 
 
-def _alias(platform: str, self_id: str, message_id: str) -> str:
-    return f"{platform}:{self_id}:message:{message_id}"
+#: Platforms whose Satori channel id is unique only inside its guild: a
+#: Telegram forum topic is its ``message_thread_id`` within one chat, and a
+#: Zulip stream topic is its name within one stream.
+_GUILD_SCOPED_CHANNEL_PLATFORMS = frozenset({"telegram", "zulip"})
+
+
+def _room(platform: str, guild_id: str, channel_id: str) -> str:
+    """The chat a message lives in, unique within one connected bot."""
+    if platform in _GUILD_SCOPED_CHANNEL_PLATFORMS and guild_id and guild_id != channel_id:
+        return f"{guild_id}/{channel_id}"
+    return channel_id
+
+
+def _alias(platform: str, self_id: str, room: str, message_id: str) -> str:
+    # Several platforms number messages per chat — a Telegram ``message_id`` or
+    # a Slack ``ts`` is unique only inside its channel — so a message is named
+    # by its room too, or two chats' message 42 would be one message.
+    return f"{platform}:{self_id}:channel:{room}:message:{message_id}"
 
 
 def _event_dedup_key(payload: Mapping[str, Any], raw_body: bytes) -> str:
@@ -491,6 +507,7 @@ class GatewayChannelProvider(ChannelProvider):
         deployment_id = str(binding.get("deployment_id") or "").strip()
         platform = str(reply_context.get("platform") or "").strip()
         self_id = str(reply_context.get("self_id") or "").strip()
+        guild_id = str(reply_context.get("guild_id") or "").strip()
         channel_id = str(reply_context.get("channel_id") or "").strip()
         message_id = str(reply_context.get("message_id") or "").strip()
         if not deployment_id or not platform or not self_id or not channel_id:
@@ -500,7 +517,13 @@ class GatewayChannelProvider(ChannelProvider):
             {
                 "platform": platform,
                 "self_id": self_id,
+                # The official encoders address a reply from the session of
+                # the message it answers: a Telegram topic or Zulip stream
+                # needs its guild, a direct reply its channel type and user.
+                "guild_id": guild_id,
                 "channel_id": channel_id,
+                "direct": reply_context.get("direct") is True,
+                "user_id": str(reply_context.get("user_id") or "").strip(),
                 "message_id": message_id,
                 "text": text,
                 "buttons": [
@@ -512,8 +535,9 @@ class GatewayChannelProvider(ChannelProvider):
                 ],
             },
         )
+        room = _room(platform, guild_id, channel_id)
         return ChannelDeliveryReceipt(
-            message_ids=[_alias(platform, self_id, message_id) for message_id in ids]
+            message_ids=[_alias(platform, self_id, room, message_id) for message_id in ids]
         )
 
     async def forward_callback(
@@ -581,9 +605,12 @@ class GatewayChannelProvider(ChannelProvider):
         self_id = str(event.self_id or "").strip()
         message_id = str(event.message.id or "").strip()
         channel_id = str(event.channel.id or "").strip()
+        guild_id = str(getattr(event.guild, "id", "") or "").strip()
         participant_id = str(event.user.id or "").strip()
         if not all((platform, self_id, message_id, channel_id, participant_id)):
             raise RuntimeError(f"{event_type} contains an empty platform identity")
+        room = _room(platform, guild_id, channel_id)
+        direct = event.channel.type == ChannelType.DIRECT
         timestamp = event.timestamp.astimezone(timezone.utc).isoformat(
             timespec="milliseconds"
         ).replace("+00:00", "Z")
@@ -594,10 +621,10 @@ class GatewayChannelProvider(ChannelProvider):
             return ChannelInbound(
                 content="",
                 dedup_key=f"{platform}:{self_id}:event:message-deleted:{source_event_key}",
-                conversation_key=f"{platform}:{self_id}:channel:{channel_id}",
+                conversation_key=f"{platform}:{self_id}:channel:{room}",
                 participant=f"{platform}:{participant_id}",
                 recall=ChannelRecall(
-                    message_id=_alias(platform, self_id, message_id),
+                    message_id=_alias(platform, self_id, room, message_id),
                     timestamp=timestamp,
                 ),
             )
@@ -632,23 +659,28 @@ class GatewayChannelProvider(ChannelProvider):
             reply_context={
                 "platform": platform,
                 "self_id": self_id,
+                "guild_id": guild_id,
                 "channel_id": channel_id,
-                "message_id": message_id,
+                "direct": direct,
+                "user_id": participant_id,
+                # Slack threads a reply under the thread's parent and refuses a
+                # reply's own ts; Satori reports that parent as the quote.
+                "message_id": reference_id if platform == "slack" and reference_id else message_id,
             },
-            dedup_key=_alias(platform, self_id, message_id),
-            conversation_key=f"{platform}:{self_id}:channel:{channel_id}",
+            dedup_key=_alias(platform, self_id, room, message_id),
+            conversation_key=f"{platform}:{self_id}:channel:{room}",
             attention=ChannelAttention(
-                is_direct_message=event.channel.type == ChannelType.DIRECT,
+                is_direct_message=direct,
                 is_mention=mentions_bot,
                 is_reply_to_agent=replies_to_bot,
             ),
             reference=(
-                _alias(platform, self_id, reference_id) if reference_id else None
+                _alias(platform, self_id, room, reference_id) if reference_id else None
             ),
             participant=f"{platform}:{participant_id}",
             ignore_reason=ignore_reason,
             message_timestamp=timestamp,
-            retain_context=event.channel.type != ChannelType.DIRECT,
+            retain_context=not direct,
         )
 
     @staticmethod
@@ -669,6 +701,7 @@ class GatewayChannelProvider(ChannelProvider):
         platform = str(event.platform or "").strip()
         self_id = str(event.self_id or "").strip()
         channel_id = str(event.channel.id or "").strip()
+        guild_id = str(getattr(event.guild, "id", "") or "").strip()
         participant_id = str(event.user.id or "").strip()
         action = str(event.button.id or "").strip()
         if not all((platform, self_id, channel_id, participant_id, action)):
@@ -688,11 +721,14 @@ class GatewayChannelProvider(ChannelProvider):
             reply_context={
                 "platform": platform,
                 "self_id": self_id,
+                "guild_id": guild_id,
                 "channel_id": channel_id,
+                "direct": event.channel.type == ChannelType.DIRECT,
+                "user_id": participant_id,
                 "message_id": "",
             },
             dedup_key=dedup_key,
-            conversation_key=f"{platform}:{self_id}:channel:{channel_id}",
+            conversation_key=f"{platform}:{self_id}:channel:{_room(platform, guild_id, channel_id)}",
             participant=f"{platform}:{participant_id}",
         )
 

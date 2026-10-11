@@ -19,17 +19,16 @@ from typing import Any, Mapping
 import pytest
 
 from astrabox.core.service.orchestrator.runtime.storage import mounts
-from astrabox.core.service.orchestrator.runtime.storage._mergerfs_docker import (
+from astrabox.providers.open_sandbox.workspace_route._mergerfs_docker import (
     DockerMounts,
     _docker_timestamp,
 )
-from astrabox.core.service.orchestrator.runtime.storage._mergerfs_kubernetes import (
+from astrabox.providers.open_sandbox.workspace_route._mergerfs_kubernetes import (
     KubernetesMounts,
 )
-from astrabox.core.service.orchestrator.runtime.storage.mergerfs import (
+from astrabox.providers.open_sandbox.workspace_route.mergerfs import (
     INSTALLATION,
     MANAGED,
-    OWNER,
     SANDBOX_BACKEND,
     STORAGE_ID,
 )
@@ -41,7 +40,7 @@ from astrabox.seams.sandbox import (
     SandboxPage,
     sandbox_installation_id,
 )
-from astrabox.seams.storage import StorageMountPlan
+from astrabox.seams.storage import WORKSPACE_ASSIGNMENT_METADATA_KEY, StorageMountPlan
 
 _LONG_AGO = datetime.now(timezone.utc) - timedelta(hours=1)
 
@@ -137,7 +136,7 @@ def router(monkeypatch: pytest.MonkeyPatch) -> _Router:
     fake = _Router()
     # The route belongs to the backend that creates the box.
     monkeypatch.setattr(_Backend, "workspace_route", lambda _self: fake, raising=False)
-    monkeypatch.setattr(mounts, "registered_sandbox_names", lambda: ["fake"])
+    monkeypatch.setattr(mounts, "enabled_sandbox_names", lambda: ["fake"])
     monkeypatch.setenv("ASTRABOX_SANDBOX_WORKSPACE_VOLUME", "astrabox-workspaces")
 
     async def _backing(assignment: str, planned: Any) -> StorageMountPlan:
@@ -170,7 +169,7 @@ async def test_a_failed_create_leaves_no_view_after_reconciliation(
     _use(monkeypatch, backend)
     for attempt in range(3):
         with pytest.raises(RuntimeError, match="Egress sidecar"):
-            await mounts.create_sandbox_with_storage(backend, _spec(f"s{attempt}"))
+            await mounts.create_sandbox_with_storage(backend, _spec(f"s{attempt}"), reason="conversation")
     assert len(router.views) == 3, "precondition: each failed create left its view"
 
     summary = await mounts.reconcile_workspace_mounts()
@@ -186,7 +185,7 @@ async def test_a_view_a_box_carries_is_kept_even_without_its_receipt(
     # still mounts the view, so the view stays until the box is gone.
     backend = _Backend()
     _use(monkeypatch, backend)
-    await mounts.create_sandbox_with_storage(backend, _spec("live"))
+    await mounts.create_sandbox_with_storage(backend, _spec("live"), reason="conversation")
     for view in router.views.values():
         view.pop("sandbox_id")
 
@@ -204,11 +203,11 @@ async def test_a_box_of_another_installation_does_not_keep_this_view(
     backend = _Backend(fail_create=True)
     _use(monkeypatch, backend)
     with pytest.raises(RuntimeError):
-        await mounts.create_sandbox_with_storage(backend, _spec("s"))
+        await mounts.create_sandbox_with_storage(backend, _spec("s"), reason="conversation")
     (assignment,) = router.views
     backend.boxes.append(
         {
-            OWNER: assignment,
+            WORKSPACE_ASSIGNMENT_METADATA_KEY: assignment,
             SANDBOX_MANAGED_BY_METADATA_KEY: SANDBOX_MANAGED_BY_METADATA_VALUE,
             SANDBOX_INSTALLATION_METADATA_KEY: "other",
         }
@@ -226,7 +225,7 @@ async def test_a_view_still_inside_its_create_window_is_kept(
     backend = _Backend(fail_create=True)
     _use(monkeypatch, backend)
     with pytest.raises(RuntimeError):
-        await mounts.create_sandbox_with_storage(backend, _spec("s"))
+        await mounts.create_sandbox_with_storage(backend, _spec("s"), reason="conversation")
     for view in router.views.values():
         # Taken now, not at import: a long suite can outlast the window itself.
         view["created_at"] = datetime.now(timezone.utc) - timedelta(seconds=30)
@@ -242,7 +241,7 @@ async def test_an_unanswered_inventory_releases_nothing(
     backend = _Backend(fail_create=True)
     _use(monkeypatch, backend)
     with pytest.raises(RuntimeError):
-        await mounts.create_sandbox_with_storage(backend, _spec("s"))
+        await mounts.create_sandbox_with_storage(backend, _spec("s"), reason="conversation")
     backend.list_error = RuntimeError("lifecycle server unreachable")
 
     summary = await mounts.reconcile_workspace_mounts()
@@ -258,7 +257,7 @@ async def test_a_view_still_mounted_does_not_stop_the_others(
     _use(monkeypatch, backend)
     for session in ("a", "b"):
         with pytest.raises(RuntimeError):
-            await mounts.create_sandbox_with_storage(backend, _spec(session))
+            await mounts.create_sandbox_with_storage(backend, _spec(session), reason="conversation")
     mounted, other = list(router.views)
     router.refuse.add(mounted)
 
@@ -351,7 +350,7 @@ def test_kubernetes_keeps_a_view_until_its_terminating_pod_is_gone(
 
     digest = hashlib.sha256(b"assignment").hexdigest()
     claim = "astrabox-view-" + digest[:32]
-    labels = {MANAGED: "mergerfs", OWNER: digest[:63]}
+    labels = {MANAGED: "mergerfs", WORKSPACE_ASSIGNMENT_METADATA_KEY: digest[:63]}
 
     def pod(deleting: str | None) -> Any:
         return SimpleNamespace(

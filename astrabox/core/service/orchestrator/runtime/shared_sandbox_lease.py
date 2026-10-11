@@ -33,6 +33,7 @@ from astrabox.core.service.orchestrator.engine.runtime_profiles import (
 from astrabox.core.service.orchestrator.runtime.conversation_identity import (
     allocate_agent_scoped_uid,
 )
+from astrabox.seams.sandbox import SandboxUnreachable
 
 logger = get_logger(__name__)
 
@@ -366,9 +367,10 @@ class SharedSandboxLease:
         an engine startup failure on a shared sandbox.
 
         The provider reads listeners from the sandbox instead of maintaining a
-        separate port ledger. An unanswered probe yields an empty set, allowing
-        placement to proceed without a collision precheck; the service's bind
-        remains responsible for rejecting an occupied port.
+        separate port ledger. A box that cannot answer the probe raises
+        ``SandboxUnreachable``, which ends this placement: it would not have
+        survived the session opening that follows, and a uid chosen without
+        the check is the collision this method exists to prevent.
         """
 
         taken = await self._provider.read_listening_ports(sandbox_id)
@@ -1181,33 +1183,37 @@ class SharedSandboxLease:
     async def read_memory(self, sandbox_id: str) -> tuple[int, int] | None:
         """The box's memory limit and use, or None when it takes no conversation.
 
-        None stands for an unreachable box and for a box with no memory limit,
-        which is never packed. Other errors propagate so a broken memory probe
+        None stands for a box that cannot be reached or is gone, and for a box
+        with no memory limit, which is never packed. A probe the box answered
+        unreadably (``SandboxProbeFailed``) propagates, so a broken memory probe
         cannot silently disable sharing for every conversation.
         """
 
         try:
-            limit, current = await self._provider.read_memory_headroom(sandbox_id)
-        except Exception as exc:
-            from astrabox.providers.open_sandbox.sandbox import box_is_unreachable
-
-            gone = (
-                isinstance(exc, APIError) and str(getattr(exc, "code", "")) == "SANDBOX_GONE"
-            ) or box_is_unreachable(exc)
-            if not gone:
-                raise
+            headroom = await self._provider.read_memory_headroom(sandbox_id)
+        except SandboxUnreachable as exc:
             logger.info(
                 "shared sandbox: box %s did not answer for its memory (%s); "
                 "not packing another conversation into it",
                 sandbox_id,
-                exc,
+                exc.message,
             )
             return None
-        if limit <= 0:
+        except APIError as exc:
+            if str(getattr(exc, "code", "")) != "SANDBOX_GONE":
+                raise
+            logger.info(
+                "shared sandbox: box %s is gone (%s); not packing another "
+                "conversation into it",
+                sandbox_id,
+                exc.message,
+            )
+            return None
+        if headroom is None or headroom.limit_bytes <= 0:
             logger.info(
                 "shared sandbox: box %s reported no memory limit; not packing "
                 "another conversation into it",
                 sandbox_id,
             )
             return None
-        return int(limit), int(current)
+        return headroom.limit_bytes, headroom.current_bytes

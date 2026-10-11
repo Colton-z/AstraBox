@@ -904,8 +904,20 @@ class TurnService:
     async def reconcile_engine_child_resources(
         self,
         session: dict[str, Any],
+        *,
+        read: bool = False,
     ) -> bool:
-        """Refresh and persist one adapter's authoritative child-resource facts."""
+        """Refresh and persist one adapter's authoritative child-resource facts.
+
+        A control attaches the engine runtime when this server holds none. A
+        read (``read=True``) attaches only when the adapter's child record
+        lives in the engine (``EngineAdapter.child_record_lives_in_engine``);
+        otherwise it refreshes through a runtime this server already holds and
+        leaves the journal as it is when there is none. Attaching binds this
+        server to the engine's live output (for Claude it takes over the
+        runner's link and starts resident observation), which belongs to
+        controls and to followers of the Session.
+        """
 
         session_id = str(session.get("session_id") or "").strip()
         if not session_id:
@@ -922,14 +934,22 @@ class TurnService:
             return False
 
         engine_kind = resolve_session_engine_kind(session)
-        client_type = get_engine_adapter(engine_kind).engine_client_type
-        if not callable(getattr(client_type, "reconcile_child_resources", None)):
+        adapter = get_engine_adapter(engine_kind)
+        if not callable(getattr(adapter.engine_client_type, "reconcile_child_resources", None)):
             return False
 
-        runtime = await self.acquire_engine_control_runtime(
-            session,
-            operation="reconcile child resources",
-        )
+        if not read or adapter.child_record_lives_in_engine:
+            runtime = await self.acquire_engine_control_runtime(
+                session,
+                operation="reconcile child resources",
+            )
+        else:
+            runtime = self._runtime_manager.get_runtime(
+                session_id,
+                sandbox_id=str(session.get("sandbox_id") or "").strip() or None,
+            )
+            if runtime is None or getattr(runtime, "engine_client", None) is None:
+                return False
         client = runtime.engine_client
         if not isinstance(client, EngineChildResourceReconciler):
             raise APIError(

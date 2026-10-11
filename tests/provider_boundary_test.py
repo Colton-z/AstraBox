@@ -8,8 +8,11 @@ from typing import Any
 import pytest
 
 import astrabox.providers as providers
+import astrabox.seams.admission as admission_seam
+import astrabox.seams.channel_accounts as channel_accounts_seam
 import astrabox.seams.extensions as extension_seam
 import astrabox.seams.model as model_seam
+import astrabox.seams.secrets as secrets_seam
 from astrabox.core.service.orchestrator.engine import registry as engine_registry
 from astrabox.core.service.orchestrator.engine.base import (
     EngineAdapter,
@@ -22,7 +25,11 @@ from astrabox.core.service.orchestrator.engine.capabilities import (
     EngineWorkloadDeclaration,
     EngineRuntimeCapabilities,
 )
-from astrabox.seams.extensions import ExtensionCatalog, ExtensionRuntimeSelection
+from astrabox.seams.extensions import (
+    ExtensionCatalog,
+    ExtensionProviderFeatures,
+    ExtensionRuntimeSelection,
+)
 from astrabox.seams.model import ModelEndpoint
 
 
@@ -39,6 +46,7 @@ class _EntryPoint:
 
 class _ExternalExtensionProvider:
     name = "external"
+    features = ExtensionProviderFeatures(display_name="External")
 
     async def list_catalog(self) -> ExtensionCatalog:
         return ExtensionCatalog()
@@ -147,6 +155,37 @@ class _ExternalEngine(EngineAdapter):
         )
 
 
+class _ExternalSecretStore(secrets_seam.SecretStore):
+    name = "external"
+
+    async def put(self, *, scope: str, key: str, value: str) -> None:
+        _ = (scope, key, value)
+
+    async def get(self, *, scope: str, key: str) -> str | None:
+        _ = (scope, key)
+        return None
+
+    async def delete(self, *, scope: str, key: str) -> None:
+        _ = (scope, key)
+
+    async def purge_scope(self, *, scope: str) -> None:
+        _ = scope
+
+
+class _ExternalChannelAccountResolver(channel_accounts_seam.ChannelAccountResolver):
+    name = "external"
+
+    async def resolve(self, *, deployment_id: str, channel: str, participant: str) -> str | None:
+        _ = (deployment_id, channel, participant)
+        return None
+
+
+class _ExternalAdmissionController(admission_seam.AdmissionController):
+    async def check(self, request: Any) -> Any:
+        _ = request
+        return admission_seam.AdmissionDecision.allow()
+
+
 @pytest.mark.parametrize(
     ("group", "target", "registry"),
     [
@@ -159,6 +198,16 @@ class _ExternalEngine(EngineAdapter):
             providers.MODEL_GROUP,
             _ExternalModelProvider,
             model_seam.registered_model_endpoint_names,
+        ),
+        (
+            providers.SECRETS_GROUP,
+            _ExternalSecretStore,
+            secrets_seam.registered_secret_store_names,
+        ),
+        (
+            providers.CHANNEL_ACCOUNTS_GROUP,
+            _ExternalChannelAccountResolver,
+            channel_accounts_seam.registered_channel_account_resolver_names,
         ),
     ],
 )
@@ -180,10 +229,36 @@ def test_class_entry_points_are_registered_without_import_side_effects(
     monkeypatch.setattr(extension_seam, "_DEFAULT_PROVIDER", None)
     monkeypatch.setattr(model_seam, "_PROVIDERS", {})
     monkeypatch.setattr(model_seam, "_DEFAULT_PROVIDER", None)
+    monkeypatch.setattr(secrets_seam, "_STORES", {})
+    monkeypatch.setattr(channel_accounts_seam, "_RESOLVERS", {})
 
     providers.load_entry_point_providers()
 
     assert registry() == ["external"]
+
+
+def test_an_admission_controller_class_entry_point_is_installed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Skipping it would leave the allow-all controller in place: every request
+    # admitted while the deployment believes its quota policy is enforced.
+    monkeypatch.setattr(providers, "_EAGER_GROUPS", (providers.ADMISSION_GROUP,))
+    monkeypatch.setattr(
+        providers,
+        "_select_entry_points",
+        lambda selected_group: (
+            {"external": _EntryPoint(_ExternalAdmissionController)}
+            if selected_group == providers.ADMISSION_GROUP
+            else {}
+        ),
+    )
+    monkeypatch.setattr(
+        admission_seam, "_controller", admission_seam.AllowAllAdmissionController()
+    )
+
+    providers.load_entry_point_providers()
+
+    assert isinstance(admission_seam.get_admission_controller(), _ExternalAdmissionController)
 
 
 def test_engine_entry_point_registers_adapter_without_import_side_effect(

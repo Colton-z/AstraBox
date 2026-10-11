@@ -19,6 +19,7 @@ from astrabox.seams.extensions import (
     ExtensionCatalog,
     ExtensionCatalogItem,
     ExtensionProvider,
+    ExtensionProviderFeatures,
     ExtensionRuntimeSelection,
     RuntimeMCPServer,
     register_extension_provider,
@@ -48,9 +49,14 @@ def _catalog_item(doc: dict[str, Any]) -> ExtensionCatalogItem | None:
 
 
 class BuiltinExtensionProvider(ExtensionProvider):
-    """Serve the administrator-registered MCP records AstraBox stores itself."""
+    """Serve the administrator-registered MCP records AstraBox stores itself.
+
+    Its records are managed through ``/api/v1/admin/mcp-servers``, not through
+    a console of its own, so it declares no management console.
+    """
 
     name = "builtin"
+    features = ExtensionProviderFeatures(display_name="AstraBox")
 
     def __init__(self, *, repo: MCPServerRepository | None = None) -> None:
         self._repo = repo or MCPServerRepository()

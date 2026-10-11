@@ -310,7 +310,7 @@ test('a group on the official Satori adapter answers by number and by button', a
     await expect.poll(() => {
       source.healthy();
       const inbound = documentsByField('channel_inbound', '$.deployment_id', deployment.deployment_id)
-        .find((row) => row.dedup_key === `e2e:${source.botId}:message:${id}-1`);
+        .find((row) => row.dedup_key === `e2e:${source.botId}:channel:room-${id}:message:${id}-1`);
       sessionId = String(inbound?.session_id || '');
       return sessionId;
     }, { timeout: 75_000 }).not.toBe('');

@@ -39,8 +39,10 @@ from astrabox.core.service.orchestrator.channel_spine_reconciler import (
 )
 from astrabox.core.service.orchestrator.deployment_service import DeploymentService
 from astrabox.persistence.repository.channel_repository import (
+    INBOUND_AUTHORIZED,
     INBOUND_DEAD,
     INBOUND_IGNORED,
+    INBOUND_OBSERVED,
     INBOUND_RECEIVED,
     INBOUND_SETTLED,
     OUTBOX_DEAD,
@@ -51,10 +53,17 @@ from astrabox.persistence.repository.channel_repository import (
 )
 from astrabox.persistence.repository.deployment_repository import DeploymentRepository
 from astrabox.seams.channel import (
+    SIGNAL_AUTHORIZATION,
+    SIGNAL_OBSERVATION,
     ChannelAttention,
+    ChannelDeliveryReceipt,
     ChannelInbound,
     ChannelProvider,
     register_channel,
+)
+from astrabox.seams.channel_accounts import (
+    ChannelAccountResolver,
+    register_channel_account_resolver,
 )
 
 
@@ -248,11 +257,10 @@ async def test_dead_item_is_revived_only_by_an_explicit_redelivery() -> None:
         item_id=item_id, owner_token=owner, generation=1, error="final", retry_at_epoch=None
     )
     assert await repo.list_recoverable_inbound() == [], "DEAD is not reconciler-recoverable"
-    revived, outcome = await _claim(repo, payload={**_PAYLOAD, "content": "redelivered"})
+    revived, outcome = await _claim(repo)
     assert outcome == "claimed"
     assert revived["state"] == INBOUND_RECEIVED
     assert int(revived["generation"]) == 2
-    assert revived["payload"]["content"] == "redelivered"
     assert revived["last_error"] == "final", "prior evidence stays on the row"
 
 
@@ -342,7 +350,6 @@ async def _outbox(repo: ChannelRepository, **overrides: Any) -> dict[str, Any]:
         "deployment_id": "wh",
         "channel_name": "recorder",
         "session_id": "s1",
-        "command_id": "cmd-1",
         "turn_id": "turn-1",
         "response_seq": 1,
         "response_id": overrides.get("turn_id", "turn-1"),
@@ -354,14 +361,14 @@ async def _outbox(repo: ChannelRepository, **overrides: Any) -> dict[str, Any]:
 
 
 async def test_outbox_creation_is_idempotent_per_destination_session_and_response() -> None:
-    """Invariant C: the row is born bound to its exact command/turn, and a
+    """Invariant C: the row is born bound to its exact turn and response, and a
     re-driven settle re-creates the SAME row (no double delivery intent)."""
     repo = ChannelRepository()
     first = await _outbox(repo)
     again = await _outbox(repo)
     assert first["_id"] == again["_id"]
-    assert again["command_id"] == "cmd-1" and again["turn_id"] == "turn-1"
-    other_turn = await _outbox(repo, command_id="cmd-2", turn_id="turn-2")
+    assert again["turn_id"] == "turn-1"
+    other_turn = await _outbox(repo, turn_id="turn-2")
     assert other_turn["_id"] != first["_id"]
 
 
@@ -772,7 +779,7 @@ async def test_delivery_reads_the_exact_turn_not_the_sessions_latest() -> None:
     register_channel(provider)
     _service, ingress, kernel, _spawned = _spine()
     repo = ingress._channel_repo
-    command_id, turn_id = kernel.record_command("sess-9", "tok")
+    _command_id, turn_id = kernel.record_command("sess-9", "tok")
     kernel.turn_texts[("sess-9", turn_id)] = "first turn's reply"
     _newer_command, newer_turn = kernel.record_command("sess-9", "tok2")
     kernel.turn_texts[("sess-9", newer_turn)] = "SECOND turn's reply"
@@ -780,7 +787,6 @@ async def test_delivery_reads_the_exact_turn_not_the_sessions_latest() -> None:
         deployment_id="wh-1",
         channel_name="recorder",
         session_id="sess-9",
-        command_id=command_id,
         turn_id=turn_id, response_id=turn_id, start_after_seq=0,
         response_seq=1,
         reply_context={"cb": "x"},
@@ -944,18 +950,26 @@ async def test_failed_turn_retries_with_a_fresh_token_after_backoff() -> None:
     _close_spawned(spawned)
 
 
-async def test_attention_policy_ignores_without_a_signal_and_admits_with_one() -> None:
+async def test_attention_policy_keeps_unaddressed_messages_as_context_and_admits_addressed_ones() -> None:
     provider = _RecorderChannel()
     provider.inbound = ChannelInbound(content="hi", dedup_key="msg-10")
     register_channel(provider)
-    service, ingress, _kernel, spawned = _spine(
+    service, ingress, kernel, spawned = _spine(
         binding_extra={"attention_policy": "mentions"}
     )
-    ignored = await service.trigger("wh-1", headers={}, raw_body=b"{}")
-    assert ignored["status"] == "ignored"
-    assert spawned == [], "no dispatch for an ignored message"
+    observed = await service.trigger("wh-1", headers={}, raw_body=b"{}")
+    assert observed["status"] == "observed"
+    assert spawned == [], "no dispatch for an unaddressed message"
     item_id = _item_id("wh-1", "msg-10")
-    assert (await ingress._channel_repo.get_inbound(item_id))["state"] == INBOUND_IGNORED
+    repo = ingress._channel_repo
+    record = await repo.get_inbound(item_id)
+    # The classification is written with the record: no owner and no lease,
+    # so a process lost right after the write leaves nothing for recovery to
+    # drive as a turn.
+    assert record["state"] == INBOUND_OBSERVED and record["owner_token"] is None
+    assert await repo.list_recoverable_inbound(now=time.time() + 365 * 86400) == []
+    assert await ingress.recover_inbound() == 0
+    assert kernel.stream_calls == 0
 
     provider.inbound = ChannelInbound(
         content="hi @agent",
@@ -1254,6 +1268,34 @@ def _streaming_spine(
         channel_ingress=ingress,
     )
     return service, ingress, kernel, frames, spawned
+
+
+async def test_streaming_events_name_the_reply_by_its_response_and_turn() -> None:
+    """A streaming provider tells one reply from another by the response it
+    renders and the Session turn that produced it, which every event of a
+    delivery carries at projection version 2. The projection names no
+    command: a reply the engine produces on its own has none."""
+    import dataclasses
+
+    provider = _StreamingChannel()
+    provider.inbound = ChannelInbound(
+        content="hi", dedup_key="s-2", reply_context={"chat": "c1"}
+    )
+    register_channel(provider)
+    service, ingress, _kernel, _frames, spawned = _streaming_spine()
+    assert (await service.trigger("wh-1", headers={}, raw_body=b"{}"))["status"] == "accepted"
+    await _drain_spawned(spawned)
+
+    (handle,) = provider.handles
+    item = await ingress._channel_repo.get_inbound(_item_id("wh-1", "s-2"))
+    response = await ingress._channel_repo.get_outbox_entry(
+        _scoped_id("outbox", "wh-1", json.dumps([item["session_id"], item["turn_id"]]))
+    )
+    assert {(event.version, event.response_id, event.turn_id) for event in handle.events} == {
+        (2, response["response_id"], item["turn_id"]),
+    }
+    assert "command_id" not in {field.name for field in dataclasses.fields(ChannelEvent)}
+    assert "command_id" not in response
 
 
 async def test_streaming_provider_observes_ordered_progress_and_settlement() -> None:
@@ -1646,13 +1688,12 @@ async def test_crash_between_outbox_create_and_settle_recovers_exactly_once() ->
         item_id=item_id, owner_token=str(item["owner_token"]), generation=1,
         session_id="sess-1",
     )
-    command_id, turn_id = kernel.record_command("sess-1", f"{item_id}::a0")
+    _command_id, turn_id = kernel.record_command("sess-1", f"{item_id}::a0")
     kernel.turn_texts[("sess-1", turn_id)] = "the reply"
     await repo.create_outbox_entry(
         deployment_id="wh-1",
         channel_name="recorder",
         session_id="sess-1",
-        command_id=command_id,
         turn_id=turn_id, response_id=turn_id, start_after_seq=0,
         response_seq=1,
         reply_context={"cb": "x"},
@@ -1759,7 +1800,6 @@ async def test_durable_mainline_reply_is_not_filtered_by_input_attempt() -> None
         deployment_id="wh-1",
         channel_name="recorder",
         session_id="sess-1",
-        command_id="cmd-X",
         turn_id="turn-X", response_id="turn-X", start_after_seq=0,
         response_seq=1,
         reply_context={"cb": "x"},
@@ -2078,16 +2118,26 @@ async def test_same_account_reference_keeps_the_explicit_channel_conversation() 
     await _drain_spawned(spawned)
 
 
-async def test_rejected_references_do_not_return_as_context_but_ordinary_group_messages_do() -> None:
+async def test_refused_references_leave_context_but_every_accounts_room_messages_join_it() -> None:
+    """What was said in a room is context for whoever the agent answers there,
+    whichever account a message ran as; a refused reference never is."""
     repo = ChannelRepository()
+    # Recorded as ingress records a room message: it continues the room.
     payload = {
-        **_PAYLOAD, "conversation_key": "room", "binding_revision": "revision",
+        **_PAYLOAD, "conversation_key": "room", "conversation": "room",
+        "binding_revision": "revision",
         "creator_user_id": "bob", "retain_context": True, "provider_ignore_reason": None,
         "message_timestamp": "2026-09-30T00:00:00+00:00", "participant": "participant",
     }
-    ordinary, _ = await _claim(repo, dedup_key="ordinary", payload={**payload, "content": "ordinary context"})
-    blocked, _ = await _claim(repo, dedup_key="blocked", payload={**payload, "content": "rejected reference"})
-    await _claim(repo, dedup_key="foreign", payload={**payload, "creator_user_id": "alice", "content": "private"})
+    ordinary, _ = await _claim(repo, dedup_key="ordinary", payload={
+        **payload, "content": "ordinary context", "reply_text": "ordinary context",
+    })
+    blocked, _ = await _claim(repo, dedup_key="blocked", payload={
+        **payload, "content": "rejected reference", "reply_text": "rejected reference",
+    })
+    await _claim(repo, dedup_key="foreign", payload={
+        **payload, "creator_user_id": "alice", "content": "private", "reply_text": "private",
+    })
     for item, reason, excluded in [
         (ordinary, "message does not mention the bot", False),
         (blocked, "CHANNEL_REFERENCE_OWNER_MISMATCH", True),
@@ -2098,5 +2148,418 @@ async def test_rejected_references_do_not_return_as_context_but_ordinary_group_m
         )
     current, _ = await _claim(repo, dedup_key="current", payload=payload)
     context = await repo.collect_unsubmitted_context(current)
-    assert [entry["item_id"] for entry in context] == [ordinary["_id"]]
-    assert context[0]["content"] == "ordinary context"
+    assert [entry["content"] for entry in context] == ["private", "ordinary context"]
+    assert ordinary["_id"] in {entry["item_id"] for entry in context}
+
+
+# ── observation and authorization signals ───────────────────────────────────
+
+
+_MENTION = ChannelAttention(is_mention=True)
+
+
+def _observation(dedup_key: str, *, participant: str = "u-1", content: str = "the message") -> ChannelInbound:
+    return ChannelInbound(
+        content=content, dedup_key=dedup_key, participant=participant,
+        conversation_key="room", message_timestamp="2026-10-01T00:00:00Z",
+        retain_context=True, signal=SIGNAL_OBSERVATION,
+    )
+
+
+def _authorization(dedup_key: str, *, participant: str = "u-1") -> ChannelInbound:
+    return ChannelInbound(
+        content="", dedup_key=dedup_key, participant=participant, attention=_MENTION,
+        reply_context={"cb": "x"}, signal=SIGNAL_AUTHORIZATION,
+    )
+
+
+async def test_authorization_whose_observation_never_arrives_dies_and_says_so() -> None:
+    """A platform's trigger names a message whose content travels on a
+    separate feed. If that content never arrives, the authorization must not
+    wait forever or run anything: after its wait it dies with evidence, the
+    participant who invoked the agent is told, and an observation that turns
+    up afterwards runs nothing."""
+    provider = _RecorderChannel()
+    register_channel(provider)
+    service, ingress, kernel, spawned = _spine(binding_extra={"updated_at": "rev-1"})
+    provider.inbound = _authorization("late-1")
+    receipt = await service.trigger("wh-1", headers={}, raw_body=b"{}")
+    assert receipt["status"] == "authorized"
+    assert spawned == []
+    repo = ingress._channel_repo
+    item_id = _item_id("wh-1", "late-1")
+    assert (await repo.get_inbound(item_id))["state"] == INBOUND_AUTHORIZED
+    assert await ingress.expire_authorizations() == 0, "still within its wait"
+
+    after_wait = time.time() + 24 * 3600 + 1
+    assert await ingress.expire_authorizations(now=after_wait) == 1
+    dead = await repo.get_inbound(item_id)
+    assert dead["state"] == INBOUND_DEAD and dead["last_error"]
+    assert provider.delivered == [({"cb": "x"}, ingress_module._AUTHORIZATION_EXPIRED_NOTICE)]
+    assert await ingress.expire_authorizations(now=after_wait) == 0, "expired once"
+
+    provider.inbound = _observation("late-1")
+    late = await service.trigger("wh-1", headers={}, raw_body=b"{}")
+    assert late["status"] == "observed"
+    assert spawned == [] and kernel.stream_calls == 0
+
+
+async def test_authorization_naming_another_sender_is_refused_and_says_so() -> None:
+    """The observation recorded who wrote the message. An authorization for
+    that message naming a different sender is not that message's trigger: it
+    must not run the observed text as someone else's request. The record
+    leaves retained context and the authorizing sender is told."""
+    provider = _RecorderChannel()
+    register_channel(provider)
+    service, ingress, kernel, spawned = _spine(binding_extra={"updated_at": "rev-1"})
+    provider.inbound = _observation("m-x", participant="u-1")
+    assert (await service.trigger("wh-1", headers={}, raw_body=b"{}"))["status"] == "observed"
+    provider.inbound = _authorization("m-x", participant="u-2")
+    receipt = await service.trigger("wh-1", headers={}, raw_body=b"{}")
+    assert receipt["status"] == "ignored"
+    assert receipt["reason"] == "CHANNEL_SIGNAL_IDENTITY_CONFLICT"
+    record = await ingress._channel_repo.get_inbound(_item_id("wh-1", "m-x"))
+    assert record["state"] == INBOUND_IGNORED and record["context_excluded"] is True
+    assert provider.delivered == [({"cb": "x"}, ingress_module._IDENTITY_CONFLICT_NOTICE)]
+    assert spawned == [] and kernel.stream_calls == 0
+
+
+async def test_concurrent_admissions_of_one_observed_message_run_it_once() -> None:
+    """A context feed recorded the message; its trigger then arrives several
+    times at once, a redelivery racing the original. Exactly one admission
+    wins, so the observed message gets one turn and one accepted receipt."""
+    provider = _RecorderChannel()
+    register_channel(provider)
+    service, ingress, kernel, spawned = _spine(binding_extra={"updated_at": "rev-1"})
+    provider.inbound = _observation("m-race")
+    await service.trigger("wh-1", headers={}, raw_body=b"{}")
+    provider.inbound = _authorization("m-race")
+    receipts = await asyncio.gather(*(
+        service.trigger("wh-1", headers={}, raw_body=b"{}") for _ in range(4)
+    ))
+    statuses = sorted(receipt["status"] for receipt in receipts)
+    assert statuses == ["accepted", "in_progress", "in_progress", "in_progress"]
+    await _drain_spawned(spawned)
+    assert kernel.stream_calls == 1
+    assert ("turn", "the message") in kernel.timeline, "the observed text is the input"
+    record = await ingress._channel_repo.get_inbound(_item_id("wh-1", "m-race"))
+    assert record["state"] == INBOUND_SETTLED
+
+
+async def test_redelivery_never_replaces_an_admitted_payload() -> None:
+    """A redelivery that steals an expired item, or revives a DEAD one, runs
+    the message that was admitted. Its input and execution account stay,
+    even when the platform resends other content under the same id or the
+    binding now runs as someone else."""
+    repo = ChannelRepository()
+    original = {**_PAYLOAD, "content": "accepted input", "creator_user_id": "alice"}
+    changed = {**_PAYLOAD, "content": "replacement", "creator_user_id": "bob"}
+    await _claim(repo, dedup_key="m-keep", payload=original, now=time.time() - 100_000)
+    stolen, outcome = await _claim(repo, dedup_key="m-keep", payload=changed)
+    assert outcome == "claimed"
+    assert stolen["payload"] == original
+    item_id, owner = str(stolen["_id"]), str(stolen["owner_token"])
+    generation = int(stolen["generation"])
+    assert await repo.begin_inbound_dispatch(item_id=item_id, owner_token=owner, generation=generation)
+    assert await repo.fail_inbound(
+        item_id=item_id, owner_token=owner, generation=generation,
+        error="final", retry_at_epoch=None,
+    )
+    revived, outcome = await _claim(repo, dedup_key="m-keep", payload=changed)
+    assert outcome == "claimed" and revived["state"] == INBOUND_RECEIVED
+    assert revived["payload"] == original
+
+
+async def test_retained_context_quotes_participants_without_the_prompt_prefix() -> None:
+    """The binding's prompt prefix frames the turn's own input once. Context
+    rows quote what each participant wrote: repeating the prefix inside every
+    quoted message would attribute the operator's instruction to them."""
+    provider = _RecorderChannel()
+    register_channel(provider)
+    service, ingress, _kernel, spawned = _spine(binding_extra={
+        "updated_at": "rev-1", "prompt_prefix": "Answer briefly.",
+        "attention_policy": "mentions",
+    })
+    retained = {"conversation_key": "room", "participant": "u-1", "retain_context": True}
+    provider.inbound = ChannelInbound(
+        content="earlier words", dedup_key="m-a",
+        message_timestamp="2026-10-01T00:00:00Z", **retained,
+    )
+    assert (await service.trigger("wh-1", headers={}, raw_body=b"{}"))["status"] == "observed"
+    provider.inbound = ChannelInbound(
+        content="the question", dedup_key="m-b", attention=_MENTION,
+        message_timestamp="2026-10-01T00:00:01Z", **retained,
+    )
+    assert (await service.trigger("wh-1", headers={}, raw_body=b"{}"))["status"] == "accepted"
+    await _drain_spawned(spawned)
+    item = await ingress._channel_repo.get_inbound(_item_id("wh-1", "m-b"))
+    assert [row["content"] for row in item["frozen_input"]["context"]] == ["earlier words"]
+    turn_input = item["frozen_input"]["content"]
+    assert turn_input.count("Answer briefly.") == 1
+    assert turn_input.endswith("Answer briefly.\n\nthe question")
+
+
+# ── conversations a provider groups by reply chain ──────────────────────────
+
+
+class _ReplyTreeChannel(_RecorderChannel):
+    """A provider that groups a room's messages by reply chain.
+
+    It does what a downstream reply-tree provider would: a message that
+    replies to nothing starts a conversation named by its own id, and a reply
+    asks core to continue the conversation of the message it replies to. The
+    provider never tracks a chain; when core recorded no such message, the
+    reply starts a conversation rooted at the message it names.
+    """
+
+    name = "reply-tree"
+
+    async def deliver_outbound(self, *, reply_context, text, binding):
+        self.delivered.append((reply_context, text))
+        return ChannelDeliveryReceipt(message_ids=[f"bot-{len(self.delivered)}"])
+
+    def say(self, message_id: str, *, at: str, replies_to: str | None = None,
+            mention: bool = False) -> None:
+        self.inbound = ChannelInbound(
+            content=f"text of {message_id}", dedup_key=message_id,
+            conversation_key=f"room/tree/{replies_to or message_id}",
+            reference=replies_to, conversation_from_reference=replies_to is not None,
+            reply_context={"to": message_id}, participant="u-1", retain_context=True,
+            message_timestamp=at, attention=_MENTION if mention else ChannelAttention(),
+        )
+
+
+async def test_a_provider_groups_a_rooms_messages_by_reply_chain(monkeypatch) -> None:
+    """Core keeps which conversation every recorded message belongs to, so a
+    provider can group messages by reply chain while naming only the message
+    each one replies to: a reply to a reply, or to the agent's own answer,
+    continues the conversation where the chain started, and reads that
+    conversation's unaddressed replies as context."""
+    import astrabox.core.service.orchestrator.channel_ingress_service as ingress_module
+
+    monkeypatch.setattr(ingress_module, "_REFERENCE_RESOLVE_WAIT_SECONDS", 0.0)
+    provider = _ReplyTreeChannel()
+    register_channel(provider)
+    service, ingress, kernel, spawned = _spine(binding_extra={
+        "scene": "channel:reply-tree", "attention_policy": "mentions", "updated_at": "rev-1",
+    })
+
+    async def say(message_id: str, at: str, **kwargs: Any) -> dict[str, Any]:
+        provider.say(message_id, at=at, **kwargs)
+        return await service.trigger("wh-1", headers={}, raw_body=b"{}")
+
+    first = await say("m1", "2026-10-01T00:00:01Z", mention=True)
+    await _drain_spawned(spawned)
+    assert (await say("m2", "2026-10-01T00:00:02Z", replies_to="m1"))["status"] == "observed"
+    third = await say("m3", "2026-10-01T00:00:03Z", replies_to="m2", mention=True)
+    assert third["session_id"] == first["session_id"]
+    await _drain_spawned(spawned)
+    item = await ingress._channel_repo.get_inbound(_item_id("wh-1", "m3"))
+    assert [row["message_id"] for row in item["frozen_input"]["context"]] == ["m2"]
+    assert "text of m2" in item["frozen_input"]["content"]
+    to_agent = await say("m4", "2026-10-01T00:00:04Z", replies_to="bot-1", mention=True)
+    assert to_agent["session_id"] == first["session_id"]
+    await _drain_spawned(spawned)
+
+    new_request = await say("m5", "2026-10-01T00:00:05Z", mention=True)
+    unknown = await say("m6", "2026-10-01T00:00:06Z", replies_to="m0", mention=True)
+    await _drain_spawned(spawned)
+    sessions = {first["session_id"], new_request["session_id"], unknown["session_id"]}
+    assert len(sessions) == 3
+    conversation = await ingress._channel_repo.get_conversation(
+        deployment_id="wh-1", conversation_key="room/tree/m0",
+    )
+    assert conversation is not None and conversation["session_id"] == unknown["session_id"]
+    assert kernel.stream_calls == 5
+
+
+async def test_a_recovered_message_takes_the_lock_of_the_conversation_it_resolved() -> None:
+    """A message can reach its conversation through the reply it quotes rather
+    than its own key. A worker that dies after binding the message's session
+    leaves recovery a session that is already bound, so recovery must still
+    serialise on that conversation: the resolved conversation is stored with
+    the session."""
+    provider = _ReplyTreeChannel()
+    register_channel(provider)
+    service, ingress, kernel, spawned = _spine(binding_extra={"scene": "channel:reply-tree"})
+    provider.inbound = ChannelInbound(
+        content="a question", dedup_key="r-1", conversation_key="room", reply_context={"to": "r-1"},
+    )
+    assert (await service.trigger("wh-1", headers={}, raw_body=b"{}"))["status"] == "accepted"
+    await _drain_spawned(spawned)
+    provider.inbound = ChannelInbound(
+        content="a follow-up", dedup_key="r-2", reference="bot-1", reply_context={"to": "r-2"},
+    )
+    receipt = await service.trigger("wh-1", headers={}, raw_body=b"{}")
+    assert receipt["status"] == "accepted"
+    _close_spawned(spawned)  # the worker dies before driving
+    repo = ingress._channel_repo
+    item_id = _item_id("wh-1", "r-2")
+    stored = await repo.get_inbound(item_id)
+    assert stored["payload"]["conversation"] is None
+    assert stored["resolved_conversation_key"] == "room"
+    await repo.renew_inbound_lease(
+        item_id=item_id, owner_token=str(stored["owner_token"]),
+        generation=1, now=time.time() - 100_000,
+    )
+    assert await ingress.recover_inbound() == 1
+    await _drain_spawned(spawned)
+    assert (await repo.get_inbound(item_id))["state"] == INBOUND_SETTLED
+    conversation = await repo.get_conversation(deployment_id="wh-1", conversation_key="room")
+    assert conversation is not None and conversation["session_id"] == receipt["session_id"]
+    assert conversation["lock_generation"] == 2 and conversation["lock_owner"] is None
+    assert kernel.stream_calls == 2
+
+
+# ── linked execution accounts ───────────────────────────────────────────────
+
+
+class _LinkResolver(ChannelAccountResolver):
+    """A directory a test controls, which counts the questions it is asked."""
+
+    name = "test-links"
+
+    def __init__(self) -> None:
+        self.links: dict[str, str] = {}
+        self.asked: list[str] = []
+        self.unavailable = False
+
+    async def resolve(self, *, deployment_id: str, channel: str, participant: str) -> str | None:
+        self.asked.append(participant)
+        if self.unavailable:
+            raise RuntimeError("directory unavailable")
+        return self.links.get(participant)
+
+
+def _linked_spine(monkeypatch: pytest.MonkeyPatch) -> tuple[Any, ...]:
+    resolver = _LinkResolver()
+    register_channel_account_resolver(resolver)
+    monkeypatch.setenv("ASTRABOX_CHANNEL_ACCOUNT_RESOLVER", resolver.name)
+    provider = _RecorderChannel()
+    register_channel(provider)
+    service, ingress, kernel, spawned = _spine(binding_extra={
+        "execution_mode": "linked", "attention_policy": "mentions", "updated_at": "rev-1",
+    })
+    return resolver, provider, service, ingress, kernel, spawned
+
+
+async def _expire_and_recover(ingress: ChannelIngressService, item_id: str) -> None:
+    stored = await ingress._channel_repo.get_inbound(item_id)
+    await ingress._channel_repo.renew_inbound_lease(
+        item_id=item_id, owner_token=str(stored["owner_token"]),
+        generation=int(stored["generation"]), now=time.time() - 100_000,
+    )
+    assert await ingress.recover_inbound() == 1
+
+
+async def test_linked_participants_run_as_their_own_accounts_and_keep_them(monkeypatch) -> None:
+    """Each participant's message runs as the account linked to that
+    participant. The account a message's first drive resolved is kept on its
+    record: a process lost before the message's session was bound, and a link
+    changed in the meantime, do not change whom the message runs as."""
+    resolver, provider, service, ingress, kernel, spawned = _linked_spine(monkeypatch)
+    resolver.links = {"im:p1": "alice", "im:p2": "bob"}
+    sessions = ingress._sessions_repo
+
+    async def ask(dedup_key: str, participant: str, conversation_key: str) -> dict[str, Any]:
+        provider.inbound = ChannelInbound(
+            content=f"question {dedup_key}", dedup_key=dedup_key, attention=_MENTION,
+            conversation_key=conversation_key, participant=participant,
+            reply_context={"to": dedup_key},
+        )
+        return await service.trigger("wh-1", headers={}, raw_body=b"{}")
+
+    first = await ask("m1", "im:p1", "room")
+    second = await ask("m2", "im:p2", "room")
+    assert first["session_id"] != second["session_id"]
+    assert [(await sessions.get_session(receipt["session_id"]))["user_id"]
+            for receipt in (first, second)] == ["alice", "bob"]
+    await _drain_spawned(spawned)
+
+    bind = ChannelRepository.bind_inbound_dispatch
+
+    async def lost_before_binding(self: ChannelRepository, **kwargs: Any) -> bool:
+        if kwargs.get("session_id"):
+            monkeypatch.setattr(ChannelRepository, "bind_inbound_dispatch", bind)
+            raise RuntimeError("process lost")
+        return await bind(self, **kwargs)
+
+    monkeypatch.setattr(ChannelRepository, "bind_inbound_dispatch", lost_before_binding)
+    with pytest.raises(RuntimeError, match="process lost"):
+        await ask("m3", "im:p1", "room-2")
+    item_id = _item_id("wh-1", "m3")
+    kept = await ingress._channel_repo.get_inbound(item_id)
+    assert kept["payload"]["execution_user_id"] == "alice" and not kept["session_id"]
+    resolver.links["im:p1"] = "carol"
+    await _expire_and_recover(ingress, item_id)
+    await _drain_spawned(spawned)
+    recovered = await ingress._channel_repo.get_inbound(item_id)
+    assert recovered["state"] == INBOUND_SETTLED
+    assert (await sessions.get_session(recovered["session_id"]))["user_id"] == "alice"
+    assert resolver.asked == ["im:p1", "im:p2", "im:p1"]
+    assert kernel.stream_calls == 3
+
+
+@pytest.mark.parametrize(("sender", "reason"), [
+    (None, "CHANNEL_PARTICIPANT_REQUIRED"),
+    ("im:stranger", "CHANNEL_PARTICIPANT_NOT_LINKED"),
+    ("im:p1", "CHANNEL_ACCOUNT_NOT_AUTHORIZED"),
+])
+async def test_a_linked_message_without_a_usable_account_is_refused_and_told(
+    monkeypatch, sender, reason,
+) -> None:
+    """A message whose participant has no linked account, or whose account
+    may not use the Agent, is refused and the participant is told why. It
+    never runs as the Agent's owner, and a message that only joins the room's
+    context is never resolved to an account at all."""
+    resolver, provider, service, ingress, kernel, spawned = _linked_spine(monkeypatch)
+    resolver.links = {"im:p1": "alice"}
+    service._agent_repo.get_agent.return_value = {
+        "user_id": "creator", "created_by": "creator", "visibility": "private",
+    }
+    provider.inbound = ChannelInbound(
+        content="chatter", dedup_key="c-1", conversation_key="room", participant="im:p1",
+        retain_context=True, message_timestamp="2026-10-01T00:00:00Z",
+    )
+    assert (await service.trigger("wh-1", headers={}, raw_body=b"{}"))["status"] == "observed"
+    if reason != "CHANNEL_ACCOUNT_NOT_AUTHORIZED":
+        service._agent_repo.get_agent.return_value = {"user_id": "creator", "template_name": "t"}
+    provider.inbound = ChannelInbound(
+        content="question", dedup_key="q-1", conversation_key="room", participant=sender,
+        reply_context={"to": "q-1"}, attention=_MENTION,
+    )
+    receipt = await service.trigger("wh-1", headers={}, raw_body=b"{}")
+    assert (receipt["status"], receipt["reason"]) == ("ignored", reason)
+    record = await ingress._channel_repo.get_inbound(_item_id("wh-1", "q-1"))
+    assert record["state"] == INBOUND_IGNORED and record["ignored_reason"] == reason
+    assert record["context_excluded"] is True and not record["session_id"]
+    assert [destination for destination, _ in provider.delivered] == [{"to": "q-1"}]
+    assert resolver.asked == ([] if sender is None else [sender])
+    assert kernel.stream_calls == 0 and not spawned
+    again = await service.trigger("wh-1", headers={}, raw_body=b"{}")
+    assert again["status"] == "ignored" and len(provider.delivered) == 1
+
+
+async def test_an_unavailable_directory_holds_a_linked_message_for_retry(monkeypatch) -> None:
+    """When the account resolver cannot answer, the message is neither refused
+    nor run as anyone: it stays to be driven again, and runs as its linked
+    account once the directory answers."""
+    resolver, provider, service, ingress, kernel, spawned = _linked_spine(monkeypatch)
+    resolver.links = {"im:p1": "alice"}
+    resolver.unavailable = True
+    provider.inbound = ChannelInbound(
+        content="question", dedup_key="q-1", conversation_key="room", participant="im:p1",
+        reply_context={"to": "q-1"}, attention=_MENTION,
+    )
+    with pytest.raises(RuntimeError, match="directory unavailable"):
+        await service.trigger("wh-1", headers={}, raw_body=b"{}")
+    item_id = _item_id("wh-1", "q-1")
+    held = await ingress._channel_repo.get_inbound(item_id)
+    assert held["state"] == INBOUND_RECEIVED and not held["session_id"]
+    assert held["payload"]["execution_user_id"] == "" and kernel.stream_calls == 0
+    resolver.unavailable = False
+    await _expire_and_recover(ingress, item_id)
+    await _drain_spawned(spawned)
+    settled = await ingress._channel_repo.get_inbound(item_id)
+    assert settled["state"] == INBOUND_SETTLED
+    assert (await ingress._sessions_repo.get_session(settled["session_id"]))["user_id"] == "alice"

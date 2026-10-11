@@ -27,12 +27,13 @@ absent TOML file is a normal no-op (the file is optional by design).
 from __future__ import annotations
 
 import os
+import re
 import tomllib
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from pydantic import AliasChoices, Field, field_validator
+from pydantic import AliasChoices, Field, ValidationInfo, field_validator, model_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -50,6 +51,32 @@ _DEFAULT_CONFIG_FILE = "astrabox.toml"
 
 _REMOVED_LOCAL_SANDBOX_BACKEND = "direct_docker"
 _CURRENT_LOCAL_SANDBOX_BACKEND = "open_sandbox"
+
+
+_CPU_QUANTITY = re.compile(r"(\d+(?:\.\d+)?)(m?)")
+_MEMORY_QUANTITY = re.compile(r"(\d+(?:\.\d+)?)(Ki|Mi|Gi|Ti|Pi|Ei|k|M|G|T|P|E)?")
+_MEMORY_UNITS = {
+    None: 1,
+    "k": 10**3, "M": 10**6, "G": 10**9, "T": 10**12, "P": 10**15, "E": 10**18,
+    "Ki": 2**10, "Mi": 2**20, "Gi": 2**30, "Ti": 2**40, "Pi": 2**50, "Ei": 2**60,
+}
+
+
+def cpu_quantity(value: str) -> float:
+    """Cores in a Kubernetes CPU quantity such as ``2``, ``0.5`` or ``500m``."""
+    match = _CPU_QUANTITY.fullmatch(value)
+    if match is None or float(match.group(1)) <= 0:
+        raise ValueError(f"{value!r} is not a CPU quantity such as 2, 0.5 or 500m")
+    cores = float(match.group(1))
+    return cores / 1000 if match.group(2) else cores
+
+
+def memory_quantity(value: str) -> float:
+    """Bytes in a Kubernetes memory quantity such as ``2Gi`` or ``768Mi``."""
+    match = _MEMORY_QUANTITY.fullmatch(value)
+    if match is None or float(match.group(1)) <= 0:
+        raise ValueError(f"{value!r} is not a memory quantity such as 2Gi or 768Mi")
+    return float(match.group(1)) * _MEMORY_UNITS[match.group(2)]
 
 
 def normalize_configured_sandbox_backend(value: Any) -> str:
@@ -242,6 +269,143 @@ class AstraBoxSettings(BaseSettings):
     def _normalize_configured_sandbox_backend(cls, value: Any) -> str:
         return normalize_configured_sandbox_backend(value)
 
+    sandbox_backends: str = Field(
+        default="",
+        description=(
+            "Comma-separated names of the sandbox backends this deployment enables; "
+            "empty enables only sandbox_backend."
+        ),
+    )
+
+    @property
+    def enabled_sandbox_backends(self) -> list[str]:
+        """``sandbox_backends`` split into names; empty when it is unset."""
+        return [
+            part.strip().lower()
+            for part in str(self.sandbox_backends or "").split(",")
+            if part.strip()
+        ]
+
+    # --- sandbox resource envelopes ----------------------------------------
+    # A conversation's own box and an Agent's shared box each have one
+    # envelope, for every box of that kind: created on demand, prepared in a
+    # pool, or replacing a lost one. Limits are the ceiling; requests are the
+    # Kubernetes scheduler's reservation. Memory requests equal the limits, so a
+    # node never promises memory it lacks; CPU requests are lower, because a
+    # busy CPU only slows a box down. A shared box carries its base runtime once
+    # for every conversation it holds, and admits another while its free memory
+    # allows.
+    sandbox_cpu_limit: str = Field(default="1", description="CPU limit of a conversation's own box.")
+    sandbox_memory_limit: str = Field(default="1Gi", description="Memory limit of a conversation's own box.")
+    sandbox_cpu_request: str = Field(
+        default="250m", description="CPU request of a conversation's own box."
+    )
+    sandbox_memory_request: str = Field(
+        default="1Gi", description="Memory request of a conversation's own box."
+    )
+    shared_sandbox_cpu_limit: str = Field(default="4", description="CPU limit of an Agent's shared box.")
+    shared_sandbox_memory_limit: str = Field(
+        default="4Gi", description="Memory limit of an Agent's shared box."
+    )
+    shared_sandbox_cpu_request: str = Field(
+        default="1", description="CPU request of an Agent's shared box."
+    )
+    shared_sandbox_memory_request: str = Field(
+        default="4Gi", description="Memory request of an Agent's shared box."
+    )
+
+    @field_validator(
+        "sandbox_cpu_limit",
+        "sandbox_memory_limit",
+        "sandbox_cpu_request",
+        "sandbox_memory_request",
+        "shared_sandbox_cpu_limit",
+        "shared_sandbox_memory_limit",
+        "shared_sandbox_cpu_request",
+        "shared_sandbox_memory_request",
+        mode="before",
+    )
+    @classmethod
+    def _unset_sandbox_resource(cls, value: Any, info: ValidationInfo) -> Any:
+        # Compose forwards a variable the operator left unset as "".
+        if value == "":
+            return cls.model_fields[str(info.field_name)].default
+        return value
+
+    @field_validator(
+        "sandbox_cpu_limit",
+        "sandbox_cpu_request",
+        "shared_sandbox_cpu_limit",
+        "shared_sandbox_cpu_request",
+        mode="after",
+    )
+    @classmethod
+    def _validate_sandbox_cpu(cls, value: str) -> str:
+        cpu_quantity(value)
+        return value
+
+    @field_validator(
+        "sandbox_memory_limit",
+        "sandbox_memory_request",
+        "shared_sandbox_memory_limit",
+        "shared_sandbox_memory_request",
+        mode="after",
+    )
+    @classmethod
+    def _validate_sandbox_memory(cls, value: str) -> str:
+        memory_quantity(value)
+        return value
+
+    # --- sandbox quota -----------------------------------------------------
+    # Ceilings on everything one sandbox backend runs for this deployment,
+    # whatever created it. Empty leaves a ceiling to its default (memory on a
+    # bundled Docker server: the host's memory less 4Gi; otherwise none);
+    # "unlimited" states there is none.
+    sandbox_quota_boxes: str = Field(default="", description="Most sandboxes a backend runs.")
+    sandbox_quota_memory: str = Field(
+        default="", description="Most memory, in box limits, a backend's sandboxes may hold."
+    )
+    sandbox_quota_cpu: str = Field(
+        default="", description="Most CPU, in box limits, a backend's sandboxes may hold."
+    )
+    sandbox_quota_concurrent_creates: str = Field(
+        default="", description="Most sandboxes a backend creates at once."
+    )
+
+    @field_validator("sandbox_quota_boxes", "sandbox_quota_concurrent_creates", mode="after")
+    @classmethod
+    def _validate_quota_count(cls, value: str) -> str:
+        if value not in ("", "unlimited") and not (value.isdigit() and int(value) > 0):
+            raise ValueError(f"{value!r} is not a positive whole number or 'unlimited'")
+        return value
+
+    @field_validator("sandbox_quota_memory", mode="after")
+    @classmethod
+    def _validate_quota_memory(cls, value: str) -> str:
+        if value not in ("", "unlimited"):
+            memory_quantity(value)
+        return value
+
+    @field_validator("sandbox_quota_cpu", mode="after")
+    @classmethod
+    def _validate_quota_cpu(cls, value: str) -> str:
+        if value not in ("", "unlimited"):
+            cpu_quantity(value)
+        return value
+
+    @model_validator(mode="after")
+    def _sandbox_requests_within_limits(self) -> AstraBoxSettings:
+        for box, prefix in (("conversation", ""), ("shared", "shared_")):
+            for kind, parse in (("cpu", cpu_quantity), ("memory", memory_quantity)):
+                request = getattr(self, f"{prefix}sandbox_{kind}_request")
+                limit = getattr(self, f"{prefix}sandbox_{kind}_limit")
+                if parse(request) > parse(limit):
+                    raise ValueError(
+                        f"{box} box {kind} request {request} exceeds its limit {limit}; "
+                        "a box cannot reserve more than it may use"
+                    )
+        return self
+
     # --- workspace storage seam --------------------------------------------
     storage_provider: str = Field(
         default="mounted_volume",
@@ -266,6 +430,13 @@ class AstraBoxSettings(BaseSettings):
     db_backend: str = Field(
         default="postgresql",
         description="Persistence backend name (PostgreSQL by default).",
+    )
+    scheduler_provider: str = Field(
+        default="dbos",
+        description=(
+            "Name of the scheduler provider that runs scheduled Deployments; "
+            "'none' disables them. Startup checks it against the repository backend."
+        ),
     )
     db_url: str | None = Field(
         default=None,

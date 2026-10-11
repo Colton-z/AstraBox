@@ -19,6 +19,11 @@ import { ErrorNote } from '@/components/shell';
 import { CatalogExtensionField, sameIds } from './CatalogExtensionField';
 import { ConnectorsCard } from './ConnectorsCard';
 import {
+  UnavailableCatalogSelection,
+  catalogSelectionOf,
+  hasCatalogSelection,
+} from './UnavailableCatalogSelection';
+import {
   ConsoleEditSections,
   ConsoleDangerButton,
   ConsoleErrorState,
@@ -52,6 +57,7 @@ import {
 import type { EnvironmentConfig } from '@/types';
 import { keepsLastRead, useKeepCurrent, type ReloadContext } from '@/hooks/useKeepCurrent';
 import { useFrontendReleaseHold } from '@/hooks/useFrontendReleaseHold';
+import { useExtensionProvider } from '@/hooks/useExtensionProvider';
 
 /** The edit helpers speak plain records; a typed draft is one. */
 const draftRecordOf = (v: unknown) => (v ?? null) as Record<string, unknown> | null;
@@ -67,6 +73,10 @@ const draftRecordOf = (v: unknown) => (v ?? null) as Record<string, unknown> | n
  *
  * The lifecycle buttons are operations on the record, not edits, so they live
  * with the heading and not in a card's footer.
+ *
+ * The extension catalog follows the deployment's provider declaration, as on an
+ * Agent's page: without a catalog the Assistant's own fields stand alone and no
+ * catalog is asked for anything.
  */
 export default function AssistantDetailPage() {
   const { assistantId = '' } = useParams();
@@ -92,6 +102,12 @@ export default function AssistantDetailPage() {
   const environment = environments.find((candidate) => candidate.name === record?.environment_name);
 
   // The deployment catalog's MCP servers and Skills, as on an Agent.
+  const {
+    provider: extensionProvider,
+    error: extensionProviderError,
+    retry: retryExtensionProvider,
+  } = useExtensionProvider();
+  const [removingSelection, setRemovingSelection] = useState(false);
   const [extensionCatalog, setExtensionCatalog] = useState<AssistantExtensionCatalog | null>(null);
   const [extensionMcpIds, setExtensionMcpIds] = useState<string[]>([]);
   const [extensionSkillIds, setExtensionSkillIds] = useState<string[]>([]);
@@ -112,8 +128,8 @@ export default function AssistantDetailPage() {
     }
   }, [assistantId]);
   useEffect(() => {
-    void loadExtensions();
-  }, [loadExtensions]);
+    if (extensionProvider) void loadExtensions();
+  }, [extensionProvider, loadExtensions]);
   const extensionsDirty = Boolean(extensionCatalog) && (
     !sameIds(extensionMcpIds, extensionCatalog!.selected_mcp_server_ids)
     || !sameIds(extensionSkillIds, extensionCatalog!.selected_skill_ids)
@@ -247,6 +263,21 @@ export default function AssistantDetailPage() {
     );
   };
 
+  /** Drop a selection no catalog can serve; the server accepts only this then. */
+  const removeCatalogSelection = async () => {
+    if (!record) return;
+    setRemovingSelection(true);
+    setExtensionError('');
+    try {
+      await setAssistantExtensions(record.assistant_id, { mcp_server_ids: [], skill_ids: [] });
+      await load();
+    } catch (e) {
+      setExtensionError((e as Error).message);
+    } finally {
+      setRemovingSelection(false);
+    }
+  };
+
   const runAction = async (action: () => Promise<unknown>) => {
     setActionBusy(true);
     setSaveError('');
@@ -280,6 +311,27 @@ export default function AssistantDetailPage() {
     );
   }
 
+  // Which catalog the fields stand beside decides how they are laid out, so the
+  // page waits for that answer rather than redrawing the card once it lands.
+  if (extensionProvider === undefined) {
+    return (
+      <ConsoleRecordPage title={assistantDisplayName(record)}>
+        {extensionProviderError ? (
+          <ConsoleErrorState
+            title={t('manage:assistants.error_title')}
+            detail={extensionProviderError.message}
+            onRetry={retryExtensionProvider}
+          />
+        ) : (
+          <ConsoleRecordLoading />
+        )}
+      </ConsoleRecordPage>
+    );
+  }
+
+  const staleSelection = extensionProvider === null
+    ? catalogSelectionOf(record as unknown as Record<string, unknown>)
+    : null;
   const state = String(record.workspace_state || 'NOT_MATERIALIZED');
   const notStarted = state === 'NOT_MATERIALIZED';
   const draftRecord = draft as unknown as Record<string, unknown> | undefined;
@@ -370,16 +422,25 @@ export default function AssistantDetailPage() {
     >
       {saveError && <ErrorNote>{saveError}</ErrorNote>}
       {extensionError && <ErrorNote>{extensionError}</ErrorNote>}
+      {staleSelection && hasCatalogSelection(staleSelection) && (
+        <UnavailableCatalogSelection
+          selection={staleSelection}
+          removing={removingSelection}
+          onRemove={() => void removeCatalogSelection()}
+        />
+      )}
       <ConsoleEditSections
         sections={sections}
         renderField={(field, customField) => {
           if (field.key !== 'mcp_servers' && field.key !== 'skills') return customField;
+          if (!extensionProvider) return customField;
           const isMcp = field.key === 'mcp_servers';
           const kind = isMcp ? 'mcp' : 'skills';
           return (
             <CatalogExtensionField
               kind={kind}
               id={`assistant-extension-${kind}`}
+              provider={extensionProvider}
               catalog={extensionCatalog}
               value={isMcp ? extensionMcpIds : extensionSkillIds}
               onChange={isMcp ? setExtensionMcpIds : setExtensionSkillIds}

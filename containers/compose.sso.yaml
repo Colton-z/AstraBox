@@ -84,6 +84,9 @@ services:
       CASDOOR_OIDC_CLIENT_ID: ${ASTRABOX_OIDC_CLIENT_ID:-astrabox-console}
       CASDOOR_OIDC_API_CLIENT_ID: ${ASTRABOX_OIDC_API_CLIENT_ID:-astrabox-api}
       ASTRABOX_CONSOLE_ORIGIN: ${ASTRABOX_CONSOLE_ORIGIN:-http://127.0.0.1:${ASTRABOX_SERVER_HOST_PORT:-8088}}
+      # The console's callback is registered below the path the deployment is
+      # published under.
+      ASTRABOX_PUBLIC_PATH_PREFIX: ${ASTRABOX_PUBLIC_PATH_PREFIX:-}
       dbName: casdoor
       # Casdoor publishes this issuer in discovery and tokens. Keep it exactly
       # aligned with the browser-facing AstraBox setting when the host port is

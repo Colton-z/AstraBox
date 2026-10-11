@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTheme } from 'next-themes';
-import { listAgents } from '@/api';
+import { MODULE_BASE, listAgents } from '@/api';
 import { getAssistant } from '@/assistant/api';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
@@ -72,7 +72,7 @@ function ArtifactFramePage({
       buildArtifactDocument({
         kind,
         content: runtime.content,
-        origin: window.location.origin,
+        base: `${window.location.origin}${MODULE_BASE}`,
         theme: resolvedTheme === 'dark' ? 'dark' : 'light',
         release:
           document
@@ -175,12 +175,12 @@ function ArtifactFramePage({
             ) : origin.session_id ? (
               <a
                 className="underline"
-                href={`/sessions/${encodeURIComponent(origin.session_id)}`}
+                href={`${MODULE_BASE}/sessions/${encodeURIComponent(origin.session_id)}`}
               >
                 {t('misc:artifacts.origin')}
               </a>
             ) : origin.assistant_id ? (
-              <a className="underline" href="/assistants">
+              <a className="underline" href={`${MODULE_BASE}/assistants`}>
                 {t('misc:artifacts.origin_assistant')}
               </a>
             ) : null}

@@ -12,16 +12,15 @@ from astrabox.core.service.orchestrator.runtime.conversation_identity import (
 class ParseSkillDescriptorTest(unittest.TestCase):
     """Contract for the git skill descriptor parser ``<repo>@<ref>#<path>``.
 
-    The ref split is authority-aware: a credential ``@`` in an https URL or the
-    ``git@`` in an scp-form SSH URL must NOT be mistaken for the ref delimiter.
-    Malformed descriptors fail loud (APIError) so a bad template entry never
-    reaches a sandbox exec — there is no fallback.
+    The ref split is authority-aware: the ``git@`` in an scp-form SSH URL must
+    NOT be mistaken for the ref delimiter. Malformed descriptors fail loud
+    (APIError) so a bad template entry never reaches a sandbox exec — there is
+    no fallback.
     """
 
     def test_skill_git_origins_preserve_descriptor_authority(self) -> None:
         for descriptor, expected in (
             ("https://GitHub.com/o/repo@main#skills/foo", ["github.com"]),
-            ("https://user:token@GitHub.com/o/repo@main", ["github.com"]),
             ("git@GitHub.com:o/repo@v1.0", ["github.com"]),
             ("ssh://git@GitHub.com/o/repo@v1.0", ["github.com"]),
             ("/opt/repos/skills#skills/foo", []),
@@ -78,22 +77,18 @@ class ParseSkillDescriptorTest(unittest.TestCase):
         self.assertEqual(ref, "a1b2c3d4")
 
     # ---- authority-aware ref split -------------------------------------------
-    def test_embedded_credentials_with_ref(self) -> None:
-        # the credential '@' before the host must NOT be taken as the ref delimiter
-        repo, ref, _, name = _parse_skill_descriptor(
-            "https://x-access-token:TOK@github.com/o/repo@main"
-        )
-        self.assertEqual(repo, "https://x-access-token:TOK@github.com/o/repo")
-        self.assertEqual(ref, "main")
-        self.assertEqual(name, "repo")
-
-    def test_embedded_credentials_without_ref(self) -> None:
-        repo, ref, _, name = _parse_skill_descriptor(
-            "https://x:tok@github.com/o/repo.git"
-        )
-        self.assertEqual(repo, "https://x:tok@github.com/o/repo.git")
-        self.assertEqual(ref, "")
-        self.assertEqual(name, "repo")
+    def test_credentials_in_an_https_source_are_refused_without_echoing_them(self) -> None:
+        # The descriptor is stored in the Agent and its cache manifest and echoed
+        # in clone errors; a private HTTPS source uses a Vault credential instead.
+        for descriptor in (
+            "https://x-access-token:TOK@github.com/o/repo@main",
+            "https://TOK@github.com/o/repo.git",
+        ):
+            with self.subTest(descriptor=descriptor):
+                with self.assertRaises(APIError) as caught:
+                    _parse_skill_descriptor(descriptor)
+                self.assertNotIn("TOK", caught.exception.message)
+                self.assertIn("github.com", caught.exception.message)
 
     def test_scp_ssh_without_ref(self) -> None:
         # git@host:org/repo — the scp userinfo '@' must not be a ref delimiter

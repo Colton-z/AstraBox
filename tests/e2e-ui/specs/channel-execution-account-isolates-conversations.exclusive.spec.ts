@@ -63,6 +63,7 @@ test('changing a channel execution account isolates history and switching back r
     deploymentId = deployment.deployment_id;
     expect(deployment.secret).toBeTruthy();
     await page.goto(appPath(`/manage/deployments/${deploymentId}`));
+    await page.getByLabel('Run messages as').selectOption('account');
     const account = page.getByRole('textbox', { name: 'Execution account user ID', exact: true });
     await account.fill(executor.user_id);
     await page.getByRole('button', { name: 'Save', exact: true }).click();
@@ -72,7 +73,7 @@ test('changing a channel execution account isolates history and switching back r
     await expect(account).toHaveValue(executor.user_id);
 
     const deniedChange = await machine.put(apiPath(`/admin/agents/${agentId}/deployments/${deploymentId}`), {
-      data: { execution_user_id: '' },
+      data: { execution_mode: 'owner' },
     });
     expect(deniedChange.status()).toBe(403);
     expect((await deniedChange.json()).code).toBe('API_TOKEN_SCOPE_INSUFFICIENT');
@@ -104,7 +105,7 @@ test('changing a channel execution account isolates history and switching back r
     expect(documentsByField('sessions', '$.session_id', first.session_id)[0]?.user_id).toBe(executor.user_id);
     expect((await machine.get(apiPath(`/sessions/${first.session_id}`))).status()).toBe(200);
 
-    await platform.updateDeployment(agentId, deploymentId, { execution_user_id: '' });
+    await platform.updateDeployment(agentId, deploymentId, { execution_mode: 'owner' });
     const duplicate = await send(firstPrompt, firstId);
     expect(duplicate.status).toBe('duplicate');
     expect(duplicate.session_id).toBe(first.session_id);
@@ -118,7 +119,9 @@ test('changing a channel execution account isolates history and switching back r
     expect(documentsByField('sessions', '$.session_id', original.session_id)[0]?.user_id).toBe(admin.user_id);
     expect([403, 404]).toContain((await machine.get(apiPath(`/sessions/${original.session_id}`))).status());
 
-    await platform.updateDeployment(agentId, deploymentId, { execution_user_id: executor.user_id });
+    await platform.updateDeployment(agentId, deploymentId, {
+      execution_mode: 'account', execution_user_id: executor.user_id,
+    });
     const recallPrompt = 'Reply only with the token I asked you to remember earlier. Do not use tools.';
     const resumed = await send(recallPrompt, randomUUID());
     expect(resumed.status).toBe('accepted');

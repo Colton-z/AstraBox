@@ -33,6 +33,7 @@ from astrabox.core.service.connectors.presets import (
     ConnectorPreset,
     connector_preset,
 )
+from astrabox.deploy.public_path import public_path
 
 logger = get_logger(__name__)
 
@@ -176,7 +177,8 @@ class ConnectorService:
             "redirect_uri": callback,
             # Back to the person's connections once the vendor answers.
             "redirect_uri_after_oauth": (
-                f"{_origin(hub.config.public_url)}/connections?connected={preset.connector_id}"
+                f"{_origin(hub.config.public_url)}{public_path('/connections')}"
+                f"?connected={preset.connector_id}"
             ),
         }
         if preset.registration == "operator":

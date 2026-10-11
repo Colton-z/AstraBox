@@ -14,6 +14,7 @@ let issue: () => Promise<IssuedMcpClientToken> = async () => {
 };
 
 vi.mock('@/api', () => ({
+  MODULE_BASE: '',
   listMcpClientTokens: async () => listed,
   issueMcpClientToken: async () => issue(),
   revokeMcpClientToken: async () => undefined,

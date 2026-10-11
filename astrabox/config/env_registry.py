@@ -250,7 +250,133 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "ASTRABOX_SANDBOX_BACKEND",
         "public",
         "open_sandbox",
-        "Name of the registered sandbox backend. Startup rejects unknown names.",
+        "Name of the default sandbox backend: an Environment that names no "
+        "backend uses it, and the first Agent is seeded with it. Startup rejects "
+        "a name that is not installed or not enabled.",
+        "astrabox.config.settings",
+    ),
+    (
+        "ASTRABOX_SANDBOX_BACKENDS",
+        "public",
+        "derived",
+        "Comma-separated names of the sandbox backends this deployment enables. "
+        "Empty enables only ASTRABOX_SANDBOX_BACKEND. Installed backends outside "
+        "this list are not offered to Environments, are not swept by background "
+        "inventory or workspace-mount reconciliation, and records that name them "
+        "fail with SANDBOX_BACKEND_DISABLED. Startup rejects a name that is not "
+        "installed, a repeated name, and a list without ASTRABOX_SANDBOX_BACKEND.",
+        "astrabox.config.settings",
+    ),
+    (
+        "ASTRABOX_SANDBOX_CPU_LIMIT",
+        "public",
+        "1",
+        "CPU limit of a conversation's own box (Environment "
+        "sandbox_tenancy=conversation), as a Kubernetes quantity (2, 0.5, "
+        "500m), for every such box: created on demand, prepared in a pool, or "
+        "replacing a lost one. A backend that cannot honour it refuses the "
+        "create with SANDBOX_RESOURCES_UNSUPPORTED before anything is "
+        "allocated; the bundled OpenSandbox server on Docker lowers a CPU limit "
+        "above the host's CPU count to that count.",
+        "astrabox.config.settings",
+    ),
+    (
+        "ASTRABOX_SANDBOX_MEMORY_LIMIT",
+        "public",
+        "1Gi",
+        "Memory limit of a conversation's own box, as a Kubernetes quantity "
+        "(1Gi, 768Mi). Startup refuses a value that is not a quantity.",
+        "astrabox.config.settings",
+    ),
+    (
+        "ASTRABOX_SANDBOX_CPU_REQUEST",
+        "public",
+        "250m",
+        "CPU request of a conversation's own box: the Kubernetes scheduler's "
+        "reservation, not a ceiling. Startup refuses one above "
+        "ASTRABOX_SANDBOX_CPU_LIMIT.",
+        "astrabox.config.settings",
+    ),
+    (
+        "ASTRABOX_SANDBOX_MEMORY_REQUEST",
+        "public",
+        "1Gi",
+        "Memory request of a conversation's own box: the Kubernetes scheduler's "
+        "reservation, not a ceiling. Startup refuses one above "
+        "ASTRABOX_SANDBOX_MEMORY_LIMIT.",
+        "astrabox.config.settings",
+    ),
+    (
+        "ASTRABOX_SHARED_SANDBOX_CPU_LIMIT",
+        "public",
+        "4",
+        "CPU limit of an Agent's shared box (Environment "
+        "sandbox_tenancy=agent), as a Kubernetes quantity, for every such box. "
+        "A shared box admits another conversation while its free memory allows, "
+        "so its size decides how many it holds.",
+        "astrabox.config.settings",
+    ),
+    (
+        "ASTRABOX_SHARED_SANDBOX_MEMORY_LIMIT",
+        "public",
+        "4Gi",
+        "Memory limit of an Agent's shared box, as a Kubernetes quantity.",
+        "astrabox.config.settings",
+    ),
+    (
+        "ASTRABOX_SHARED_SANDBOX_CPU_REQUEST",
+        "public",
+        "1",
+        "CPU request of an Agent's shared box. Startup refuses one above "
+        "ASTRABOX_SHARED_SANDBOX_CPU_LIMIT.",
+        "astrabox.config.settings",
+    ),
+    (
+        "ASTRABOX_SHARED_SANDBOX_MEMORY_REQUEST",
+        "public",
+        "4Gi",
+        "Memory request of an Agent's shared box. Startup refuses one above "
+        "ASTRABOX_SHARED_SANDBOX_MEMORY_LIMIT.",
+        "astrabox.config.settings",
+    ),
+    (
+        "ASTRABOX_SANDBOX_QUOTA_BOXES",
+        "public",
+        "",
+        "Most sandboxes one sandbox backend runs for this deployment, counting "
+        "boxes being created, prepared in pools and awaiting confirmed "
+        "destruction. A create past it is refused with "
+        "SANDBOX_CAPACITY_EXHAUSTED. Empty or unlimited sets no ceiling. "
+        "Startup refuses a ceiling on a backend that cannot list its sandboxes.",
+        "astrabox.config.settings",
+    ),
+    (
+        "ASTRABOX_SANDBOX_QUOTA_MEMORY",
+        "public",
+        "",
+        "Most memory, summed over box limits and the egress sidecar each Docker "
+        "box runs beside it, that one backend's sandboxes may hold (a "
+        "Kubernetes quantity such as 12Gi). Empty: on the bundled Docker "
+        "server, the Docker host's memory less 4Gi; elsewhere no ceiling. "
+        "unlimited sets none. Startup logs the value in force and where it came "
+        "from.",
+        "astrabox.config.settings",
+    ),
+    (
+        "ASTRABOX_SANDBOX_QUOTA_CPU",
+        "public",
+        "",
+        "Most CPU, summed over box limits and their sidecars, that one "
+        "backend's sandboxes may hold (a Kubernetes quantity). Empty or "
+        "unlimited sets no ceiling.",
+        "astrabox.config.settings",
+    ),
+    (
+        "ASTRABOX_SANDBOX_QUOTA_CONCURRENT_CREATES",
+        "public",
+        "",
+        "Most sandboxes one backend creates at once. Empty or unlimited sets no "
+        "ceiling.",
         "astrabox.config.settings",
     ),
     (
@@ -261,8 +387,9 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "workspace arrived. Independent of ASTRABOX_SANDBOX_BACKEND — where a "
         "workspace lives is a durability decision, not a sandbox runtime one. "
         "Startup rejects unknown names. 'mounted_volume' supplies the deployment's "
-        "backing filesystem; the platform's common mergerfs router assigns "
-        "workspaces independently of the selected medium. 'aws_efs' verifies an "
+        "backing filesystem; each sandbox backend's workspace route brings it into "
+        "boxes (the OpenSandbox backend's through host mergerfs views), "
+        "independently of the selected medium. 'aws_efs' verifies an "
         "operator-owned EFS CSI-backed PVC on Kubernetes. Additional providers can "
         "be installed through the astrabox.providers.storage entry-point group.",
         "astrabox.config.settings",
@@ -294,6 +421,19 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "postgresql",
         "Persistence backend name. PostgreSQL is the deployment default; SQLite "
         "is included, and the [mongo] extra registers MongoDB.",
+        "astrabox.config.settings",
+    ),
+    (
+        "ASTRABOX_SCHEDULER_PROVIDER",
+        "public",
+        "dbos",
+        "Scheduler provider that runs scheduled Deployments (cron dispatch, Run "
+        "ledger, retries and recovery); 'none' disables scheduled Deployments, "
+        "and startup then refuses while an enabled one is stored. The built-in "
+        "'dbos' keeps its state in the repository's SQL database, so startup "
+        "refuses it with a repository backend that has none (MongoDB). Other "
+        "providers install through the astrabox.providers.scheduler entry-point "
+        "group.",
         "astrabox.config.settings",
     ),
     (
@@ -527,12 +667,13 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "ASTRABOX_AGENT_PREWARM_REDIS_URL",
         "internal",
         "",
-        "Redis URL passed to OpenSandbox's official client-side pool for "
-        "distributed idle-capacity coordination. Redis is not AstraBox's product "
-        "database and stores no workspace, credential, Agent, or Session data. "
-        "Required when an Agent has prepared capacity; bundled Compose sets it. "
-        "When set, a new Agent created without a prepared_capacity is stored "
-        "with 1; when unset, it is stored with 0.",
+        "The OpenSandbox backend's pool coordination store: the Redis URL its "
+        "official client-side pool keeps shared idle-capacity state in. Redis is "
+        "not AstraBox's product database and stores no workspace, credential, "
+        "Agent, or Session data. Without it the OpenSandbox client pool cannot "
+        "run, so an Agent on that backend is refused prepared capacity and one "
+        "created without choosing is stored with 0 (with it, 1); bundled Compose "
+        "sets it.",
         "astrabox.common.utils.settings",
     ),
     (
@@ -607,9 +748,15 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "ASTRABOX_EXTENSION_PROVIDER",
         "public",
         "",
-        "Selects the ExtensionProvider that supplies catalogs, runtime bindings, "
-        "and provider-owned MCP request authorization. Empty selects the provider "
-        "that declares itself as the deployment default.",
+        "Selects the ExtensionProvider whose MCP server and Skill catalog Agents "
+        "and Assistants select from, and which supplies runtime bindings and "
+        "provider-owned MCP request authorization. Empty selects the provider "
+        "that declares itself as the deployment default (litellm). 'none' runs no "
+        "catalog: Agents and Assistants use only the MCP servers, Skills and "
+        "packages written on them, and a record that still holds a catalog "
+        "selection is named at startup and fails new work with "
+        "EXTENSION_CATALOG_DISABLED until that selection is removed. Startup "
+        "refuses a name no installed provider registers.",
         "astrabox.common.utils.settings",
     ),
     (
@@ -736,8 +883,9 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "public",
         "derived",
         "Image built from containers/workspace-mounter/Dockerfile, used by the "
-        "platform workspace router whenever ASTRABOX_SANDBOX_WORKSPACE_VOLUME is "
-        "set; runs outside user sandboxes. Unset, it is the release image "
+        "OpenSandbox backend's workspace route whenever "
+        "ASTRABOX_SANDBOX_WORKSPACE_VOLUME is set; runs outside user sandboxes. "
+        "Unset, it is the release image "
         "<ASTRABOX_IMAGE_PREFIX>workspace-mounter:<ASTRABOX_IMAGE_TAG>, which is "
         "published for amd64 only.",
         "astrabox.common.utils.settings",
@@ -747,8 +895,9 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "public",
         "local",
         "Workspace storage topology: local for one sandbox host, shared for "
-        "a filesystem shared by all eligible sandbox hosts. The mergerfs "
-        "router rejects local storage on multi-node Kubernetes clusters.",
+        "a filesystem shared by all eligible sandbox hosts. The OpenSandbox "
+        "backend's mergerfs route rejects local storage on multi-node Kubernetes "
+        "clusters.",
         "astrabox.common.utils.settings",
     ),
     (
@@ -1364,6 +1513,16 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "astrabox.core.service.orchestrator.channel_spine_reconciler",
     ),
     (
+        "ASTRABOX_CHANNEL_ACCOUNT_RESOLVER",
+        "public",
+        "links",
+        "Which AstraBox account a messaging participant runs as when a trigger "
+        "runs as linked accounts. links reads the links administrators keep on "
+        "each trigger; an installed resolver can answer from a directory instead. "
+        "Unknown names fail during startup.",
+        "astrabox.seams.channel_accounts",
+    ),
+    (
         "ASTRABOX_TRANSCRIPT_CAPABILITY_REQUIRED",
         "public",
         "true",
@@ -1392,6 +1551,19 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "default list wholesale. Exposing the console behind a real hostname means "
         "adding it here (and putting real authentication in front).",
         "astrabox.web.trusted_host_middleware",
+    ),
+    (
+        "ASTRABOX_PUBLIC_PATH_PREFIX",
+        "public",
+        "",
+        "The path browsers and API clients reach AstraBox under, such as /astrabox, "
+        "when a gateway publishes it below a path of a shared host: a reverse proxy "
+        "that removes the path before forwarding, or an ASGI host that mounts the "
+        "application there. Every URL AstraBox gives a browser or client carries it, "
+        "including the console's page, sign-in callbacks, cookie paths and share links. "
+        "A leading slash and no trailing slash; empty publishes AstraBox at the root "
+        "of its host.",
+        "astrabox.deploy.public_path",
     ),
     (
         "ASTRABOX_DEFAULT_ORG",

@@ -53,6 +53,12 @@ class _Provider(SandboxProvider):
     async def kill(self, *args: Any, **kwargs: Any) -> Any:
         raise NotImplementedError
 
+    async def pause(self, sandbox_id: str) -> bool:
+        raise NotImplementedError
+
+    async def resume(self, sandbox_id: str) -> bool:
+        raise NotImplementedError
+
 
 @pytest.fixture(autouse=True)
 def _isolated_sandbox_registry(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -399,6 +399,30 @@ class AgentRepository:
 
         return await run_mongo_with_retry("agents.list_access_docs", _list)
 
+    async def list_catalog_selections(self) -> list[dict[str, Any]]:
+        """Every live Agent's id, name, enabled flag and extension-catalog selection.
+
+        For checking the whole collection's catalog selections against the
+        deployment's extension provider without reading whole Agents.
+        """
+        await self._ensure_indexes()
+        collection = await get_async_collection(self._collection_name)
+
+        async def _list() -> list[dict[str, Any]]:
+            cursor = collection.find(
+                {"deleted": {"$ne": True}},
+                projection={
+                    "agent_id": 1,
+                    "name": 1,
+                    "enabled": 1,
+                    "mcp_assignments": 1,
+                    "extension_catalog": 1,
+                },
+            )
+            return [doc async for doc in cursor]
+
+        return await run_mongo_with_retry("agents.list_catalog_selections", _list)
+
     async def list_agents_by_name_page(
         self, *, after: tuple[str, str] | None, limit: int
     ) -> list[dict[str, Any]]:

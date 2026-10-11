@@ -578,6 +578,10 @@ async def _publish_runtime(
 class DeepSeekHarnessEngineAdapter(EngineAdapter):
     """EngineAdapter for the DeepSeek Harness web profile's API."""
 
+    # The harness's own catalog and history are a child's durable record; the
+    # relay journals nothing for children (docs/maintainers/resident-relay.md).
+    child_record_lives_in_engine = True
+
     def supports_unowned_output_attach(self) -> bool:
         return True
 

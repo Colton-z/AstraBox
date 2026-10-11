@@ -14,7 +14,6 @@ from astrabox.api.routes.conversation_models import (
 )
 from astrabox.api.routes.response_envelope import ApiEnvelope
 from astrabox.common.utils.api_response import success_response
-from astrabox.common.utils.settings import load_astrabox_settings
 from astrabox.common.utils.user_context import get_current_user_context
 from astrabox.core.service.orchestrator.service_registry import (
     get_agent_service,
@@ -64,6 +63,13 @@ class AgentRecord(BaseModel):
     claude_options: dict[str, Any] | None = None
     skills: list[str] | None = None
     mcp_servers: dict[str, Any] | None = None
+    #: MCP servers selected from extension catalogs, as stored:
+    #: ``{provider, item_id}`` rows. Written only through ``/extensions``.
+    mcp_assignments: list[dict[str, Any]] | None = None
+    #: Skills selected from the extension catalog, as stored: ``skill_ids``
+    #: and the Git ``skills`` they compiled to. Written only through
+    #: ``/extensions``.
+    extension_catalog: dict[str, Any] | None = None
     artifacts_enabled: bool | None = None
     default_repo: dict[str, Any] | None = None
     packages: list[dict[str, Any]] | None = None
@@ -277,7 +283,7 @@ def register_agent_routes(app: Any) -> None:
     async def get_agent_configuration_schema(request: Request):
         """Agent form structure for any signed-in Agent author."""
         await _resolve_user(request)
-        return success_response(get_agent_schema(load_astrabox_settings()))
+        return success_response(get_agent_schema())
 
     @app.get(
         "/api/v1/agent-configuration/environments",

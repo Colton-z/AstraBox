@@ -60,14 +60,10 @@ export default defineConfig({
   testIgnore: [
     "**/layout*.spec.ts",
     // The API-shaped specs belong to playwright.api.config.ts, which names
-    // them in its testMatch. Two of them refuse to load without their live-MCP
-    // and JWT environment, so collecting them here makes a plain browser run
-    // fail before its first spec on variables only the API run needs.
+    // them in its testMatch and supplies the live-MCP environment they read.
     "**/agent-mcp.spec.ts",
     "**/mcp-registry.spec.ts",
     "**/mcp-runtime.spec.ts",
-    "**/extension-console.spec.ts",
-    "**/extension-console-local.spec.ts",
     // website.spec.ts likewise has its own config.
     "**/website.spec.ts",
   ],

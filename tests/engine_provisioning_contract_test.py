@@ -65,6 +65,9 @@ class _Backend:
     async def find_sandbox_by_assignment(self, _assignment_id: str) -> None:
         return None
 
+    def fit_resources(self, limits: Any, requests: Any) -> tuple[dict[str, str], dict[str, str]]:
+        return dict(limits), dict(requests)
+
     async def create_sandbox(self, spec: Any) -> Any:
         self.spec = spec
         return SimpleNamespace(sandbox_id="box-1", id="box-1")
@@ -316,11 +319,9 @@ class TestTheContractComposesWhatAdaptersUsedToForget:
         # another image exits 127 on. The contract has no default at all.
         assert backend.spec.entrypoint == ("/opt/gem/run.sh",)
         assert backend.spec.permission_level == "advanced"
-        assert backend.spec.resource_limits == sandbox_create_resources()[0]
-        assert backend.spec.resource_requests == {
-            "cpu": "200m",
-            "memory": "768Mi",
-        }
+        assert (backend.spec.resource_limits, backend.spec.resource_requests) == (
+            sandbox_create_resources(shared=False)
+        )
 
     @pytest.mark.asyncio
     async def test_reattach_reproves_the_running_box_permission_level(

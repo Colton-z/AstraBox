@@ -52,7 +52,7 @@ test('Satori acknowledges a cross-account reply refusal and keeps ordinary conte
     })).deployment_id;
     await source.waitConnected();
 
-    const alias = (messageId: string) => `e2e:${source!.botId}:message:${messageId}`;
+    const alias = (messageId: string) => `e2e:${source!.botId}:channel:${id}:message:${messageId}`;
     const inbound = (messageId: string) => documentsByField('channel_inbound', '$.deployment_id', deploymentId)
       .find((row) => row.dedup_key === alias(messageId));
     const sourceCursor = () => Number(documentsByField('deployments', '$.deployment_id', deploymentId)[0]?.source_cursor || 0);
@@ -81,7 +81,9 @@ test('Satori acknowledges a cross-account reply refusal and keeps ordinary conte
     await expect.poll(() => documentsByField('channel_aliases', '$.deployment_id', deploymentId)
       .find((row) => row.alias === alias('reply-1'))?.session_id).toBe(original);
 
-    await platform.updateDeployment(agentId, deploymentId, { execution_user_id: executor.user_id });
+    await platform.updateDeployment(agentId, deploymentId, {
+      execution_mode: 'account', execution_user_id: executor.user_id,
+    });
     const acceptedCursor = sourceCursor();
     expect(acceptedCursor).toBeGreaterThan(0);
     send('forbidden', `<quote id="reply-1">${firstMarker}</quote><at id="${source.botId}"/>${rejectedMarker}: continue that old reply.`);
@@ -92,13 +94,16 @@ test('Satori acknowledges a cross-account reply refusal and keeps ordinary conte
     });
     // Management responses omit the internal cursor; its durable advance owns ACK safety.
     await expect.poll(sourceCursor).toBeGreaterThan(acceptedCursor);
-    expect(source.deliveries).toHaveLength(1);
+    // The participant is told why, under the message that was refused.
+    await expect.poll(() => source!.deliveries.length).toBe(2);
+    expect(source.deliveries[1].content).toContain('<quote id="forbidden"');
+    expect(source.deliveries[1].content).toContain('cannot continue');
     expect(source.connectionCount).toBe(1);
 
     send('ordinary', contextMarker);
-    await expect.poll(() => inbound('ordinary')?.state).toBe('IGNORED');
+    await expect.poll(() => inbound('ordinary')?.state).toBe('OBSERVED');
     send('second', `<at id="${source.botId}"/>Reply only ${secondMarker}. Do not use tools.`);
-    const delegated = await settled('second', 2, secondMarker);
+    const delegated = await settled('second', 3, secondMarker);
     expect(delegated).not.toBe(original);
     expect(documentsByField('sessions', '$.session_id', delegated)[0]?.user_id).toBe(executor.user_id);
     const frozen = inbound('second')!.frozen_input as { content: string; context: Array<{ message_id: string }> };
@@ -111,13 +116,13 @@ test('Satori acknowledges a cross-account reply refusal and keeps ordinary conte
     expect(JSON.stringify(ownMessages.payload)).not.toContain(firstMarker);
     expect(JSON.stringify(ownMessages.payload)).not.toContain(rejectedMarker);
 
-    await platform.updateDeployment(agentId, deploymentId, { execution_user_id: '' });
+    await platform.updateDeployment(agentId, deploymentId, { execution_mode: 'owner' });
     send('same-owner', `<quote id="reply-1"/><at id="${source.botId}"/>Reply only with the token I asked you to remember earlier. Do not use tools.`);
-    expect(await settled('same-owner', 3, firstMarker)).toBe(original);
+    expect(await settled('same-owner', 4, firstMarker)).toBe(original);
     expect(source.connectionCount).toBe(1);
     expect(inbound('forbidden')?.state).toBe('IGNORED');
     expect(inbound('forbidden')?.context_submitted).not.toBe(true);
-    expect(source.deliveries).toHaveLength(3);
+    expect(source.deliveries).toHaveLength(4);
   } finally {
     await source?.close();
     await machine.dispose();

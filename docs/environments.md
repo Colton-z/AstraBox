@@ -33,11 +33,11 @@ The console presents the following settings.
 | Description | No | What the Environment is intended for. |
 | Agent program | Yes | The installed program that powers Agents in this Environment. |
 | Enabled | No | Whether the Environment can be selected for an Agent. |
-| Sandbox service | No | The service that creates and manages sandboxes. AstraBox includes OpenSandbox support. |
+| Sandbox service | No | The service that creates and manages sandboxes. AstraBox includes OpenSandbox support. An Environment is refused on a service that cannot create sandboxes under its network access rules. |
 | Sandbox image or template | No | The prebuilt sandbox image. When omitted, the selected Agent program uses its deployment default. |
 | Network access | No | `Limited` allows required platform connections plus selected destinations; `Unrestricted` allows all outbound destinations. |
 | Idle sandbox behavior | No | Terminates an idle sandbox or, when the sandbox service supports snapshots, pauses it for later recovery. |
-| Sandbox sharing | No | Gives each conversation its own sandbox or shares one sandbox across the same Agent's conversations. |
+| Sandbox sharing | No | Gives each conversation its own sandbox or shares one sandbox across the same Agent's conversations. Sharing runs each conversation in an isolated session, and is refused on a sandbox service that cannot. |
 | Sandbox permissions | No | Grants the system permissions required by the selected Agent program and sandbox-sharing mode. |
 | Model connection | No | Selects the model gateway and its connection details for Agents in this Environment. |
 | Tracing | No | Sends supported OpenTelemetry data from the Agent program to your collector. |

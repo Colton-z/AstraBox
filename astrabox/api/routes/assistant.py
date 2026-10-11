@@ -57,8 +57,15 @@ class InheritedExtensions(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     instructions: bool
+    #: Skill sources the layers write themselves.
     skills: list[str]
+    #: Skill sources the layers select from the extension catalog. They reach
+    #: the Assistant only while the deployment runs one
+    #: (``/api/v1/extension-provider`` is not null).
+    catalog_skills: list[str]
     mcp_servers: list[str]
+    #: How many MCP servers the layers select from extension catalogs, which
+    #: likewise need the deployment to run one.
     catalog_mcp_servers: int
     packages: list[dict[str, Any]]
     credential_vaults: int
@@ -123,6 +130,13 @@ class Assistant(BaseModel):
     timezone: str | None = None
     model_config_override: dict[str, Any] | None = None
     mcp_servers: dict[str, Any] | None = None
+    #: MCP servers selected from extension catalogs, as stored:
+    #: ``{provider, item_id}`` rows. Written only through ``/extensions``.
+    mcp_assignments: list[dict[str, Any]] | None = None
+    #: Skills selected from the extension catalog, as stored: ``skill_ids``
+    #: and the Git ``skills`` they compiled to. Written only through
+    #: ``/extensions``.
+    extension_catalog: dict[str, Any] | None = None
     packages: list[dict[str, Any]] | None = None
     skills: list[str] | None = None
     #: The engine's native configuration documents (Hermes: ``config``, merged

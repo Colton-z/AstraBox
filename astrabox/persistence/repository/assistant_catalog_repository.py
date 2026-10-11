@@ -118,6 +118,28 @@ class AssistantCatalogRepository:
             return await _list()
         return await run_mongo_with_retry("assistant_catalog.list_by_environment", _list)
 
+    async def list_catalog_selections(self) -> list[dict[str, Any]]:
+        """Every live Assistant's id, name and extension-catalog selection.
+
+        For checking the whole collection's catalog selections against the
+        deployment's extension provider without reading whole Assistants.
+        """
+        collection = await get_async_collection(self._collection_name)
+
+        async def _list() -> list[dict[str, Any]]:
+            cursor = collection.find(
+                {"deleted": {"$ne": True}},
+                projection={
+                    "assistant_id": 1,
+                    "display_name": 1,
+                    "mcp_assignments": 1,
+                    "extension_catalog": 1,
+                },
+            )
+            return [doc async for doc in cursor]
+
+        return await run_mongo_with_retry("assistant_catalog.list_catalog_selections", _list)
+
     async def list_owner_assistants(self, owner_id: str) -> list[dict[str, Any]]:
         """Every live Assistant ``owner_id`` owns, the most recently edited first."""
 

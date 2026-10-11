@@ -1118,6 +1118,23 @@ class EngineAdapter(ABC):
         """
         raise NotImplementedError(f"{self.engine_kind} does not declare child-run activity")
 
+    #: Whether this engine's durable child record is reachable only through
+    #: the engine. A child-run read attaches the engine to refresh it only when
+    #: this is True; otherwise the read refreshes through a runtime the server
+    #: already holds and serves the journal as it is when there is none.
+    child_record_lives_in_engine: bool = False
+
+    def child_run_fact_reopens(self, data: dict[str, Any]) -> bool:
+        """Whether a lifecycle fact that does not close a child revives a closed one.
+
+        The child-run fold asks only when the child's latest applied fact
+        closed it, and skips a fact this answers False for: the engine reads
+        that fact as a report on the activation the close ended, journaled
+        after it. The default answers True, so an engine that says nothing
+        here has every such fact taken as the child living again.
+        """
+        return True
+
     #: Whether this adapter's ``prepare_runtime`` prepares a whole
     #: per-conversation box with NO in-box runner (``runner_uri=None``):
     #: preparation provisions the box and proves it can hold a conversation,

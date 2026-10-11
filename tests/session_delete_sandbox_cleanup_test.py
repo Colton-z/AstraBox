@@ -162,7 +162,7 @@ async def test_cleanup_state_read_failure_names_the_record_store_and_stops() -> 
         status_code=503,
         category="persistence",
         retryable=True,
-        owner="mongo",
+        owner="store",
         user_message=(
             "Session cleanup state is temporarily unavailable; retry the operation."
         ),

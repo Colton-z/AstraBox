@@ -448,6 +448,12 @@ function resolve(pathname: string, query: URLSearchParams): unknown {
   // from `admin/*`, which is the Environment form's. `listAgentEnvironments`
   // rejects a non-array (`expectList`), so an unmapped path here is not a page
   // with an empty picker: it is the create page's whole load failing.
+  // The record pages read the deployment's extension provider before laying
+  // out their MCP and Skills fields, and refuse an answer without `provider`.
+  // The walk measures the catalog form, so the stub declares a catalog.
+  if (at("extension-provider")) {
+    return { provider: { name: "litellm", display_name: "LiteLLM", management_console: true } };
+  }
   if (at("agent-configuration", "schema")) return AGENT_FORM_SCHEMA;
   if (at("agent-configuration", "environments")) return environments;
   if (at("agent-configuration", "environments", "*", "models")) return { models: MODELS };

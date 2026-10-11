@@ -81,7 +81,7 @@ async def main():
     orphan = given['orphan']
     assert await session_repo.find_session_by_sandbox_id(orphan) is None, 'orphan still has a Session owner'
     assert not await agent_repo.list_agents_by_sandbox_id(orphan), 'orphan still has an Agent owner'
-    assert await provider.count_live_isolated_sessions(orphan) == 0, 'orphan is not empty in execd'
+    assert await provider.count_active_isolated_sessions(orphan) == 0, 'orphan is not empty in execd'
     inventory = await provider.list_sandboxes(page=1, page_size=100)
     assert not inventory.has_next_page, 'test inventory exceeds the reaper page'
     ids = {item.sandbox_id for item in inventory.items}
@@ -171,7 +171,7 @@ async def main():
         assert agent is not None, 'adopting Agent disappeared'
         assert all(seat.get('sandbox_id') != sandbox_id for seat in agent.get('_prepared_slots') or []), 'the seats were recorded before the handoff window'
         assert not await agent_repo.list_agents_by_sandbox_id(sandbox_id), 'the box is already an Agent resident box'
-        live = await adapter.count_live_isolated_sessions(sandbox_id)
+        live = await adapter.count_active_isolated_sessions(sandbox_id)
         assert live > 0, 'a pool box must arrive carrying its seats'
         inventory = await adapter.list_sandboxes(page=1, page_size=100)
         assert not inventory.has_next_page, 'test inventory exceeds the reaper page'

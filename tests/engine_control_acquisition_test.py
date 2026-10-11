@@ -295,3 +295,79 @@ async def test_child_reconcile_does_not_attach_an_engine_without_the_protocol(
 
     assert reconciled is False
     service._runtime_ensure.acquire_engine_control_runtime.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_child_run_reads_refresh_only_through_a_runtime_the_server_holds() -> None:
+    """Reading a Claude child run never attaches the engine.
+
+    Claude's child record is the platform's own transcript mirror, so a read
+    has no need of the engine. An attach binds the server to the engine's
+    live output: after a restart, a read that attached took over the runner's
+    link and published a held native continuation as an engine-owned
+    response. Claude declares a child-resource refresh, so its reads reach the
+    refresh path: with no runtime held they serve the journal as it is, and
+    with one held they refresh through it.
+    """
+    import astrabox.core.service.orchestrator.engine.claude_code  # noqa: F401
+    from astrabox.common.utils.user_context import UserContext
+    from astrabox.core.service.orchestrator.session_kernel.service_mixins.child_runs import (
+        ChildRunProjectionMixin,
+    )
+
+    held: dict[str, object] = {}
+    service = TurnService.__new__(TurnService)
+    service._runtime_manager = SimpleNamespace(
+        get_runtime=lambda session_id, sandbox_id=None: held.get(session_id),
+    )
+    service.acquire_engine_control_runtime = AsyncMock(
+        side_effect=AssertionError("a child-run read attached an engine runtime")
+    )
+    service._session_events_repo = SimpleNamespace(
+        allocate_session_frame_seq=AsyncMock(return_value=7),
+        append_frames=AsyncMock(),
+        append_event=AsyncMock(),
+    )
+
+    class _Reads(ChildRunProjectionMixin):
+        pass
+
+    reads = _Reads()
+    reads._turn_service = service
+    reads._child_run_view = SimpleNamespace(
+        list_child_runs=AsyncMock(return_value=[]),
+        get_child_run_messages=AsyncMock(return_value=[]),
+    )
+    session = {
+        "session_id": "session-1",
+        "session_kind": "agent_chat",
+        "engine_kind": "claude_code",
+        "sandbox_id": "sandbox-1",
+        "state": "READY",
+    }
+    user = UserContext("user-1")
+
+    await reads.list_child_runs(user, "session-1", session=session)
+    await reads.get_child_run_messages(user, "session-1", "child-1", session=session)
+
+    service.acquire_engine_control_runtime.assert_not_awaited()
+    service._session_events_repo.append_frames.assert_not_awaited()
+
+    class _HeldClient:
+        def __init__(self) -> None:
+            self.refreshes = 0
+
+        async def reconcile_child_resources(
+            self,
+        ) -> list[ChildResourceFact | PrivateDiagnostic]:
+            self.refreshes += 1
+            return []
+
+    client = _HeldClient()
+    held["session-1"] = SimpleNamespace(engine_client=client)
+
+    await reads.list_child_runs(user, "session-1", session=session)
+    await reads.get_child_run_messages(user, "session-1", "child-1", session=session)
+
+    assert client.refreshes == 2
+    service.acquire_engine_control_runtime.assert_not_awaited()

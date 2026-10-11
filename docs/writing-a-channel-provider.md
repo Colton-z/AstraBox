@@ -67,15 +67,96 @@ Return a `ChannelInbound` with stable values from the messaging product:
 | `reply_context` | Non-secret routing values for delivering the reply |
 | `attention` | Direct-message, mention, and reply signals |
 | `participant` | External sender identity recorded with the message and matched against the trigger's Allowed senders; a trigger with that list refuses a message without it |
+| `signal` | What this inbound says about its message: `message`, `observation`, or `authorization` (see below) |
 
-`reference` links an inbound reply to an earlier platform message.
+`reference` links an inbound reply to an earlier platform message, in the
+same form as `dedup_key` and delivery receipt IDs. `dedup_key`, `reference`,
+and receipt IDs must be unique within the Deployment: qualify a message
+number that the platform repeats across chats with the chat.
 `ack_extra` adds product-required fields to the callback response.
 `alias_link` records a platform message ID that becomes known after delivery.
 `ignore_reason` classifies an authenticated event that must not start a turn.
 
 The Deployment's `attention_policy` decides whether an authenticated message
 needs a direct-message, mention, or reply signal. The adapter reports those
-facts; it does not decide the policy.
+facts; it does not decide the policy. A message the policy does not address
+is kept as retained context, so a later signal that addresses the same
+`dedup_key` can still run it.
+
+### Separate context and trigger feeds
+
+Some messaging products deliver every group message on one feed but the
+permission to answer one — a bot callback for a mention — on another, in
+either order. Report both with `signal`, and give them the same `dedup_key`:
+
+| `signal` | Use it for | Requirements |
+| --- | --- | --- |
+| `message` (default) | A complete message that may run under the Deployment's rules | — |
+| `observation` | A message delivered for context only | `dedup_key`, `participant`, `conversation_key`, `message_timestamp`, `retain_context=True`; no `reply_context` |
+| `authorization` | Permission to run the observed message with the same `dedup_key` | `dedup_key`, `participant`, an `attention` signal; no `content`, `reference`, `message_timestamp`, or `retain_context` |
+
+AstraBox keeps one record per `dedup_key` and starts at most one turn for it.
+An observation never runs, whatever the `attention_policy`. An authorization
+runs the observed message's text with its own `reply_context`; when it
+arrives first, AstraBox waits for the observation for one day and then tells
+the participant the message was not answered. The first recorded content of
+a message is kept: a signal naming a different sender or conversation is
+refused, and a message recalled before its authorization never runs.
+
+### Group messages into conversations
+
+`conversation_key` decides which conversation, and so which Session, a
+message continues. Return the same key for every message of one
+conversation: a direct chat, a room, a ticket, or a thread the platform
+names.
+
+To group a room's messages by reply chain instead, let AstraBox follow the
+chain. Give a message that replies to nothing its own conversation key. On a
+reply, set `reference` to the message it replies to and
+`conversation_from_reference=True`. The reply then continues the
+conversation of that message when AstraBox recorded it, as a message of this
+Deployment or as a reply it delivered. Otherwise the reply's own
+`conversation_key` applies, so derive it from the message it replies to:
+
+```python
+root = quoted_id or message_id
+return ChannelInbound(
+    content=text,
+    dedup_key=f"{room}:{message_id}",
+    conversation_key=f"{room}/chain/{root}",
+    reference=f"{room}:{quoted_id}" if quoted_id else None,
+    conversation_from_reference=quoted_id is not None,
+    participant=sender,
+    message_timestamp=sent_at,
+    retain_context=True,
+)
+```
+
+AstraBox keeps which conversation every message belongs to. A reply to a
+reply, or to the Agent's answer, joins the conversation where its chain
+started, although the adapter named only the message it quoted. Retained
+context follows the same conversations, so each chain reads its own
+unaddressed replies. If a Deployment should choose between grouping by room
+and by reply chain, offer that choice as one of the adapter's configuration
+fields.
+
+### Execution identity
+
+Report as `participant` only an identity the adapter verified, never one the
+request merely claims: a trigger may run each message as the AstraBox account
+linked to its participant. Leave it unset when the platform does not say who
+sent a message; a trigger that runs as linked accounts refuses such a
+message.
+
+`ChannelDescriptor.execution_modes` lists the modes a trigger of the adapter
+may run in, `("owner", "account", "linked")` by default. An adapter whose
+work belongs to a person, such as a ticket assigned to its processor,
+declares `("linked",)`, so no trigger of it can run as the Agent's creator or
+one fixed account. The adapter does not decide which account a participant
+runs as: the deployment's account resolver does. The built-in `links`
+resolver reads the links administrators keep on each trigger. A resolver
+backed by a directory registers at the `astrabox.providers.channel_accounts`
+entry-point group and is selected with `ASTRABOX_CHANNEL_ACCOUNT_RESOLVER`.
 
 ## Source connection mode
 
@@ -263,8 +344,9 @@ For products that update a message while the Agent works, set
 attempt; update those messages instead of creating replacements.
 
 Use `ChannelEvent.response_id` to identify the main-Agent reply independently
-of what triggered it. `command_id` and `turn_id` can be empty for native
-Session output; do not require an inbound command to deliver it. `progress`
+of what triggered it. `turn_id` names the Session turn that produced the reply
+and can be empty for native Session output; do not require an inbound message
+to deliver a reply. `progress`
 contains the reply's accumulated text, including its earlier text blocks.
 Treat it as replacement content when updating a message. Text-only delivery
 omits replies with no text; native tool cards remain available in Web.

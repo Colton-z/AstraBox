@@ -67,6 +67,7 @@ from astrabox.core.service.artifacts.service import ArtifactService
 from astrabox.core.service.artifacts.origin import OriginAccess
 from astrabox.core.service.artifacts.sample import ArtifactSampleService
 from astrabox.core.service.artifacts.agent_runs import ArtifactAgentRuns
+from astrabox.deploy.public_path import public_path_prefix
 from astrabox.core.service.orchestrator.runtime_manager import RemoteAgentRuntimeManager
 from astrabox.core.service.orchestrator.runtime_subject import (
     RuntimeSubjectCoordinator,
@@ -93,6 +94,9 @@ from astrabox.core.service.orchestrator.admin_service import AdminService
 from astrabox.core.service.orchestrator.channel_ingress_service import (
     ChannelIngressService,
 )
+from astrabox.core.service.orchestrator.channel_account_links import (
+    ChannelAccountLinkService,
+)
 from astrabox.core.service.orchestrator.channel_credentials import (
     ChannelCredentialService,
 )
@@ -106,6 +110,9 @@ from astrabox.core.service.orchestrator.session_file_service import SessionFileS
 from astrabox.core.service.orchestrator.deployment_service import DeploymentService
 
 logger = get_logger(__name__)
+
+#: Deployment fields that change whom a channel's messages run as.
+_CHANGES_EXECUTION = frozenset({"execution_mode", "execution_user_id"})
 
 
 class AgentPlatformService:
@@ -266,6 +273,7 @@ class AgentPlatformService:
                 sessions_repo=self._sessions_repo,
                 binding_repo=self._platform_mcp_binding_repo,
                 runtime_manager=self._runtime_manager,
+                public_base_url=public_path_prefix(),
             ),
         )
         origin_access = OriginAccess(agent_config=self._agent_config, agent_repo=self._agent_repo)
@@ -358,6 +366,7 @@ class AgentPlatformService:
 
         self._agent_deployment_repo = DeploymentRepository()
         self._channel_credentials = ChannelCredentialService()
+        self._channel_account_links = ChannelAccountLinkService()
         self._channel_ingress_service = ChannelIngressService(
             deployment_repo=self._agent_deployment_repo,
             agent_repo=self._agent_repo,
@@ -1294,8 +1303,7 @@ class AgentPlatformService:
             callback_base_url=callback_base_url,
             schedule=payload.get("schedule"),
             allowed_participants=payload.get("allowed_participants"),
-            **({"execution_user_id": payload["execution_user_id"], "actor": user}
-               if "execution_user_id" in payload else {}),
+            **self._execution_identity(payload, user),
         )
         await self._channel_source_host.reconcile()
         return created
@@ -1398,16 +1406,59 @@ class AgentPlatformService:
             deployment_id,
             agent_id=agent_id,
             patch=patch,
-            **({"actor": user} if "execution_user_id" in patch else {}),
+            **({"actor": user} if _CHANGES_EXECUTION.intersection(patch) else {}),
         )
         await self._channel_source_host.reconcile()
         return updated
+
+    @staticmethod
+    def _execution_identity(payload: dict[str, Any], user: UserContext) -> dict[str, Any]:
+        """Execution keywords for a create, only when the request names any.
+
+        A request without them keeps the replacement contract's original
+        keyword shape.
+        """
+        named = {key: payload[key] for key in _CHANGES_EXECUTION if key in payload}
+        return {**named, "actor": user} if named else {}
+
+    async def _agent_channel_binding(
+        self, user: UserContext, agent_id: str, deployment_id: str
+    ) -> dict[str, Any]:
+        await self._deployment_service.assert_can_manage_agent(user, agent_id)
+        for binding in await self._deployment_service.list_for_agent(agent_id):
+            if str(binding.get("deployment_id") or "") == deployment_id:
+                return binding
+        raise APIError(code="NOT_FOUND", message="deployment not found", status_code=404)
+
+    async def list_agent_deployment_account_links(
+        self, user: UserContext, agent_id: str, deployment_id: str
+    ) -> list[dict[str, Any]]:
+        binding = await self._agent_channel_binding(user, agent_id, deployment_id)
+        return await self._channel_account_links.links(binding, actor=user)
+
+    async def put_agent_deployment_account_link(
+        self, user: UserContext, agent_id: str, deployment_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        binding = await self._agent_channel_binding(user, agent_id, deployment_id)
+        return await self._channel_account_links.link(
+            binding, participant=payload.get("participant"), user_id=payload.get("user_id"),
+            actor=user,
+        )
+
+    async def delete_agent_deployment_account_link(
+        self, user: UserContext, agent_id: str, deployment_id: str, participant: str
+    ) -> dict[str, Any]:
+        binding = await self._agent_channel_binding(user, agent_id, deployment_id)
+        return await self._channel_account_links.unlink(
+            binding, participant=participant, actor=user,
+        )
 
     async def delete_agent_deployment(
         self, user: UserContext, agent_id: str, deployment_id: str
     ) -> dict[str, Any]:
         await self._deployment_service.assert_can_manage_agent(user, agent_id)
         await self._deployment_service.delete(deployment_id, agent_id=agent_id)
+        await self._channel_account_links.purge(deployment_id)
         await self._channel_source_host.reconcile()
         return {"deployment_id": deployment_id, "deleted": True}
 

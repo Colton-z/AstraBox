@@ -22,8 +22,6 @@ export default defineConfig({
     "agent-mcp.spec.ts",
     "mcp-registry.spec.ts",
     "mcp-runtime.spec.ts",
-    "extension-console.spec.ts",
-    "extension-console-local.spec.ts",
   ],
   workers: 1,
   fullyParallel: false,

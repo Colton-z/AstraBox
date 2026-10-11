@@ -126,7 +126,6 @@ async def test_real_mongo_outbox_fenced_lease_and_atomic_attempts() -> None:
         deployment_id=_binding(),
         channel_name="recorder",
         session_id="s1",
-        command_id="cmd-1",
         turn_id="turn-1", response_id="turn-1", start_after_seq=0,
         response_seq=1,
         reply_context={"cb": "x"},

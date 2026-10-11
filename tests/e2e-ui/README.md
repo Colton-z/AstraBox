@@ -59,6 +59,49 @@ Calendar API 和 Drive API。每个应用各需一次管理员授权（hub 已�
 Assistant 新建的事件必须能被 hub 直接读到且开始时间正确。最后一条删除本轮的事件、
 把文件移入回收站并断开两个应用；中途失败时 Google 侧记录也会被删除，AstraBox 记录保留用于排查。
 
+`*.no-extension-catalog.spec.ts` 验收不启用扩展目录的部署：服务端设置
+`ASTRABOX_EXTENSION_PROVIDER=none`（Compose 安装写在 `containers/.env`）。这与 lane 所用部署
+（Agent 从网关目录中选择 MCP 服务和 Skill）是不同的部署形态，所以只有设置了
+`ASTRABOX_E2E_EXTENSION_PROVIDER=none` 时才会收集这类文件；用例开头还会读部署自己的
+`GET /api/v1/extension-provider`，部署仍启用目录时直接失败。除 lane 的常规 fixture 外，
+其中「保留旧目录选择」的用例通过数据库 oracle 写入 Agent 记录，非 Compose 部署需要
+`ASTRABOX_E2E_POSTGRES_CONTAINER`：
+
+```bash
+cd tests/e2e-ui
+ASTRABOX_E2E_EXTENSION_PROVIDER=none \
+ASTRABOX_E2E_BASE_URL=http://<host>:<server-port> \
+npx playwright test specs/agents-and-assistants-work-without-an-extension-catalog.no-extension-catalog.spec.ts
+```
+
+`*.path-prefix.spec.ts` 验收发布在子路径下的部署：服务端设置 `ASTRABOX_PUBLIC_PATH_PREFIX`，
+前面是一个去掉该前缀、并对前缀之外的所有路径返回 404 的代理
+（`fixtures/path-prefix-proxy.Caddyfile`）。这样，任何从主机根路径拼出的地址都会失败，
+而不会碰巧打到根路径上的 AstraBox。只有设置了 `ASTRABOX_E2E_APP_PREFIX`（与
+`ASTRABOX_PUBLIC_PATH_PREFIX` 相同）时才会收集这类文件。`ASTRABOX_E2E_CONSOLE_URL` 和
+`ASTRABOX_E2E_BASE_URL` 都是代理的源地址（origin），不带路径；全局登录同样经过代理：
+
+```bash
+cd tests/e2e-ui
+ASTRABOX_E2E_APP_PREFIX=/astrabox \
+ASTRABOX_E2E_CONSOLE_URL=http://<代理地址> ASTRABOX_E2E_BASE_URL=http://<代理地址> \
+npx playwright test specs/the-console-works-below-a-gateway-path.path-prefix.spec.ts
+```
+
+`*.sandbox-envelope.spec.ts` 验收部署设置的沙箱资源规格：服务端用
+`ASTRABOX_SANDBOX_CPU_LIMIT`、`ASTRABOX_SANDBOX_MEMORY_LIMIT`、`ASTRABOX_SANDBOX_CPU_REQUEST`、
+`ASTRABOX_SANDBOX_MEMORY_REQUEST` 设一套非默认规格，运行时用 `ASTRABOX_E2E_SANDBOX_ENVELOPE`
+（JSON）写出同一套规格；不设置时不收集这类文件。用例在对话独占箱、Agent 共享箱和预热箱三处，
+分别读 Kubernetes 上 Pod 的 requests/limits 和箱内 cgroup v2 的 CPU、内存上限，所以要在能
+`kubectl` 到该集群的地方运行：
+
+```bash
+cd tests/e2e-ui
+ASTRABOX_E2E_SANDBOX_ENVELOPE='{"limits":{"cpu":"1","memory":"2Gi"},"requests":{"cpu":"1","memory":"2Gi"}}' \
+ASTRABOX_E2E_BASE_URL=http://<host>:<server-port> \
+npx playwright test specs/every-box-takes-the-deployments-resource-envelope.sandbox-envelope.spec.ts
+```
+
 ## 运行
 
 针对一个已经在运行的部署直接调用 Playwright，用完整文件路径和用例标题选例：

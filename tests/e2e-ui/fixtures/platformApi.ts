@@ -337,6 +337,18 @@ export class PlatformApi {
     );
   }
 
+  /** Administrator: run a participant's messages on a linked trigger as `userId`. */
+  linkAccount(
+    agentId: string,
+    deploymentId: string,
+    participant: string,
+    userId: string,
+  ): Promise<{ participant: string; user_id: string }> {
+    return this.data('PUT', `/admin/agents/${agentId}/deployments/${deploymentId}/account-links`, {
+      participant, user_id: userId,
+    });
+  }
+
   deleteDeployment(agentId: string, deploymentId: string): Promise<{ deleted?: boolean }> {
     return this.data<{ deleted?: boolean }>(
       'DELETE',

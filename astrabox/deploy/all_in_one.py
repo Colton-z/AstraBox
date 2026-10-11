@@ -153,6 +153,7 @@ REFUSED: tuple[tuple[str, tuple[str, ...], str, str], ...] = (
     ("ASTRABOX_STATE_DIR", ("/data",), "keys and data live in the /data volume, which is what a backup and an upgrade carry", COMPOSE_INSTEAD),
     ("ASTRABOX_AGENT_PREWARM_REDIS_URL", (), "the pool store is the embedded Valkey", COMPOSE_INSTEAD),
     ("ASTRABOX_SANDBOX_BACKEND", ("open_sandbox",), "sandboxes run on this Docker host through the bundled lifecycle server", "the server image with Docker Compose and the Kubernetes overlay"),
+    ("ASTRABOX_SANDBOX_BACKENDS", ("open_sandbox",), "sandboxes run on this Docker host through the bundled lifecycle server", "the server image with Docker Compose and the Kubernetes overlay"),
     ("ASTRABOX_SANDBOX_OPENAPI_BASE_URL", (), "sandboxes run on this Docker host through the bundled lifecycle server", "the server image with Docker Compose and the Kubernetes overlay"),
     ("ASTRABOX_SANDBOX_SERVER_RUNTIME", ("docker",), "sandboxes run on this Docker host through the bundled lifecycle server", "the server image with Docker Compose and the Kubernetes overlay"),
     ("ASTRABOX_LITELLM_BASE_URL", (), "external gateways are the team topology; this image runs the embedded model gateway", "the server image with Docker Compose and compose.team-gateway.yaml"),

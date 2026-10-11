@@ -23,10 +23,10 @@ function object(value: unknown): Record<string, unknown> {
 
 function inboundRows() { return documentsByField('channel_inbound', '$.deployment_id', deploymentId); }
 function messagesFor(messageId: string) {
-  return inboundRows().filter((row) => row.dedup_key === `e2e:${source!.botId}:message:${messageId}`);
+  return inboundRows().filter((row) => row.dedup_key === `e2e:${source!.botId}:channel:room:message:${messageId}`);
 }
 function expectOnlyUserMessages(messageIds: string[]) {
-  const prefix = `e2e:${source!.botId}:message:`;
+  const prefix = `e2e:${source!.botId}:channel:room:message:`;
   const rows = inboundRows();
   expect(rows.filter((row) => String(row.dedup_key).startsWith(prefix))
     .map((row) => row.dedup_key).sort()).toEqual(messageIds.map((id) => `${prefix}${id}`).sort());
@@ -99,11 +99,13 @@ async function waitSettled(command: Record<string, unknown>, expectedDeliveries:
   expect(receipts.every((row) => object(row.payload).input_id === inputId)).toBe(true);
   expect(object(receipts.find((row) => row.event_type === 'input.consumed')!.payload).content)
     .toBe(object(command.payload).content);
+  // A delivery row belongs to the response it reports: one per turn, whatever
+  // command or engine work produced it.
   const outbox = documentsByField('channel_outbox', '$.session_id', sessionId)
-    .filter((row) => row.command_id === commandId);
+    .filter((row) => row.turn_id === command.turn_id);
   expect(outbox).toHaveLength(1);
   await expect.poll(() => documentsByField('channel_outbox', '$.session_id', sessionId)
-    .find((row) => row.command_id === commandId)?.state).toBe('DELIVERED');
+    .find((row) => row.turn_id === command.turn_id)?.state).toBe('DELIVERED');
   evidence.receipts = receipts;
 }
 
@@ -149,7 +151,7 @@ test('channel recall before Agent submission replaces retained context with a ti
   const marker = `[该消息已于 ${recalledAt} 被撤回]`;
   const wakeText = `Conversation ${unique}. Explain what a notebook is in one short sentence. Do not use tools.`;
   sendMessage(contextId, secret, base);
-  await expect.poll(() => messagesFor(contextId)[0]?.state).toBe('IGNORED');
+  await expect.poll(() => messagesFor(contextId)[0]?.state).toBe('OBSERVED');
   expect(messagesFor(contextId)[0]?.session_id).toBeNull();
   recallMessage(contextId, base + 1000, 2);
   await expect.poll(() => object(messagesFor(contextId)[0]?.recall || {}).timestamp).toBe(recalledAt);

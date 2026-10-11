@@ -246,7 +246,7 @@ class TerminalWorker(KernelWorkerBase):
             if not started:
                 await _record_started()
 
-            if event_type in {"stdout", "stderr", "exit"} and await _sync_projected_interrupt():
+            if event_type in {"stdout", "stderr", "__cwd__", "exit"} and await _sync_projected_interrupt():
                 return
 
             if event_type == "stdout":
@@ -408,6 +408,11 @@ class TerminalWorker(KernelWorkerBase):
                     continue
                 if item is sentinel:
                     break
+                # Taking over the shell to signal it also ends this command's
+                # stream, and the interrupt records the command's end itself.
+                # An interrupt accepted before this event is settled first, so
+                # nothing the ended stream still delivers is recorded over it.
+                await _maybe_dispatch_interrupt()
                 await _record_stream_event(item)
 
             try:

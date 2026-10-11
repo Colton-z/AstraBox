@@ -211,6 +211,18 @@ def _apply_parent(entry: dict[str, Any], parent_child_run_id: str) -> None:
 
 
 def _apply_lifecycle(entry: dict[str, Any], data: dict[str, Any]) -> None:
+    event = str(data["event"])
+    if (
+        entry.get("closed")
+        and event != "closed"
+        and not get_engine_adapter(str(entry["engine_kind"])).child_run_fact_reopens(data)
+    ):
+        # The engine reads this fact as a report on the activation the close
+        # ended. A reattach journals what the runner retained, so such a fact
+        # can follow a close that recovery took from the transcript mirror;
+        # applying it would reopen the child and replace its terminal status,
+        # operations and usage.
+        return
     _apply_parent(entry, str(data.get("parentChildRunId") or "").strip())
     tool_call_id = data.get("toolCallId")
     if isinstance(tool_call_id, str) and tool_call_id and tool_call_id not in entry["tool_call_ids"]:
@@ -239,7 +251,6 @@ def _apply_lifecycle(entry: dict[str, Any], data: dict[str, Any]) -> None:
     if isinstance(usage, dict):
         entry["usage"] = {**dict(entry.get("usage") or {}), **dict(usage)}
 
-    event = str(data["event"])
     if event == "opened":
         # A new activation has no terminal status until the engine supplies one.
         entry.pop("engine_status", None)

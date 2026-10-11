@@ -3,6 +3,9 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- The path the deployment publishes the console under; the AstraBox server
+         fills it in on every request (see frontend/vite.config.ts). -->
+    <meta name="astrabox-base-path" content="__ASTRABOX_BASE_PATH__" />
     <title>AstraBox</title>
     <script>
       // The application cannot report a failure to download its own entry.

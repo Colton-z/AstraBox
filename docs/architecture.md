@@ -59,6 +59,15 @@ protected-credential requests without exposing a provider SDK. A selected
 provider maps the capabilities it supports and refuses the rest before work
 starts.
 
+A deployment can install several sandbox providers and enables the ones it uses
+with `ASTRABOX_SANDBOX_BACKENDS`; `ASTRABOX_SANDBOX_BACKEND` is the default for
+an Environment that names none. An Environment can choose only an enabled
+backend. A record that still names an installed backend the deployment does not
+enable fails with `SANDBOX_BACKEND_DISABLED`; AstraBox does not hand it to
+another backend, and startup logs each enabled Environment that selects one. Background sandbox inventory sweeps and workspace-view
+reconciliation run for each enabled backend separately, so one unreachable
+control plane does not stop the others.
+
 The built-in `open_sandbox` plugin calls an OpenSandbox lifecycle service. The server
 image can run that service against a local Docker daemon or connect to a
 separately managed OpenSandbox deployment backed by Kubernetes.
@@ -126,6 +135,13 @@ PostgreSQL is the deployment default for AstraBox records. MongoDB is available
 through the `mongo` extra, and SQLite suits local development and tests. Team
 deployments use shared PostgreSQL or MongoDB. The bundled LiteLLM service uses
 a separate database and database role.
+
+Scheduled Deployments run through a scheduler provider. The built-in `dbos`
+provider embeds DBOS Transact in each server process and keeps its schedules
+and Run ledger in the same PostgreSQL database (its `dbos` schema) or SQLite
+file. It cannot run with MongoDB; such a deployment sets
+`ASTRABOX_SCHEDULER_PROVIDER=none` or installs a provider that supports its
+database.
 
 AstraBox Credential Vault records are organization-level resources. The `local`
 secret-store plugin encrypts values with AES-GCM; `aws_kms` uses AWS KMS envelope
@@ -276,13 +292,14 @@ workers.
 
 Installed provider packages can connect another Agent program, sandbox
 backend, model service, data store, Secret Store, identity provider, workspace
-store, extension source, or messaging platform without changing the Session
-API. AstraBox checks provider compatibility at startup and refuses an unknown
+store, extension source, scheduler, or messaging platform without changing the
+Session API. AstraBox checks provider compatibility at startup and refuses an unknown
 or incompatible configuration.
 
 For extension points, see [Embed AstraBox](embedding.md),
-[Add an Agent program](writing-an-engine-adapter.md), and
-[Add a messaging platform](writing-a-channel-provider.md).
+[Add an Agent program](writing-an-engine-adapter.md),
+[Add a messaging platform](writing-a-channel-provider.md), and
+[Add a scheduler](writing-a-scheduler-provider.md).
 
 ## Related documents
 

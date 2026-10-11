@@ -5,7 +5,7 @@ import {
   ARTIFACT_SANDBOX,
   buildArtifactDocument,
 } from './document';
-const settings = { origin: 'https://console.example', release: 'release-1' };
+const settings = { base: 'https://console.example', release: 'release-1' };
 describe('artifact document isolation', () => {
   it('installs the exact policy first, then the bridge, before author scripts', () => {
     const html = buildArtifactDocument({
@@ -16,7 +16,7 @@ describe('artifact document isolation', () => {
     });
     const doc = new DOMParser().parseFromString(html, 'text/html');
     expect(doc.head.firstElementChild?.getAttribute('content')).toBe(
-      artifactCSP(settings.origin),
+      artifactCSP(settings.base),
     );
     expect(doc.head.children[1].getAttribute('src')).toBe(
       'https://console.example/artifact-runtime/bridge.js?release=release-1',
@@ -38,7 +38,7 @@ describe('artifact document isolation', () => {
     ]);
     expect(ARTIFACT_SANDBOX).not.toContain('allow-same-origin');
     expect(ARTIFACT_SANDBOX).not.toContain('allow-downloads');
-    const csp = artifactCSP(settings.origin);
+    const csp = artifactCSP(settings.base);
     expect(
       csp
         .split(';')

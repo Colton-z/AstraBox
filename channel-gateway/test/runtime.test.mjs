@@ -62,6 +62,7 @@ test('adapter delivery errors cannot echo configured credentials', async () => {
   binding.ctx.bots.push({
     platform: 'test',
     selfId: 'bot-1',
+    session: (event) => ({ event }),
     createMessage: async () => {
       throw new Error('request failed with platform-token-value')
     },
@@ -76,6 +77,86 @@ test('adapter delivery errors cannot echo configured credentials', async () => {
     }),
     (error) => error.message === 'request failed with [redacted]',
   )
+})
+
+test('a reply is addressed with the session of the message it answers', async () => {
+  // A Telegram forum topic is a channel inside a chat, and the official
+  // encoder sends to the session's guild; a Zulip direct reply needs the
+  // session's channel type and user. The gateway must hand both encoders the
+  // answered message's addressing, not a bare channel id.
+  const binding = runtime()
+  const sends = []
+  binding.ctx.bots.push({
+    platform: 'telegram',
+    selfId: 'bot-1',
+    session: (event) => ({ event }),
+    createMessage: async (channelId, content, referrer, options) => {
+      sends.push({ channelId, referrer, event: options.session.event })
+      return [{ id: `reply-${sends.length}` }]
+    },
+  })
+
+  assert.deepEqual(await binding.deliver({
+    platform: 'telegram', self_id: 'bot-1', guild_id: '-100123', channel_id: '42',
+    direct: false, user_id: 'participant', message_id: '7', text: 'in the topic',
+  }), ['reply-1'])
+  assert.deepEqual(await binding.deliver({
+    platform: 'telegram', self_id: 'bot-1', channel_id: '555', direct: true,
+    user_id: '555', text: 'in the direct chat',
+  }), ['reply-2'])
+  assert.deepEqual(sends, [
+    {
+      channelId: '42',
+      referrer: undefined,
+      event: {
+        channel: { id: '42', type: Universal.Channel.Type.TEXT },
+        guild: { id: '-100123' },
+        user: { id: 'participant' },
+      },
+    },
+    {
+      channelId: '555',
+      referrer: undefined,
+      event: {
+        channel: { id: '555', type: Universal.Channel.Type.DIRECT },
+        user: { id: '555' },
+      },
+    },
+  ])
+})
+
+test('a WeChat Official Account reply is refused before the adapter can send it', async () => {
+  // The adapter reports neither a sent customer-service reply nor its API
+  // error, so a delivery it made would be retried as failed and sent again.
+  const binding = new BindingRuntime({
+    id: 'binding-1',
+    provider: { name: 'wechat-official' },
+    config: {},
+    credentials: {},
+    callbackBaseUrl: '',
+    cursor: 0,
+    onIdle: async () => {},
+  })
+  binding.ctx = { server: { port: 12345 }, bots: [] }
+  const sends = []
+  binding.ctx.bots.push({
+    platform: 'wechat-official',
+    selfId: 'gh_account',
+    session: (event) => ({ event }),
+    createMessage: async (...args) => {
+      sends.push(args)
+      return []
+    },
+  })
+
+  await assert.rejects(
+    binding.deliver({
+      platform: 'wechat-official', self_id: 'gh_account', channel_id: 'openid-1',
+      direct: true, user_id: 'openid-1', text: 'answer',
+    }),
+    /cannot confirm a reply/,
+  )
+  assert.deepEqual(sends, [])
 })
 
 test('a Matrix binding registers its application service and serves authenticated callbacks', async (t) => {
