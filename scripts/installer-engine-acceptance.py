@@ -212,7 +212,19 @@ def _owner(api: Api, engine: str, model: str, label: str) -> tuple[str, str]:
         agents = [a for a in api.call("GET", "/api/v1/agents") if a.get("name") == SEEDED_CLAUDE_CODE_AGENT]
         if len(agents) != 1:
             raise AcceptanceFailure(f"the seeded {SEEDED_CLAUDE_CODE_AGENT} Agent is not listed exactly once")
-        return "agent", str(agents[0]["agent_id"])
+        agent_id = str(agents[0]["agent_id"])
+        agent = api.call("GET", f"/api/v1/agents/{agent_id}")
+        # Seeded Agents keep their saved model when the installer changes the
+        # deployment default. Select this acceptance run's model as a user does.
+        selected = api.call("PUT", f"/api/v1/agents/{agent_id}", {
+            "name": agent["name"],
+            "environment_name": agent["environment_name"],
+            "model": model,
+            "version": agent["version"],
+        })
+        if selected["model"] != model:
+            raise AcceptanceFailure("the seeded Claude Code Agent did not save the selected model")
+        return "agent", agent_id
     environment = f"{label}-{engine.replace('_', '-')}"
     engine_kind = "assistant" if engine == "hermes" else engine
     api.call("PUT", f"/api/v1/admin/environments/{environment}", {"engine_kind": engine_kind, "enabled": True})
