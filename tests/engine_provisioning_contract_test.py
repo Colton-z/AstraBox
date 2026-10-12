@@ -544,3 +544,59 @@ class TestARejoinTheStoreCannotServe:
             workspace_plan=plan,
         )
         assert result.resume_session_key == plan.resume_engine_session_key
+
+
+class _UncorrelatedBackend(_Backend):
+    """A backend that cannot look a sandbox up by its create assignment."""
+
+    supports_correlated_create = False
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.creates = 0
+
+    async def find_sandbox_by_assignment(self, _assignment_id: str) -> None:
+        raise AssertionError("a backend without correlated create is never asked")
+
+    async def create_sandbox(self, spec: Any) -> Any:
+        self.creates += 1
+        return await super().create_sandbox(spec)
+
+
+@pytest.mark.asyncio
+async def test_a_backend_without_correlated_create_creates_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _UncorrelatedBackend()
+
+    await _provision(
+        monkeypatch,
+        EngineSandboxRequest(entrypoint=("/opt/gem/run.sh",), credential=_credential()),
+        backend=backend,
+    )
+
+    assert backend.creates == 1
+
+
+@pytest.mark.asyncio
+async def test_an_interrupted_start_is_refused_rather_than_creating_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from astrabox.core.service.orchestrator.engine import provisioning
+
+    earlier_execution = SimpleNamespace(
+        assignment_id="assignment-contract-1",
+        claim_first_provider_attempt=AsyncMock(return_value=False),
+    )
+    monkeypatch.setattr(provisioning, "current_recovery", lambda _session_id: earlier_execution)
+    backend = _UncorrelatedBackend()
+
+    with pytest.raises(APIError) as refused:
+        await _provision(
+            monkeypatch,
+            EngineSandboxRequest(entrypoint=("/opt/gem/run.sh",), credential=_credential()),
+            backend=backend,
+        )
+
+    assert refused.value.code == "SANDBOX_CREATE_INTERRUPTED"
+    assert backend.creates == 0

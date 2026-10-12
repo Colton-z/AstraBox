@@ -120,6 +120,7 @@ class CreateSessionIdempotencyTests(unittest.IsolatedAsyncioTestCase):
     ) -> tuple[SessionKernelService, _FakeLifecycleWorker, _AsyncSpawnRecorder]:
         service = _bare_service()
         service._session_service = SimpleNamespace(
+            record_user_profile=AsyncMock(),
             _agent_config=SimpleNamespace(
                 resolve_session_harness=AsyncMock(return_value=SimpleNamespace())
             )

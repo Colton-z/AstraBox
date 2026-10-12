@@ -21,8 +21,6 @@ class ParseSkillDescriptorTest(unittest.TestCase):
     def test_skill_git_origins_preserve_descriptor_authority(self) -> None:
         for descriptor, expected in (
             ("https://GitHub.com/o/repo@main#skills/foo", ["github.com"]),
-            ("git@GitHub.com:o/repo@v1.0", ["github.com"]),
-            ("ssh://git@GitHub.com/o/repo@v1.0", ["github.com"]),
             ("/opt/repos/skills#skills/foo", []),
             ("file:///opt/repos/skills#skills/foo", []),
             ("file://localhost/opt/repos/skills#skills/foo", []),

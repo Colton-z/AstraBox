@@ -75,7 +75,12 @@ class GenericJsonChannelProvider(ChannelProvider):
     supports_interaction_actions = True
 
     def describe(self) -> ChannelDescriptor:
-        return ChannelDescriptor(name=self.name, label="Generic JSON webhook")
+        return ChannelDescriptor(
+            name=self.name,
+            label="Generic JSON webhook",
+            participant_format="the request's sender value, exactly as sent",
+            participant_example="user123",
+        )
 
     def verify_and_resolve(
         self,

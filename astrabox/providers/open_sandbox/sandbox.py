@@ -2,8 +2,10 @@
 lifecycle API, the live-sandbox handle, and the in-box HTTP data plane.
 
 The runtime treats a "sandbox" as an opaque handle. For OpenSandbox that handle
-(:class:`OpenSandboxHandle`) wraps the SDK ``Sandbox`` object (identity +
-``commands``/``files`` capabilities + endpoint resolution). Lifecycle
+(:class:`OpenSandboxHandle`) wraps the SDK ``Sandbox`` object: its identity,
+endpoint resolution, and the box's ``files``, ``commands`` and ``processes``
+through the standard execd implementations (:mod:`astrabox.providers.execd`).
+Lifecycle
 (connect/kill/probe/renew/expiry/endpoint-by-id) lives on the provider, one SDK
 object per operation, closed in ``finally`` — no long-lived pool a caller must
 remember to release.
@@ -31,18 +33,17 @@ import shlex
 import threading
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
-from urllib.parse import urlsplit
 
 import httpx
 from opensandbox import Sandbox, SandboxManager
-from opensandbox.adapters.factory import AdapterFactory
 from opensandbox.exceptions import SandboxApiException
-from opensandbox.models.filesystem import SearchEntry
-from opensandbox.models.sandboxes import NetworkRule, SandboxEndpoint, SandboxFilter, SnapshotFilter
+from opensandbox.models.sandboxes import NetworkRule, SandboxFilter, SnapshotFilter
 
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.settings import load_astrabox_settings
+from astrabox.providers.execd import EXECD_PORT, ExecdCommands, ExecdFiles, ExecdProcesses
+from astrabox.providers.execd.commands import ReportedExitStatus, join_execd_lines
 from astrabox.providers.open_sandbox import _config
 from astrabox.providers.open_sandbox.aio_auth import AIO_HTTP_PORT
 from astrabox.providers.open_sandbox._metadata import (
@@ -95,13 +96,13 @@ from astrabox.seams.sandbox import (
     SandboxDataPlaneAssessment,
     SandboxDescriptor,
     SandboxDiagnostics,
+    SandboxEndpoint,
     SandboxHttpResponse,
     SandboxLifecycleProbeResult,
     SandboxNetworkPolicy,
     SandboxPage,
     SandboxIsolatedSession,
     SandboxIsolationCapability,
-    SandboxMemoryHeadroom,
     SandboxProbeFailed,
     SandboxSecurityPosture,
     SandboxUnreachable,
@@ -157,66 +158,6 @@ its own conditions say the transition is over and did not happen. Polling on
 past it spends the whole settle budget to return the same verdict, and a caller
 that is an HTTP request spends it in front of the user.
 """
-
-#: execd's stdout/stderr line-event model used by ``exec_collect``. Pinned execd
-#: v1.1.0 (:data:`EXECD_LINE_EVENT_MODEL_VERSION`) emits this shape, although
-#: execd publishes no normative contract for it:
-#:
-#: * one event carries one output LINE with its terminating newline removed;
-#: * an event whose text is EXACTLY ``"\n"`` carries an EMPTY line.
-#:
-#: Reassembly therefore normalizes the empty-line event to ``""`` and re-joins on
-#: ``"\n"``. Joining the raw texts (either with ``""`` or with ``"\n"``) is wrong:
-#: the first drops every line boundary, the second doubles the boundary around an
-#: empty line, which already arrives carrying its own ``"\n"``.
-EXECD_LINE_EVENT_MODEL_VERSION = "1.1.0"
-
-#: The measurement, in a shape a test can assert:
-#: ``(in-box command, execd events, bytes exec_collect reassembles)``.
-#: Deliberately a tripwire — if execd changes the semantics, the table test goes
-#: red instead of the file panel silently mis-splitting a body from the status
-#: code ``curl -w '\n%{http_code}'`` appends.
-EXECD_LINE_EVENT_MODEL: tuple[tuple[str, tuple[str, ...], bytes], ...] = (
-    # Faithful: interior line boundaries survive.
-    (r"printf 'hello\n200'", ("hello", "200"), b"hello\n200"),
-    # Faithful: an empty interior line arrives as the "\n" event.
-    (r"printf 'a\n\n404'", ("a", "\n", "404"), b"a\n\n404"),
-    # NOT faithful: execd emits no event for a TRAILING newline, so it cannot be
-    # recovered …
-    (r"printf 'only\n'", ("only",), b"only"),
-    # … which makes the newline-terminated output above indistinguishable from
-    # this one. Both reassemble identically; that ambiguity is inherent to a
-    # line-event stream, not something a smarter reader could resolve.
-    (r"printf 'no-newline'", ("no-newline",), b"no-newline"),
-    # NOT faithful: a CR is consumed with the LF that follows it, so CRLF
-    # output arrives as LF.
-    (r"printf 'a\r\nb\n200'", ("a", "b", "200"), b"a\nb\n200"),
-)
-
-#: The event text that stands for an empty line (see the model above).
-_EXECD_EMPTY_LINE_EVENT = "\n"
-
-
-def collect_execd_stream(messages: Any) -> bytes:
-    """Reassemble one execd output stream's line events into UTF-8 bytes.
-
-    Applies :data:`EXECD_LINE_EVENT_MODEL` exactly: each event is a line, an
-    event whose text is exactly ``"\\n"`` is an empty line, and the lines are
-    re-joined with ``"\\n"``. An empty event list reassembles to ``b""``.
-    """
-    lines = ["" if str(msg.text) == _EXECD_EMPTY_LINE_EVENT else str(msg.text) for msg in messages]
-    return "\n".join(lines).encode("utf-8")
-
-
-#: Host-side deadline for one execd command round trip. The SDK's execd SSE
-#: client deliberately disables its read timeout (a streaming face), so without
-#: this bound a command that never terminates — or a half-open host→box TCP
-#: connection — hangs the await forever. Every other in-box face is already
-#: deadline-bounded (the resident ws transport via bounded_sidecar_operation,
-#: the dataplane per request); this closes the execd face. Generous: every
-#: in-tree ``exec_collect`` consumer is a short probe/scan, and callers with a
-#: tighter budget pass their own.
-_EXECD_ROUNDTRIP_TIMEOUT_SECONDS = 60.0
 
 #: Ceiling on one diagnostic report's characters. A ``logs`` report is an
 #: unbounded container log; without a cap one operator page-load could pull a
@@ -396,6 +337,10 @@ _DEFAULT_LIST_PAGE_SIZE = 50
 #: up, and the gate's whole purpose is to absorb exactly that.
 _INBOX_SERVICE_READY_TIMEOUT_SECONDS = 90
 
+#: How much longer than its in-box loop the host waits for that readiness
+#: probe to report, so a slow but healthy poll is never cut off mid-probe.
+_INBOX_SERVICE_PROBE_MARGIN_SECONDS = 60.0
+
 
 async def _read_capped_report(
     response: httpx.Response, *, keep_tail: bool, limit: int
@@ -454,43 +399,23 @@ def _is_not_found(exc: SandboxApiException) -> bool:
     return exc.status_code == 404
 
 
-class ReportedExitStatus:
-    """The exit status execd named, kept out of the way of what followed it.
-
-    execd reports a process's own exit code as an error's value ("9" for
-    `exit 9`) and reports transport trouble the same way with a message. The
-    SDK's dispatcher assigns ``execution.error`` on every error event, so a
-    drain complaining about the pipe a finished shell closed replaces the exit
-    status and the run ends up with no code at all.
-
-    Every event still reaches ``on_error``. A process exits once, so the FIRST
-    numeric value is its outcome; anything after it describes the plumbing.
-    """
-
-    __slots__ = ("code",)
-
-    def __init__(self) -> None:
-        self.code: int | None = None
-
-    def record(self, error: Any) -> None:
-        if self.code is not None:
-            return
-        try:
-            self.code = int(str(getattr(error, "value", "")))
-        except (TypeError, ValueError):
-            return
+#: The shapes in which an OpenSandbox endpoint names its sandbox; see
+#: :meth:`OpenSandboxSandboxProvider.endpoint_names_sandbox`.
+_SANDBOX_ID_IN_ENDPOINT_RES = (
+    re.compile(r"(?:^|[.-])sandbox-([0-9a-f]{32})(?:[.-]|$)", re.IGNORECASE),
+    re.compile(r"(?:^|[.-])([0-9a-f]{32})-\d+(?:[.-]|$)", re.IGNORECASE),
+    re.compile(r"(?:^|/)sandboxes/([0-9a-f]{32})(?:/|$)", re.IGNORECASE),
+)
 
 
-class OpenSandboxEndpoint:
-    """``get_endpoint`` return shape: a full-URL endpoint plus the headers every
-    request targeting it must carry (empty for a direct-reach deployment).
-    Exposes ``.endpoint`` so it satisfies the seam's ``SandboxEndpointRef``."""
+def _endpoint_headers(raw: Any) -> dict[str, str]:
+    """The headers the SDK says a request to an endpoint carries, without empty entries."""
 
-    __slots__ = ("endpoint", "headers")
-
-    def __init__(self, endpoint: str, headers: dict[str, str] | None = None) -> None:
-        self.endpoint = str(endpoint)
-        self.headers = dict(headers or {})
+    return {
+        str(name): str(value)
+        for name, value in dict(raw or {}).items()
+        if str(name).strip() and value is not None
+    }
 
 
 def _snapshot_items(listing: object) -> list:
@@ -518,14 +443,17 @@ class OpenSandboxHandle:
     ``id`` so ``extract_sandbox_id`` resolves without re-guessing.
     """
 
-    __slots__ = ("_sdk", "_endpoints")
+    __slots__ = ("_sdk", "_endpoints", "_files", "_commands", "_processes")
 
     def __init__(self, sdk_sandbox: Sandbox) -> None:
         self._sdk = sdk_sandbox
         # get_endpoint memoization, keyed by in-box port: endpoint routing is
         # stable for a live sandbox, and the consumers (dataplane builds, panel
         # reads) re-resolve per call otherwise.
-        self._endpoints: dict[int, OpenSandboxEndpoint] = {}
+        self._endpoints: dict[int, SandboxEndpoint] = {}
+        self._files: ExecdFiles | None = None
+        self._commands: ExecdCommands | None = None
+        self._processes: ExecdProcesses | None = None
 
     @property
     def sidecar_faces(self) -> Sandbox:
@@ -552,50 +480,38 @@ class OpenSandboxHandle:
         return str(self._sdk.id)
 
     @property
-    def commands(self) -> Any:
-        """The SDK ``Commands`` capability, passed through untouched.
+    def commands(self) -> ExecdCommands:
+        """Commands in the box, through the execd client the SDK sandbox already holds.
 
-        Core command readers dispatch on the SDK's exact signature
-        (``run(command, *, opts=..., handlers=...)`` and
-        ``interrupt(execution_id)``), so the adapter is the seam.
+        It shares the sandbox's transport, so closing this handle closes it.
         """
-        return self._sdk.commands
+        if self._commands is None:
+            self._commands = ExecdCommands.over(self._sdk.commands, sandbox_id=self.sandbox_id)
+        return self._commands
 
     @property
-    def files(self) -> Any:
-        """The SDK ``Filesystem`` capability, passed through untouched."""
-        return self._sdk.files
+    def processes(self) -> ExecdProcesses:
+        """Long-lived processes in the box, through the box's execd at its endpoint.
 
-    async def get_filesystem(
-        self, port: int, *, headers: Mapping[str, str] | None = None
-    ) -> Any:
-        """Bind the SDK file capability to an already-running conversation service.
-
-        Reuse the sandbox's owned transport. Closing this handle closes that
-        transport; the consumer must not close a second copy of the SDK sandbox.
+        Unlike ``files`` and ``commands`` they do not share the SDK client: a
+        process attachment is a WebSocket of its own.
         """
-        endpoint = await self.get_endpoint(port)
-        address = urlsplit(endpoint.endpoint)
-        if address.scheme not in {"http", "https"} or not address.netloc:
-            raise ValueError("sandbox filesystem endpoint requires an HTTP(S) URL")
-        connection = self._sdk.connection_config.model_copy(
-            update={"protocol": address.scheme}
-        )
-        return AdapterFactory(connection).create_filesystem_service(
-            SandboxEndpoint(
-                endpoint=address.netloc + address.path.rstrip("/"),
-                headers={**endpoint.headers, **dict(headers or {})},
+        if self._processes is None:
+            self._processes = ExecdProcesses(
+                lambda: self.get_endpoint(EXECD_PORT), sandbox_id=self.sandbox_id
             )
-        )
+        return self._processes
 
-    async def search_file_paths(
-        self, path: str, pattern: str, *, port: int,
-        headers: Mapping[str, str] | None = None,
-    ) -> list[str]:
-        """Keep the SDK's search request and result types inside the provider."""
-        filesystem = await self.get_filesystem(port, headers=headers)
-        entries = await filesystem.search(SearchEntry(path=path, pattern=pattern))
-        return [entry.path for entry in entries]
+    @property
+    def files(self) -> ExecdFiles:
+        """The box's files, through the execd client the SDK sandbox already holds.
+
+        An upload uses a client of its own on the sandbox's transport (see
+        :meth:`ExecdFiles.of_sandbox`), so closing this handle closes both.
+        """
+        if self._files is None:
+            self._files = ExecdFiles.of_sandbox(self._sdk)
+        return self._files
 
     def _endpoint_error(
         self,
@@ -623,7 +539,7 @@ class OpenSandboxHandle:
             status_code=502,
         )
 
-    async def get_endpoint(self, port: int = IN_BOX_SIDECAR_PORT) -> OpenSandboxEndpoint:
+    async def get_endpoint(self, port: int = IN_BOX_SIDECAR_PORT) -> SandboxEndpoint:
         """Resolve the full-URL endpoint for an in-box port (memoized per port).
 
         The SDK returns a bare ``host:port``; the scheme comes from the
@@ -644,9 +560,9 @@ class OpenSandboxHandle:
                 port=key,
                 settings=settings,
             ) from None
-        resolved = OpenSandboxEndpoint(
-            endpoint=_config.endpoint_url(raw.endpoint, settings=settings),
-            headers=dict(raw.headers or {}),
+        resolved = SandboxEndpoint(
+            url=_config.endpoint_url(raw.endpoint, settings=settings),
+            headers=_endpoint_headers(raw.headers),
         )
         self._endpoints[key] = resolved
         return resolved
@@ -656,7 +572,7 @@ class OpenSandboxHandle:
         port: int,
         *,
         expires_at: datetime,
-    ) -> OpenSandboxEndpoint:
+    ) -> SandboxEndpoint:
         """Mint a fresh OSEP-0011 browser URL for one in-box port.
 
         Signed endpoints are deliberately not cached: their expiry is part of
@@ -677,85 +593,11 @@ class OpenSandboxHandle:
                 port=int(port),
                 settings=settings,
             ) from None
-        return OpenSandboxEndpoint(
-            endpoint=_config.endpoint_url(raw.endpoint, settings=settings),
-            headers=dict(raw.headers or {}),
+        return SandboxEndpoint(
+            url=_config.endpoint_url(raw.endpoint, settings=settings),
+            headers=_endpoint_headers(raw.headers),
+            expires_at=expires_at,
         )
-
-    async def exec_collect(
-        self,
-        cmd: list[str],
-        *,
-        max_output: int | None = None,
-        timeout: float | None = _EXECD_ROUNDTRIP_TIMEOUT_SECONDS,
-    ) -> tuple[int, bytes, bytes]:
-        """Run ``cmd`` in the box over execd; return ``(exit_code, stdout, stderr)``.
-
-        TEXT-SAFE ONLY, and specifically LINE-shaped. execd streams output as
-        decoded per-LINE text events (:data:`EXECD_LINE_EVENT_MODEL`), so what
-        the streams reassemble to is:
-
-        * FAITHFUL for interior line boundaries, empty lines included — the
-          reassembly rule is what makes ``curl -w '\\n%{http_code}'`` splittable
-          by its last newline;
-        * NOT faithful for a TRAILING newline (execd emits no event for it, so
-          ``foo\\n`` and ``foo`` reassemble identically) or for ``\\r`` before a
-          newline (CRLF arrives as LF);
-        * NOT faithful for raw binary — the bytes are a UTF-8 re-encoding of
-          decoded text.
-
-        Anything needing exact bytes uses the ``files`` API instead
-        (:meth:`put_bytes` to write, ``files.read_bytes`` to read), or stages
-        through a file and base64s it back over this face — the contract the
-        session file service already follows for uploads and downloads.
-
-        The argv is joined with ``shlex.join`` so the execd shell sees exactly
-        one command with exact quoting. A missing exit code is inferred from the
-        execd error payload (its ``value`` carries the numeric code for a plain
-        non-zero exit); an execd-level error with no numeric code maps to 1 with
-        the error text appended to stderr. ``max_output`` (when set) keeps only
-        each stream's trailing bytes so a runaway command cannot blow up host
-        memory.
-
-        ``timeout`` is a HOST-side wall-clock deadline on the whole round trip
-        (the SDK's execd streaming client has no read timeout of its own, so a
-        non-terminating in-box command or a dead host→box route would otherwise
-        hang forever); ``None`` opts out for a deliberately long-running call.
-        Expiry raises ``TimeoutError`` — loud, never a silent stall.
-        """
-        command = shlex.join(str(part) for part in cmd)
-        try:
-            async with asyncio.timeout(timeout):
-                execution = await self._sdk.commands.run(command)
-        except TimeoutError:
-            if timeout is None:
-                raise
-            raise TimeoutError(
-                f"open_sandbox execd command did not complete within "
-                f"{timeout:g}s: {command[:200]!r}"
-            ) from None
-        stdout = collect_execd_stream(execution.logs.stdout)
-        stderr = collect_execd_stream(execution.logs.stderr)
-        code = execution.exit_code
-        if code is None:
-            error = execution.error
-            if error is None:
-                code = 0
-            else:
-                match = _TRAILING_INT_RE.search(str(error.value or ""))
-                if match is not None:
-                    code = int(match.group(1))
-                else:
-                    code = 1
-                    stderr += f"{error.name}: {error.value}".encode("utf-8")
-        if max_output is not None:
-            stdout = stdout[-max_output:]
-            stderr = stderr[-max_output:]
-        return int(code), stdout, stderr
-
-    async def put_bytes(self, path: str, data: bytes) -> None:
-        """Write ``data`` verbatim to ``path`` inside the box (binary-safe)."""
-        await self._sdk.files.write_file(path, bytes(data))
 
     async def close(self) -> None:
         """Release the SDK's local HTTP resources (never the remote sandbox)."""
@@ -798,7 +640,7 @@ class OpenSandboxDataPlane(SandboxDataPlane):
         if self._base_url is None:
             assert self._handle is not None  # enforced by __init__
             endpoint = await self._handle.get_endpoint(self._port)
-            self._base_url = endpoint.endpoint.rstrip("/")
+            self._base_url = endpoint.url
             self._headers = dict(endpoint.headers)
         return self._base_url, dict(self._headers)
 
@@ -962,7 +804,6 @@ class OpenSandboxSandboxProvider(SandboxProvider):
     # deployments hand out bare host:port), so the endpoint string is never
     # authoritative over the persisted sandbox id.
     endpoint_is_authoritative = False
-    assistant_workspace_root_preprovisioned = False
     supports_correlated_create = True
     # The substitution runs in the egress sidecar — the only place that sees a
     # request after the box encrypted it — declared to it as
@@ -983,6 +824,9 @@ class OpenSandboxSandboxProvider(SandboxProvider):
     # The lifecycle API pages its sandbox list and describes one by id
     # (:meth:`list_sandboxes`, :meth:`describe_sandbox`).
     supports_inventory_listing = True
+    # Every box runs execd, which OpenSandbox starts on create; the handle's
+    # `processes` are its PTY sessions (astrabox.providers.execd.ExecdProcesses).
+    supports_process_sessions = True
     # Settings that configure only this backend's lifecycle client and client
     # pool; they do nothing in a deployment that does not enable it.
     owned_settings = (
@@ -1600,11 +1444,11 @@ class OpenSandboxSandboxProvider(SandboxProvider):
             "sys.exit(7)\n"
         )
         try:
-            exit_code, _stdout, stderr = await handle.exec_collect(
-                ["python3", "-c", probe],
+            result = await handle.commands.run(
+                shlex.join(["python3", "-c", probe]),
                 # The in-box loop owns the deadline; the host bound only has to
                 # outlast it so a healthy slow poll is never cut off mid-probe.
-                timeout=float(timeout_seconds) + _EXECD_ROUNDTRIP_TIMEOUT_SECONDS,
+                timeout=float(timeout_seconds) + _INBOX_SERVICE_PROBE_MARGIN_SECONDS,
             )
         except TimeoutError as exc:
             raise APIError(
@@ -1616,13 +1460,13 @@ class OpenSandboxSandboxProvider(SandboxProvider):
                 ),
                 status_code=502,
             ) from exc
-        if exit_code != 0:
+        if result.exit_code != 0:
             raise APIError(
                 code="AGENT_RUNTIME_ERROR",
                 message=(
                     f"open_sandbox in-box service on port {int(port)} was not "
                     f"listening within {int(timeout_seconds)}s "
-                    f"(probe exit={exit_code}, stderr={stderr[-200:]!r})"
+                    f"(probe exit={result.exit_code}, stderr={result.stderr[-200:]!r})"
                 ),
                 status_code=502,
             )
@@ -2234,7 +2078,22 @@ class OpenSandboxSandboxProvider(SandboxProvider):
                 ),
                 status_code=502,
             )
-        return endpoint.endpoint
+        return endpoint.url
+
+    def endpoint_names_sandbox(self, endpoint: str) -> str | None:
+        """The sandbox id an OpenSandbox endpoint carries, in any of its three shapes.
+
+        A routed endpoint names the box as a host label ``sandbox-<id>`` or
+        ``<id>-<port>``, and a server-proxied one as the path segment
+        ``sandboxes/<id>``, where ``<id>`` is 32 hexadecimal digits. Any other
+        address, such as a bare Docker-network IP, does not say.
+        """
+        value = str(endpoint or "").strip()
+        for pattern in _SANDBOX_ID_IN_ENDPOINT_RES:
+            match = pattern.search(value)
+            if match:
+                return match.group(1).lower()
+        return None
 
     async def resolve_browser_endpoint(
         self,
@@ -2291,7 +2150,7 @@ class OpenSandboxSandboxProvider(SandboxProvider):
         finally:
             await handle.close()
         return SandboxBrowserEndpoint(
-            endpoint=endpoint.endpoint,
+            endpoint=endpoint.url,
             headers=dict(endpoint.headers),
             expires_at=expires_at,
             signed=expires_at is not None,
@@ -2464,10 +2323,7 @@ class OpenSandboxSandboxProvider(SandboxProvider):
             resolved = await handle.get_endpoint()
         except Exception:
             return descriptor
-        endpoint = str(getattr(resolved, "endpoint", "") or "").strip()
-        return (
-            dataclasses.replace(descriptor, endpoint=endpoint or None) if endpoint else descriptor
-        )
+        return dataclasses.replace(descriptor, endpoint=resolved.url)
 
     async def read_security_posture(self, sandbox_id: str) -> SandboxSecurityPosture:
         """Ask the BOX what it is contained by — the sidecar's own policy and vault.
@@ -2679,97 +2535,6 @@ class OpenSandboxSandboxProvider(SandboxProvider):
                 ),
             ) from exc
 
-    async def _probe_output(
-        self, sandbox_id: str, *, probe: str, cmd: list[str]
-    ) -> tuple[int, str]:
-        """Run one read-only command in the box; return its exit code and stdout.
-
-        Through ``exec_collect``, whose result carries the output: the SDK's
-        ``commands.run`` returns an execution whose bytes sit behind
-        ``logs.stdout``, and reading ``result.stdout`` instead yields nothing on
-        every box.
-        """
-
-        handle = await self._connect_for_probe(sandbox_id)
-        try:
-            code, stdout, _stderr = await handle.exec_collect(cmd)
-        except Exception as exc:
-            detail = _config.scrub_secret(
-                str(exc), secret=_config.resolve_api_key(self._settings())
-            )
-            if box_is_unreachable(exc):
-                raise SandboxUnreachable(sandbox_id, detail) from exc
-            raise SandboxProbeFailed(sandbox_id, probe=probe, detail=detail) from exc
-        finally:
-            with contextlib.suppress(Exception):
-                await handle.close()
-        return code, stdout.decode("utf-8", "replace")
-
-    async def read_memory_headroom(self, sandbox_id: str) -> SandboxMemoryHeadroom | None:
-        """The box's memory limit and current use, read from its cgroup.
-
-        ``memory.max`` is the literal ``max`` when the template set no limit,
-        which is ``None``: a box with no limit cannot be reasoned about and is
-        not packed. Any other answer that is not two byte counts is
-        :class:`SandboxProbeFailed`, so a reading defect fails the placement
-        that relied on it instead of quietly turning packing off.
-        """
-
-        code, text = await self._probe_output(
-            sandbox_id,
-            probe="memory",
-            cmd=["cat", "/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory.current"],
-        )
-        lines = [line.strip() for line in text.splitlines() if line.strip()]
-        if code == 0 and len(lines) == 2 and lines[1].isdigit():
-            if lines[0] == "max":
-                return None
-            if lines[0].isdigit():
-                return SandboxMemoryHeadroom(
-                    limit_bytes=int(lines[0]), current_bytes=int(lines[1])
-                )
-        raise SandboxProbeFailed(
-            sandbox_id,
-            probe="memory",
-            detail=f"exit {code}, cgroup v2 memory.max and memory.current read as {text[:200]!r}",
-        )
-
-    async def read_listening_ports(self, sandbox_id: str) -> frozenset[int]:
-        """The TCP ports something in this box is already listening on.
-
-        Read from ``/proc/net/tcp`` rather than a tool (``ss``/``netstat`` are
-        not in every engine image), where state ``0A`` is LISTEN and the local
-        address is ``HEX_IP:HEX_PORT``. ``/proc/net/tcp6`` is absent on a box
-        without IPv6, which makes ``cat`` exit non-zero after printing the IPv4
-        table, so the table's own header, not the exit code, decides whether
-        the box answered.
-        """
-
-        _code, text = await self._probe_output(
-            sandbox_id,
-            probe="listening ports",
-            cmd=["cat", "/proc/net/tcp", "/proc/net/tcp6"],
-        )
-        if "local_address" not in text:
-            raise SandboxProbeFailed(
-                sandbox_id,
-                probe="listening ports",
-                detail=f"/proc/net/tcp read as {text[:200]!r}",
-            )
-        ports: set[int] = set()
-        for line in text.splitlines():
-            fields = line.split()
-            if len(fields) < 4 or fields[3] != "0A":
-                continue
-            local = fields[1].rsplit(":", 1)
-            if len(local) != 2:
-                continue
-            try:
-                ports.add(int(local[1], 16))
-            except ValueError:
-                continue
-        return frozenset(ports)
-
     async def count_active_isolated_sessions(self, sandbox_id: str) -> int:
         """How many isolated sessions execd itself holds active in this box.
 
@@ -2901,8 +2666,6 @@ class OpenSandboxSandboxProvider(SandboxProvider):
         one, and a vendor not-found on connect is already the definitive gone.
         Anything else proves nothing.
         """
-
-        from astrabox.providers.open_sandbox.executor import EXECD_PORT
 
         target = str(sandbox_id or "").strip()
         if not target:
@@ -3081,19 +2844,15 @@ class OpenSandboxSandboxProvider(SandboxProvider):
         owner = f"{int(uid)}:{int(gid)}"
         quoted = shlex.quote(path)
         handle = await self.connect(sandbox_id)
-        exit_code, _stdout, stderr = await handle.exec_collect(
-            [
-                "sh",
-                "-c",
-                f"mkdir -p {quoted} && chown -R {owner} {quoted} && chmod 0700 {quoted}",
-            ]
+        result = await handle.commands.run(
+            f"mkdir -p {quoted} && chown -R {owner} {quoted} && chmod 0700 {quoted}"
         )
-        if exit_code != 0:
+        if result.exit_code != 0:
             raise APIError(
                 code="AGENT_RUNTIME_ERROR",
                 message=(
                     f"could not prepare isolated workspace {path!r} for {owner} in "
-                    f"sandbox {sandbox_id!r}: {stderr.decode('utf-8', 'replace').strip()}"
+                    f"sandbox {sandbox_id!r}: {result.stderr.strip()}"
                 ),
                 status_code=502,
             )
@@ -3189,8 +2948,8 @@ class OpenSandboxSandboxProvider(SandboxProvider):
             raise TimeoutError(
                 f"open_sandbox isolated run did not complete within {timeout_s:g}s: {code[:200]!r}"
             ) from None
-        stdout = collect_execd_stream(execution.logs.stdout).decode("utf-8", "replace")
-        stderr = collect_execd_stream(execution.logs.stderr).decode("utf-8", "replace")
+        stdout = join_execd_lines(message.text for message in execution.logs.stdout)
+        stderr = join_execd_lines(message.text for message in execution.logs.stderr)
         exit_code = execution.exit_code
         if exit_code is None:
             error = execution.error
@@ -3500,11 +3259,7 @@ register_sandbox(OpenSandboxSandboxProvider())
 
 
 __all__ = [
-    "EXECD_LINE_EVENT_MODEL",
-    "EXECD_LINE_EVENT_MODEL_VERSION",
     "OpenSandboxDataPlane",
-    "OpenSandboxEndpoint",
     "OpenSandboxHandle",
     "OpenSandboxSandboxProvider",
-    "collect_execd_stream",
 ]

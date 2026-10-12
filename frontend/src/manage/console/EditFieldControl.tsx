@@ -6,8 +6,10 @@ import {
   ConsoleJsonField,
   ConsoleListField,
   ConsoleNumberField,
+  ConsoleSearchMultiSelect,
   ConsoleSearchSelect,
   ConsoleSelect,
+  ConsoleTagsField,
   ConsoleTextArea,
   ConsoleTextField,
   ConsoleToggle,
@@ -100,6 +102,7 @@ export function EditFieldControl({
           emptyLabel={field.emptyLabel}
           allowCustom={field.allowCustom}
           disabled={disabled}
+          invalid={invalid}
         />
       );
     case 'number':
@@ -126,6 +129,34 @@ export function EditFieldControl({
           mono={field.mono}
           disabled={disabled}
           invalid={invalid}
+        />
+      );
+    case 'multi_select':
+      return (
+        <ConsoleSearchMultiSelect
+          id={id}
+          value={(Array.isArray(raw) ? raw : []).map(String)}
+          onChange={(v) => set(v)}
+          options={field.options ?? []}
+          placeholder={field.placeholder}
+          searchPlaceholder={field.searchPlaceholder}
+          emptyLabel={field.emptyLabel}
+          unknownLabel={field.unknownOptionLabel}
+          disabled={disabled}
+        />
+      );
+    case 'tags':
+      return (
+        <ConsoleTagsField
+          id={id}
+          value={(Array.isArray(raw) ? raw : []).map(String)}
+          onChange={(v) => set(v)}
+          suggestions={field.suggestions}
+          normalize={field.normalizeItem}
+          max={field.maxItems}
+          maxLength={field.maxItemLength}
+          placeholder={field.placeholder}
+          disabled={disabled}
         />
       );
     case 'list':

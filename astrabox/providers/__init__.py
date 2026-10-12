@@ -38,6 +38,7 @@ CHANNEL_GROUP = "astrabox.providers.channel"
 CHANNEL_ACCOUNTS_GROUP = "astrabox.providers.channel_accounts"
 ADMISSION_GROUP = "astrabox.providers.admission"
 EXTENSIONS_GROUP = "astrabox.providers.extensions"
+SKILLS_GROUP = "astrabox.providers.skills"
 SCHEDULER_GROUP = "astrabox.providers.scheduler"
 
 # Groups whose members are eagerly loaded at bootstrap so their register_* side
@@ -55,6 +56,7 @@ _EAGER_GROUPS = (
     CHANNEL_ACCOUNTS_GROUP,
     ADMISSION_GROUP,
     EXTENSIONS_GROUP,
+    SKILLS_GROUP,
     SCHEDULER_GROUP,
 )
 
@@ -203,6 +205,7 @@ def register_builtin_providers() -> None:
     from astrabox.providers import channel_generic as _channel_generic  # noqa: F401
     from astrabox.providers import channel_satori as _channel_gateway  # noqa: F401
     from astrabox.providers import channel_account_links as _channel_account_links  # noqa: F401
+    from astrabox.providers import skill_git as _skill_git  # noqa: F401
     from astrabox.providers import builtin_extensions as _builtin_extensions  # noqa: F401
     from astrabox.providers import litellm_extensions as _extensions  # noqa: F401
     from astrabox.providers import scheduler_dbos as _dbos_scheduler  # noqa: F401
@@ -261,6 +264,9 @@ def load_entry_point_providers() -> None:
     from astrabox.seams.extensions import (
         register_extension_provider,
         registered_extension_provider_names,
+    )
+    from astrabox.seams.skills import (
+        register_skill_content_provider, registered_skill_content_provider_names,
     )
     from astrabox.seams.model import (
         register_model_endpoint,
@@ -349,6 +355,10 @@ def load_entry_point_providers() -> None:
                 provider_name not in registered_extension_provider_names()
             ):
                 register_extension_provider(target())
+            elif group == SKILLS_GROUP and (
+                provider_name not in registered_skill_content_provider_names()
+            ):
+                register_skill_content_provider(target())
             elif group == CHANNEL_ACCOUNTS_GROUP and (
                 provider_name not in registered_channel_account_resolver_names()
             ):
@@ -363,6 +373,7 @@ __all__ = [
     "SECRETS_GROUP",
     "CHANNEL_ACCOUNTS_GROUP",
     "EXTENSIONS_GROUP",
+    "SKILLS_GROUP",
     "SCHEDULER_GROUP",
     "OPEN_SANDBOX",
     "load_provider",

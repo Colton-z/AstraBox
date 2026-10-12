@@ -5,7 +5,9 @@ import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { ErrorNote } from '@/components/shell';
 import { linkDeploymentAccount, listDeploymentAccountLinks, unlinkDeploymentAccount } from '@/api';
-import type { ChannelAccountLink } from '@/types';
+import type { ChannelAccountLink, ChannelProviderDescriptor } from '@/types';
+
+import { channelParticipantHelp } from './channelProviderFields';
 
 import {
   ConsoleCard,
@@ -26,9 +28,11 @@ import {
 export default function DeploymentAccountLinks({
   agentId,
   deploymentId,
+  provider,
 }: {
   agentId: string;
   deploymentId: string;
+  provider?: ChannelProviderDescriptor;
 }) {
   const { t } = useTranslation();
   const [links, setLinks] = useState<ChannelAccountLink[]>([]);
@@ -132,14 +136,14 @@ export default function DeploymentAccountLinks({
       <ConsoleFieldRow
         label={t('manage:deployments.account_links_field_participant')}
         htmlFor="deployment-account-link-participant"
-        help={t('manage:deployments.account_links_field_participant_help')}
+        help={channelParticipantHelp(t, provider)}
         required
       >
         <ConsoleTextField
           id="deployment-account-link-participant"
           value={participant}
           onChange={setParticipant}
-          placeholder="telegram:123456789"
+          placeholder={provider?.participant_example || undefined}
         />
       </ConsoleFieldRow>
       <ConsoleFieldRow

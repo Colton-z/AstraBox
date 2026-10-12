@@ -880,10 +880,10 @@ class DeepSeekHarnessEngineAdapter(EngineAdapter):
                     # and the image reads it only when the attachment restore
                     # below asks, so one owner-only write publishes it whole
                     # without the installer's atomic replacement.
-                    await sandbox.files.write_file(
+                    await sandbox.files.write_bytes(
                         state_target_path,
                         state_target.encode("utf-8"),
-                        mode=600,
+                        mode=0o600,
                         owner=linux_user,
                         group=linux_user,
                     )

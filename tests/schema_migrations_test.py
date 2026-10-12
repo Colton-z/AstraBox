@@ -186,6 +186,74 @@ async def test_startup_keys_agent_rows_a_released_store_holds_without_the_list_k
     assert {doc["agent_id"]: doc async for doc in agents.find({})} == rows
 
 
+async def test_startup_gives_live_agent_rows_without_a_model_the_deployment_model(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A store at schema version 5 holds the seeded Agents without ``model``.
+
+    Every Agent save requires a model, so the console could not save such a
+    row, and the runtime refuses to resolve one. The startup migration writes
+    the deployment's default model into each live row that names none, blank
+    included, and leaves an authored model and a deleted row as they are.
+    """
+    from astrabox.persistence.repository.agent_repository import AgentRepository
+
+    monkeypatch.setenv("ASTRABOX_MODEL_NAME", "deployment-model")
+    agents = await get_async_collection(AgentRepository()._collection_name)
+    await agents.insert_one(
+        {"_id": "a1", "agent_id": "seeded", "name": "Claude Code", "deleted": False}
+    )
+    await agents.insert_one(
+        {"_id": "a2", "agent_id": "blank", "name": "Blank", "model": "  ", "deleted": False}
+    )
+    await agents.insert_one(
+        {
+            "_id": "a3",
+            "agent_id": "authored",
+            "name": "Authored",
+            "model": "operator-model",
+            "deleted": False,
+        }
+    )
+    await agents.insert_one(
+        {"_id": "a4", "agent_id": "deleted", "name": "Deleted", "deleted": True}
+    )
+    schema = await get_async_collection(migrations.SCHEMA_META_COLLECTION)
+    await schema.insert_one(
+        {
+            "_id": "schema",
+            "version": 5,
+            "applied": [
+                {"version": version, "description": f"v{version}", "applied_at": "2026-10-10T00:00:00+00:00"}
+                for version in range(1, 6)
+            ],
+            "locked_by": None,
+            "locked_at": None,
+        }
+    )
+
+    with caplog.at_level("INFO", logger="astrabox.persistence.migrations"):
+        await migrations.run_pending_migrations()
+
+    rows = {doc["agent_id"]: doc async for doc in agents.find({})}
+    assert rows["seeded"]["model"] == "deployment-model"
+    assert rows["blank"]["model"] == "deployment-model"
+    assert rows["authored"]["model"] == "operator-model"
+    assert "model" not in rows["deleted"], "a deleted Agent is never resolved, so it keeps its row"
+    assert (
+        "schema migration gave 2 Agent row(s) the deployment's default model "
+        "'deployment-model'"
+    ) in caplog.text
+    doc = await _read_schema_doc()
+    assert doc is not None and doc["version"] == migrations.latest_known_version()
+
+    # Recorded as applied: a later deployment model does not move a row.
+    monkeypatch.setenv("ASTRABOX_MODEL_NAME", "next-deployment-model")
+    await migrations.run_pending_migrations()
+    assert {doc["agent_id"]: doc async for doc in agents.find({})} == rows
+
+
 # --------------------------------------------------------------------------- #
 # Fresh store: stamp latest directly, no historical apply() calls               #
 # --------------------------------------------------------------------------- #

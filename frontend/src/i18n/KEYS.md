@@ -55,9 +55,9 @@ levels). Within one component you may also do
 `common` holds the strings repeated across the app: `save`, `cancel`, `revert`,
 `confirm`, `confirm_delete`, `delete`, `create`, `new`, `refresh`, `loading`,
 `close`, `retry`, `all`, `enabled`, `disabled`, `enable`,
-`disable`, `yes`, `no`, `copy`, `copied`, `name`, `model`,
-`model_deployment_default`, `status`, `session`, `sandbox`, `engine`,
-`created_at`, `updated_at`, `saved`, and `files`.
+`disable`, `yes`, `no`, `copy`, `copied`, `name`, `model`, `status`,
+`session`, `sandbox`, `engine`, `created_at`, `updated_at`, `saved`, and
+`files`.
 
 Components MUST reuse `t('common:<atom>')` for these and MUST NOT
 re-add the same atom under another namespace. Only add a key to a feature

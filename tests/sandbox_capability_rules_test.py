@@ -6,7 +6,9 @@ capability is refused when the provider is installed instead of failing at the
 first conversation that needs it. The write paths then refuse configuration the
 selected backend has not declared it can run: shared tenancy without isolated
 sessions, any Environment on a backend that cannot create a box under a network
-policy, and prepared capacity on a backend whose client pool cannot run here.
+policy, prepared capacity on a backend whose client pool cannot run here, and an
+engine or a terminal panel that needs the box's long-lived processes on a
+backend without them.
 """
 
 from __future__ import annotations
@@ -229,3 +231,37 @@ async def test_prepared_capacity_needs_a_pool_that_can_run_here() -> None:
 
     backend.ready = True
     assert default_prepared_capacity("pooling-test") == 1
+
+
+async def test_a_box_process_feature_needs_a_backend_with_process_sessions() -> None:
+    """Pi and the terminal panel need the box's long-lived processes in a conversation's own box."""
+
+    register_builtin_providers()
+    register_sandbox(_Backend())
+
+    with pytest.raises(APIError) as engine_refused:
+        validate_environment_payload(_environment(engine_kind="pi", sandbox_backend="rules-test"))
+
+    assert engine_refused.value.status_code == 400
+    assert "supports_process_sessions" in engine_refused.value.message
+
+    class _PlainEnvironments:
+        async def get_any_by_name(self, name: str) -> dict[str, Any] | None:
+            return {"name": name, "engine_kind": _AGENT_ENGINE, "sandbox_backend": "rules-test"}
+
+    agents = _Agents()
+    service = AgentConfigService(agents, environment_repo=_PlainEnvironments())  # type: ignore[arg-type]
+    with pytest.raises(APIError) as panel_refused:
+        await service.create_agent_config(
+            _Author(),  # type: ignore[arg-type]
+            {
+                "name": "with-terminal",
+                "model": "some-model",
+                "environment_name": "plain-env",
+                "terminal_panel": True,
+            },
+        )
+
+    assert (panel_refused.value.code, panel_refused.value.status_code) == ("INVALID_REQUEST", 400)
+    assert "supports_process_sessions" in panel_refused.value.message
+    assert agents.agent is None

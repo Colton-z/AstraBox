@@ -61,7 +61,7 @@ def _model_access() -> SimpleNamespace:
 
 
 class _SandboxFiles:
-    async def write_file(self, _path: str, _body: bytes, **_kwargs: Any) -> None:
+    async def write_bytes(self, _path: str, _body: bytes, **_kwargs: Any) -> None:
         pass
 
 

@@ -3,9 +3,8 @@
  *
  * Selecting the 101 MiB fixture must send one successful upload, refresh the file
  * tree, and show the new entry. The files API must report the exact byte count
- * from the sandbox filesystem. This scenario does not download the file because
- * the current download transport caps buffered responses at 64 MiB; upload uses a
- * separate multipart path without that response limit.
+ * from the sandbox filesystem. This scenario does not download the file; the
+ * download of a large file is covered through the API in tests/e2e/test_files.py.
  *
  * The upload is expensive and mutates one session filesystem, so the spec runs
  * exclusively. It does not require a model turn.

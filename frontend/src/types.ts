@@ -1,5 +1,11 @@
 import type { components } from './api/schema';
 
+export type SkillDescriptor = string | Record<string, unknown>;
+
+export function skillSourceLabel(source: SkillDescriptor): string {
+  return typeof source === 'string' ? source : `${source.provider}: ${source.name} @ ${source.version}`;
+}
+
 export type AgentPreparedRuntimeStatus = components['schemas']['AgentPreparedRuntimeStatus'];
 
 /**
@@ -45,6 +51,11 @@ export type SandboxTerminateResult = Schemas['SandboxTermination'];
 export type ConversationEndResult = Schemas['ConversationEndResult'];
 export type BackgroundTaskState = Schemas['BackgroundTaskState'];
 export type AgentRuntimeView = Schemas['AgentRuntimeView'];
+export type AgentCategory = Schemas['AgentCategory'];
+export type AdminAgentCategory = Schemas['AdminAgentCategory'];
+export type DeletedAgentCategory = Schemas['DeletedAgentCategory'];
+export type AgentTag = Schemas['AgentTag'];
+export type AgentFavorite = Schemas['AgentFavorite'];
 
 export type SessionState =
   | 'CREATING'
@@ -98,7 +109,9 @@ export interface AgentDraft {
   environment_name?: string;
   system?: string;
   display_meta?: Record<string, unknown>;
-  skills?: string[];
+  // Ids of the administrator-defined categories the home page lists it under.
+  categories?: string[];
+  skills?: SkillDescriptor[];
   mcp_servers?: Record<string, unknown>;
   engine_options?: Record<string, unknown>;
   default_repo?: Record<string, unknown>;
@@ -127,6 +140,8 @@ export type AgentAccessPolicy = Omit<AgentAccess, 'created_by'>;
 export interface AgentConfig extends AgentDraft {
   agent_id: string;
   can_manage?: boolean;
+  // Whether the reader has favorited it; the full list read carries it.
+  favorited?: boolean;
   version?: number;
   state?: string;
   updated_at?: string;
@@ -232,6 +247,8 @@ export interface ChannelAccountLink {
 }
 
 export interface ChannelProviderDescriptor {
+  participant_format?: string;
+  participant_example?: string;
   can_configure_execution_user?: boolean;
   /** The modes a trigger of this platform may run its messages in. */
   execution_modes?: ChannelExecutionMode[];
@@ -357,6 +374,7 @@ export type FormFieldType =
   | 'enum'
   | 'env_ref'
   | 'string_list'
+  | 'skill_list'
   | 'key_value'
   | 'object'
   | 'object_list';
@@ -645,7 +663,7 @@ export interface AdminSessionMcpConnection {
 }
 
 export interface AdminSessionDetail extends AdminSessionSummary {
-  template_skills?: string[];
+  template_skills?: SkillDescriptor[];
   template_mcp_servers?: string[];
   template_mcp_config?: unknown;
   mcp_connections?: AdminSessionMcpConnection[];

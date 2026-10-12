@@ -568,6 +568,7 @@ async def _run_bridge_command(
                     session=session,
                     session_id=session_id,
                     requested_command_id=command_id,
+                    turn_id=state.effective_turn_id,
                     permission_mode=permission_mode,
                 )
             except InputAlreadySettled as settled:

@@ -106,7 +106,10 @@ from astrabox.core.service.orchestrator.channel_source_host import (
 from astrabox.core.service.orchestrator.channel_spine_reconciler import (
     ChannelSpineReconciler,
 )
-from astrabox.core.service.orchestrator.session_file_service import SessionFileService
+from astrabox.core.service.orchestrator.session_file_service import (
+    FileDownload,
+    SessionFileService,
+)
 from astrabox.core.service.orchestrator.deployment_service import DeploymentService
 
 logger = get_logger(__name__)
@@ -928,7 +931,7 @@ class AgentPlatformService:
             token, block_id, cursor=cursor
         )
 
-    async def download_shared_file(self, token: str, *, path: str) -> tuple[bytes, str]:
+    async def download_shared_file(self, token: str, *, path: str) -> FileDownload:
         return await self._session_share_service.download_shared_file(token, path=path)
 
     async def update_session_permission_mode(
@@ -1219,7 +1222,7 @@ class AgentPlatformService:
         session_id: str,
         *,
         path: str,
-    ) -> tuple[AsyncIterator[bytes], str]:
+    ) -> FileDownload:
         await self.ensure_bootstrap()
         session = await self._session_service.must_get_owned_session(user, session_id)
         return await self._session_file_service.download_file(

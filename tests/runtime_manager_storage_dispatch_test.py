@@ -17,42 +17,12 @@ from astrabox.core.service.orchestrator.runtime_manager import (
     RemoteAgentRuntimeManager,
     SessionRuntime,
 )
-from astrabox.core.service.orchestrator.runtime.pty_terminal import (
-    ResolvedExecdEndpoint,
-)
 from astrabox.core.service.orchestrator.terminal_service import TerminalService
 from astrabox.common.utils.user_context import UserContext
 from astrabox.persistence.models.session_snapshot import owned_fields_for_channel
 from astrabox.core.service.orchestrator.session_kernel.workers.lifecycle.commands import (
     _LifecycleCommandsMixin,
 )
-
-
-def test_storage_mount_capability_helper_binds_only_the_sandbox(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Calling the helper through a manager must not pass ``self`` as a box.
-
-    Assistant startup reaches this after its Hermes sandbox exists. Binding the
-    helper as an instance method passes the manager as an extra argument, which
-    destroys the new sandbox and leaves the workspace hibernating.
-    """
-    sandbox = object()
-    monkeypatch.setattr(
-        runtime_manager_module,
-        "get_underlying_sandbox",
-        lambda candidate: candidate,
-    )
-    monkeypatch.setattr(
-        runtime_manager_module,
-        "sandbox_for_sandbox",
-        lambda candidate: SimpleNamespace(
-            uses_create_oss_mounts=candidate is sandbox
-        ),
-    )
-    manager = RemoteAgentRuntimeManager.__new__(RemoteAgentRuntimeManager)
-
-    assert manager._sandbox_uses_create_storage_mounts(sandbox) is True
 
 
 def test_terminal_channel_owns_the_persistent_pty_anchor() -> None:
@@ -286,7 +256,7 @@ async def test_terminal_reports_its_durable_pty_id(
 ) -> None:
     """The lifecycle snapshot needs the shell id after a command has exited."""
 
-    sandbox = object()
+    sandbox = SimpleNamespace(processes=object())
     runtime = SimpleNamespace(
         user_id="user-1",
         terminal_cwd="/workspace",
@@ -310,8 +280,8 @@ async def test_terminal_reports_its_durable_pty_id(
     opened: list[tuple[str | None, dict[str, str] | None]] = []
 
     class _Terminal:
-        def __init__(self, *args, **kwargs) -> None:
-            pass
+        def __init__(self, processes: object) -> None:
+            assert processes is sandbox.processes
 
         async def session_exists(self, pty_session_id: str) -> bool:
             return False
@@ -328,20 +298,8 @@ async def test_terminal_reports_its_durable_pty_id(
         async def run(self, pty_session_id: str, command: str):
             yield {"type": "__done__", "exit_code": 0, "cwd": "/workspace"}
 
-    async def resolve_endpoint(candidate: object) -> ResolvedExecdEndpoint:
-        assert candidate is sandbox
-        return ResolvedExecdEndpoint(
-            origin="http://sandbox.example.test",
-            headers={},
-        )
-
     terminal_service_module._pty_sessions.pop("session-1", None)
     monkeypatch.setattr(terminal_service_module, "PtyTerminal", _Terminal)
-    monkeypatch.setattr(
-        terminal_service_module,
-        "resolve_execd_endpoint",
-        resolve_endpoint,
-    )
     monkeypatch.setattr(
         terminal_service_module,
         "get_underlying_sandbox",
@@ -453,11 +411,10 @@ async def test_shared_terminal_uses_the_persisted_isolated_session_after_restart
             bindings.pop(execution_id)
 
     monkeypatch.setattr(terminal_service_module, "sandbox_for_name", lambda name: _Provider())
-    monkeypatch.setattr(
-        terminal_service_module,
-        "resolve_execd_endpoint",
-        AsyncMock(side_effect=AssertionError("box-level execd PTY must not be resolved")),
-    )
+    def _box_terminal(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("the box-level terminal shell must not be used")
+
+    monkeypatch.setattr(terminal_service_module, "PtyTerminal", _box_terminal)
     service = TerminalService(
         runtime_manager=_RuntimeManager(),
         must_get_owned_session=AsyncMock(

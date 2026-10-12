@@ -78,7 +78,7 @@ async def main():
     bootstrap()
     row = await AgentRepository().get_agent(sys.argv[1]) or {}
     handle = await sandbox_for_name(row['_client_pool_backend']).connect(sys.argv[2])
-    seats = json.loads(await handle.files.read_file(POOL_SEATS_RECEIPT))
+    seats = json.loads(await handle.files.read_bytes(POOL_SEATS_RECEIPT))
     print(json.dumps([{key: seat.get(key) for key in KEYS} for seat in seats]))
 asyncio.run(main())
 `, agentId, poolBox,

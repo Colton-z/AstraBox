@@ -1,5 +1,5 @@
 import { ChevronRightIcon } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { Button } from '@/components/ui/button';
@@ -44,6 +44,7 @@ export function ConsoleCreatePage({
   invalidKeys,
   onInvalidChange,
   error,
+  refusedKey,
   saving,
   createLabel,
   savingLabel,
@@ -63,6 +64,8 @@ export function ConsoleCreatePage({
   invalidKeys: Set<string>;
   onInvalidChange: (key: string, invalid: boolean) => void;
   error?: string;
+  /** The field the refused create named (`fieldNamedByRefusal`), marked in the form. */
+  refusedKey?: string | null;
   saving?: boolean;
   createLabel: string;
   savingLabel?: string;
@@ -83,6 +86,11 @@ export function ConsoleCreatePage({
   const { essential, advanced, advancedCount } = advancedKeys
     ? splitAdvanced(sections, advancedKeys)
     : { essential: sections, advanced: [], advancedCount: 0 };
+  // A mark inside the closed fold is a mark nobody sees.
+  const refusalFolded = Boolean(refusedKey && advancedKeys?.has(refusedKey));
+  useEffect(() => {
+    if (refusalFolded) setShowAdvanced(true);
+  }, [refusalFolded]);
 
   return (
     <ConsoleRecordPage
@@ -114,6 +122,7 @@ export function ConsoleCreatePage({
           idPrefix={idPrefix}
           invalidKeys={invalidKeys}
           onInvalidChange={onInvalidChange}
+          refusedKey={refusedKey}
         />
         {advancedCount > 0 && (
           /* One disclosure for all of them, not one per card: what is folded
@@ -144,6 +153,7 @@ export function ConsoleCreatePage({
                 idPrefix={idPrefix}
                 invalidKeys={invalidKeys}
                 onInvalidChange={onInvalidChange}
+                refusedKey={refusedKey}
               />
             </CollapsibleContent>
           </Collapsible>

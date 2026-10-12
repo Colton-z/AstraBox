@@ -532,7 +532,10 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "ASTRABOX_MODEL_NAME",
         "public",
         "",
-        "Operator override for the model name when the agent doesn't specify one.",
+        "Overrides the deployment's default model (ANTHROPIC_MODEL): the model an "
+        "Assistant that selects none runs, title requests use when "
+        "ASTRABOX_TITLE_MODEL_NAME is empty, and a new installation seeds its "
+        "Agents with. Every Agent runs the model it names.",
         "astrabox.core.service.orchestrator.runtime.config_resolver",
     ),
     (
@@ -719,7 +722,7 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "ASTRABOX_DEPLOY_KEY_SECRET_NAMES",
         "public",
         "",
-        "Comma-separated secret names that Agent and Assistant repositories may "
+        "Comma-separated secret names that Agent and Assistant repositories and Skills may "
         "use as deploy_key_secret_name, for example your-repo-deploy-key. Each "
         "name resolves like every secret name (upper-cased, hyphens to "
         "underscores). Any other name is refused with "
@@ -786,7 +789,7 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "public",
         "",
         "Model route for titles and process summaries. Empty uses the deployment's "
-        "default model, the route its seeded Agents use. With DeepSeek's endpoint "
+        "default model. With DeepSeek's endpoint "
         "and the bundled gateway, the entry point sets it to the native "
         "deepseek/<model> route, which disables DeepSeek's thinking; point it at a "
         "non-thinking route for any provider whose route cannot.",

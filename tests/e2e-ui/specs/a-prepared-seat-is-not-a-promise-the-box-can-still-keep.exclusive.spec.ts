@@ -144,7 +144,7 @@ async function startConversationFromCard(page: Page, agentName: string): Promise
   await expect(card, `${agentName} must appear in the Agent picker`).toBeVisible({
     timeout: READY_TIMEOUT_MS,
   });
-  await card.getByRole('button').click();
+  await card.getByTestId('agent-start').click();
   await page.waitForURL((url) => /\/sessions\/[^/]+$/.test(url.pathname), {
     timeout: CONVERSATION_START_TIMEOUT_MS,
   });

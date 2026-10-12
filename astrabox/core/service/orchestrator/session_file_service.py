@@ -1,15 +1,12 @@
 from __future__ import annotations
 
-import copy
-import json
+import contextlib
+import dataclasses
 import posixpath
-import shlex
 from pathlib import PurePosixPath
-from typing import Any
-from collections.abc import AsyncIterator
+from typing import IO, Any
+from collections.abc import AsyncGenerator, AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
-
-from opensandbox.models.filesystem import DirectoryListEntry, MoveEntry, WriteEntry
 
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
@@ -24,34 +21,122 @@ from astrabox.core.service.orchestrator.runtime.conversation_identity import (
     normalize_runtime_identity,
     plan_assistant_profile_identity,
 )
-from astrabox.core.service.orchestrator.runtime.diagnostics import (
-    extract_command_log_text,
-)
-from astrabox.core.service.orchestrator.runtime.sandbox_client import (
-    get_underlying_sandbox,
+from astrabox.seams.sandbox import SandboxUnreachable
+from astrabox.seams.sandbox_data import (
+    SandboxDirectorySpec,
+    SandboxEntry,
+    SandboxFiles,
+    SandboxPathNotFound,
+    SandboxPathRejected,
 )
 
 logger = get_logger(__name__)
 
-# The public download route still returns one buffered response. Read through
-# execd's streaming filesystem face, but stop before one request can consume an
-# unbounded amount of API-process memory. Uploads are streamed and have no such
-# response-body limit.
-_FILESYSTEM_MAX_RESPONSE_BYTES = 64 * 1024 * 1024
+# What the panel writes: the conversation's account reads and writes, its group
+# reads, and no other account sees the file.
+_FILESYSTEM_FILE_MODE = 0o640
+_FILESYSTEM_DIRECTORY_MODE = 0o750
 
-# OpenSandbox's Filesystem SDK models Unix modes as integers containing the
-# familiar octal digits (for example ``755``), then execd parses those digits
-# in base 8. Python's ``0o755`` value is decimal 493 and therefore must not be
-# passed to this API; values such as ``0o750`` even serialize with an invalid
-# octal digit (488). Keep this wire-format quirk explicit at the adapter edge.
-_FILESYSTEM_FILE_MODE = 640
-_FILESYSTEM_DIRECTORY_MODE = 750
+
+class SessionFileStreamBroken(RuntimeError):
+    """A file download failed after its response had started.
+
+    The status line and ``Content-Length`` are already on the wire, so no
+    error envelope can follow them; the server has to close the connection
+    short of the promised length, which the client reads as a failed
+    download. This is deliberately not an :class:`APIError`: the app's handler
+    for unexpected errors logs it with the request's trace id, and the server
+    then aborts the connection.
+    """
+
+
+class FileDownload:
+    """One file in a box, opened for streaming to a client.
+
+    Every check that can refuse the download has passed by the time this
+    exists: the caller's access to the session, the path's containment and
+    symlink walk, that the path names a regular file, and the box's own
+    opening of it, whose first chunk is already read. ``size`` comes from the
+    same metadata read as those checks.
+
+    Iterating yields the file's bytes as they arrive from the box, once. The
+    box connection stays open until :meth:`aclose`, which the response calls
+    when the body ends, when the client goes away and when the request is
+    cancelled.
+    """
+
+    def __init__(
+        self,
+        *,
+        filename: str,
+        size: int,
+        first: bytes,
+        rest: AsyncIterator[bytes],
+        resources: contextlib.AsyncExitStack,
+        path: str,
+    ) -> None:
+        self.filename = filename
+        self.size = size
+        #: Bytes handed to the response so far.
+        self.sent = 0
+        self._path = path
+        self._resources = resources
+        self._body = self._stream(first, rest)
+
+    def __aiter__(self) -> AsyncIterator[bytes]:
+        return self._body
+
+    @property
+    def complete(self) -> bool:
+        return self.sent == self.size
+
+    async def aclose(self) -> None:
+        """Release the box connection; calling it again does nothing."""
+        await self._body.aclose()
+        await self._resources.aclose()
+
+    async def _stream(
+        self, first: bytes, rest: AsyncIterator[bytes]
+    ) -> AsyncGenerator[bytes, None]:
+        # The newest chunk is held back until the next one arrives or the box
+        # ends the file. A body longer or shorter than ``size``, which means
+        # the file changed after its metadata was read, then fails before the
+        # client has every byte ``Content-Length`` promised, and the client
+        # sees a failed download instead of a complete one.
+        received = len(first)
+        held = first
+        if received > self.size:
+            raise self._broken(f"the box sent more than the file's {self.size} bytes")
+        try:
+            async for chunk in rest:
+                received += len(chunk)
+                if received > self.size:
+                    raise self._broken(f"the box sent more than the file's {self.size} bytes")
+                if held:
+                    yield held
+                    self.sent += len(held)
+                held = chunk
+        except SessionFileStreamBroken:
+            raise
+        except Exception as exc:
+            raise self._broken(f"reading from the box failed: {type(exc).__name__}") from exc
+        if received != self.size:
+            raise self._broken(f"the box ended the file at {received} of {self.size} bytes")
+        if held:
+            yield held
+            self.sent += len(held)
+
+    def _broken(self, reason: str) -> SessionFileStreamBroken:
+        return SessionFileStreamBroken(
+            f"file download stopped after {self.sent} of {self.size} bytes: "
+            f"{reason}: path={self._path}"
+        )
 
 
 class _MappedRootFilesystem:
-    """Expose one visible root through the box's physical filesystem API."""
+    """Expose one visible root through the box's physical files."""
 
-    def __init__(self, delegate: Any, *, visible_root: str, source_root: str) -> None:
+    def __init__(self, delegate: SandboxFiles, *, visible_root: str, source_root: str) -> None:
         self._delegate = delegate
         self._visible_root = posixpath.normpath(visible_root)
         self._source_root = posixpath.normpath(source_root)
@@ -86,67 +171,55 @@ class _MappedRootFilesystem:
             else posixpath.normpath(posixpath.join(self._visible_root, relative))
         )
 
-    def _visible_entry(self, entry: Any) -> Any:
-        raw_path = str(
-            entry.get("path") if isinstance(entry, dict) else getattr(entry, "path", "")
-        )
-        visible_path = self._to_visible(raw_path)
-        if isinstance(entry, dict):
-            return {**entry, "path": visible_path}
-        copier = getattr(entry, "model_copy", None)
-        if callable(copier):
-            return copier(update={"path": visible_path})
-        try:
-            mapped = copy.copy(entry)
-            mapped.path = visible_path
-            return mapped
-        except Exception as exc:
-            raise APIError(
-                code="AGENT_RUNTIME_ERROR",
-                message="sandbox filesystem returned an unsupported directory entry",
-                status_code=502,
-            ) from exc
+    def _visible_entry(self, entry: SandboxEntry) -> SandboxEntry:
+        return dataclasses.replace(entry, path=self._to_visible(entry.path))
 
-    async def list_directory(self, entry: DirectoryListEntry) -> list[Any]:
-        mapped = entry.model_copy(update={"path": self._to_source(entry.path)})
-        return [self._visible_entry(item) for item in await self._delegate.list_directory(mapped)]
+    async def read_bytes(self, path: str) -> bytes:
+        return await self._delegate.read_bytes(self._to_source(path))
 
-    async def get_file_info(self, paths: list[str]) -> dict[str, Any]:
-        infos = await self._delegate.get_file_info([self._to_source(path) for path in paths])
-        return {
-            self._to_visible(path): self._visible_entry(info)
-            for path, info in infos.items()
-        }
+    def read_chunks(self, path: str) -> AsyncGenerator[bytes, None]:
+        return self._delegate.read_chunks(self._to_source(path))
 
-    async def write_file(self, path: str, data: Any, **kwargs: Any) -> None:
-        await self._delegate.write_file(self._to_source(path), data, **kwargs)
-
-    async def create_directories(self, entries: list[WriteEntry]) -> None:
-        await self._delegate.create_directories(
-            [entry.model_copy(update={"path": self._to_source(entry.path)}) for entry in entries]
+    async def write_bytes(
+        self,
+        path: str,
+        data: bytes | IO[bytes],
+        *,
+        mode: int = 0o644,
+        owner: str | None = None,
+        group: str | None = None,
+    ) -> None:
+        await self._delegate.write_bytes(
+            self._to_source(path), data, mode=mode, owner=owner, group=group
         )
 
-    async def move_files(self, entries: list[MoveEntry]) -> None:
-        await self._delegate.move_files(
-            [
-                entry.model_copy(
-                    update={
-                        "src": self._to_source(entry.src),
-                        "dest": self._to_source(entry.dest),
-                    }
-                )
-                for entry in entries
-            ]
+    async def make_directories(self, specs: Sequence[SandboxDirectorySpec]) -> None:
+        await self._delegate.make_directories(
+            [dataclasses.replace(spec, path=self._to_source(spec.path)) for spec in specs]
         )
 
-    async def delete_files(self, paths: list[str]) -> None:
-        await self._delegate.delete_files([self._to_source(path) for path in paths])
+    async def stat(self, paths: Sequence[str]) -> Mapping[str, SandboxEntry]:
+        asked = {self._to_source(path): path for path in paths}
+        entries = await self._delegate.stat(list(asked))
+        return {asked[source]: self._visible_entry(entry) for source, entry in entries.items()}
 
-    async def delete_directories(self, paths: list[str]) -> None:
-        await self._delegate.delete_directories([self._to_source(path) for path in paths])
+    async def list_directory(self, path: str) -> Sequence[SandboxEntry]:
+        return [
+            self._visible_entry(entry)
+            for entry in await self._delegate.list_directory(self._to_source(path))
+        ]
 
-    async def read_bytes_stream(self, path: str, **kwargs: Any) -> Any:
-        return await self._delegate.read_bytes_stream(self._to_source(path), **kwargs)
+    async def search(self, root: str, pattern: str) -> Sequence[str]:
+        return [
+            self._to_visible(found)
+            for found in await self._delegate.search(self._to_source(root), pattern)
+        ]
+
+    async def move(self, source: str, destination: str) -> None:
+        await self._delegate.move(self._to_source(source), self._to_source(destination))
+
+    async def remove(self, paths: Sequence[str]) -> None:
+        await self._delegate.remove([self._to_source(path) for path in paths])
 
 
 class SessionFileService:
@@ -246,7 +319,7 @@ class SessionFileService:
                 ownership = self._filesystem_ownership(session)
                 await self._filesystem_call(
                     "file upload",
-                    filesystem.write_file(
+                    filesystem.write_bytes(
                         destination,
                         file_obj,
                         mode=_FILESYSTEM_FILE_MODE,
@@ -296,9 +369,9 @@ class SessionFileService:
             ownership = self._filesystem_ownership(session)
             await self._filesystem_call(
                 "directory creation",
-                filesystem.create_directories(
+                filesystem.make_directories(
                     [
-                        WriteEntry(
+                        SandboxDirectorySpec(
                             path=target_path,
                             mode=_FILESYSTEM_DIRECTORY_MODE,
                             owner=ownership.get("owner"),
@@ -349,7 +422,7 @@ class SessionFileService:
             )
             await self._filesystem_call(
                 "file move",
-                filesystem.move_files([MoveEntry(source=src_abs, destination=dest_abs)]),
+                filesystem.move(src_abs, dest_abs),
                 path=src_abs,
             )
             return {
@@ -374,8 +447,7 @@ class SessionFileService:
         async with self._resolve_session_context(user, session_id) as (session, sandbox, root_path):
             abs_paths = [self._resolve_client_path(root_path, item) for item in paths]
             filesystem = self._resolve_filesystem(sandbox, session.get("runtime_identity"))
-            file_paths: list[str] = []
-            directory_paths: list[str] = []
+            present: list[str] = []
             for abs_path in abs_paths:
                 self._assert_not_session_root(abs_path, root_path, operation="delete")
                 info = await self._assert_path_resolves_within_root(
@@ -389,33 +461,18 @@ class SessionFileService:
                 # succeeds once every requested target is absent. Existing parent
                 # components were still walked above, so a symlink cannot turn the
                 # missing leaf into an escape from the session root.
-                if info is None:
-                    continue
-                if self._entry_type(info) == "directory":
-                    directory_paths.append(abs_path)
-                else:
-                    file_paths.append(abs_path)
-            if file_paths:
-                await self._filesystem_call(
-                    "file deletion",
-                    filesystem.delete_files(list(dict.fromkeys(file_paths))),
-                )
-            if directory_paths:
-                # Deepest-first also handles callers that selected both a directory
-                # and one of its descendants.
-                directories = sorted(
-                    dict.fromkeys(directory_paths),
-                    key=lambda item: item.count("/"),
-                    reverse=True,
-                )
-                await self._filesystem_call(
-                    "directory deletion",
-                    filesystem.delete_directories(directories),
-                )
+                if info is not None:
+                    present.append(abs_path)
+            targets = list(dict.fromkeys(present))
+            if targets:
+                # Removal is recursive and unlinks a symlink without following
+                # it, so a selection holding a directory and one of its
+                # descendants needs no ordering.
+                await self._filesystem_call("deletion", filesystem.remove(targets))
             return {
                 "root_path": root_path,
                 "paths": abs_paths,
-                "deleted_count": len(set(file_paths + directory_paths)),
+                "deleted_count": len(targets),
             }
 
     async def download_file(
@@ -424,34 +481,9 @@ class SessionFileService:
         session_id: str,
         *,
         path: str,
-    ) -> tuple[bytes, str]:
-        if not str(path or "").strip():
-            raise APIError(
-                code="INVALID_REQUEST",
-                message="path is required",
-                status_code=400,
-            )
-        async with self._resolve_session_context(user, session_id) as (session, sandbox, root_path):
-            target_path = self._resolve_client_path(root_path, path)
-            filesystem = self._resolve_filesystem(sandbox, session.get("runtime_identity"))
-            info = await self._assert_path_resolves_within_root(
-                filesystem,
-                root_path=root_path,
-                target_path=target_path,
-            )
-            if self._entry_type(info) == "directory":
-                raise APIError(
-                    code="INVALID_REQUEST",
-                    message=f"not a file: {target_path}",
-                    status_code=400,
-                )
-            filename = PurePosixPath(target_path).name or "download"
-            content = await self._read_file_bytes(
-                filesystem,
-                target_path,
-                known_size=self._entry_size(info),
-            )
-            return content, filename
+    ) -> FileDownload:
+        """Open a file of the owner's session for streaming; see :class:`FileDownload`."""
+        return await self._open_download(user, session_id, path=path)
 
     async def list_entries_for_session(
         self,
@@ -489,33 +521,72 @@ class SessionFileService:
         session: dict[str, Any],
         *,
         path: str,
-    ) -> tuple[bytes, str]:
+    ) -> FileDownload:
         """Read-only file download for an already-authorized session doc (share path)."""
+        return await self._open_download(
+            None, str(session.get("session_id") or ""), path=path, prefetched_session=session
+        )
+
+    async def _open_download(
+        self,
+        user: UserContext | None,
+        session_id: str,
+        *,
+        path: str,
+        prefetched_session: dict[str, Any] | None = None,
+    ) -> FileDownload:
+        """Run every check a download can fail, then open the file in the box.
+
+        The box connection the session context opens is handed to the returned
+        download rather than closed here, so it outlives this call; a refusal
+        closes it before raising.
+        """
         if not str(path or "").strip():
-            raise APIError(code="INVALID_REQUEST", message="path is required", status_code=400)
-        async with self._resolve_session_context(
-            None, str(session.get("session_id") or ""), prefetched_session=session
-        ) as (resolved_session, sandbox, root_path):
+            raise APIError(
+                code="INVALID_REQUEST",
+                message="path is required",
+                status_code=400,
+            )
+        async with contextlib.AsyncExitStack() as stack:
+            session, sandbox, root_path = await stack.enter_async_context(
+                self._resolve_session_context(
+                    user, session_id, prefetched_session=prefetched_session
+                )
+            )
             target_path = self._resolve_client_path(root_path, path)
-            filesystem = self._resolve_filesystem(
-                sandbox, resolved_session.get("runtime_identity")
-            )
+            filesystem = self._resolve_filesystem(sandbox, session.get("runtime_identity"))
             info = await self._assert_path_resolves_within_root(
-                filesystem, root_path=root_path, target_path=target_path
+                filesystem,
+                root_path=root_path,
+                target_path=target_path,
             )
-            if self._entry_type(info) == "directory":
+            if info is None or info.kind != "file":
                 raise APIError(
                     code="INVALID_REQUEST",
                     message=f"not a file: {target_path}",
                     status_code=400,
                 )
-            filename = PurePosixPath(target_path).name or "download"
-            content = await self._read_file_bytes(
-                filesystem,
-                target_path,
-                known_size=self._entry_size(info),
+            chunks = await stack.enter_async_context(
+                contextlib.aclosing(filesystem.read_chunks(target_path))
             )
-            return content, filename
+            # The box reports a failure to open the file, such as the file
+            # being removed after the metadata read, only once iteration
+            # starts. Reading the first chunk here turns that into a refusal
+            # the client still receives as an error response.
+            try:
+                first = await anext(chunks, b"")
+            except Exception as exc:
+                raise self._filesystem_api_error(
+                    exc, op_label="file download", path=target_path
+                ) from exc
+            return FileDownload(
+                filename=PurePosixPath(target_path).name or "download",
+                size=info.size,
+                first=bytes(first),
+                rest=chunks,
+                resources=stack.pop_all(),
+                path=target_path,
+            )
 
     @asynccontextmanager
     async def _resolve_session_context(
@@ -741,43 +812,17 @@ class SessionFileService:
         return None
 
     @staticmethod
-    def _resolve_command_runner(sandbox: Any) -> Any:
-        command_runner = getattr(sandbox, "commands", None)
-        run_fn = getattr(command_runner, "run", None)
-        if command_runner is None or not callable(run_fn):
-            raise APIError(
-                code="AGENT_RUNTIME_ERROR",
-                message="sandbox command runner unavailable",
-                status_code=502,
-            )
-        return command_runner
-
-    @staticmethod
     def _resolve_filesystem(
         sandbox: Any,
         runtime_identity: dict[str, Any] | None = None,
-    ) -> Any:
-        """Return the OpenSandbox execd filesystem capability for ``sandbox``."""
-        underlying = get_underlying_sandbox(sandbox)
-        filesystem = getattr(underlying, "files", None)
-        required = (
-            "list_directory",
-            "get_file_info",
-            "write_file",
-            "create_directories",
-            "move_files",
-            "delete_files",
-            "delete_directories",
-            "read_bytes_stream",
-        )
-        if filesystem is None or any(
-            not callable(getattr(filesystem, method, None)) for method in required
-        ):
-            raise APIError(
-                code="AGENT_RUNTIME_ERROR",
-                message="sandbox does not expose the OpenSandbox filesystem API",
-                status_code=502,
-            )
+    ) -> SandboxFiles:
+        """The box's files, seen through the conversation's visible root.
+
+        ``sandbox`` is a provider's :class:`astrabox.seams.sandbox.SandboxHandle`.
+        A conversation whose visible root differs from where its files live
+        gets a mapping that translates every path both ways.
+        """
+        filesystem: SandboxFiles = sandbox.files
         visible_root = identity_file_root_dir(runtime_identity)
         source_root = identity_file_root_source_dir(runtime_identity)
         if visible_root and source_root and visible_root != source_root:
@@ -795,50 +840,59 @@ class SessionFileService:
         op_label: str,
         path: str | None = None,
     ) -> APIError:
-        if isinstance(exc, APIError):
-            return exc
-        try:
-            status_code = int(getattr(exc, "status_code", 0) or 0)
-        except (TypeError, ValueError):
-            status_code = 0
+        """Answer a files failure in the API's own terms.
+
+        The box's and the transport's words go to the log only. The response is
+        a boundary: they can name the box's physical paths, which a mapped
+        conversation root keeps from its user, and the operator reading the log
+        is the one who needs them.
+        """
         target = f": {path}" if path else ""
-        if status_code == 404:
+        if isinstance(exc, SandboxPathNotFound):
             return APIError(
                 code="FILE_NOT_FOUND",
                 message=f"path not found{target}",
                 status_code=404,
             )
-        if status_code == 400:
-            return APIError(
-                code="INVALID_REQUEST",
-                message=f"sandbox filesystem rejected {op_label}{target}",
-                status_code=400,
+        if isinstance(exc, SandboxUnreachable):
+            logger.warning(
+                "sandbox filesystem operation could not reach the box: operation=%s "
+                "path=%s detail=%s",
+                op_label,
+                path or "",
+                exc.message[:400],
             )
-        # The exception's own text, not only its class. One vendor class covers
-        # an unreachable box, a refused path and an internal fault, so the class
-        # alone cannot say which happened — and the class alone is what this
-        # reported, in the log and in the response, leaving a 502 that named the
-        # operation and nothing about why it failed.
+            return APIError(
+                code="SANDBOX_UNREACHABLE",
+                message=f"sandbox filesystem {op_label} could not reach the box",
+                status_code=503,
+            )
+        if isinstance(exc, APIError):
+            return exc
         detail = str(exc).strip()
+        if isinstance(exc, SandboxPathRejected):
+            logger.warning(
+                "sandbox filesystem operation refused: operation=%s path=%s reason=%s",
+                op_label,
+                path or "",
+                detail[:400] or "<none>",
+            )
+            return APIError(
+                code="AGENT_RUNTIME_ERROR",
+                message=f"sandbox filesystem {op_label} was refused{target}",
+                status_code=502,
+            )
         logger.warning(
-            "OpenSandbox filesystem operation failed: operation=%s path=%s "
-            "status=%s error_type=%s detail=%s",
+            "sandbox filesystem operation failed: operation=%s path=%s "
+            "error_type=%s detail=%s",
             op_label,
             path or "",
-            status_code or "unknown",
             type(exc).__name__,
             detail[:400] or "<none>",
         )
-        # The detail stays in the log. The response is a boundary: a 502 handed
-        # to a caller must not carry the transport's own words, which is pinned
-        # by its own test — and the operator reading the log is the one who
-        # needs them anyway.
         return APIError(
             code="AGENT_RUNTIME_ERROR",
-            message=(
-                f"sandbox filesystem {op_label} failed"
-                + (f": status={status_code}" if status_code else "")
-            ),
+            message=f"sandbox filesystem {op_label} failed",
             status_code=502,
         )
 
@@ -858,68 +912,35 @@ class SessionFileService:
                 path=path,
             ) from exc
 
-    async def _get_entry_info(self, filesystem: Any, path: str) -> Any:
-        infos = await self._filesystem_call(
+    async def _get_entry_info(self, filesystem: SandboxFiles, path: str) -> SandboxEntry:
+        entries = await self._filesystem_call(
             "file metadata lookup",
-            filesystem.get_file_info([path]),
+            filesystem.stat([path]),
             path=path,
         )
-        if not isinstance(infos, dict):
+        entry = entries.get(path)
+        if entry is None:
             raise APIError(
                 code="AGENT_RUNTIME_ERROR",
-                message="sandbox filesystem returned invalid metadata",
+                message=f"sandbox filesystem answered without the entry for {path}",
                 status_code=502,
             )
-        info = infos.get(path)
-        if info is None:
-            normalized = posixpath.normpath(path)
-            for candidate in infos.values():
-                candidate_path = str(
-                    candidate.get("path")
-                    if isinstance(candidate, dict)
-                    else getattr(candidate, "path", "")
-                )
-                if posixpath.normpath(candidate_path) == normalized:
-                    info = candidate
-                    break
-        if info is None:
-            raise APIError(
-                code="FILE_NOT_FOUND",
-                message=f"path not found: {path}",
-                status_code=404,
-            )
-        return info
-
-    @staticmethod
-    def _entry_type(info: Any) -> str:
-        if isinstance(info, dict):
-            value = info.get("entry_type", info.get("type"))
-        else:
-            value = getattr(info, "entry_type", None)
-        return str(value or "").strip().lower()
-
-    @staticmethod
-    def _entry_size(info: Any) -> int:
-        value = info.get("size") if isinstance(info, dict) else getattr(info, "size", 0)
-        try:
-            return max(0, int(value or 0))
-        except (TypeError, ValueError):
-            return 0
+        return entry
 
     async def _assert_path_resolves_within_root(
         self,
-        filesystem: Any,
+        filesystem: SandboxFiles,
         *,
         root_path: str,
         target_path: str,
         expect_directory: bool = False,
         allow_missing_leaf: bool = False,
         allow_symlink_leaf: bool = False,
-    ) -> Any | None:
+    ) -> SandboxEntry | None:
         """Reject paths that escape the session root through a symlink.
 
         The public API already normalizes ``..`` lexically. This second check
-        walks the existing path components with execd's lstat-style metadata,
+        walks the existing path components with the box's lstat metadata,
         so an in-root component cannot redirect a later filesystem operation
         outside the session directory. A missing tail is allowed for create,
         upload and move destinations; its last existing parent is still checked.
@@ -941,7 +962,7 @@ class SessionFileService:
                 current = self._normalize_absolute_path(posixpath.join(current, part))
                 prefixes.append(current)
 
-        final_info: Any | None = None
+        final_info: SandboxEntry | None = None
         for index, prefix in enumerate(prefixes):
             is_target = index == len(prefixes) - 1
             try:
@@ -951,7 +972,7 @@ class SessionFileService:
                     return None
                 raise
 
-            entry_type = self._entry_type(info)
+            entry_type = info.kind
             if entry_type == "symlink":
                 if is_target and prefix != root and allow_symlink_leaf:
                     return info
@@ -986,36 +1007,19 @@ class SessionFileService:
 
     async def _list_entries_via_filesystem(
         self,
-        filesystem: Any,
+        filesystem: SandboxFiles,
         *,
         current_path: str,
     ) -> dict[str, Any]:
-        raw_entries = await self._filesystem_call(
+        listed = await self._filesystem_call(
             "directory listing",
-            filesystem.list_directory(DirectoryListEntry(path=current_path, depth=1)),
+            filesystem.list_directory(current_path),
             path=current_path,
         )
-        if not isinstance(raw_entries, list):
-            raise APIError(
-                code="AGENT_RUNTIME_ERROR",
-                message="sandbox filesystem returned an invalid directory listing",
-                status_code=502,
-            )
 
         entries: list[dict[str, Any]] = []
-        for raw_entry in raw_entries:
-            raw_path = str(
-                raw_entry.get("path")
-                if isinstance(raw_entry, dict)
-                else getattr(raw_entry, "path", "")
-            ).strip()
-            if not raw_path:
-                raise APIError(
-                    code="AGENT_RUNTIME_ERROR",
-                    message="sandbox filesystem returned an invalid directory entry",
-                    status_code=502,
-                )
-            path = self._normalize_absolute_path(raw_path)
+        for entry in listed:
+            path = self._normalize_absolute_path(entry.path)
             if path == posixpath.normpath(current_path):
                 continue
             if not self._is_within_root(path, current_path):
@@ -1024,20 +1028,13 @@ class SessionFileService:
                     message="sandbox filesystem returned an out-of-directory entry",
                     status_code=502,
                 )
-            modified_at = (
-                raw_entry.get("modified_at")
-                if isinstance(raw_entry, dict)
-                else getattr(raw_entry, "modified_at", None)
-            )
-            if hasattr(modified_at, "isoformat"):
-                modified_at = modified_at.isoformat()
             entries.append(
                 {
                     "path": path,
                     "name": PurePosixPath(path).name,
-                    "kind": ("directory" if self._entry_type(raw_entry) == "directory" else "file"),
-                    "size": self._entry_size(raw_entry),
-                    "modified_at": str(modified_at or ""),
+                    "kind": "directory" if entry.kind == "directory" else "file",
+                    "size": entry.size,
+                    "modified_at": entry.modified_at.isoformat() if entry.modified_at else "",
                 }
             )
         entries.sort(key=lambda item: (item["kind"] != "directory", item["name"].lower()))
@@ -1053,60 +1050,6 @@ class SessionFileService:
         # filesystem API accepts account names, not numeric uid/gid values.
         return {"owner": linux_user, "group": linux_user}
 
-    async def _read_file_bytes(
-        self,
-        filesystem: Any,
-        path: str,
-        *,
-        known_size: int,
-    ) -> bytes:
-        if known_size > _FILESYSTEM_MAX_RESPONSE_BYTES:
-            raise APIError(
-                code="AGENT_RUNTIME_ERROR",
-                message=(
-                    "sandbox file download exceeds the host cap of "
-                    f"{_FILESYSTEM_MAX_RESPONSE_BYTES} bytes"
-                ),
-                status_code=502,
-            )
-        stream = await self._filesystem_call(
-            "file download",
-            filesystem.read_bytes_stream(path),
-            path=path,
-        )
-        chunks: list[bytes] = []
-        total = 0
-        try:
-            async for chunk in stream:
-                data = bytes(chunk)
-                total += len(data)
-                if total > _FILESYSTEM_MAX_RESPONSE_BYTES:
-                    raise APIError(
-                        code="AGENT_RUNTIME_ERROR",
-                        message=(
-                            "sandbox file download exceeds the host cap of "
-                            f"{_FILESYSTEM_MAX_RESPONSE_BYTES} bytes"
-                        ),
-                        status_code=502,
-                    )
-                chunks.append(data)
-        except APIError:
-            raise
-        except Exception as exc:
-            raise self._filesystem_api_error(
-                exc,
-                op_label="file download",
-                path=path,
-            ) from exc
-        finally:
-            close = getattr(stream, "aclose", None)
-            if callable(close):
-                try:
-                    await close()
-                except Exception:
-                    pass
-        return b"".join(chunks)
-
     @classmethod
     def _resolve_chown_identity(cls, session: dict[str, Any]) -> dict[str, Any] | None:
         """Pick the Linux identity that should own files written by the file panel."""
@@ -1114,114 +1057,3 @@ class SessionFileService:
         if identity:
             return identity
         return cls._planned_assistant_identity(session)
-
-    # Path-safety guard script body. Reads four sys.argv values (target, root,
-    # expect_directory, allow_missing_leaf) and prints either ``{ok, resolved_path}``
-    # or ``{error: {code, message, status_code}}`` as a single JSON line.
-    _PATH_GUARD_SCRIPT = (
-        "import json\n"
-        "import os\n"
-        "import sys\n"
-        "\n"
-        "target = sys.argv[1]\n"
-        "root = sys.argv[2]\n"
-        "expect_directory = sys.argv[3] == '1'\n"
-        "allow_missing_leaf = sys.argv[4] == '1'\n"
-        "\n"
-        "def within(path: str, root_path: str) -> bool:\n"
-        "    normalized_path = os.path.normpath(path)\n"
-        "    normalized_root = os.path.normpath(root_path)\n"
-        "    return normalized_path == normalized_root or normalized_path.startswith(normalized_root.rstrip('/') + '/')\n"
-        "\n"
-        "result_path = sys.argv[5] if len(sys.argv) > 5 else ''\n"
-        "\n"
-        "def emit(payload: dict) -> None:\n"
-        "    text = json.dumps(payload, ensure_ascii=False)\n"
-        "    if result_path:\n"
-        "        with open(result_path, 'w', encoding='utf-8') as handle:\n"
-        "            handle.write(text)\n"
-        "    print(text)\n"
-        "\n"
-        "def fail(code: str, message: str, status_code: int) -> None:\n"
-        "    emit({'error': {'code': code, 'message': message, 'status_code': status_code}})\n"
-        "    raise SystemExit(0)\n"
-        "\n"
-        "real_root = os.path.realpath(root)\n"
-        "if os.path.islink(root):\n"
-        "    fail('INVALID_REQUEST', f'session root must not be a symlink: {root}', 400)\n"
-        "probe = target\n"
-        "if os.path.lexists(target):\n"
-        "    resolved = os.path.realpath(target)\n"
-        "else:\n"
-        "    if not allow_missing_leaf:\n"
-        "        fail('FILE_NOT_FOUND', f'path not found: {target}', 404)\n"
-        "    while not os.path.lexists(probe):\n"
-        "        parent = os.path.dirname(probe.rstrip('/')) or '/'\n"
-        "        if parent == probe:\n"
-        "            fail('FILE_NOT_FOUND', f'path not found: {target}', 404)\n"
-        "        probe = parent\n"
-        "    resolved = os.path.realpath(probe)\n"
-        "\n"
-        "if not within(resolved, real_root):\n"
-        "    fail('INVALID_REQUEST', f'path escapes session root: {target}', 400)\n"
-        "\n"
-        "if os.path.lexists(target) and expect_directory and not os.path.isdir(target):\n"
-        "    fail('NOT_DIRECTORY', f'not a directory: {target}', 400)\n"
-        "\n"
-        "emit({'ok': True, 'resolved_path': resolved})\n"
-    )
-
-    @staticmethod
-    def _build_path_guard_command(
-        *,
-        root_path: str,
-        target_path: str,
-        expect_directory: bool,
-        allow_missing_leaf: bool,
-    ) -> str:
-        """Heredoc form for path guard checks."""
-        return (
-            "python - "
-            f"{shlex.quote(target_path)} "
-            f"{shlex.quote(root_path)} "
-            f"{'1' if expect_directory else '0'} "
-            f"{'1' if allow_missing_leaf else '0'} "
-            "<<'PY'\n" + SessionFileService._PATH_GUARD_SCRIPT + "PY"
-        )
-
-    @staticmethod
-    def _parse_guard_payload(result: Any, *, target_path: str) -> dict[str, Any]:
-        raw_text = extract_command_log_text(result).strip()
-        return SessionFileService._parse_guard_payload_text(raw_text, target_path=target_path)
-
-    @staticmethod
-    def _parse_guard_payload_text(raw_text: str, *, target_path: str) -> dict[str, Any]:
-        if not raw_text:
-            raise APIError(
-                code="AGENT_RUNTIME_ERROR",
-                message=f"empty path guard result: {target_path}",
-                status_code=502,
-            )
-        try:
-            payload = json.loads(raw_text)
-        except json.JSONDecodeError as exc:
-            logger.warning("invalid path guard payload for %s: %s", target_path, raw_text)
-            raise APIError(
-                code="AGENT_RUNTIME_ERROR",
-                message="invalid path guard payload",
-                status_code=502,
-            ) from exc
-        error_payload = payload.get("error") if isinstance(payload, dict) else None
-        if isinstance(error_payload, dict):
-            raise APIError(
-                code=str(error_payload.get("code") or "AGENT_RUNTIME_ERROR"),
-                message=str(error_payload.get("message") or "path guard failed"),
-                status_code=int(error_payload.get("status_code") or 502),
-            )
-        if not isinstance(payload, dict) or payload.get("ok") is not True:
-            raise APIError(
-                code="AGENT_RUNTIME_ERROR",
-                message="path guard payload missing success marker",
-                status_code=502,
-            )
-        return payload

@@ -54,6 +54,15 @@ def check_scalar(field_key: str, field_type: str, value: Any, enum: list[str] | 
     elif field_type == "string_list":
         if not isinstance(value, list) or any(not isinstance(s, str) for s in value):
             raise invalid_request(f"{field_key} must be a list of strings")
+    elif field_type == "skill_list":
+        from astrabox.core.service.orchestrator.runtime.skill_sources import normalize_skills
+
+        if not isinstance(value, list):
+            raise invalid_request(f"{field_key} must be a list of skill sources")
+        try:
+            normalize_skills(value)
+        except ValueError as exc:
+            raise invalid_request(str(exc)) from None
     elif field_type == "key_value":
         if not isinstance(value, dict) or any(not isinstance(v, str) for v in value.values()):
             raise invalid_request(f"{field_key} must be an object of string values")

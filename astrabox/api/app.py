@@ -39,24 +39,20 @@ _DEFAULT_ENVIRONMENT_NAME = "claude-code"
 
 
 def _seed_default_model() -> str:
-    """Return the deployment model reported when built-in Agents are seeded.
+    """Return the deployment's default model, which the built-in Agents are seeded with.
 
-    The selected endpoint provider owns any provider-specific model override.
+    :meth:`RuntimeConfigResolver.default_model_name` defines it, and schema
+    migration 6 gives Agents stored without a model the same value.
     ``astrabox/config/app.yml`` supplies the bundled model unless deployment
-    configuration replaces it.
+    configuration replaces it. Empty when the deployment configures none.
     """
 
     from astrabox.common.utils.settings import load_astrabox_settings
-    from astrabox.seams.model import ModelEndpoint, model_endpoint_for_name
-
-    settings = load_astrabox_settings()
-    endpoint = model_endpoint_for_name(settings.model_endpoint_provider).resolve(
-        requested=ModelEndpoint(
-            model_name=str(settings.model_name or "").strip() or None,
-        ),
-        settings=settings,
+    from astrabox.core.service.orchestrator.runtime.config_resolver import (
+        RuntimeConfigResolver,
     )
-    return str(endpoint.model_name or "").strip()
+
+    return RuntimeConfigResolver(load_astrabox_settings()).default_model_name() or ""
 
 _FINANCIAL_SERVICES_REPOSITORY = "https://github.com/anthropics/financial-services.git"
 _FINANCIAL_SERVICES_REVISION = "286f9068951335bcabd99525d5197752866ee05f"
@@ -119,9 +115,14 @@ async def _seed_default_agent_if_empty() -> None:
 
     Credentials are not seeded: the environment carries no ``provider_access`` and
     no ``endpoint_provider`` here, so model connectivity falls back to the
-    deployment's selected model endpoint provider. Organization, model, backend,
-    and image selectors are also absent, so their resolution boundaries use the
+    deployment's selected model endpoint provider. Organization, backend, and
+    image selectors are also absent, so their resolution boundaries use the
     current request or deployment defaults until an operator writes a pin.
+
+    Each Agent stores the deployment's default model (:func:`_seed_default_model`),
+    because every Agent names its own; a later change to the deployment's model
+    does not change these Agents. Raises before writing anything when the
+    deployment configures no default model.
     """
     import uuid
 
@@ -149,6 +150,13 @@ async def _seed_default_agent_if_empty() -> None:
             "agent seed skipped: backend %r declares no runtime defaults", backend_name
         )
         return
+    deployment_model = _seed_default_model()
+    if not deployment_model:
+        raise RuntimeError(
+            "cannot seed the built-in Agents: every Agent names a model, and this "
+            "deployment configures no default model to give them; set "
+            "ANTHROPIC_MODEL (or ASTRABOX_MODEL_NAME)"
+        )
 
     environments_repo = EnvironmentRepository()
     # The seed writes repositories directly instead of using
@@ -189,7 +197,6 @@ async def _seed_default_agent_if_empty() -> None:
         },
     )
 
-    deployment_model = _seed_default_model()
     # The seed writes the repository directly, so it applies the same
     # create-time default as AgentConfigService.create_agent_config.
     seeded_capacity = default_prepared_capacity(backend_name)
@@ -217,9 +224,10 @@ async def _seed_default_agent_if_empty() -> None:
     ) -> dict[str, object]:
         # visibility public so any user of a fresh instance can see/use it; the
         # system principal is the creator (seed-time, no request user).
-        # Organization and model stay absent. Catalog resolution uses the
-        # request's current organization and runtime resolution uses the
-        # deployment's current model; explicitly authored values still win.
+        # Organization stays absent, so catalog resolution uses the request's
+        # current organization; an explicitly authored one still wins. The
+        # model is written like any Agent's: the write path requires one and
+        # the runtime refuses an Agent without one.
         return {
             "agent_id": str(uuid.uuid4()),
             "enabled": True,
@@ -232,6 +240,7 @@ async def _seed_default_agent_if_empty() -> None:
             "created_at": seeded_at,
             "updated_at": seeded_at,
             "description": description,
+            "model": deployment_model,
             "system": system,
             "environment_name": _DEFAULT_ENVIRONMENT_NAME,
             "display_meta": {"display_name": name},
@@ -290,11 +299,11 @@ async def _seed_default_agent_if_empty() -> None:
     )
     logger.info(
         "seeded default environment %r (deployment backend=%s, image=%s) "
-        "+ 2 agents (deployment model=%r)",
+        "+ 2 agents (model=%r)",
         _DEFAULT_ENVIRONMENT_NAME,
         backend_name,
         default_runtime_image,
-        deployment_model or "<unset>",
+        deployment_model,
     )
 
 
@@ -582,12 +591,14 @@ def _register_feature_routes(app: FastAPI) -> None:
     feat = load_astrabox_settings()
     if feat.agent_enabled:
         from astrabox.api.routes.agents import register_agent_routes
+        from astrabox.api.routes.agent_catalog import register_agent_catalog_routes
         from astrabox.api.routes.agent_mcp import (
             register_agent_mcp_routes,
         )
         from astrabox.api.routes.mcp_tokens import register_mcp_token_routes
 
         register_agent_routes(app)
+        register_agent_catalog_routes(app)
         register_agent_mcp_routes(app)
         # Behind the same gate as the facade the keys authenticate against:
         # issuing a credential for an endpoint this deployment does not serve

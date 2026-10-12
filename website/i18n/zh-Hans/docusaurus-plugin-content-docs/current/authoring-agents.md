@@ -23,7 +23,8 @@ Agent 在 Session 中执行任务。AstraBox 让 Agent 随时可用，创建或�
 | `name` | string | 是 | Agent 名称 |
 | `description` | string | 否 | Agent 的说明 |
 | `use_cases` | array | 否 | 这个 Agent 适合处理的任务示例 |
-| `display_meta` | object | 否 | 客户端显示的名称、图标和标签 |
+| `display_meta` | object | 否 | `display_name`、`icon` 和 `tags`。标签可被搜索，并显示在主页的 Agent 卡片上，点击即按该标签筛选：最多 5 个，存储时转为小写、去掉开头的 `#`、空格换成 `-` |
+| `categories` | array | 否 | Agent 在主页上所属分类的 ID，取自管理员定义的分类（`GET /api/v1/agent-categories`）；不存在的 ID 会被拒绝 |
 | `model` | string | 是 | 模型标识，详见下文 |
 | `system` | string | 否 | 系统提示词 |
 | `engine_options` | object | 否 | 运行环境所选 Agent 程序定义的高级配置 |
@@ -174,7 +175,7 @@ Agent 采用乐观并发控制（OCC）机制：
 1. **命名规范** — 用 `团队-用途` 格式，如 `backend-code-review`、`frontend-test-gen`
 2. **提示词精炼** — `system` 字段写清角色、输出格式、限制条件
 3. **最小权限原则** — 只添加任务需要的 MCP 服务器、Skill、Plugin、代码仓库、凭证和网络地址
-4. **善用展示信息** — 添加清楚的说明和标签，帮助用户找到合适的 Agent
+4. **帮用户找到 Agent** — 写清楚说明，选好它所属的分类，并用标签写下用户会搜索的词
 5. **自动更新时检查版本** — 服务修改 Agent 时携带版本，让并发修改产生冲突，而不是互相覆盖
 
 已安装的 Agent 程序需要把工作拆分为 child run 时，参阅

@@ -1,9 +1,21 @@
 """Durably fenced orchestration for sandbox turn preparation.
 
 The public provider surface lives in :mod:`astrabox.seams.sandbox`.  Core owns
-the effect boundary: reload the durable session, atomically claim a no-TTL
-attempt guard, run the untrusted hook under a host-clock deadline, keep the
-guard across the engine write, and release only by exact attempt CAS.
+the effect boundary: reload the durable session and its turn slot, claim a
+no-TTL attempt guard and confirm the turn still holds the slot, run the
+untrusted hook under a host-clock deadline, keep the guard across the engine
+write, and release only by exact attempt CAS.
+
+The guard is stored on the session row beside the sandbox binding and the
+principal it protects; which turn is running is recorded only in the session's
+snapshot (``session_snapshots.current_turn_id``). The repository backends
+compare-and-set one document at a time, so the claim is atomic with the
+binding and the principal, and the turn is read twice: before the claim, and
+again while the guard is held. A claim fills only an empty guard slot or one
+naming a sandbox other than the session's current binding, so a claimant whose
+turn ended between the two reads displaced no current owner and releases its
+own guard. A claimant that finds its turn in the slot during the hold held the
+guard while that turn was running.
 
 The capability is limited to profile-exclusive sandboxes. Shared sandboxes do
 not provide the required sandbox-keyed distributed fence or immutable
@@ -21,6 +33,9 @@ from typing import Any
 
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
+from astrabox.core.service.orchestrator.session_kernel.conversation_recovery import (
+    snapshot_active_turn_id,
+)
 from astrabox.seams.sandbox import (
     TURN_PREPARATION_FAILED,
     TURN_PREPARATION_USER_ACTION_REQUIRED,
@@ -68,6 +83,43 @@ def _failure(
             "engine_kind": context.engine_kind,
             "dispatch_attempt_id": context.dispatch_attempt_id,
         },
+    )
+
+
+def _turn_owner_mismatch(context: SandboxTurnContext) -> APIError:
+    return _failure(
+        context,
+        reason="turn_owner_mismatch",
+        detail="persisted active turn does not match turn context",
+    )
+
+
+def sandbox_turn_context(
+    *,
+    session: dict[str, Any],
+    session_id: str,
+    runtime: Any,
+    turn_id: str,
+) -> SandboxTurnContext:
+    """Describe one engine write to ``runtime`` on behalf of ``turn_id``.
+
+    The backend and the principal come from the persisted session, the sandbox
+    from the runtime the write goes to (the session's binding when the runtime
+    names none), and every write gets a fresh dispatch attempt id.
+    """
+    principal_id = session.get("user_id")
+    return SandboxTurnContext(
+        sandbox_backend=str(session.get("sandbox_backend") or "").strip().lower(),
+        sandbox_id=(
+            str(getattr(runtime, "sandbox_id", "") or "").strip()
+            or str(session.get("sandbox_id") or "").strip()
+        ),
+        session_id=session_id,
+        principal_id=principal_id.strip() if isinstance(principal_id, str) else "",
+        turn_id=turn_id,
+        engine_kind=str(getattr(runtime, "engine_kind", "") or "").strip().lower(),
+        dispatch_attempt_id=str(uuid.uuid4()),
+        sandbox_handle=getattr(runtime, "sandbox", None),
     )
 
 
@@ -134,7 +186,13 @@ def _validate_context(
     context: SandboxTurnContext,
     *,
     persisted_session: object,
+    active_turn_id: str | None,
 ) -> str:
+    """Check the context against the session row and the snapshot's turn slot.
+
+    ``active_turn_id`` is :func:`snapshot_active_turn_id` of the session's
+    snapshot. Returns the raw stored principal for the guard's claim filter.
+    """
     identifiers = {
         "sandbox_backend": context.sandbox_backend,
         "sandbox_id": context.sandbox_id,
@@ -168,7 +226,6 @@ def _validate_context(
     persisted_sandbox_id = str(
         persisted_session.get("sandbox_id") or ""
     ).strip()
-    persisted_turn_id = str(persisted_session.get("current_turn_id") or "").strip()
     if persisted_session_id != context.session_id:
         raise _failure(
             context,
@@ -187,12 +244,8 @@ def _validate_context(
             reason="sandbox_mismatch",
             detail="persisted sandbox binding does not match turn context",
         )
-    if persisted_turn_id != context.turn_id:
-        raise _failure(
-            context,
-            reason="turn_owner_mismatch",
-            detail="persisted active turn does not match turn context",
-        )
+    if active_turn_id != context.turn_id:
+        raise _turn_owner_mismatch(context)
     if (
         not isinstance(persisted_principal_id, str)
         or not persisted_principal_id.strip()
@@ -327,6 +380,46 @@ async def _release_active_guard(
         return False
 
 
+async def _read_active_turn_id(
+    session_snapshots_repo: Any,
+    context: SandboxTurnContext,
+) -> str | None:
+    return snapshot_active_turn_id(
+        await session_snapshots_repo.get_snapshot(context.session_id)
+    )
+
+
+async def _confirm_turn_holds_slot(
+    sessions_repo: Any,
+    session_snapshots_repo: Any,
+    context: SandboxTurnContext,
+    *,
+    owner_token: str,
+) -> None:
+    """Re-read the turn slot while this coordinator holds the guard.
+
+    The claim's compare-and-set covers the session row only, so the turn is
+    confirmed here, after the claim and before any provider effect. On a
+    mismatch or a failed read the exact guard is released: nothing has run
+    against the sandbox under it.
+    """
+    try:
+        active_turn_id = await _read_active_turn_id(session_snapshots_repo, context)
+    except asyncio.CancelledError:
+        await _release_active_guard(sessions_repo, context, owner_token=owner_token)
+        raise
+    except Exception:
+        await _release_active_guard(sessions_repo, context, owner_token=owner_token)
+        raise _failure(
+            context,
+            reason="session_reload_failed",
+            detail="persisted active turn could not be reloaded under the guard",
+        ) from None
+    if active_turn_id != context.turn_id:
+        await _release_active_guard(sessions_repo, context, owner_token=owner_token)
+        raise _turn_owner_mismatch(context)
+
+
 def _schedule_abandoned_cleanup(
     provider_task: asyncio.Task[Any],
     *,
@@ -455,9 +548,15 @@ async def prepared_sandbox_turn(
     context: SandboxTurnContext,
     *,
     sessions_repo: Any,
+    session_snapshots_repo: Any,
     timeout_seconds: float = TURN_PREPARATION_TIMEOUT_SECONDS,
 ) -> AsyncIterator[None]:
-    """Fence provider preparation and the immediately following engine write."""
+    """Fence provider preparation and the immediately following engine write.
+
+    ``sessions_repo`` holds the session's sandbox binding, its principal and
+    the guard; ``session_snapshots_repo`` holds the conversation's turn slot.
+    Only the turn in that slot is prepared.
+    """
     try:
         provider = sandbox_for_name(context.sandbox_backend)
     except asyncio.CancelledError:
@@ -480,6 +579,7 @@ async def prepared_sandbox_turn(
 
     try:
         persisted_session = await sessions_repo.get_session(context.session_id)
+        active_turn_id = await _read_active_turn_id(session_snapshots_repo, context)
     except asyncio.CancelledError:
         raise
     except Exception:
@@ -491,6 +591,7 @@ async def prepared_sandbox_turn(
     principal_id = _validate_context(
         context,
         persisted_session=persisted_session,
+        active_turn_id=active_turn_id,
     )
     context = _validated_live_context(provider, context)
     # The public dispatch attempt id is provider-facing and may be replayed by
@@ -521,6 +622,12 @@ async def prepared_sandbox_turn(
             reason="guard_conflict",
             detail="another turn preparation attempt owns this sandbox",
         )
+    await _confirm_turn_holds_slot(
+        sessions_repo,
+        session_snapshots_repo,
+        context,
+        owner_token=guard_owner_token,
+    )
 
     try:
         provider_awaitable = provider.prepare_turn(context=context)
@@ -672,4 +779,5 @@ __all__ = [
     "TURN_PREPARATION_REFRESH_FRACTION",
     "TURN_PREPARATION_TIMEOUT_SECONDS",
     "prepared_sandbox_turn",
+    "sandbox_turn_context",
 ]

@@ -27,7 +27,6 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from opensandbox.models.execd import Execution, ExecutionLogs, OutputMessage
 
 from astrabox.common.utils.errors import APIError
 from astrabox.providers.open_sandbox.sandbox import (
@@ -39,6 +38,7 @@ from astrabox.seams.sandbox import (
     SandboxProbeFailed,
     SandboxUnreachable,
 )
+from tests._execd_fakes import ExecdRun, ScriptedExecdCommands
 
 
 class _FakeIsolation:
@@ -460,21 +460,11 @@ def _headroom_provider(stdout: bytes) -> OpenSandboxSandboxProvider:
     """A provider whose box answers a command the way the real one does."""
 
     provider = OpenSandboxSandboxProvider()
-    execution = Execution(
-        logs=ExecutionLogs(
-            stdout=[
-                OutputMessage(text=line, timestamp=0)
-                for line in stdout.decode("utf-8").splitlines()
-            ],
-            stderr=[],
-        ),
-        exit_code=0,
-        error=None,
-    )
     handle = OpenSandboxHandle(
         SimpleNamespace(  # type: ignore[arg-type]
-            commands=SimpleNamespace(
-                run=_async_returning(execution),
+            id="sbx-1",
+            commands=ScriptedExecdCommands(
+                ExecdRun(stdout=tuple(stdout.decode("utf-8").splitlines()))
             ),
             close=_async_returning(None),
         )

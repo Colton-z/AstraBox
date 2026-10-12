@@ -429,7 +429,7 @@ test('a plugin conversation owns its mutable plugin data and registers every dec
   await page.goto(appPath('/agents'));
   const card = page.locator(`[data-testid="agent-option"][data-agent-name="${agentName}"]`);
   await expect(card, `the picker must offer ${agentName}`).toBeVisible({ timeout: 45_000 });
-  await card.getByRole('button').click();
+  await card.getByTestId('agent-start').click();
   await page.waitForURL((url) => /\/sessions\/[^/]+$/.test(url.pathname), { timeout: 120_000 });
   const sessionId = new URL(page.url()).pathname.split('/').filter(Boolean).pop() || '';
   expect(sessionId, 'the Agent card must open a concrete conversation').not.toEqual('');

@@ -25,7 +25,8 @@ The Agent executes tasks inside a Session. AstraBox keeps the Agent available, s
 | `name` | string | Yes | The Agent name. |
 | `description` | string | No | A description for the Agent. |
 | `use_cases` | array | No | Short examples of work this Agent handles. |
-| `display_meta` | object | No | Display name, icon, and tags shown by clients. |
+| `display_meta` | object | No | `display_name`, `icon` and `tags`. Tags are searched and shown on the Agent's card on the home page, where clicking one filters by it: at most five, stored lower case with a leading `#` dropped and spaces turned into `-`. |
+| `categories` | array | No | Ids of the categories the Agent is listed under on the home page, from those an administrator defines (`GET /api/v1/agent-categories`). An unknown id is refused. |
 | `model` | string | Yes | The model identifier. See details below. |
 | `system` | string | No | The system prompt. |
 | `engine_options` | object | No | Advanced options defined by the Agent program selected through the Environment. |
@@ -204,7 +205,7 @@ To resolve the conflict:
 1. **Naming conventions** — Use the `team-purpose` format, such as `backend-code-review`, `frontend-test-gen`.
 2. **Prompt refinement** — Specify the role, output format, and constraints in the `system` field.
 3. **Apply the principle of least privilege** — Add only the MCP servers, Skills, Plugins, repositories, credentials, and network destinations required for the Agent's work.
-4. **Use display metadata effectively** — Add a clear description and tags so users can find the right Agent.
+4. **Help users find the Agent** — Give it a clear description, the categories it belongs under, and tags for the words people will search for.
 5. **Use version checks for automated updates** — Include the version when a service edits an Agent so concurrent changes produce a conflict instead of replacing one another.
 
 See [Multiagent orchestration](multi-agents.md) when the installed Agent

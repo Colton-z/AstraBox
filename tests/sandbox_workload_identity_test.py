@@ -32,6 +32,7 @@ from types import SimpleNamespace
 import pytest
 
 import astrabox.core.service.orchestrator.engine.claude_code  # noqa: F401 — registers the runtime profile used below
+from astrabox.seams.sandbox_data import SandboxCommandResult
 from astrabox.common.utils.errors import APIError
 from astrabox.core.service.orchestrator.runtime.conversation_identity import (
     _CONVERSATION_BOOTSTRAP_SCRIPT,
@@ -125,22 +126,16 @@ def test_the_image_configures_execd_to_host_conversation_homes() -> None:
 
 
 def test_bootstrap_stderr_cannot_corrupt_the_ready_line_telemetry() -> None:
-    """OpenSandbox returns stdout/stderr as separate message collections."""
+    """A command's stdout and stderr arrive apart, and stay apart in its output."""
 
-    result = SimpleNamespace(
-        error=None,
-        logs=SimpleNamespace(
-            stdout=[
-                SimpleNamespace(
-                    text=(
-                        "CONVERSATION_BOOTSTRAP_READY user=agent uid=1000 gid=1000 "
-                        "home=/home/agent workspace=/home/agent/workspace "
-                        "timings_b64=eyJ0b3RhbCI6NzB9"
-                    )
-                )
-            ],
-            stderr=[SimpleNamespace(text="useradd: warning: home already exists")],
+    result = SandboxCommandResult(
+        exit_code=0,
+        stdout=(
+            "CONVERSATION_BOOTSTRAP_READY user=agent uid=1000 gid=1000 "
+            "home=/home/agent workspace=/home/agent/workspace "
+            "timings_b64=eyJ0b3RhbCI6NzB9"
         ),
+        stderr="useradd: warning: home already exists",
     )
 
     ready = _ready_identity_from_bootstrap_output(

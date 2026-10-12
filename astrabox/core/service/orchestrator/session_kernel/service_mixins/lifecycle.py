@@ -81,6 +81,7 @@ class LifecycleCommandsMixin:
                 message=f"agent '{agent_id or template_name}' not found or not permitted",
                 status_code=403,
             )
+        await self._session_service.record_user_profile(user)
         normalized_idempotency_key = str(idempotency_key or "").strip() or None
         if session_id is not None and normalized_idempotency_key is not None:
             raise ValueError("session_id and idempotency_key are mutually exclusive")

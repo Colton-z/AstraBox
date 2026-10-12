@@ -263,11 +263,16 @@
       },
       "tags": {
         "label": "Tags",
-        "example": "research"
+        "example": "research",
+        "help": "Words people search for. Press Enter or a comma to add one."
       },
       "use_cases": {
         "label": "Use cases",
         "example": "Compare technical solutions and write a recommendation"
+      },
+      "categories": {
+        "label": "Categories",
+        "help": "The home page lists this Agent under each category you choose."
       },
       "model": {
         "label": "Model",
@@ -289,9 +294,9 @@
       },
       "skills": {
         "label": "Custom Skills",
-        "help": "Enter Skill sources to combine with the Skills selected from {{catalog}}; identical sources are deduplicated",
+        "help": "JSON array of Git strings or source objects, combined with Skills from {{catalog}}. Identical sources are deduplicated; installed names must be unique.",
         "label_alone": "Skills",
-        "help_alone": "Enter Skill sources; identical sources are deduplicated"
+        "help_alone": "JSON array of Git strings or source objects. A source object names provider, source, version and name; config holds public settings and approved credential names."
       },
       "mcp_servers": {
         "label": "Custom MCP",

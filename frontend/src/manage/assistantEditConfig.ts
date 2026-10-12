@@ -1,3 +1,4 @@
+import type { SkillDescriptor } from '@/types';
 // The create-flow and edit-flow edit configs for an Assistant, in the same
 // declarative grammar environmentEditConfig.ts produces (EditSectionSpec[]), so
 // the create page and the record page's edit cards both render console-grammar
@@ -210,7 +211,7 @@ export interface AssistantEditDraft {
   permission_mode_default: string;
   system: string;
   timezone: string;
-  skills: string[];
+  skills: SkillDescriptor[];
   mcp_servers: Record<string, unknown> | undefined;
   packages: unknown[] | undefined;
   engine_options: Record<string, unknown>;
@@ -331,14 +332,14 @@ export function buildAssistantExtensionSection(
     fields.push({
       key: 'skills',
       label: i18n.t('manage:assistant_form.skills_label'),
-      type: 'list',
+      type: 'json',
       get: (d) => (d as unknown as AssistantEditDraft).skills,
       set: (d, value) => ({
         ...d,
-        skills: Array.isArray(value) ? value.map(String).filter((item) => item.trim() !== '') : [],
+        skills: value ?? [],
       }),
       idTag: 'skills',
-      example: 'https://github.com/anthropics/skills.git@main#skills/brand-guidelines',
+      example: '["https://github.com/anthropics/skills.git@main#skills/brand-guidelines"]',
       help: i18n.t('manage:assistant_form.skills_help'),
     });
   }

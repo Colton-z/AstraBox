@@ -80,17 +80,8 @@ test('a console record is created, edited and destroyed from the page that owns 
   const seeded = await api.defaultAgent();
   const environmentName = String(seeded.environment_name || '').trim();
   expect(environmentName, 'the seeded agent must name an environment to borrow').not.toEqual('');
-  // The seeded agent pins no model — a null there means "whatever this
-  // environment defaults to", which is what every deployment ships. So the
-  // throwaway agent's model is resolved the way the rest of the tree resolves
-  // it (deployment-trigger-runs-the-agent…:52): the agent's own pin when it has
-  // one, otherwise the first concrete entry from the environment's listing.
-  // Wildcards are skipped because they are a policy pattern, not a model.
-  let model = String(seeded.model || '').trim();
-  if (!model || model.includes('*')) {
-    const models = await api.listEnvironmentModels(environmentName);
-    model = models.find((candidate) => candidate && !candidate.includes('*')) ?? '';
-  }
+  const model = String(seeded.model || '').trim();
+  expect(model).not.toContain('*');
   expect(model, 'the throwaway agent needs a concrete model to name').not.toEqual('');
 
   // The name the create page must refuse. Taken from the same listing the page

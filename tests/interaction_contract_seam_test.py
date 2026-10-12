@@ -43,9 +43,6 @@ from astrabox.core.service.orchestrator.engine.interaction_contract import (
     validate_interaction_contract,
     validate_interaction_response,
 )
-from astrabox.core.service.orchestrator.runtime.pty_terminal import (
-    ResolvedExecdEndpoint,
-)
 
 #: Claude's own words. Nothing in a Hermes flow may carry any of them.
 _CLAUDE_VOCABULARY = (

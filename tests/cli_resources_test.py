@@ -263,8 +263,12 @@ def test_destroy_reports_an_absent_agent_rather_than_failing(
     assert deployment.writes == []
 
 
-def test_a_nested_field_that_really_differs_is_still_reported() -> None:
-    """The path lookup must not turn into "never changed"."""
+def test_a_nested_field_that_really_differs_is_written_where_it_is_stored() -> None:
+    """The path lookup must not turn into "never changed", and the write follows it.
+
+    The deployment accepts ``display_name`` only inside ``display_meta``, which
+    a write replaces whole: the request carries the stored ``icon`` with it.
+    """
     deployment = _Deployment(
         agents=[
             {
@@ -273,7 +277,7 @@ def test_a_nested_field_that_really_differs_is_still_reported() -> None:
                 "name": "researcher",
                 "model": "claude-opus-5",
                 "environment_name": "default",
-                "display_meta": {"display_name": "Old name"},
+                "display_meta": {"display_name": "Old name", "icon": "flask"},
             }
         ],
         environments=[{"name": "default", "endpoint_provider": "litellm"}],
@@ -295,6 +299,9 @@ def test_a_nested_field_that_really_differs_is_still_reported() -> None:
     agent_result = next(row for row in results if row["kind"] == "agent")
     assert agent_result["action"] == ACTION_UPDATE
     assert agent_result["fields"] == ["display_name"]
+    (_, _, body), = [write for write in deployment.writes if write[0] == "PUT"]
+    assert "display_name" not in body
+    assert body["display_meta"] == {"display_name": "New name", "icon": "flask"}
 
 
 def _wire(monkeypatch: pytest.MonkeyPatch, deployment: _Deployment) -> None:

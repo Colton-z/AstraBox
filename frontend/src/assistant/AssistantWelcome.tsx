@@ -1,3 +1,4 @@
+import { skillSourceLabel } from '@/types';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import useSWR from 'swr';
@@ -52,10 +53,10 @@ export function AssistantWelcome({ assistantId }: { assistantId: string }) {
     .map((c) => c.name);
   const unique = (names: string[]) => Array.from(new Set(names));
   const skills = unique([
-    ...(record?.inherited?.skills ?? []),
+    ...(record?.inherited?.skills ?? []).map(skillSourceLabel),
     // Undefined until read, null without a catalog: listed only once a catalog is known to run.
-    ...(extensionProvider.provider ? record?.inherited?.catalog_skills ?? [] : []),
-    ...(record?.skills ?? []),
+    ...(extensionProvider.provider ? record?.inherited?.catalog_skills ?? [] : []).map(skillSourceLabel),
+    ...(record?.skills ?? []).map(skillSourceLabel),
   ]);
   const tools = unique([
     ...(record?.inherited?.mcp_servers ?? []),

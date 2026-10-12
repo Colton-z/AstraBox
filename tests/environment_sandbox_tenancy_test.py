@@ -49,7 +49,12 @@ class _FakeAgentRepo:
     async def get_agent(self, agent_id: str) -> dict[str, Any] | None:
         if agent_id != _AGENT_ID:
             return None
-        return {"agent_id": _AGENT_ID, "name": "a", "environment_name": "env-1"}
+        return {
+            "agent_id": _AGENT_ID,
+            "name": "a",
+            "model": "claude-opus-4-8",
+            "environment_name": "env-1",
+        }
 
 
 async def _harness(**environment: Any) -> Any:

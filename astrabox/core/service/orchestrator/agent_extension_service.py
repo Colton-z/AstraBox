@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from astrabox.core.service.orchestrator.runtime.skill_sources import normalize_skills
+
+from astrabox.seams.skills import SkillDescriptor
+
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -101,7 +105,7 @@ class CatalogSelection:
 
     mcp_servers: tuple[tuple[str, str], ...] = ()
     skill_ids: tuple[str, ...] = ()
-    skills: tuple[str, ...] = ()
+    skills: tuple[SkillDescriptor, ...] = ()
 
     def __bool__(self) -> bool:
         return bool(self.mcp_servers or self.skill_ids or self.skills)
@@ -132,7 +136,7 @@ def catalog_selection(record: Mapping[str, Any]) -> CatalogSelection:
     return CatalogSelection(
         mcp_servers=tuple(normalize_assignments(record.get(AGENT_MCP_ASSIGNMENTS_FIELD))),
         skill_ids=_stored_strings(skills.get("skill_ids")),
-        skills=_stored_strings(skills.get("skills")),
+        skills=tuple(normalize_skills(skills.get("skills"))),
     )
 
 

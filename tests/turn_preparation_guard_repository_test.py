@@ -40,7 +40,6 @@ async def _insert_session(collection: AsyncCollection) -> None:
             "user_id": "principal-1",
             "sandbox_backend": "exclusive-provider",
             "sandbox_id": "sandbox-1",
-            "current_turn_id": "turn-1",
             "deleted": False,
         }
     )
@@ -283,46 +282,7 @@ async def test_claim_atomically_matches_owner_backend_and_sandbox(
     )
 
 
-async def test_claim_atomically_matches_current_logical_turn(
-    guard_store: Any,
-) -> None:
-    repo, collection = guard_store
-    await _insert_session(collection)
-
-    stale = await repo.claim_turn_preparation_guard(
-        "session-1",
-        principal_id="principal-1",
-        sandbox_backend="exclusive-provider",
-        sandbox_id="sandbox-1",
-        turn_id="turn-stale",
-        attempt_id="stale-attempt",
-        owner_token="stale-owner",
-    )
-
-    assert stale is None
-    stored = await collection.find_one({"session_id": "session-1"})
-    assert stored is not None
-    assert stored.get("turn_preparation_guard") is None
-
-    await collection.update_one(
-        {"session_id": "session-1"},
-        {"$set": {"current_turn_id": "turn-new", "busy_turn_id": "turn-stale"}},
-    )
-    assert (
-        await repo.claim_turn_preparation_guard(
-            "session-1",
-            principal_id="principal-1",
-            sandbox_backend="exclusive-provider",
-            sandbox_id="sandbox-1",
-            turn_id="turn-stale",
-            attempt_id="stale-busy-attempt",
-            owner_token="stale-busy-owner",
-        )
-        is None
-    )
-
-
-async def test_ambiguous_claim_write_is_reaped_if_turn_changes_before_readback(
+async def test_ambiguous_claim_write_is_reaped_if_binding_changes_before_readback(
     guard_store: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -339,9 +299,12 @@ async def test_ambiguous_claim_write_is_reaped_if_turn_changes_before_readback(
         result = await original_find_one_and_update(*args, **kwargs)
         if first_call:
             first_call = False
+            # The session is rebound to a replacement sandbox after the claim
+            # landed but before its caller learned so: the guard it installed
+            # names a sandbox other than the session's binding.
             await collection.update_one(
                 {"session_id": "session-1"},
-                {"$set": {"current_turn_id": "turn-2"}},
+                {"$set": {"sandbox_id": "sandbox-2"}},
             )
             raise _AppliedThenResponseLost("server applied write before disconnect")
         return result
@@ -364,7 +327,7 @@ async def test_ambiguous_claim_write_is_reaped_if_turn_changes_before_readback(
     assert claimed is None
     stored = await collection.find_one({"session_id": "session-1"})
     assert stored is not None
-    assert stored["current_turn_id"] == "turn-2"
+    assert stored["sandbox_id"] == "sandbox-2"
     assert stored.get("turn_preparation_guard") is None
 
 

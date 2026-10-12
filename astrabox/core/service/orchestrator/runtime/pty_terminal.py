@@ -1,98 +1,43 @@
-"""Provide one long-lived execd shell per session.
+"""Provide one long-lived shell per session, as a process in the session's box.
 
 The shell outlives individual requests, so ``cd`` and ``export`` affect later
 commands. A command sentinel reports each command's exit code and final working
-directory because execd's ``exit`` frame describes the shell itself.
+directory, because the process's own exit describes the shell, not a command.
 
-Protocol (components/execd/PTY.md):
-
-* ``POST /pty`` with ``{"cwd": ...}`` creates a session and returns its id;
-* ``GET  /pty/{id}`` reports ``output_offset`` — where a reconnect should resume;
-* ``WS   /pty/{id}/ws`` carries it. ``?since=<offset>`` replays what was missed,
-  ``?takeover=1`` evicts an existing connection (a second one is otherwise a
-  409, and the evicted one closes with 4001);
-* frames are binary with a one-byte kind — ``0x01`` stdout, ``0x02`` stderr in
-  pipe mode, ``0x03`` replay — and input is ``0x00`` followed by raw bytes;
-* ``?pty=0`` selects pipe mode, avoiding input echo and shell prompts while
-  preserving separate stdout and stderr frames;
-* control is JSON text: ``resize``, ``signal``, ``ping``.
-
-``takeover=1`` lets any replica attach to the shell owned by the box. The host
-only persists the execd session id.
+The shell is one of the box's long-lived processes
+(:class:`astrabox.seams.sandbox_data.SandboxProcesses`): any replica attaches
+to it by id and takes it over, which lets a command run on whichever replica
+serves the request. The host keeps only the process id.
 """
 
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import inspect
-import json
 import re
 import shlex
 import uuid
 from collections.abc import AsyncIterator, Mapping
-from dataclasses import dataclass
 from typing import Any
 
-import httpx
 import websockets
-from websockets.asyncio.client import ClientConnection
-from websockets.frames import Frame, Opcode
 
 from astrabox.common.utils.errors import APIError
-from astrabox.common.logger.logger_factory import get_logger
-
-logger = get_logger(__name__)
-
-#: execd's port inside the sandbox. Fixed by the daemon, not configurable here.
-EXECD_PORT = 44772
+from astrabox.seams.sandbox_data import (
+    ProcessExit,
+    ProcessOutput,
+    SandboxEndpoint,
+    SandboxProcessDetached,
+    SandboxProcesses,
+)
 
 #: How long to wait for a command's sentinel before giving the caller back what
 #: arrived. A terminal must not hang on a command that never returns — the user
 #: can still see the output that did arrive, and the shell stays alive.
 _COMMAND_TIMEOUT_SECONDS = 300.0
 
-_CONNECT_TIMEOUT_SECONDS = 15.0
 
-#: How long to keep reading after the shell's exit notice. execd's exit control
-#: frame can overtake stdout frames still queued behind it — a fast
-#: ``echo X && exit 7`` can report exit 7 with X lost. The socket closing ends
-#: the drain early; this only bounds a server that neither sends more nor
-#: closes.
-_EXIT_DRAIN_SECONDS = 0.5
-
-_STDOUT, _STDERR, _REPLAY, _INPUT = 0x01, 0x02, 0x03, 0x00
-
-
-class ExecdClientConnection(ClientConnection):
-    """A client connection that ends TCP itself once the closing handshake is done.
-
-    RFC 6455 §7.1.1 has the server close the TCP connection first once both
-    Close frames have been exchanged, and lets the client close it when the
-    server has not. execd answers a Close frame but never closes its side, and
-    websockets' ``close()`` otherwise waits its whole ``close_timeout`` for
-    that FIN on every connection it leaves. The handshake itself is still
-    awaited: nothing here closes the socket before the peer's Close frame has
-    answered the one this side sent, so every frame sent before it has been
-    read by execd.
-    """
-
-    def process_event(self, event: Any) -> None:
-        super().process_event(event)
-        protocol = self.protocol
-        if (
-            isinstance(event, Frame)
-            and event.opcode is Opcode.CLOSE
-            and protocol.close_sent is not None
-            and protocol.close_rcvd is not None
-            and not self.transport.is_closing()
-        ):
-            # The Close this side sent, or the echo the protocol just
-            # queued, is flushed before the transport closes.
-            self.transport.close()
-
-
-def websocket_header_kwargs(headers: dict[str, str]) -> dict[str, Any]:
+def websocket_header_kwargs(headers: Mapping[str, str]) -> dict[str, Any]:
     """Header keyword across websockets' legacy and asyncio client APIs."""
 
     if not headers:
@@ -116,8 +61,12 @@ def _sentinel_command(command: str, marker: str) -> str:
     return f"{command}\nprintf '\\n{marker}:%s:%s\\n' \"$?\" \"$PWD\"\n"
 
 
-def _shell_command_with_env(envs: Mapping[str, str]) -> str:
-    """Start the persistent Bash with only the supplied process-env overlay."""
+def _shell_command(envs: Mapping[str, str]) -> str:
+    """Start the persistent Bash with only the supplied process-env overlay.
+
+    ``exec`` makes the Bash the process the box started rather than its
+    child, so a signal or a close aimed at the process reaches the shell.
+    """
 
     assignments: list[str] = []
     for raw_name, raw_value in sorted(envs.items()):
@@ -129,34 +78,17 @@ def _shell_command_with_env(envs: Mapping[str, str]) -> str:
             raise ValueError(f"PTY environment variable {name!r} contains NUL")
         assignments.append(shlex.quote(f"{name}={value}"))
     if not assignments:
-        return ""
+        return "exec bash --norc --noprofile"
     return "exec env -- " + " ".join(assignments) + " bash --norc --noprofile"
 
 
-@dataclass(frozen=True)
-class ResolvedExecdEndpoint:
-    """Host-reachable execd URL and the routing headers required to use it."""
+async def resolve_sandbox_endpoint(underlying: Any, port: int) -> SandboxEndpoint:
+    """Resolve one in-box port through the sandbox handle's ``get_endpoint``.
 
-    origin: str
-    headers: dict[str, str]
-
-
-async def resolve_execd_endpoint(underlying: Any) -> ResolvedExecdEndpoint:
-    """Resolve execd through the sandbox backend's official endpoint face."""
-
-    return await resolve_sandbox_endpoint(underlying, EXECD_PORT)
-
-
-async def resolve_sandbox_endpoint(
-    underlying: Any, port: int
-) -> ResolvedExecdEndpoint:
-    """Resolve one in-box port through the sandbox backend's endpoint face.
-
-    Mirrors how the file panel reaches the in-box file server: ``get_endpoint``
-    is the backend's contract for turning an in-box port into an address the
-    host can dial. Some deployments also return routing or access headers;
-    dropping those makes the same code work on an open local Docker server and
-    fail on a hardened Kubernetes ingress, so they are part of the result.
+    The result keeps the routing or access headers a deployment returns with
+    the address: dropping them works against an open local Docker server and
+    fails behind a hardened Kubernetes ingress. A failure is the 502
+    ``AGENT_RUNTIME_ERROR`` naming the port.
     """
     get_endpoint = getattr(underlying, "get_endpoint", None)
     if underlying is None or not callable(get_endpoint):
@@ -178,58 +110,23 @@ async def resolve_sandbox_endpoint(
             message=f"in-box port {port} endpoint resolution failed: {exc}",
             status_code=502,
         ) from exc
-    if isinstance(resolved, dict):
-        raw_origin = resolved.get("endpoint") or resolved.get("url")
-        raw_headers = resolved.get("headers")
-    else:
-        raw_origin = getattr(resolved, "endpoint", None) or getattr(
-            resolved, "url", None
-        )
-        raw_headers = getattr(resolved, "headers", None)
-    origin = str(raw_origin or "").strip().rstrip("/")
-    if not origin.startswith(("http://", "https://")):
+    if not isinstance(resolved, SandboxEndpoint):
         raise APIError(
             code="AGENT_RUNTIME_ERROR",
             message=(
-                f"in-box port {port} endpoint is not an absolute URL: "
-                f"{origin!r}"
+                f"in-box port {port} resolved to {type(resolved).__name__}, "
+                "not a SandboxEndpoint"
             ),
             status_code=502,
         )
-    headers = {
-        str(key): str(value)
-        for key, value in dict(raw_headers or {}).items()
-        if str(key).strip() and value is not None
-    }
-    return ResolvedExecdEndpoint(origin=origin, headers=headers)
-
-
-async def resolve_execd_origin(underlying: Any) -> str:
-    """URL-only view of :func:`resolve_execd_endpoint`, without its headers."""
-
-    return (await resolve_execd_endpoint(underlying)).origin
+    return resolved
 
 
 class PtyTerminal:
-    """A shell in one sandbox, addressed by the box's execd endpoint."""
+    """A persistent shell in one box, kept as one of the box's long-lived processes."""
 
-    def __init__(
-        self,
-        origin: str,
-        *,
-        headers: dict[str, str] | None = None,
-        transport: httpx.AsyncBaseTransport | None = None,
-    ) -> None:
-        #: ``http://host:port`` for this box's execd, as the endpoint face resolved it.
-        self._origin = origin.rstrip("/")
-        self._headers = dict(headers or {})
-        self._transport = transport
-
-    @property
-    def _ws_origin(self) -> str:
-        if self._origin.startswith("https://"):
-            return "wss://" + self._origin[len("https://") :]
-        return "ws://" + self._origin[len("http://") :]
+    def __init__(self, processes: SandboxProcesses) -> None:
+        self._processes = processes
 
     async def open_session(
         self,
@@ -237,101 +134,13 @@ class PtyTerminal:
         cwd: str | None,
         envs: Mapping[str, str] | None = None,
     ) -> str:
-        body: dict[str, Any] = {}
-        if cwd:
-            body["cwd"] = cwd
-        command = _shell_command_with_env(envs or {})
-        if command:
-            # Execd v1.1.0 has no PTY ``envs`` field. Its documented
-            # ``command`` field launches this shell when the WebSocket opens,
-            # so the overlay belongs to the PTY process rather than the box.
-            body["command"] = command
-        async with httpx.AsyncClient(
-            transport=self._transport,
-            timeout=_CONNECT_TIMEOUT_SECONDS,
-            headers=self._headers,
-        ) as client:
-            response = await client.post(f"{self._origin}/pty", json=body)
-            response.raise_for_status()
-            session_id = str((response.json() or {}).get("session_id") or "").strip()
-        if not session_id:
-            raise RuntimeError("execd created a pty session without returning an id")
-        return session_id
-
-    async def close_session(self, pty_session_id: str) -> bool:
-        """Terminate a persistent shell; 404 is already-clean idempotent success."""
-        target = str(pty_session_id or "").strip()
-        if not target:
-            return False
-        async with httpx.AsyncClient(
-            transport=self._transport,
-            timeout=_CONNECT_TIMEOUT_SECONDS,
-            headers=self._headers,
-        ) as client:
-            response = await client.delete(f"{self._origin}/pty/{target}")
-            if response.status_code != 404:
-                response.raise_for_status()
-        return True
-
-    async def output_offset(self, pty_session_id: str) -> int:
-        """Where this shell's output currently ends.
-
-        A reconnect without this replays the session's whole history, so every
-        command would arrive carrying every earlier command's output. Asking
-        first, and attaching with ``since=<offset>``, is what makes one call see
-        only its own output.
-        """
-        async with httpx.AsyncClient(
-            transport=self._transport,
-            timeout=_CONNECT_TIMEOUT_SECONDS,
-            headers=self._headers,
-        ) as client:
-            response = await client.get(f"{self._origin}/pty/{pty_session_id}")
-            response.raise_for_status()
-            return int((response.json() or {}).get("output_offset") or 0)
-
-    async def signal(self, pty_session_id: str, name: str) -> None:
-        """Send signal ``name`` to the session's shell and the command it is running.
-
-        execd takes a signal only as a control frame on the connection that
-        holds the session, so this attaches with ``takeover=1``, which closes
-        the connection streaming the command's output, sends the frame and
-        leaves. In pipe mode the shell runs its commands in its own process
-        group, so the signal reaches the shell as well; a shell it ends is
-        started again by execd on the session's next attach. A session whose
-        shell is not running has nothing to signal.
-        """
-        async with httpx.AsyncClient(
-            transport=self._transport,
-            timeout=_CONNECT_TIMEOUT_SECONDS,
-            headers=self._headers,
-        ) as client:
-            response = await client.get(f"{self._origin}/pty/{pty_session_id}")
-            response.raise_for_status()
-            status = response.json() or {}
-        if not status.get("running"):
-            return
-        since = int(status.get("output_offset") or 0)
-        url = f"{self._ws_origin}/pty/{pty_session_id}/ws?pty=0&takeover=1&since={since}"
-        async with websockets.connect(
-            url,
-            open_timeout=_CONNECT_TIMEOUT_SECONDS,
-            create_connection=ExecdClientConnection,
-            **websocket_header_kwargs(self._headers),
-        ) as ws:
-            await ws.send(json.dumps({"type": "signal", "signal": name}))
+        # The process face carries no environment of its own, so the overlay
+        # is part of the shell's command line and belongs to the shell process
+        # rather than to the box.
+        return await self._processes.start(_shell_command(envs or {}), cwd=cwd or None)
 
     async def session_exists(self, pty_session_id: str) -> bool:
-        try:
-            async with httpx.AsyncClient(
-                transport=self._transport,
-                timeout=_CONNECT_TIMEOUT_SECONDS,
-                headers=self._headers,
-            ) as client:
-                response = await client.get(f"{self._origin}/pty/{pty_session_id}")
-            return response.status_code == 200
-        except Exception:
-            return False
+        return await self._processes.exists(pty_session_id)
 
     async def run(self, pty_session_id: str, command: str) -> AsyncIterator[dict[str, Any]]:
         """Run one command in the session's shell, yielding terminal events.
@@ -339,71 +148,50 @@ class PtyTerminal:
         Yields ``{"type": "stdout"|"stderr", "text": ...}`` as output arrives and
         finally ``{"type": "__done__", "exit_code": int, "cwd": str}``. Framing
         the command is the sentinel's job (see :func:`_sentinel_command`); the
-        socket's own ``exit`` frame would mean the shell died, which is reported
-        as a failure rather than as the command finishing.
+        process's own exit would mean the shell died, which is reported as the
+        command's status with whatever output it left.
         """
         marker = f"__ASTRABOX_PTY_{uuid.uuid4().hex[:12]}__"
         # Requiring digits, so the sentinel cannot be matched by anything the
         # command itself happened to print that merely began with the marker.
         sentinel = re.compile(rf"{re.escape(marker)}:(-?\d+):([^\r\n]*)")
-        since = await self.output_offset(pty_session_id)
-        url = f"{self._ws_origin}/pty/{pty_session_id}/ws?pty=0&takeover=1&since={since}"
+        # Attaching from where the output ends now is what makes this call see
+        # only its own output rather than every earlier command's as well.
+        since = await self._processes.output_offset(pty_session_id)
+        attachment = await self._processes.attach(pty_session_id, since=since, takeover=True)
+        frames = attachment.frames()
         pending = ""
         exit_code: int | None = None
         cwd = ""
         shell_exited = False
-
-        async with websockets.connect(
-            url,
-            open_timeout=_CONNECT_TIMEOUT_SECONDS,
-            create_connection=ExecdClientConnection,
-            **websocket_header_kwargs(self._headers),
-        ) as ws:
-            await ws.send(bytes([_INPUT]) + _sentinel_command(command, marker).encode())
-            loop = asyncio.get_event_loop()
+        try:
+            await attachment.send(_sentinel_command(command, marker).encode())
+            loop = asyncio.get_running_loop()
             deadline = loop.time() + _COMMAND_TIMEOUT_SECONDS
-
-            while exit_code is None or shell_exited:
+            while True:
                 remaining = deadline - loop.time()
                 if remaining <= 0:
                     break
                 try:
-                    frame = await asyncio.wait_for(ws.recv(), timeout=remaining)
-                except asyncio.TimeoutError:
+                    frame = await asyncio.wait_for(anext(frames), timeout=remaining)
+                except (TimeoutError, StopAsyncIteration, SandboxProcessDetached):
+                    # The deadline passed, or the attachment ended without the
+                    # shell's exit: an interrupt took the shell over, or the
+                    # connection dropped. What arrived is still output.
                     break
-                except websockets.ConnectionClosed:
-                    # The drain's natural end: execd said everything it had.
+
+                if isinstance(frame, ProcessExit):
+                    # The shell itself left (`exit 7`, or anything that kills
+                    # bash), so the sentinel never printed: this is the
+                    # command's exit status, and whatever is buffered is the
+                    # output nobody else will flush. Output the exit overtook
+                    # has already arrived before it.
+                    exit_code = frame.exit_code if frame.exit_code is not None else 0
+                    shell_exited = True
                     break
 
-                if isinstance(frame, str):
-                    # Control frames. `exit` here is the shell leaving — which a
-                    # command can cause (`exit 7`, or anything that kills bash).
-                    # The sentinel never printed in that case, so this is the
-                    # command's exit code and the only chance to hand over what
-                    # it wrote: whatever is buffered is the output nobody else
-                    # will flush. Reading continues past it, because the exit
-                    # notice can overtake stdout frames still queued behind it:
-                    # a fast `echo X && exit 7` can report exit 7 with X lost.
-                    # Drain briefly; the socket closing or the window lapsing
-                    # ends it.
-                    with contextlib.suppress(Exception):
-                        payload = json.loads(frame)
-                        if str(payload.get("type") or "") == "exit":
-                            exit_code = int(payload.get("exit_code") or 0)
-                            shell_exited = True
-                            deadline = min(deadline, loop.time() + _EXIT_DRAIN_SECONDS)
-                    continue
-
-                if not frame:
-                    continue
-                kind, data = frame[0], frame[1:]
-                if kind == _REPLAY:
-                    data = data[8:]  # an 8-byte offset header precedes replayed bytes
-                elif kind not in (_STDOUT, _STDERR):
-                    continue
-
-                text = data.decode("utf-8", "replace")
-                if kind == _STDERR:
+                text = frame.data.decode("utf-8", "replace")
+                if isinstance(frame, ProcessOutput) and frame.stream == "stderr":
                     # Straight through. Only stdout can carry the sentinel, so
                     # stderr never needs holding back — buffering the two
                     # together would label stderr as stdout.
@@ -439,6 +227,9 @@ class PtyTerminal:
                 if cut > 0:
                     emit, pending = pending[:cut], pending[cut:]
                     yield {"type": "stdout", "text": emit}
+        finally:
+            await frames.aclose()
+            await attachment.detach()
 
         if shell_exited or exit_code is None:
             # Either the shell died mid-command, or the deadline passed before
@@ -452,11 +243,7 @@ class PtyTerminal:
 
 
 __all__ = [
-    "EXECD_PORT",
-    "ExecdClientConnection",
     "PtyTerminal",
-    "ResolvedExecdEndpoint",
-    "resolve_execd_endpoint",
-    "resolve_execd_origin",
+    "resolve_sandbox_endpoint",
     "websocket_header_kwargs",
 ]

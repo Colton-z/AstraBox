@@ -256,11 +256,16 @@
       },
       "tags": {
         "label": "标签",
-        "example": "资料研究"
+        "example": "资料研究",
+        "help": "用户搜索时会用到的词。按回车或逗号添加。"
       },
       "use_cases": {
         "label": "使用场景",
         "example": "比较技术方案并整理选型建议"
+      },
+      "categories": {
+        "label": "分类",
+        "help": "首页会在你选择的每个分类下列出这个 Agent。"
       },
       "model": {
         "label": "模型",
@@ -282,9 +287,9 @@
       },
       "skills": {
         "label": "自定义 Skill",
-        "help": "填写 Skill 来源，与从 {{catalog}} 中选择的 Skill 合并；完全相同的来源会去重",
+        "help": "Git 描述字符串或来源对象组成的 JSON 数组，与 {{catalog}} 中选择的 Skill 合并。相同来源去重，安装名称不能重复。",
         "label_alone": "Skill",
-        "help_alone": "填写 Skill 来源；完全相同的来源会去重"
+        "help_alone": "填写 Git 描述字符串或来源对象组成的 JSON 数组。来源对象指定 provider、source、version、name；config 只保存公开配置和获准的凭据名称。"
       },
       "mcp_servers": {
         "label": "自定义 MCP",

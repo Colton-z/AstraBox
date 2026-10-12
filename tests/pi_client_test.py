@@ -23,7 +23,6 @@ from astrabox.core.service.orchestrator.engine.pi_client import PiEngineClient, 
 from astrabox.core.service.orchestrator.engine.pi_events import PiProtocolError
 from astrabox.core.service.orchestrator.engine.pi_pipe import PiWireRecord
 from astrabox.core.service.orchestrator.engine.resident_relay import ResidentRelay
-from astrabox.core.service.orchestrator.runtime.pty_terminal import ResolvedExecdEndpoint
 
 _SESSION = "11111111-1111-4111-8111-111111111111"
 
@@ -122,7 +121,7 @@ class _FakeProcess:
 
 def _client(process: _FakeProcess) -> PiEngineClient:
     client = PiEngineClient(
-        endpoint=ResolvedExecdEndpoint(origin="http://sandbox.test", headers={}),
+        processes=object(),  # type: ignore[arg-type]
         platform_session_id=_SESSION,
         cwd="/workspace",
         command="pi --mode rpc",

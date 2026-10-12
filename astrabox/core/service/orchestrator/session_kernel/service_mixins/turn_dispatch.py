@@ -550,6 +550,7 @@ class TurnDispatchStreamingMixin(SessionOutputSubscriptionMixin):
                 session=session,
                 session_id=session_id,
                 requested_command_id=command_id,
+                turn_id=turn_id,
                 permission_mode=permission_mode,
                 on_refused=(
                     _settle_refused_turn if command_type == "StartTurn" else None

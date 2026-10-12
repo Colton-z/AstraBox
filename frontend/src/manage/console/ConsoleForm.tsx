@@ -425,6 +425,7 @@ export function ConsoleSearchSelect({
   emptyLabel,
   disabled,
   allowCustom = false,
+  invalid,
 }: {
   id?: string;
   value: string;
@@ -435,7 +436,9 @@ export function ConsoleSearchSelect({
   emptyLabel?: string;
   disabled?: boolean;
   allowCustom?: boolean;
+  invalid?: boolean;
 }) {
+  const aria = useFieldAria();
   const { t } = useTranslation();
   const [query, setQuery] = useState('');
 
@@ -502,8 +505,10 @@ export function ConsoleSearchSelect({
             uses plain HTML rather than Base UI's Field context, so the explicit
             trigger label supplies its accessible name. */}
         <ComboboxInput
+          {...aria}
           id={id}
           disabled={disabled}
+          aria-invalid={invalid || undefined}
           placeholder={searchPlaceholder ?? placeholder ?? t('manage:console.select_placeholder')}
           triggerLabel={t('manage:console.open_options')}
           className="w-full"
@@ -514,7 +519,7 @@ export function ConsoleSearchSelect({
   );
 }
 
-/** Searchable multi-select used for Agent MCP and Skill assignments. */
+/** Searchable multi-select used for Agent MCP and Skill assignments and categories. */
 export function ConsoleSearchMultiSelect({
   id,
   value,
@@ -524,6 +529,7 @@ export function ConsoleSearchMultiSelect({
   searchPlaceholder,
   emptyLabel,
   disabled,
+  unknownLabel,
 }: {
   id?: string;
   value: string[];
@@ -533,6 +539,8 @@ export function ConsoleSearchMultiSelect({
   searchPlaceholder?: string;
   emptyLabel?: string;
   disabled?: boolean;
+  /** The chip's words for a value no option offers; the value itself when absent. */
+  unknownLabel?: (value: string) => string;
 }) {
   const { t } = useTranslation();
   const anchor = useComboboxAnchor();
@@ -542,11 +550,13 @@ export function ConsoleSearchMultiSelect({
   // show as something the operator can see and unassign, not as a silent gap.
   const selected = useMemo(
     () =>
-      value.map(
-        (id_) =>
-          items.find((option) => option.value === id_) ?? { value: id_, label: id_, node: id_ },
-      ),
-    [value, items],
+      value.map((id_) => {
+        const known = items.find((option) => option.value === id_);
+        if (known) return known;
+        const label = unknownLabel?.(id_) ?? id_;
+        return { value: id_, label, node: label };
+      }),
+    [value, items, unknownLabel],
   );
 
   return (
@@ -590,6 +600,197 @@ export function ConsoleSearchMultiSelect({
         />
       </Combobox>
     </ComboboxFieldGroup>
+  );
+}
+
+/**
+ * Free-text tags: type one and press Enter or a comma, or pick a suggestion.
+ *
+ * The kit's chips combobox, as in {@link ConsoleSearchMultiSelect}, except that
+ * a value need not be one of the suggestions. While a value is being typed the
+ * field shows the form the server will store it in (`normalize`), so a reader
+ * never adds `Code Review` and finds `code-review` afterwards. Text not yet
+ * added is not part of the value. A value past `max`, or longer than
+ * `maxLength`, stays in the input with the reason under it rather than failing
+ * the save later.
+ */
+export function ConsoleTagsField({
+  id,
+  value,
+  onChange,
+  suggestions = [],
+  normalize = (raw) => raw.trim(),
+  max,
+  maxLength,
+  placeholder,
+  disabled,
+}: {
+  id?: string;
+  value: string[];
+  onChange: (value: string[]) => void;
+  suggestions?: string[];
+  normalize?: (raw: string) => string;
+  max?: number;
+  maxLength?: number;
+  placeholder?: string;
+  disabled?: boolean;
+}) {
+  const { t } = useTranslation();
+  const aria = useFieldAria();
+  const anchor = useComboboxAnchor();
+  const [query, setQuery] = useState('');
+  const [open, setOpen] = useState(false);
+  const [refusal, setRefusal] = useState('');
+  // The suggestion the arrow keys rest on, as the combobox reports it: Enter
+  // then adds that suggestion, and the typed text otherwise.
+  const highlighted = useRef<string | undefined>(undefined);
+
+  const typed = normalize(query);
+  const offered = useMemo(
+    () =>
+      suggestions
+        .filter((tag) => !value.includes(tag) && (typed === '' || tag.includes(typed)))
+        .slice(0, 8),
+    [suggestions, value, typed],
+  );
+  // The list closes when nothing in it matches, whatever the combobox asked.
+  const shown = open && offered.length > 0;
+
+  /**
+   * Add `raws` in order, stopping at the first one that cannot be added.
+   * Returns how many were taken; an empty or repeated value is taken as a
+   * no-op rather than refused.
+   */
+  const addAll = (raws: string[]): number => {
+    let next = value;
+    let taken = 0;
+    for (const raw of raws) {
+      const tag = normalize(raw);
+      if (tag !== '' && !next.includes(tag)) {
+        if (max !== undefined && next.length >= max) {
+          setRefusal(t('manage:console.tags_limit', { max }));
+          break;
+        }
+        if (maxLength !== undefined && [...tag].length > maxLength) {
+          setRefusal(t('manage:console.tags_too_long', { max: maxLength }));
+          break;
+        }
+        next = [...next, tag];
+      }
+      taken += 1;
+    }
+    if (next !== value) onChange(next);
+    if (taken === raws.length) setRefusal('');
+    return taken;
+  };
+
+  const statusId = id ? `${id}-status` : undefined;
+  const status = refusal ? (
+    <FieldError id={statusId} className="text-11 leading-snug">{refusal}</FieldError>
+  ) : typed ? (
+    <FieldDescription id={statusId} className="text-11 leading-snug">
+      {t('manage:console.tags_add_hint', { tag: typed })}
+    </FieldDescription>
+  ) : null;
+  const describedBy = [aria['aria-describedby'], status ? statusId : undefined]
+    .filter(Boolean)
+    .join(' ') || undefined;
+
+  return (
+    <div className="flex min-w-0 flex-col gap-1.5">
+      <ComboboxFieldGroup id={id}>
+        <Combobox
+          multiple
+          items={offered}
+          filter={null}
+          value={value}
+          disabled={disabled}
+          open={shown}
+          onOpenChange={(next) => {
+            setOpen(next);
+            if (!next) highlighted.current = undefined;
+          }}
+          onItemHighlighted={(item: string | undefined) => {
+            highlighted.current = item;
+          }}
+          inputValue={query}
+          onInputValueChange={(text, details) => {
+            // The combobox empties a multiple selection's input whenever its
+            // list closes, which is right for a filter and wrong here: the
+            // input holds a tag being written, and it stays until the tag is
+            // added or the reader deletes it.
+            if (details.reason === 'input-clear') return;
+            // A comma separates tags however it arrives: typed, pasted, or a
+            // full-width one from an input method.
+            const parts = text.split(/[,，]/);
+            const rest = parts.pop() ?? '';
+            if (parts.length === 0) {
+              setQuery(text);
+              if (refusal) setRefusal('');
+              return;
+            }
+            const taken = addAll(parts);
+            setQuery(taken === parts.length ? rest : parts[taken]);
+          }}
+          onValueChange={(next: string[]) => {
+            if (next.length < value.length) {
+              onChange(next);
+              setRefusal('');
+              return;
+            }
+            const picked = next.filter((tag) => !value.includes(tag));
+            if (addAll(picked) === picked.length) setQuery('');
+          }}
+        >
+          {/* Chips rather than a count: the reader's next act is to remove one
+              of these, and "3 selected" makes them open the list to find out
+              which. */}
+          <ComboboxChips ref={anchor} className="w-full">
+            <ComboboxValue>
+              {(chosen: string[]) => (
+                <>
+                  {chosen.map((tag) => (
+                    <ComboboxChip key={tag} aria-label={`#${tag}`}>
+                      #{tag}
+                    </ComboboxChip>
+                  ))}
+                  <ComboboxChipsInput
+                    id={id}
+                    disabled={disabled}
+                    aria-describedby={describedBy}
+                    aria-required={aria['aria-required']}
+                    aria-invalid={refusal ? true : undefined}
+                    placeholder={chosen.length === 0 ? placeholder : ''}
+                    onKeyDown={(event) => {
+                      if (event.key !== 'Enter' || event.nativeEvent.isComposing) return;
+                      // A highlighted suggestion on screen is the combobox's to
+                      // add. One left over from a list that has since closed is
+                      // not, and the typed text is added instead.
+                      if (shown && highlighted.current !== undefined
+                        && offered.includes(highlighted.current)) return;
+                      if (query.trim() === '') return;
+                      event.preventDefault();
+                      event.preventBaseUIHandler();
+                      if (addAll([query]) === 1) setQuery('');
+                    }}
+                  />
+                </>
+              )}
+            </ComboboxValue>
+          </ComboboxChips>
+          <ComboboxContent anchor={anchor}>
+            <ComboboxList>
+              {(tag: string) => (
+                <ComboboxItem key={tag} value={tag}>
+                  <span className="min-w-0 truncate">#{tag}</span>
+                </ComboboxItem>
+              )}
+            </ComboboxList>
+          </ComboboxContent>
+        </Combobox>
+      </ComboboxFieldGroup>
+      {status}
+    </div>
   );
 }
 

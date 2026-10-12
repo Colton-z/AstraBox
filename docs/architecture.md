@@ -59,6 +59,24 @@ protected-credential requests without exposing a provider SDK. A selected
 provider maps the capabilities it supports and refuses the rest before work
 starts.
 
+A sandbox handle also carries the box's files, runs commands in it, keeps its
+long-lived processes, and resolves its ports to addresses. AstraBox uses all of
+them through one contract, whatever the backend: files with absolute paths,
+POSIX permission bits and account names; commands as shell command lines run as
+root, whose exit status is data and whose deadline the caller's side keeps;
+processes, such as a terminal's shell or the Pi program, that any replica
+attaches to by id and that replay their output from a byte offset; and
+endpoints as a URL with the headers every request carries. Every bundled image
+carries OpenSandbox's execd, and AstraBox includes an implementation of the
+contract on it (`astrabox.providers.execd`): a provider whose boxes run execd,
+and whose endpoint resolution reaches its port with the headers a request
+needs, can reuse it instead of mapping its own SDK. Either way,
+`astrabox.testing.sandbox_data_conformance` checks the contract on a live box
+of the provider. A backend without long-lived processes says so with
+`supports_process_sessions`, and AstraBox refuses the Agent programs and the
+terminal panel that need them when they are configured. See
+[Add a sandbox provider](writing-a-sandbox-provider.md).
+
 A deployment can install several sandbox providers and enables the ones it uses
 with `ASTRABOX_SANDBOX_BACKENDS`; `ASTRABOX_SANDBOX_BACKEND` is the default for
 an Environment that names none. An Environment can choose only an enabled
@@ -298,8 +316,9 @@ or incompatible configuration.
 
 For extension points, see [Embed AstraBox](embedding.md),
 [Add an Agent program](writing-an-engine-adapter.md),
-[Add a messaging platform](writing-a-channel-provider.md), and
-[Add a scheduler](writing-a-scheduler-provider.md).
+[Add a messaging platform](writing-a-channel-provider.md),
+[Add a scheduler](writing-a-scheduler-provider.md), and
+[Add a sandbox provider](writing-a-sandbox-provider.md).
 
 ## Related documents
 

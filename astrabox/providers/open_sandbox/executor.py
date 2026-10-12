@@ -13,9 +13,7 @@ from opensandbox import Sandbox
 from opensandbox.models.sandboxes import CredentialProxyConfig
 from opensandbox.models.filesystem import WriteEntry
 
-from astrabox.core.service.orchestrator.runtime.pty_terminal import (
-    EXECD_PORT,
-)
+from astrabox.providers.execd import EXECD_PORT
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.settings import load_astrabox_settings
@@ -54,7 +52,9 @@ from astrabox.seams.sandbox import (
     SANDBOX_PERMISSION_LEVEL_PRIVILEGED,
     SANDBOX_PERMISSION_LEVELS,
     SANDBOX_SESSION_ID_METADATA_KEY,
+    SandboxCommandOutcomeUnknown,
     SandboxDestruction,
+    SandboxUnreachable,
     sandbox_installation_id,
 )
 
@@ -108,15 +108,16 @@ _INBOX_SERVER_PROBE_TIMEOUT_SECONDS = 5.0
 # caller starts using it; user commands are never retried.
 _EXECD_COMMAND_READY_TIMEOUT_SECONDS = 10.0
 _EXECD_COMMAND_READY_POLL_SECONDS = 0.2
+#: The answers a converging command stream gives: a stream that ends without
+#: an exit status, one cut off mid-response, and a probe that ran out of its
+#: own two seconds. The last is the readiness question answering "not yet":
+#: a box seconds old on a node running a dozen of them can take longer for its
+#: first exec, and treating that as permanent fails a runtime start that the
+#: rest of the ten-second budget would have carried.
 _EXECD_COMMAND_TRANSIENT_ERRORS = (
-    "empty sse stream",
-    "incomplete chunked read",
-    # A probe that ran out of ITS OWN two seconds is the readiness question
-    # answering "not yet", not a broken box. Treated as permanent, one slow
-    # first exec — a box seconds old on a node running a dozen of them —
-    # failed the whole runtime start and spent the ten-second budget below on
-    # nothing (p187: `sh -lc :` did not complete within 2s, raised, done).
-    "did not complete within",
+    TimeoutError,
+    SandboxUnreachable,
+    SandboxCommandOutcomeUnknown,
 )
 
 # OpenSandbox server 0.2.3 consumes this exact extension on both its Docker and
@@ -300,11 +301,12 @@ async def _wait_for_execd_command_stream(
 ) -> None:
     """Wait for execd's SSE command path with a no-op readiness probe.
 
-    The SDK already proved ``GET /ping``. An empty or incomplete stream, or the
-    host deadline expiring for one bounded probe attempt, means this separate
-    route is still converging. Every other error is a real failure and leaves
-    immediately. Retrying this probe cannot duplicate user work because the
-    command is the shell no-op ``:``.
+    The SDK already proved ``GET /ping``. A stream that ends without an exit
+    status or is cut off, or the deadline expiring for one bounded probe
+    attempt, means this separate route is still converging. Every other error,
+    a refusal by execd included, is a real failure and leaves immediately.
+    Retrying this probe cannot duplicate user work because the command is the
+    shell no-op ``:``.
     """
     loop = asyncio.get_running_loop()
     deadline = loop.time() + _EXECD_COMMAND_READY_TIMEOUT_SECONDS
@@ -312,8 +314,8 @@ async def _wait_for_execd_command_stream(
     while True:
         attempts += 1
         try:
-            code, _stdout, stderr = await handle.exec_collect(
-                ["sh", "-lc", ":"],
+            result = await handle.commands.run(
+                "sh -lc :",
                 timeout=min(2.0, max(0.1, deadline - loop.time())),
             )
         except Exception as exc:
@@ -321,9 +323,7 @@ async def _wait_for_execd_command_stream(
                 str(exc),
                 secret=_config.resolve_api_key(load_astrabox_settings()),
             )
-            transient = isinstance(exc, TimeoutError) or any(
-                marker in detail.lower() for marker in _EXECD_COMMAND_TRANSIENT_ERRORS
-            )
+            transient = isinstance(exc, _EXECD_COMMAND_TRANSIENT_ERRORS)
             remaining = deadline - loop.time()
             if not transient:
                 raise RuntimeError(
@@ -338,11 +338,11 @@ async def _wait_for_execd_command_stream(
                 ) from exc
             await asyncio.sleep(min(_EXECD_COMMAND_READY_POLL_SECONDS, remaining))
             continue
-        if code != 0:
+        if result.exit_code != 0:
             raise RuntimeError(
                 "open_sandbox execd command readiness probe returned non-zero "
-                f"(session={session_id} sandbox={handle.sandbox_id} exit={code} "
-                f"stderr={stderr.decode('utf-8', 'replace')[-300:]!r})"
+                f"(session={session_id} sandbox={handle.sandbox_id} "
+                f"exit={result.exit_code} stderr={result.stderr[-300:]!r})"
             )
         if attempts > 1:
             logger.info(
@@ -686,7 +686,7 @@ async def verify_host_reach(
 ) -> None:
     """Wait until the HOST can reach the box's control port.
 
-    The readiness poll above runs INSIDE the box (``exec_collect`` of a
+    The readiness poll above runs INSIDE the box (a command running a
     loopback probe), so it answers only "the server bound its port" — it
     says nothing about the host→box route the turn transport needs. Without
     this check the first real host→box touch is the engine client's ws dial

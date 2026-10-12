@@ -999,6 +999,7 @@ async def test_the_stream_remakes_the_workers_delivery_judgement() -> None:
         user=UserContext(user_id="owner"),
         session={"session_id": "session-1"},
         session_id="session-1",
+        turn_id="turn-1",
         permission_mode=None,
         delivery_command=stale_command,
     )

@@ -55,6 +55,8 @@ export type EditFieldType =
   | 'toggle'
   | 'number'
   | 'list'
+  | 'multi_select'
+  | 'tags'
   | 'json';
 
 export type EditFieldSpec = {
@@ -77,8 +79,22 @@ export type EditFieldSpec = {
    */
   disabled?: boolean;
   required?: boolean;
-  /** Options for `select` and `search_select`. */
+  /** Options for `select`, `search_select` and `multi_select`. */
   options?: { value: string; label: React.ReactNode }[];
+  /**
+   * `multi_select`: what to call a stored value no option offers any more, so
+   * it shows as something the reader can see and remove rather than as a bare
+   * id or a silent gap.
+   */
+  unknownOptionLabel?: (value: string) => string;
+  /** `tags`: values to offer while the reader types one. */
+  suggestions?: string[];
+  /** `tags`: the form the server stores a typed value in, shown before it is added. */
+  normalizeItem?: (raw: string) => string;
+  /** `tags`: the most values the server accepts; one more is refused in place. */
+  maxItems?: number;
+  /** `tags`: the longest value the server accepts, in characters. */
+  maxItemLength?: number;
   placeholder?: string;
   /** Suggested input, shown while empty and accepted only by an unmodified Tab. */
   example?: string;

@@ -247,7 +247,7 @@ class ExitedContainerConvergesTests(unittest.IsolatedAsyncioTestCase):
 
 
 class _FakeCommands:
-    async def run(self, command: str, *, envs: Any = None, timeout_in_millis: Any = None) -> Any:
+    async def run(self, command: str, *, env: Any = None, timeout: Any = None) -> Any:
         # In-box command server never comes up -> the readiness gate times out.
         raise ConnectionError("in-box command server not up")
 

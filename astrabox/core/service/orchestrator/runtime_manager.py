@@ -14,7 +14,6 @@ import sys
 from pathlib import Path
 import contextlib
 import os
-import re
 import time
 from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass
@@ -35,29 +34,26 @@ from astrabox.core.service.orchestrator.runtime.diagnostics import (
     is_claude_server_start_timeout_error,
 )
 from astrabox.core.service.orchestrator.runtime.sandbox_client import (
-    SANDBOX_LIFECYCLE_PROBE_FAILED,
-    SANDBOX_LIFECYCLE_PROBE_NOT_FOUND,
     check_server_health,
     extract_sandbox_id,
-    SandboxLifecycleProbeResult,
     get_underlying_sandbox,
     reset_server_session,
     resolve_enhanced_server_endpoint,
-)
-from astrabox.core.service.orchestrator.runtime.pty_terminal import (
-    PtyTerminal,
-    resolve_execd_endpoint,
 )
 from astrabox.core.service.orchestrator.runtime.terminal_execution import (
     is_isolated_terminal_execution_id,
 )
 from astrabox.seams.sandbox import (
     SANDBOX_INSTALLATION_METADATA_KEY,
+    SANDBOX_LIFECYCLE_PROBE_FAILED,
+    SANDBOX_LIFECYCLE_PROBE_NOT_FOUND,
     SANDBOX_MANAGED_BY_METADATA_KEY,
     SANDBOX_MANAGED_BY_METADATA_VALUE,
     SandboxAllocation,
+    SandboxLifecycleProbeResult,
     SandboxDataPlane,
     SandboxProvider,
+    enabled_sandbox_names,
     sandbox_for_name,
     sandbox_for_sandbox,
     sandbox_for_template,
@@ -90,7 +86,6 @@ from astrabox.persistence.repository.session_repository import SessionRepository
 from astrabox.persistence.repository.session_snapshot_repository import SessionSnapshotRepository
 from astrabox.core.service.orchestrator.runtime.storage import (
     clone_default_repo,
-    mount_assistant_workspace_storage,
 )
 from astrabox.core.service.orchestrator.session_workspace_plan import (
     ConversationWorkspacePlan,
@@ -124,7 +119,6 @@ from astrabox.seams.egress_credentials import MCPOutboundCredentialResolution
 from astrabox.core.service.orchestrator.runtime.diagnostics import (  # noqa: F401
     is_initialize_timeout_error,
     build_runtime_start_error_message,
-    extract_command_log_text,
     normalize_diag_text,
     run_sandbox_diag_command,
 )
@@ -135,11 +129,6 @@ _RUNTIME_SANDBOX_BINDING_UNSPECIFIED = object()
 
 
 ProgressCallback = Callable[[str], Coroutine[Any, Any, None]] | None
-_SANDBOX_ID_IN_ENDPOINT_RES = (
-    re.compile(r"(?:^|[.-])sandbox-([0-9a-f]{32})(?:[.-]|$)", re.IGNORECASE),
-    re.compile(r"(?:^|[.-])([0-9a-f]{32})-\d+(?:[.-]|$)", re.IGNORECASE),
-    re.compile(r"(?:^|/)sandboxes/([0-9a-f]{32})(?:/|$)", re.IGNORECASE),
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -762,7 +751,6 @@ class RemoteAgentRuntimeManager:
     _is_local_mode = staticmethod(is_local_mode)
     _get_underlying_sandbox = staticmethod(get_underlying_sandbox)
     _extract_sandbox_id = staticmethod(extract_sandbox_id)
-    _extract_command_log_text = staticmethod(extract_command_log_text)
     _normalize_diag_text = staticmethod(normalize_diag_text)
     _is_initialize_timeout_error = staticmethod(is_initialize_timeout_error)
     _is_claude_server_start_timeout_error = staticmethod(is_claude_server_start_timeout_error)
@@ -1236,11 +1224,19 @@ class RemoteAgentRuntimeManager:
 
     @staticmethod
     def _extract_sandbox_id_from_endpoint(endpoint: str | None) -> str | None:
+        """The sandbox an endpoint names, by the enabled backend whose address it is.
+
+        How an address encodes a box is a backend's knowledge
+        (:meth:`SandboxProvider.endpoint_names_sandbox`). ``None`` when no
+        enabled backend can tell.
+        """
         value = str(endpoint or "").strip()
-        for pattern in _SANDBOX_ID_IN_ENDPOINT_RES:
-            match = pattern.search(value)
-            if match:
-                return match.group(1).lower()
+        if not value:
+            return None
+        for name in enabled_sandbox_names():
+            named = sandbox_for_name(name).endpoint_names_sandbox(value)
+            if named:
+                return named
         return None
 
     async def _resolve_validated_sandbox_endpoint(
@@ -1284,21 +1280,15 @@ class RemoteAgentRuntimeManager:
         expected_sandbox_id = requested_sandbox_id or endpoint_sandbox_id or runtime_sandbox_id
 
         if endpoint and expected_sandbox_id:
-            if endpoint_sandbox_id:
-                if endpoint_sandbox_id.lower() != expected_sandbox_id.lower():
-                    logger.warning(
-                        "discard stale sandbox endpoint session=%s endpoint_sandbox=%s expected_sandbox=%s reason=%s endpoint=%s",
-                        session_id or "<none>",
-                        endpoint_sandbox_id,
-                        expected_sandbox_id,
-                        reason,
-                        endpoint,
-                    )
-                    endpoint = ""
-            else:
+            # An endpoint is used only when its backend says it names the
+            # expected sandbox. One that says nothing is resolved again by id.
+            if endpoint_sandbox_id is None:
+                endpoint = ""
+            elif endpoint_sandbox_id.lower() != expected_sandbox_id.lower():
                 logger.warning(
-                    "discard unverifiable sandbox endpoint session=%s expected_sandbox=%s reason=%s endpoint=%s",
+                    "discard stale sandbox endpoint session=%s endpoint_sandbox=%s expected_sandbox=%s reason=%s endpoint=%s",
                     session_id or "<none>",
+                    endpoint_sandbox_id,
                     expected_sandbox_id,
                     reason,
                     endpoint,
@@ -1446,37 +1436,6 @@ class RemoteAgentRuntimeManager:
             return True
         return self._is_terminal_interaction_broker_sandbox_state(
             getattr(probe, "sandbox_state", None)
-        )
-
-    @staticmethod
-    def _sandbox_uses_create_storage_mounts(sandbox: Any) -> bool:
-        adapter = sandbox_for_sandbox(get_underlying_sandbox(sandbox))
-        return bool(adapter and adapter.uses_create_oss_mounts)
-
-    async def _mount_assistant_workspace_storage(
-        self,
-        sandbox: Any,
-        *,
-        user_id: str,
-        assistant_id: str,
-        engine_kind: str,
-    ) -> None:
-        # Backends with create-time storage mounts already mounted the shared
-        # assistant root; the runtime NFS mount path does not apply.
-        if self._sandbox_uses_create_storage_mounts(sandbox):
-            return
-        # Backends whose shared assistant root is baked into the image / bound at
-        # create likewise have no runtime NAS mount to perform.
-        adapter = sandbox_for_sandbox(get_underlying_sandbox(sandbox))
-        if adapter and adapter.assistant_workspace_root_preprovisioned:
-            return
-        await mount_assistant_workspace_storage(
-            sandbox,
-            user_id=user_id,
-            assistant_id=assistant_id,
-            engine_kind=engine_kind,
-            settings=self._settings,
-            get_underlying_sandbox_fn=get_underlying_sandbox,
         )
 
     async def _clone_default_repo(
@@ -1991,12 +1950,7 @@ class RemoteAgentRuntimeManager:
             return
         sandbox = await self.connect_sandbox_only(normalized_sandbox_id)
         try:
-            endpoint = await resolve_execd_endpoint(get_underlying_sandbox(sandbox))
-            terminal = PtyTerminal(
-                endpoint.origin,
-                headers=endpoint.headers,
-            )
-            await terminal.close_session(normalized_pty_session_id)
+            await get_underlying_sandbox(sandbox).processes.close(normalized_pty_session_id)
         finally:
             close = getattr(sandbox, "close", None)
             if callable(close):
@@ -2333,9 +2287,8 @@ class RemoteAgentRuntimeManager:
     ) -> None:
         """Interrupt the command running in a box-level terminal shell.
 
-        ``execution_id`` is the shell's PTY session id, so the interrupt is
-        that session's own ``SIGINT``; execd's command interrupt knows only
-        the commands it started itself.
+        ``execution_id`` is the id of the box process running the shell, so
+        the interrupt is that process's own ``SIGINT``.
         """
         if sandbox_obj is None:
             raise APIError(
@@ -2344,10 +2297,7 @@ class RemoteAgentRuntimeManager:
                 status_code=502,
             )
         try:
-            endpoint = await resolve_execd_endpoint(sandbox_obj)
-            await PtyTerminal(endpoint.origin, headers=endpoint.headers).signal(
-                execution_id, "SIGINT"
-            )
+            await sandbox_obj.processes.signal(execution_id, "SIGINT")
         except APIError:
             raise
         except Exception as exc:
@@ -4183,23 +4133,6 @@ class RemoteAgentRuntimeManager:
             target_cwd,
             session_id,
             runtime_identity=runtime_identity,
-        )
-
-    async def mount_assistant_workspace_storage(
-        self,
-        sandbox: Any,
-        *,
-        user_id: str,
-        assistant_id: str,
-        engine_kind: str,
-    ) -> None:
-        """Mount the persistent Assistant workspace (EnginePlatform tier 1)."""
-
-        await self._mount_assistant_workspace_storage(
-            sandbox,
-            user_id=user_id,
-            assistant_id=assistant_id,
-            engine_kind=engine_kind,
         )
 
     async def prepare_workspace_storage(

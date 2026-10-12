@@ -105,6 +105,13 @@ class ChannelDescriptor:
     #: declares ``(EXECUTION_LINKED,)``, so no binding can run that work as the
     #: Agent's owner or one fixed account.
     execution_modes: tuple[str, ...] = EXECUTION_MODES
+    #: How this provider writes a sender's identity in
+    #: ``ChannelInbound.participant``, which is what an allowed-sender list and
+    #: an account link must name exactly — for example ``platform:user-id``.
+    #: Empty when the provider states no format.
+    participant_format: str = ""
+    #: One identity written in that format, for example ``user123``.
+    participant_example: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -119,6 +126,8 @@ class ChannelDescriptor:
             "setup_url": self.setup_url,
             "documentation_url": self.documentation_url,
             "execution_modes": list(self.execution_modes),
+            "participant_format": self.participant_format,
+            "participant_example": self.participant_example,
         }
 
 

@@ -3,17 +3,16 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 
 from astrabox.api.routes.response_envelope import ApiEnvelope
 from astrabox.api.routes.sessions import (
     DeliveryFailure, SessionHistoryBlockPage, SessionHistoryBlockDetails,
 )
-from astrabox.api.routes.session_files import SessionFileListing
+from astrabox.api.routes.session_files import FileDownloadResponse, SessionFileListing
 from astrabox.common.utils.api_response import error_response, success_response
 from astrabox.common.utils.errors import APIError
-from astrabox.common.utils.http_headers import build_attachment_headers
 from astrabox.common.utils.user_context import get_current_user_context
 from astrabox.core.service.orchestrator.service_registry import get_platform_service
 
@@ -227,9 +226,7 @@ def register_share_routes(app: Any) -> None:
     @app.get("/api/v1/share/{token}/files/download")
     async def shared_file_download(token: str, request: Request, path: str):
         try:
-            content, filename = await _service.download_shared_file(token, path=path)
+            download = await _service.download_shared_file(token, path=path)
         except APIError as exc:
             return _err(exc)
-        headers = build_attachment_headers(filename)
-        headers["Content-Length"] = str(len(content))
-        return Response(content=content, media_type="application/octet-stream", headers=headers)
+        return FileDownloadResponse(download, request)

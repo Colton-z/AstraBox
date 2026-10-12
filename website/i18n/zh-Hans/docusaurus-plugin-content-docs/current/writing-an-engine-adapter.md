@@ -54,6 +54,7 @@ Agent 程序已有的名称和值应保持不变。例如，它的 API 将某项
 - Agent 程序公开的权限模式及其默认值；
 - 描述 Agent 程序专属设置的 `engine_options_schema`；
 - 当 AstraBox 需要在可替换沙箱外保存原生对话文件时使用的 `session_log`；
+- `requires_process_sessions`：在对话独占的沙箱里，引擎作为沙箱的长驻进程运行、通过其 stdin 和 stdout 驱动（`SandboxHandle.processes`）时声明；此后把该引擎与 conversation 租户组合的 Environment，在未声明 `supports_process_sessions` 的沙箱后端上会被拒绝；
 - `configuration_inputs`，即适配器实际使用的 AstraBox 配置：MCP 服务、Skill、Plugin 或链路追踪。
 
 系统会在注册时校验这些声明。保存 Agent 时，不属于该适配器 `configuration_inputs` 的已配置值会被拒绝，不会保存成不生效的设置。

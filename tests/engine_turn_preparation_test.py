@@ -10,8 +10,16 @@ from astrabox.core.service.orchestrator.engine_turn import (
     iter_engine_client_events,
 )
 from astrabox.core.service.orchestrator.engine.base import EngineInputCommand
+from astrabox.core.service.orchestrator.turn_service import TurnService
+from astrabox.core.service.orchestrator.session_kernel.conversation_recovery import (
+    build_turn_active_snapshot_updates,
+)
 from astrabox.seams import sandbox as sandbox_seam
-from astrabox.seams.sandbox import SandboxTurnContext, register_sandbox
+from astrabox.seams.sandbox import (
+    SandboxTurnContext,
+    TurnPreparationUserActionRequired,
+    register_sandbox,
+)
 
 
 class _PreparingProvider:
@@ -77,7 +85,6 @@ class _SessionsRepo:
             "user_id": "persisted-owner",
             "sandbox_id": "assistant-sandbox",
             "sandbox_backend": "assistant-preparation-order",
-            "current_turn_id": "assistant-turn",
         }
 
     async def claim_turn_preparation_guard(
@@ -121,6 +128,19 @@ class _SessionsRepo:
         return True
 
 
+class _SnapshotsRepo:
+    """The session's snapshot after the worker admitted ``assistant-turn``."""
+
+    async def get_snapshot(self, session_id: str) -> dict[str, Any]:
+        return {
+            "session_id": session_id,
+            **build_turn_active_snapshot_updates(
+                conversation_state="PROCESSING",
+                turn_id="assistant-turn",
+            ),
+        }
+
+
 @pytest.fixture(autouse=True)
 def _isolated_sandbox_registry(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sandbox_seam, "_BACKENDS", dict(sandbox_seam._BACKENDS))
@@ -128,8 +148,6 @@ def _isolated_sandbox_registry(monkeypatch: pytest.MonkeyPatch) -> None:
 
 async def _drive(
     provider: _PreparingProvider,
-    *,
-    prepare_engine_input: Any = None,
 ) -> tuple[list[dict[str, Any]], Any]:
     register_sandbox(provider)  # type: ignore[arg-type]
     engine_client = _RecordingEngineClient(provider.trace)
@@ -145,7 +163,6 @@ async def _drive(
         dataplane=object(),
         interrupting=False,
         conversation_bound=True,
-        prepare_engine_input=prepare_engine_input,
     )
     session = {
         "session_id": "assistant-session",
@@ -160,6 +177,11 @@ async def _drive(
             row["sandbox_backend"] = provider.name
             return row
 
+    sessions_repo = _ProviderSessionsRepo()
+    turn_service = object.__new__(TurnService)
+    turn_service._input_delivery_locks = {}
+    turn_service._sessions_repo = sessions_repo  # type: ignore[assignment]
+    turn_service._session_snapshots_repo = _SnapshotsRepo()
     events = [
         event
         async for event in iter_engine_client_events(
@@ -172,7 +194,8 @@ async def _drive(
             on_query_committed=None,
             emit_timing=lambda *args, **kwargs: None,
             client_message_id=None,
-            sessions_repo=_ProviderSessionsRepo(),  # type: ignore[arg-type]
+            sessions_repo=sessions_repo,  # type: ignore[arg-type]
+            prepare_engine_write=turn_service.prepared_engine_write,
             broker=object(),  # type: ignore[arg-type]
             delivery_command={
                 "command_id": "assistant-command",
@@ -205,25 +228,6 @@ async def test_assistant_prepares_inside_runtime_lock_before_input_delivery() ->
     assert not hasattr(context, "dataplane")
 
 
-async def test_egress_credentials_refresh_before_sandbox_and_engine_input() -> None:
-    trace: list[str] = []
-    provider = _PreparingProvider("assistant-credential-refresh-order", trace)
-
-    async def refresh() -> None:
-        assert provider.runtime_lock is not None
-        assert provider.runtime_lock.locked()
-        trace.append("refresh_credentials")
-
-    events, engine_client = await _drive(
-        provider,
-        prepare_engine_input=refresh,
-    )
-
-    assert trace == ["refresh_credentials", "prepare", "begin_delivery"]
-    assert engine_client.begin_delivery_calls == 1
-    assert events[0]["code"] == "ENGINE_INPUT_DELIVERY_FAILED"
-
-
 async def test_assistant_preparation_failure_prevents_engine_write() -> None:
     trace: list[str] = []
     provider = _PreparingProvider(
@@ -241,5 +245,32 @@ async def test_assistant_preparation_failure_prevents_engine_write() -> None:
         "turn_id": "assistant-turn",
         "code": "TURN_PREPARATION_FAILED",
         "message": "sandbox turn preparation failed",
+    }
+    assert events[1]["state"] == "READY"
+
+
+async def test_a_user_action_the_provider_asks_for_reaches_the_turn_stream() -> None:
+    # The provider needs the user to authorize before this turn can run: the
+    # stream must say so under its own code and message, not as a generic
+    # delivery failure.
+    trace: list[str] = []
+    provider = _PreparingProvider(
+        "assistant-preparation-user-action",
+        trace,
+        error=TurnPreparationUserActionRequired(
+            message="Authorize the agent to act for you",
+            url="https://idp.example/confirm",
+        ),
+    )
+
+    events, engine_client = await _drive(provider)
+
+    assert trace == ["prepare"]
+    assert engine_client.begin_delivery_calls == 0
+    assert events[0] == {
+        "type": "error",
+        "turn_id": "assistant-turn",
+        "code": "TURN_PREPARATION_USER_ACTION_REQUIRED",
+        "message": "Authorize the agent to act for you",
     }
     assert events[1]["state"] == "READY"

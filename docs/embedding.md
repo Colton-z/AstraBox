@@ -225,8 +225,9 @@ on the parent ASGI app.
 See [Architecture](architecture.md#plugin-interfaces) for the available Provider
 interfaces. The adapter-specific guides cover
 [Agent programs](writing-an-engine-adapter.md),
-[messaging platforms](writing-a-channel-provider.md), and
-[schedulers](writing-a-scheduler-provider.md).
+[messaging platforms](writing-a-channel-provider.md),
+[schedulers](writing-a-scheduler-provider.md), and
+[sandbox providers](writing-a-sandbox-provider.md).
 
 ## Process and security requirements
 

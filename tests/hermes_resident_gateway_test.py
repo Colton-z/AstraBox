@@ -50,6 +50,7 @@ from astrabox.core.service.orchestrator.runtime.hermes_backend_channel import (
     BackendNotListening,
     _classify_connect_failure,
 )
+from astrabox.seams.sandbox_data import SandboxEndpoint
 
 
 @pytest.fixture(autouse=True)
@@ -473,10 +474,10 @@ async def test_the_upgrade_request_line_carries_no_credential() -> None:
     sandbox = SimpleNamespace(
         sandbox_id="sb-1",
         get_endpoint=AsyncMock(
-            return_value={
-                "endpoint": f"http://127.0.0.1:{port}/proxy/9118",
-                "headers": {"X-Route": "sb-1"},
-            }
+            return_value=SandboxEndpoint(
+                url=f"http://127.0.0.1:{port}/proxy/9118",
+                headers={"X-Route": "sb-1"},
+            )
         ),
     )
     try:

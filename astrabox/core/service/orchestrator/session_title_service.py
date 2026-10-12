@@ -448,8 +448,7 @@ class ConversationTitleModel:
         egress DNS. The provider's credential goes only to the provider's own
         server-side address; a title base URL anywhere else must bring its own
         key. ``title_model.model_name`` selects the gateway route; empty
-        selects the deployment's default model, the route its seeded Agents
-        use.
+        selects the deployment's default model.
 
         Raises :class:`SessionTitleGenerationError` when no base URL,
         credential or model can be determined, or when the only credential

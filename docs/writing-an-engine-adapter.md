@@ -82,6 +82,11 @@ Return `EngineRuntimeCapabilities` from the adapter. The declaration includes:
   top-level fields actually managed by the platform, not a vendor-option whitelist;
 - `session_log` when AstraBox must preserve opaque conversation files outside
   a replaceable sandbox;
+- `requires_process_sessions` when, in a conversation's own box, the engine
+  runs as one of the box's long-lived processes driven over its stdin and
+  stdout (`SandboxHandle.processes`); an Environment that pairs the engine
+  with conversation tenancy is then refused on a sandbox backend that does not
+  declare `supports_process_sessions`;
 - `configuration_inputs`, the optional AstraBox configuration the adapter
   actually consumes: MCP servers, Skills, Plugins, or tracing.
 

@@ -106,7 +106,7 @@ def author_egress_hosts(
     if isinstance(skills, str):
         skill_items = [skills]
     else:
-        skill_items = [str(item) for item in (skills or []) if str(item or "").strip()]
+        skill_items = list(skills or [])
     hosts: list[str] = []
     for host in (
         *skill_repo_egress_hosts(skill_items),
@@ -278,12 +278,13 @@ async def validate_author_declarations(
             message=f"Environment networking is invalid: {exc}",
             status_code=500,
         ) from exc
-    await refuse_unadmitted_author_hosts(
-        spec,
-        author_egress_hosts(
+    try:
+        hosts = author_egress_hosts(
             skills=skills, packages=packages, mcp_servers=mcp_servers
-        ),
-    )
+        )
+    except ValueError as exc:
+        raise APIError(code="INVALID_REQUEST", message=str(exc), status_code=400) from None
+    await refuse_unadmitted_author_hosts(spec, hosts)
 
 
 __all__ = [

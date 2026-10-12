@@ -3,16 +3,60 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from fastapi import Body, File, Form, Request, UploadFile
-from fastapi.responses import Response
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict
+from starlette.types import Receive, Scope, Send
 
+from astrabox.api.routes.http_common import resolve_request_trace_context
 from astrabox.api.routes.response_envelope import ApiEnvelope
+from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.api_response import success_response
 from astrabox.common.utils.http_headers import build_attachment_headers
 from astrabox.common.utils.user_context import get_current_user_context
 from astrabox.core.service.orchestrator.service_registry import get_platform_service
+from astrabox.core.service.orchestrator.session_file_service import FileDownload
+
+logger = get_logger(__name__)
 
 _registered_on: int | None = None
+
+
+class FileDownloadResponse(StreamingResponse):
+    """A box file's bytes, streamed to the client as the box sends them.
+
+    The owner's download and a share link's download both answer with this.
+    Its headers come from checks the download passed before the response
+    existed: ``Content-Length`` is the file's size and ``Content-Disposition``
+    carries its name. Each chunk is sent only after the client has taken the
+    one before it, so a slow client slows the read from the box and the server
+    holds a chunk or two of the file, never the file.
+
+    The download's box connection is released however the body ends: after
+    the last byte, when the client goes away, or when the request is
+    cancelled. A failure after the headers raises
+    :class:`~astrabox.core.service.orchestrator.session_file_service.SessionFileStreamBroken`,
+    and the server closes the connection short of ``Content-Length``.
+    """
+
+    def __init__(self, download: FileDownload, request: Request) -> None:
+        headers = build_attachment_headers(download.filename)
+        headers["Content-Length"] = str(download.size)
+        super().__init__(download, media_type="application/octet-stream", headers=headers)
+        self._download = download
+        self._trace_id, _ = resolve_request_trace_context(request)
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            await self._download.aclose()
+            if not self._download.complete:
+                logger.info(
+                    "file download ended before its last byte: sent=%d size=%d trace_id=%s",
+                    self._download.sent,
+                    self._download.size,
+                    self._trace_id,
+                )
 
 
 class ListSessionFilesRequest(BaseModel):
@@ -239,15 +283,9 @@ def register_session_file_routes(app: Any) -> None:
         path: str,
     ):
         user = await get_current_user_context(request)
-        content, filename = await _service.download_session_file(
+        download = await _service.download_session_file(
             user,
             session_id,
             path=path,
         )
-        headers = build_attachment_headers(filename)
-        headers["Content-Length"] = str(len(content))
-        return Response(
-            content=content,
-            media_type="application/octet-stream",
-            headers=headers,
-        )
+        return FileDownloadResponse(download, request)

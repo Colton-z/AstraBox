@@ -73,14 +73,23 @@ def _is_existing_index_error(exc: Exception) -> bool:
     )
 
 
-def _turn_preparation_active_turn_id(session: dict[str, Any]) -> str:
-    """Canonical session-row turn owner."""
-    return str(session.get("current_turn_id") or "").strip()
-
-
+#: Why ``prepared_sandbox_turn`` quarantines a guard: the caller was
+#: cancelled or the hook outlived its deadline during preparation, or a
+#: re-preparation failed during the engine write.
 _TURN_PREPARATION_QUARANTINE_REASONS = frozenset(
-    {"caller_cancelled", "deadline_expired"}
+    {"caller_cancelled", "deadline_expired", "refresh_failed"}
 )
+
+
+def _turn_preparation_quarantine_reason(reason: str) -> str:
+    """The reason as the guard stores it: a known reason, else ``abandoned``.
+
+    The stored reason is durable evidence, so free text never reaches it.
+    """
+    normalized = str(reason or "").strip().lower()
+    if normalized in _TURN_PREPARATION_QUARANTINE_REASONS:
+        return normalized
+    return "abandoned"
 
 
 
@@ -1073,6 +1082,14 @@ class SessionRepository:
         owned by the turn checkpoint layer.  A guard belonging to a different
         sandbox id is stale after a durable rebuild and may be replaced
         atomically.
+
+        The compare-and-set matches the principal and the sandbox binding in
+        the write that takes the slot, so a claim never replaces the guard of
+        the sandbox the session is bound to.  It does not judge the turn: the
+        snapshot's turn slot is the only record of which turn is running (see
+        the note above), and ``turn_id`` is stored in the guard as the
+        attempt's identity.  ``prepared_sandbox_turn`` confirms the turn
+        against the snapshot while it holds the returned guard.
         """
         guard = {
             "state": "ACTIVE",
@@ -1096,7 +1113,6 @@ class SessionRepository:
                     "sandbox_backend": sandbox_backend,
                     "sandbox_id": sandbox_id,
                     "turn_preparation_guard.sandbox_id": {"$ne": sandbox_id},
-                    "current_turn_id": turn_id,
                 },
                 {
                     "$set": {
@@ -1139,12 +1155,12 @@ class SessionRepository:
             and str(result.get("sandbox_backend") or "").strip().lower()
             == sandbox_backend
             and str(result.get("sandbox_id") or "").strip() == sandbox_id
-            and _turn_preparation_active_turn_id(result) == turn_id
         )
         if not binding_is_current:
             # An ambiguous first write may have installed this call's guard
-            # immediately before the session moved to another turn/binding.  Discover it by
-            # the private owner token, then remove only that exact stale guard.
+            # immediately before the session moved to another binding.  Discover
+            # it by the private owner token, then remove only that exact stale
+            # guard.
             await self.release_turn_preparation_guard(
                 session_id,
                 sandbox_id=sandbox_id,
@@ -1165,9 +1181,7 @@ class SessionRepository:
         reason: str,
     ) -> bool:
         """Mark exactly one ACTIVE attempt as QUARANTINED."""
-        normalized_reason = str(reason or "").strip().lower()
-        if normalized_reason not in _TURN_PREPARATION_QUARANTINE_REASONS:
-            normalized_reason = "abandoned"
+        normalized_reason = _turn_preparation_quarantine_reason(reason)
         collection = await get_async_collection(self._collection_name)
         result = await run_mongo_with_retry(
             "sessions.quarantine_turn_preparation_guard",

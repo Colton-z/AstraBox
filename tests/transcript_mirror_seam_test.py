@@ -270,10 +270,10 @@ class _CapturingFiles:
         self.dirs: list[str] = []
         self.written: list[dict[str, Any]] = []
 
-    async def create_directories(self, entries: list) -> None:
-        self.dirs.extend(e.path for e in entries)
+    async def make_directories(self, specs: list) -> None:
+        self.dirs.extend(spec.path for spec in specs)
 
-    async def write_file(self, path: str, data: bytes, **kw: Any) -> None:
+    async def write_bytes(self, path: str, data: bytes, **kw: Any) -> None:
         self.written.append({"path": path, "data": data, **kw})
 
 

@@ -17,6 +17,7 @@ from typing import Any
 
 import pytest
 
+from astrabox.seams.sandbox_data import SandboxCommandResult
 from astrabox.core.service.orchestrator.runtime.storage import _git_clone
 from astrabox.core.service.orchestrator.runtime.storage import _plugin_cache
 from astrabox.core.service.orchestrator.runtime.packages import package_egress_hosts
@@ -27,11 +28,11 @@ class _Commands:
         self.calls: list[str] = []
         self._results = list(results or [])
 
-    async def run(self, command: str) -> Any:
+    async def run(self, command: str, **_options: Any) -> Any:
         self.calls.append(command)
         if self._results:
             return self._results.pop(0)
-        return SimpleNamespace(error=None, exit_code=0, stdout="")
+        return SandboxCommandResult(exit_code=0, stdout="", stderr="")
 
 
 def test_https_package_repository_host_is_available_to_the_sandbox_policy() -> None:
@@ -84,13 +85,13 @@ async def test_agent_prewarm_accepts_https_plugin_repo_and_forwards_protocol(
 ) -> None:
     commands = _Commands(
         [
-            SimpleNamespace(error="cache miss", exit_code=1, stdout=""),
-            SimpleNamespace(error=None, exit_code=0, stdout=""),
-            SimpleNamespace(error=None, exit_code=0, stdout="EXISTS\n"),
-            SimpleNamespace(
-                error=None,
+            SandboxCommandResult(exit_code=1, stdout="", stderr=""),
+            SandboxCommandResult(exit_code=0, stdout="", stderr=""),
+            SandboxCommandResult(exit_code=0, stdout="EXISTS\n", stderr=""),
+            SandboxCommandResult(
                 exit_code=0,
                 stdout="AGENT_RUNTIME_PLUGIN_CACHE_READY hash=test cached=0\n",
+                stderr="",
             ),
         ]
     )

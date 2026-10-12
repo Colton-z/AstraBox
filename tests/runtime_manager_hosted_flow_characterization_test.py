@@ -51,6 +51,7 @@ from astrabox.seams.sandbox import (
     SandboxLifecycleProbeResult,
     SandboxProvider,
 )
+from astrabox.seams.sandbox_data import SandboxEndpoint
 
 _OPTIONS = ClaudeAgentOptions()  # real SDK shape; option contents are irrelevant here
 
@@ -64,16 +65,16 @@ class _FakeSandbox:
     def __init__(self, sandbox_id: str) -> None:
         self.sandbox_id = sandbox_id
         self.runner_controller: _FakeAgent | None = None
-        self.files = SimpleNamespace(write_file=self._write_file)
+        self.files = SimpleNamespace(write_bytes=self._write_bytes)
         self.written: list[str] = []
 
-    async def _write_file(self, path: str, _body: bytes, **_kwargs: Any) -> None:
+    async def _write_bytes(self, path: str, _body: bytes, **_kwargs: Any) -> None:
         self.written.append(path)
 
     async def get_endpoint(self, port: int) -> Any:
         assert self.runner_controller is not None
         runner_uri = await self.runner_controller.resolve_runner_uri()
-        return SimpleNamespace(endpoint=runner_uri.replace("ws://", "http://"), headers={})
+        return SandboxEndpoint(url=runner_uri.replace("ws://", "http://"))
 
 
 class _FakeAgent:

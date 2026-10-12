@@ -10,7 +10,7 @@
 //      the schema. It is appended as its own section in the same edit grammar.
 import { createElement, Fragment } from 'react';
 import i18n from '@/i18n';
-import type { EnvironmentConfig, FormFieldSchema, FormSchema } from '@/types';
+import type { AgentCategory, EnvironmentConfig, FormFieldSchema, FormSchema } from '@/types';
 import { deleteByPath, getByPath, setByPath } from '@/components/form/paths';
 
 import type {
@@ -19,7 +19,12 @@ import type {
   EditFieldType,
   EditSectionSpec,
 } from './console';
-import { isEmptyValue } from './agentConfig';
+import {
+  MAX_AGENT_TAG_LENGTH,
+  MAX_AGENT_TAGS,
+  isEmptyValue,
+  normalizeAgentTag,
+} from './agentConfig';
 import { ModelGatewayLink } from './ModelGatewayLink';
 
 // Schema field type → console edit control. Structurally rich blocks
@@ -43,6 +48,7 @@ function editType(field: FormFieldSchema): EditFieldType {
     case 'key_value':
     case 'object':
     case 'object_list':
+    case 'skill_list':
       return 'json';
     case 'string':
     default:
@@ -111,6 +117,10 @@ export type AgentEditOpts = {
    * a catalog selection.
    */
   catalogName?: string;
+  /** The categories a platform administrator defined, for the `categories` picker. */
+  categories?: AgentCategory[];
+  /** Tags the reader's Agents already carry, most used first, offered while typing one. */
+  tagSuggestions?: string[];
 };
 
 /** Label and help of the Agent's own MCP and Skills fields, which depend on a catalog beside them. */
@@ -146,12 +156,52 @@ function fieldExample(field: FormFieldSchema, type: EditFieldType): string | und
   if (field.placeholder !== undefined) return undefined;
   const key = `misc:agent_form.fields.${field.key}.example`;
   if (i18n.exists(key)) return i18n.t(key);
-  if (field.key === 'skills') return 'https://github.com/anthropics/skills.git@main#skills/skill-creator';
+  if (field.key === 'skills') return '["https://github.com/anthropics/skills.git@main#skills/skill-creator"]';
   if (field.key === 'idle_hibernate_seconds') return '300';
   if (type === 'json') {
     return JSON.stringify(AGENT_JSON_EXAMPLES[field.key] ?? (field.type === 'object_list' ? [] : {}), null, 2);
   }
   return undefined;
+}
+
+/**
+ * The controls for the two fields the home page finds an Agent by.
+ *
+ * The schema types both as plain string lists. Categories are ids the reader
+ * picks by name from the administrator's list; tags are free text the server
+ * normalizes and caps, so the form shows the stored form and the cap while
+ * the tag is typed.
+ */
+function catalogControl(field: FormFieldSchema, opts: AgentEditOpts): Partial<EditFieldSpec> {
+  if (field.key === 'categories') {
+    return {
+      type: 'multi_select',
+      options: (opts.categories ?? []).map((category) => ({
+        value: category.category_id,
+        label: category.name,
+      })),
+      unknownOptionLabel: () => i18n.t('manage:agent_form.category_unavailable'),
+      placeholder: i18n.t('manage:agent_form.select_categories_placeholder'),
+      searchPlaceholder: i18n.t('manage:agent_form.search_categories_placeholder'),
+      // With none defined, the open list says who adds them; otherwise it is
+      // a search that matched nothing, which the picker says itself.
+      emptyLabel: opts.categories?.length ? undefined : i18n.t('manage:agent_form.no_categories'),
+    };
+  }
+  if (field.key === 'tags') {
+    return {
+      type: 'tags',
+      suggestions: opts.tagSuggestions ?? [],
+      normalizeItem: normalizeAgentTag,
+      maxItems: MAX_AGENT_TAGS,
+      maxItemLength: MAX_AGENT_TAG_LENGTH,
+      // The example is a placeholder only: Tab takes an example into a text
+      // field, and a tag is added by Enter or a comma instead.
+      example: undefined,
+      placeholder: i18n.t('misc:agent_form.fields.tags.example'),
+    };
+  }
+  return {};
 }
 
 function toFieldSpec(field: FormFieldSchema, opts: AgentEditOpts): EditFieldSpec {
@@ -222,7 +272,24 @@ function toFieldSpec(field: FormFieldSchema, opts: AgentEditOpts): EditFieldSpec
     allowCustom: isModel,
     rows: field.type === 'text' ? (field.key === 'system' ? 8 : 3) : type === 'json' ? 6 : undefined,
     mono: field.key === 'system',
+    ...catalogControl(field, opts),
   };
+}
+
+/**
+ * The fields the home page finds an Agent by. The schema marks tags advanced,
+ * among the display fields; the form keeps both visible, tags directly after
+ * categories, because together they decide where the Agent is listed and what
+ * a search finds it by.
+ */
+const CATALOG_KEYS = new Set(['categories', 'tags']);
+
+function catalogFieldsTogether(fields: FormFieldSchema[]): FormFieldSchema[] {
+  const tags = fields.find((field) => field.key === 'tags');
+  if (!tags || !fields.some((field) => field.key === 'categories')) return fields;
+  return fields
+    .filter((field) => field !== tags)
+    .flatMap((field) => (field.key === 'categories' ? [field, tags] : [field]));
 }
 
 // ── Access control (not in the schema) ──────────────────────────────────────
@@ -347,14 +414,13 @@ export function buildAgentEditSections(
   // save and lifting fields out of a card would separate them from it.
   const advancedKeys = new Set(
     schema.fields
-      .filter((f) => f.advanced)
+      .filter((f) => f.advanced && !CATALOG_KEYS.has(f.key))
       .flatMap((f) => expandField(f, opts).map((spec) => spec.key)),
   );
   const schemaSections = schema.groups
     .map((group) => ({
       label: i18n.t(`misc:agent_form.groups.${group.id}.label`),
-      fields: schema.fields
-        .filter((f) => f.group === group.id)
+      fields: catalogFieldsTogether(schema.fields.filter((f) => f.group === group.id))
         .flatMap((f) => expandField(f, opts)),
     }))
     .filter((s) => s.fields.length > 0);

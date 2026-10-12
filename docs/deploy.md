@@ -153,9 +153,11 @@ as described in [Connect a model](models.md).
 | An OpenAI-compatible service | `OPENAI_COMPATIBLE_BASE_URL`, `OPENAI_COMPATIBLE_API_KEY`, `ANTHROPIC_MODEL` | `openai-compatible/<model ID>` |
 | None for now | nothing | add routes in the console under **Integrated services** |
 
-`ANTHROPIC_MODEL` is the deployment's default model: the seeded Agents use it
-until an Agent selects its own, and an Agent that selects a model enters the
-name in the last column. With `ANTHROPIC_BASE_URL` set, the deployment serves
+`ANTHROPIC_MODEL` is the deployment's default model: a new installation creates
+its seeded Agents with it, and an Agent that selects a model enters the name in
+the last column. Every Agent stores the model it runs, so changing
+`ANTHROPIC_MODEL` later leaves existing Agents on theirs; select the new model
+on each Agent's page. With `ANTHROPIC_BASE_URL` set, the deployment serves
 the default model through the gateway's `anthropic/` routes. For DeepSeek it
 also recognises the endpoint and gives the same credential to the gateway's
 native DeepSeek routes, which serve the other Agent programs' Messages and
@@ -182,7 +184,7 @@ which is off on a new installation.
 | `ASTRABOX_IMAGE_PREFIX` | Repository prefix of a registry mirror holding the published images; the component name is appended. Default: `ghcr.io/colton-z/astrabox-`. |
 | `ASTRABOX_INSTALL_MODEL_PROVIDER` | `anthropic`, `deepseek`, `anthropic-compatible`, `openai-compatible` or `none`. |
 | `ASTRABOX_INSTALL_MODEL_API_KEY` | The model service's API key. |
-| `ASTRABOX_INSTALL_MODEL_NAME` | The model ID the seeded Agents use. Default for DeepSeek: `deepseek-flash`. |
+| `ASTRABOX_INSTALL_MODEL_NAME` | The model ID written as `ANTHROPIC_MODEL`, which a new installation creates its seeded Agents with. Default for DeepSeek: `deepseek-flash`. |
 | `ASTRABOX_INSTALL_MODEL_BASE_URL` | Base URL of an Anthropic-compatible or OpenAI-compatible service. |
 | `ASTRABOX_INSTALL_TEAM_LOGIN` | `casdoor` runs the bundled Casdoor login service with the stack; `none` runs the stack without login. |
 | `ASTRABOX_CONSOLE_ORIGIN` | With team login: the console's public URL, such as `https://astrabox.example.com`. |

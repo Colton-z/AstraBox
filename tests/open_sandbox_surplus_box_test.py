@@ -47,7 +47,7 @@ def _binding(sandbox_id: str) -> SimpleNamespace:
 
 
 class _Files:
-    async def write_file(self, *_args: Any, **_kwargs: Any) -> None:
+    async def write_bytes(self, *_args: Any, **_kwargs: Any) -> None:
         return None
 
 

@@ -1,4 +1,4 @@
-import type { ChannelExecutionMode, ChannelFieldDescriptor } from '@/types';
+import type { ChannelExecutionMode, ChannelFieldDescriptor, ChannelProviderDescriptor } from '@/types';
 import type { TFunction } from 'i18next';
 
 import type { EditFieldSpec, EditFieldType } from './console';
@@ -6,6 +6,19 @@ import type { EditFieldSpec, EditFieldType } from './console';
 export type ChannelDraftSection = 'channel_config' | 'credentials';
 
 const EXECUTION_MODES: ChannelExecutionMode[] = ['owner', 'account', 'linked'];
+
+/** Sender identities are declared by the provider and matched exactly. */
+export function channelParticipantHelp(
+  t: TFunction,
+  provider: ChannelProviderDescriptor | undefined,
+): string {
+  const format = provider?.participant_format || t('manage:deployments.participant_format_unspecified');
+  const example = provider?.participant_example
+    ? t('manage:deployments.participant_example', { example: provider.participant_example })
+    : '';
+  return t('manage:deployments.participant_format_help', { format, example });
+}
+
 
 /** The modes a platform's triggers may run in; every mode when it declares none. */
 export function channelExecutionModes(modes: ChannelExecutionMode[] | undefined): ChannelExecutionMode[] {

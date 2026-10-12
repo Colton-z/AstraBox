@@ -30,10 +30,15 @@ import type {
   AdminIntegrations,
   AdminNavigationSummary,
   AdminSystemOverview,
+  AdminAgentCategory,
   AgentAccess,
   AgentAccessPolicy,
+  AgentCategory,
   AgentConfig,
+  AgentFavorite,
   AgentListPage,
+  AgentTag,
+  DeletedAgentCategory,
   ListPageQuery,
   AgentPreparedRuntimeStatus,
   AgentExtensionCatalog,
@@ -430,21 +435,20 @@ interface Transport {
   url: string;
 }
 
-function transport(recovery: NetworkRecoveryOptions = {}): Transport {
+function transport(recovery: NetworkRecoveryOptions = {}, multipartBody?: FormData): Transport {
   const wire: Transport = (async (request: Request): Promise<Response> => {
     const url = originRelative(request.url);
     wire.url = url;
-    // A JSON content type unless the request already carries one, which a
-    // multipart upload does — its boundary is in the header openapi-fetch let
-    // the platform generate, and overwriting it would make the body
-    // unparseable to the server.
     const headers = new Headers(request.headers);
-    if (!headers.has('Content-Type')) {
+    if (multipartBody) {
+      // Fetch frames the original files without reading them into JS memory.
+      // Its boundary must be generated with that body, not copied from Request.
+      headers.delete('Content-Type');
+    } else if (!headers.has('Content-Type')) {
       headers.set('Content-Type', 'application/json');
     }
-    // Bytes, not text: a retry has to resend exactly what was sent, and an
-    // upload's body is arbitrary binary that decoding would corrupt.
-    const body = request.body === null ? undefined : await request.arrayBuffer();
+    const body = multipartBody
+      ?? (request.body === null ? undefined : await request.arrayBuffer());
     let response: Response;
     try {
       response = await fetchWithNetworkRecovery(url, {
@@ -529,8 +533,9 @@ function undeclaredQuery(values: Record<string, string | number | boolean | null
 async function send<R extends { response: Response }>(
   run: (wire: { fetch: Transport }) => Promise<R>,
   recovery: NetworkRecoveryOptions = {},
+  multipartBody?: FormData,
 ): Promise<PayloadOf<R>> {
-  const wire = transport(recovery);
+  const wire = transport(recovery, multipartBody);
   let response: Response;
   let typed: unknown;
   try {
@@ -1110,6 +1115,93 @@ export async function deleteAgent(agentId: string): Promise<AgentConfig> {
     ...wire,
     params: { path: { agent_id: agentId } },
   })) as Promise<AgentConfig>;
+}
+
+// ── Agent catalog ───────────────────────────────────────────────────────────
+// How people find Agents: the categories a platform administrator defines, the
+// tags an Agent's authors write, and each user's own favorites.
+
+/** Every Agent category, in the administrator's order. */
+export async function listAgentCategories(): Promise<AgentCategory[]> {
+  return expectList<AgentCategory>(
+    await send((wire) => client.GET('/api/v1/agent-categories', wire)),
+    '/agent-categories',
+  );
+}
+
+/** The tags of the Agents the caller may see, most used first. */
+export async function listAgentTags(): Promise<AgentTag[]> {
+  return expectList<AgentTag>(
+    await send((wire) => client.GET('/api/v1/agent-tags', wire)),
+    '/agent-tags',
+  );
+}
+
+/** Favorite or unfavorite one Agent for the caller; repeating either is a no-op. */
+export async function setAgentFavorite(agentId: string, favorited: boolean): Promise<AgentFavorite> {
+  const path = { agent_id: agentId };
+  return send((wire) =>
+    favorited
+      ? client.PUT('/api/v1/agents/{agent_id}/favorite', { ...wire, params: { path } })
+      : client.DELETE('/api/v1/agents/{agent_id}/favorite', { ...wire, params: { path } }),
+  );
+}
+
+/** Every category with the number of Agents it holds (platform administrators). */
+export async function listAdminAgentCategories(): Promise<AdminAgentCategory[]> {
+  return expectList<AdminAgentCategory>(
+    await send((wire) => client.GET('/api/v1/admin/agent-categories', wire)),
+    '/admin/agent-categories',
+  );
+}
+
+/**
+ * Add a category at the end of the order.
+ *
+ * Refused with 409 `AGENT_CATEGORY_NAME_TAKEN` when another category has the
+ * same name regardless of case.
+ */
+export async function createAdminAgentCategory(name: string): Promise<AgentCategory> {
+  return send((wire) => client.POST('/api/v1/admin/agent-categories', {
+    ...wire,
+    body: { name },
+  }));
+}
+
+/** Rename one category; Agents name it by id, so they follow without a write. */
+export async function renameAdminAgentCategory(
+  categoryId: string,
+  name: string,
+): Promise<AgentCategory> {
+  return send((wire) => client.PUT('/api/v1/admin/agent-categories/{category_id}', {
+    ...wire,
+    params: { path: { category_id: categoryId } },
+    body: { name },
+  }));
+}
+
+/**
+ * Put the categories in a new order.
+ *
+ * `categoryIds` must name every category exactly once; the server refuses a
+ * partial list rather than guessing where the missing ones go.
+ */
+export async function reorderAdminAgentCategories(categoryIds: string[]): Promise<AgentCategory[]> {
+  return expectList<AgentCategory>(
+    await send((wire) => client.PUT('/api/v1/admin/agent-categories/order', {
+      ...wire,
+      body: { category_ids: categoryIds },
+    })),
+    '/admin/agent-categories/order',
+  );
+}
+
+/** Delete one category after taking it off every Agent that holds it. */
+export async function deleteAdminAgentCategory(categoryId: string): Promise<DeletedAgentCategory> {
+  return send((wire) => client.DELETE('/api/v1/admin/agent-categories/{category_id}', {
+    ...wire,
+    params: { path: { category_id: categoryId } },
+  }));
 }
 
 export async function listAdminEnvironments(): Promise<EnvironmentConfig[]> {
@@ -2352,7 +2444,7 @@ export async function uploadSessionFiles(
     ...wire,
     params: { path: { session_id: sessionId } },
     body: formData as never,
-  })) as Promise<SessionFilesMutationResult>;
+  }), {}, formData) as Promise<SessionFilesMutationResult>;
 }
 
 export async function getSpeechInputOptions(sessionId: string, signal?: AbortSignal) {
@@ -2377,7 +2469,7 @@ export async function transcribeSpeechInput(
     params: { path: { session_id: sessionId } },
     body: formData as never,
     signal,
-  }));
+  }), {}, formData);
   return result.text;
 }
 

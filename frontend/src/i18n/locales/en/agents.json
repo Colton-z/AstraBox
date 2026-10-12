@@ -10,5 +10,18 @@
   "home_starting": "Starting…",
   "home_empty": "No Agents are available.",
   "home_empty_hint": "An administrator must create and enable an Agent before users can start a conversation.",
-  "home_empty_cta": "Go to the management console"
+  "home_empty_cta": "Go to the management console",
+  "tabs_label": "Browse Agents",
+  "tab_favorites": "Favorites",
+  "search_placeholder": "Search Agents",
+  "favorite_label": "Favorite {{name}}",
+  "favorite_add_failed": "Couldn't add {{name}} to favorites",
+  "favorite_remove_failed": "Couldn't remove {{name}} from favorites",
+  "favorites_empty": "No favorites yet",
+  "favorites_empty_hint": "Select the star on an Agent's card to keep it here.",
+  "no_match": "No Agent here matches",
+  "no_match_hint": "Change the search, or remove the tag filter.",
+  "tags_label": "Tags",
+  "filter_by_tag": "Show Agents tagged #{{tag}}",
+  "tag_filter_clear": "Remove the #{{tag}} filter"
 }

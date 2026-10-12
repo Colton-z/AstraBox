@@ -16,14 +16,15 @@ import pytest
 
 from astrabox.providers.open_sandbox.workspace_route import mergerfs
 from astrabox.deploy import sandbox_server
+from astrabox.seams.sandbox_data import SandboxCommandResult
 from astrabox.seams.storage import WorkspaceRef
 
 _EXTERNAL = "https://sandbox-control.example.com"
 
 
 def _box(filesystem: str) -> SimpleNamespace:
-    async def run(_command: str) -> SimpleNamespace:
-        return SimpleNamespace(stdout=f"{filesystem}\n")
+    async def run(_command: str, **_options: object) -> SandboxCommandResult:
+        return SandboxCommandResult(exit_code=0, stdout=filesystem, stderr="")
 
     return SimpleNamespace(commands=SimpleNamespace(run=run))
 

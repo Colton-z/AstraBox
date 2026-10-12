@@ -21,7 +21,6 @@
   "copied": "已复制",
   "name": "名称",
   "model": "模型",
-  "model_deployment_default": "部署默认模型",
   "status": "状态",
   "session": "Session",
   "sandbox": "沙箱",

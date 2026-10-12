@@ -137,6 +137,10 @@ AGENT_FIELD_SCHEMA: list[dict[str, Any]] = [
         "path": "display_meta.tags",
     },
     {"key": "use_cases", "type": "string_list", "advanced": True, "group": GROUP_IDENTITY},
+    # Ids of the Agent categories a platform administrator defines; the home
+    # page lists the Agent under each. Tags (display_meta.tags) are the
+    # author's own words for search.
+    {"key": "categories", "type": "string_list", "group": GROUP_IDENTITY},
     # ── model ─────────────────────────────────────────────────────────────
     # model is first-class + required. Free text (no authoritative registry);
     # the console renders a combobox with a free-entry escape hatch.
@@ -153,7 +157,7 @@ AGENT_FIELD_SCHEMA: list[dict[str, Any]] = [
     # The built-in `artifacts` platform MCP server, which every Agent
     # conversation receives unless its owner turns it off here.
     {"key": "artifacts_enabled", "type": "boolean", "group": GROUP_TOOLS, "default": True},
-    {"key": "skills", "type": "string_list", "group": GROUP_TOOLS},
+    {"key": "skills", "type": "skill_list", "group": GROUP_TOOLS, "complex": True},
     # mcp_servers is a name-keyed map of server definitions; the console edits
     # it as a list and serializes to and from the map.
     {

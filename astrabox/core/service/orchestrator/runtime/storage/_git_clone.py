@@ -22,13 +22,8 @@ from astrabox.common.utils.secrets import SecretProvider
 from astrabox.common.utils.settings import load_astrabox_settings
 from astrabox.core.service.orchestrator.runtime.conversation_identity import (
     command_for_identity,
-    run_sandbox_command,
 )
 from astrabox.seams.sandbox import sandbox_for_sandbox
-
-from astrabox.core.service.orchestrator.runtime.storage._command_result import (
-    _extract_command_stream_text,
-)
 
 logger = get_logger(__name__)
 
@@ -58,7 +53,7 @@ _HTTPS_CLONE_RETRY_BACKOFF_SECONDS = 2
 # even a ~200-file repo blows past the 60s exec timeout. Clone into local /tmp instead,
 # then bulk-copy the tree to the remote target with high concurrency so the writes
 # overlap. This timeout covers that bulk copy.
-_REMOTE_BULK_COPY_TIMEOUT_MS = 300_000
+_REMOTE_BULK_COPY_TIMEOUT_SECONDS = 300.0
 
 
 def _remote_staging_copy_command(src: str, dst: str) -> str:
@@ -261,6 +256,7 @@ async def _clone_git_repo_in_sandbox(
             f"mkdir -p {shlex.quote(_CLONE_STAGE_ROOT)} "
             f"&& chmod 1777 {shlex.quote(_CLONE_STAGE_ROOT)}"
         )
+    commands = underlying.commands
     declared_protocol = str(protocol or "ssh").strip().lower()
     if declared_protocol not in {"ssh", "https"}:
         raise APIError(
@@ -314,34 +310,33 @@ async def _clone_git_repo_in_sandbox(
             ),
             clean=clone_into,
         )
-        clone_result = await underlying.commands.run(clone_cmd)
+        # A clone is as long as its repository, and waits on a sibling's clone of
+        # the same target, so it has no deadline of its own.
+        clone_result = await commands.run(clone_cmd, timeout=None)
         for attempt in range(1, _HTTPS_CLONE_MAX_ATTEMPTS):
-            clone_err_probe = getattr(clone_result, "error", None)
-            if not clone_err_probe:
+            if clone_result.exit_code == 0:
                 break
-            stderr_probe = _extract_command_stream_text(clone_result, "stderr")
-            if "403" not in (str(clone_err_probe) + stderr_probe):
+            if "403" not in clone_result.stderr:
                 break  # non-403 error, not the transient egress race — let it fail loud
             logger.warning(
                 "%s clone hit transient egress 403, retrying (attempt %d/%d) target=%s",
                 label, attempt, _HTTPS_CLONE_MAX_ATTEMPTS, clone_into,
             )
-            await underlying.commands.run(f"rm -rf {shlex.quote(clone_into)}")
+            await commands.run(f"rm -rf {shlex.quote(clone_into)}", timeout=None)
             await asyncio.sleep(_HTTPS_CLONE_RETRY_BACKOFF_SECONDS * attempt)
-            clone_result = await underlying.commands.run(clone_cmd)
-        if stage_via_tmp and not getattr(clone_result, "error", None):
+            clone_result = await commands.run(clone_cmd, timeout=None)
+        if stage_via_tmp and clone_result.exit_code == 0:
             # Local clone succeeded — bulk-parallel-copy the tree onto the remote target,
             # then drop the staging dir. The copy result becomes clone_result so the
             # shared error check below validates the remote-side write.
             logger.info(
                 "%s staged clone done, bulk-copying to remote target=%s", label, target,
             )
-            copy_result = await run_sandbox_command(
-                underlying.commands.run,
+            copy_result = await commands.run(
                 _remote_staging_copy_command(clone_into, target),
-                timeout_in_millis=_REMOTE_BULK_COPY_TIMEOUT_MS,
+                timeout=_REMOTE_BULK_COPY_TIMEOUT_SECONDS,
             )
-            await underlying.commands.run(f"rm -rf {shlex.quote(clone_into)}")
+            await commands.run(f"rm -rf {shlex.quote(clone_into)}", timeout=None)
             clone_result = copy_result
     else:
         if not deploy_key_secret_name:
@@ -368,14 +363,16 @@ async def _clone_git_repo_in_sandbox(
                 f" && chown -R {shlex.quote(identity['linux_user'])}:{shlex.quote(identity['linux_user'])} "
                 f"{shlex.quote(_ssh_dir)}"
             )
-        setup_result = await underlying.commands.run(setup_cmd)
-        setup_err = getattr(setup_result, "error", None)
-        if setup_err:
-            setup_stderr = _extract_command_stream_text(setup_result, "stderr").strip()
+        setup_result = await commands.run(setup_cmd)
+        if setup_result.exit_code != 0:
             await _remove_deploy_key(underlying, _key_path)
             raise APIError(
                 code=error_code,
-                message=f"failed to write deploy key for {label}: {setup_err}; stderr={setup_stderr!r}",
+                message=(
+                    f"failed to write deploy key for {label}: "
+                    f"exit_code={setup_result.exit_code}; "
+                    f"stderr={setup_result.stderr.strip()!r}"
+                ),
                 status_code=502,
             )
         ssh_cmd = (
@@ -403,40 +400,28 @@ async def _clone_git_repo_in_sandbox(
             ),
             identity,
         )
-        clone_result = await underlying.commands.run(full_cmd)
-        if stage_via_tmp and not getattr(clone_result, "error", None):
+        clone_result = await commands.run(full_cmd, timeout=None)
+        if stage_via_tmp and clone_result.exit_code == 0:
             copy_cmd = command_for_identity(_remote_staging_copy_command(clone_into, target), identity)
-            # Deliver the extended copy timeout via whichever convention the adapter exposes
-            # (one backend's opts=RunCommandOpts.timeout, the other's timeout_in_millis);
-            # run_sandbox_command must not silently drop it — a dropped timeout leaves large
-            # copies on the default (short) timeout and can fail large repos.
-            copy_result = await run_sandbox_command(
-                underlying.commands.run,
-                copy_cmd,
-                timeout_in_millis=_REMOTE_BULK_COPY_TIMEOUT_MS,
-            )
-            await underlying.commands.run(
-                command_for_identity(f"rm -rf {shlex.quote(clone_into)}", identity)
+            copy_result = await commands.run(copy_cmd, timeout=_REMOTE_BULK_COPY_TIMEOUT_SECONDS)
+            await commands.run(
+                command_for_identity(f"rm -rf {shlex.quote(clone_into)}", identity),
+                timeout=None,
             )
             clone_result = copy_result
         secret_for_redact = None
 
-    clone_err = _redact_secret_text(getattr(clone_result, "error", None), secret_for_redact)
-    if clone_err:
+    if clone_result.exit_code != 0:
         if key_written:
             # A clone that failed does not need its key, and the sandbox's
             # user must not keep a secret the checkout never used.
             await _remove_deploy_key(underlying, _key_path)
-        clone_stdout = _redact_secret_text(
-            _extract_command_stream_text(clone_result, "stdout").strip(), secret_for_redact,
-        )
-        clone_stderr = _redact_secret_text(
-            _extract_command_stream_text(clone_result, "stderr").strip(), secret_for_redact,
-        )
+        clone_stdout = _redact_secret_text(clone_result.stdout.strip(), secret_for_redact)
+        clone_stderr = _redact_secret_text(clone_result.stderr.strip(), secret_for_redact)
         raise APIError(
             code=error_code,
             message=(
-                f"git clone failed for {label}: {clone_err}; "
+                f"git clone failed for {label}: exit_code={clone_result.exit_code}; "
                 f"stdout={clone_stdout!r}; stderr={clone_stderr!r}; url={log_url}"
             ),
             status_code=502,
@@ -451,15 +436,16 @@ async def _clone_git_repo_in_sandbox(
         chown_cmd = (
             f"chown -R {shlex.quote(linux_user)}:{shlex.quote(linux_user)} {shlex.quote(target)}"
         )
-        chown_result = await underlying.commands.run(chown_cmd)
-        chown_err = getattr(chown_result, "error", None)
-        if chown_err:
-            chown_stderr = _extract_command_stream_text(chown_result, "stderr").strip()
+        # Ownership changes once per file of the tree, so a large tree on a
+        # remote mount takes as long as it takes.
+        chown_result = await commands.run(chown_cmd, timeout=None)
+        if chown_result.exit_code != 0:
             raise APIError(
                 code=error_code,
                 message=(
                     f"failed to chown {label} clone to conversation user {linux_user!r}: "
-                    f"{chown_err}; stderr={chown_stderr!r}"
+                    f"exit_code={chown_result.exit_code}; "
+                    f"stderr={chown_result.stderr.strip()!r}"
                 ),
                 status_code=502,
             )
@@ -636,11 +622,12 @@ async def _remove_deploy_key(underlying: Any, key_path: str) -> None:
     if not key_path:
         return
     result = await underlying.commands.run(f"rm -f -- {shlex.quote(key_path)}")
-    if getattr(result, "error", None):
+    if result.exit_code != 0:
         logger.error(
-            "could not remove deploy key after a failed clone: path=%s error=%s",
+            "could not remove deploy key after a failed clone: path=%s exit_code=%s stderr=%s",
             key_path,
-            getattr(result, "error", None),
+            result.exit_code,
+            result.stderr.strip(),
         )
 
 

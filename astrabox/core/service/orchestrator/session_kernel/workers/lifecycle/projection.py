@@ -124,7 +124,6 @@ class _LifecycleProjectionMixin:
             "killed",
             "state",
             "permission_mode",
-            "current_turn_id",
             "startup_command_id",
             "startup_command_event_seq",
         ):

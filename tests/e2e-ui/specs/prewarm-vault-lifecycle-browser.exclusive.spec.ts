@@ -242,9 +242,8 @@ test(`an administrator reprepares installed extensions without interrupting an e
       : process.env.ASTRABOX_E2E_PREWARM_CONVERSATION_ENVIRONMENT) || '').trim(),
     `e2e-prewarm-refresh-${Date.now()}`);
   // Same real public extension sources used by the existing preparation suite.
-  const skills = page.locator('[role="group"][aria-labelledby="agent-skills-label"]');
-  await skills.getByRole('button', { name: 'Add', exact: true }).click();
-  await skills.getByRole('textbox').fill('https://github.com/anthropics/skills.git@main#skills/skill-creator');
+  const skills = page.locator('#agent-skills');
+  await skills.fill(JSON.stringify(['https://github.com/anthropics/skills.git@main#skills/skill-creator']));
   await page.locator('#agent-packages').fill(JSON.stringify([{
     kind: 'claude-plugin',
     url: 'https://github.com/anthropics/claude-plugins-official.git',
@@ -258,7 +257,7 @@ test(`an administrator reprepares installed extensions without interrupting an e
   expect(first.sandboxId).toBe(initial.sandbox_id);
   // The management terminal HOME is not the engine's native config directory.
   // Check the real prepared cache plus engine-discovered commands in the UI.
-  const checkExtensions = "test -s /opt/conversation-runtime/claude-skills-cache/skill-creator/SKILL.md && test -n \"$(find /opt/conversation-runtime/claude-plugin-repos-cache/repos -path '*/frontend-design/skills/frontend-design/SKILL.md' -print -quit)\"";
+  const checkExtensions = "test -n \"$(find -L /opt/conversation-runtime -path '*/skill-creator/SKILL.md' -type f -print -quit)\" && test -n \"$(find /opt/conversation-runtime/claude-plugin-repos-cache/repos -path '*/frontend-design/skills/frontend-design/SKILL.md' -print -quit)\"";
   await terminal(page, first.sessionId,
     `${checkExtensions} && printf 'before-refresh' > prewarm-refresh-marker && printf 'EXTENSIONS_BEFORE_REFRESH_OK\\n'`,
     'EXTENSIONS_BEFORE_REFRESH_OK');

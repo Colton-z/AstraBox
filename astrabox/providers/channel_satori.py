@@ -249,6 +249,7 @@ class GatewayChannelProvider(ChannelProvider):
         self._descriptor = ChannelDescriptor(
             name=self.name,
             label=str(definition.get("label") or self.name),
+            participant_format="platform:user-id, as Satori names the platform and the user",
             config_fields=tuple(
                 _field(value, secret=False)
                 for value in definition.get("config_fields") or ()

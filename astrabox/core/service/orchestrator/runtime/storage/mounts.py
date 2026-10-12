@@ -59,13 +59,15 @@ async def create_sandbox_with_storage(
     Agent's shared box, a pool member) for the quota's record. A create that
     recovers the box an earlier attempt already made reserves nothing: that box
     is already charged. Neither does a backend that cannot list its sandboxes,
-    which startup lets have no ceiling.
+    which startup lets have no ceiling. Only a backend that can look a box up
+    by its assignment is asked for an earlier attempt's box; any other is
+    asked to create once.
     """
     from astrabox.core.service.orchestrator.runtime import sandbox_quota
     from astrabox.core.service.orchestrator.runtime.sandbox_client import extract_sandbox_id
 
     existing = None
-    if spec.workspace_mounts or bool(getattr(backend, "supports_correlated_create", False)):
+    if bool(getattr(backend, "supports_correlated_create", False)):
         existing = await backend.find_sandbox_by_assignment(spec.assignment_id)
     if existing is not None or not bool(getattr(backend, "supports_inventory_listing", False)):
         return await _create_with_storage(backend, spec, existing)

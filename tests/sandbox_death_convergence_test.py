@@ -849,6 +849,10 @@ class ScanOnceTests(unittest.IsolatedAsyncioTestCase):
                 new=AsyncMock(return_value={}),
             ),
             patch(
+                "astrabox.core.service.orchestrator.agent.prepared_capacity.release_abandoned_unit_bindings",
+                new=AsyncMock(return_value={}),
+            ),
+            patch(
                 "astrabox.core.service.orchestrator.runtime.storage.mounts.reconcile_workspace_mounts",
                 new=AsyncMock(return_value={}),
             ),
@@ -898,6 +902,10 @@ class WatcherShutdownTests(unittest.IsolatedAsyncioTestCase):
             patch.object(watcher, "_sweep_idle_bindings", new=idle_sweep),
             patch(
                 "astrabox.core.service.orchestrator.runtime.sandbox_quota.reconcile_sandbox_quota",
+                new=AsyncMock(return_value={}),
+            ),
+            patch(
+                "astrabox.core.service.orchestrator.agent.prepared_capacity.release_abandoned_unit_bindings",
                 new=AsyncMock(return_value={}),
             ),
             patch(

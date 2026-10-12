@@ -84,6 +84,13 @@ Session 启动时，AstraBox 不会安装通用依赖列表，也不会执行通
 沙箱需要的系统账号、Agent 程序和后台服务也必须预先构建到镜像中，确保按需创建
 和预热的沙箱行为一致。
 
+每个内置镜像还带有 OpenSandbox 的执行服务 execd `v1.1.0`，位于
+`/opt/astrabox/opensandbox/execd`，旁边是 OpenSandbox 的 `bootstrap.sh` 启动脚本和
+镜像自带的隔离策略 `isolation.toml`。AstraBox 通过端口 `44772` 上的 execd 访问沙箱内的
+文件、命令和长驻进程（例如终端的 shell 和 Pi 程序）：OpenSandbox 会在它创建的每个沙箱中
+启动一个 execd；一个 Pi Agent 的多段对话共享同一沙箱时，每段对话自己的 execd 由镜像中的
+这一份运行。自定义镜像需要保留这些文件。
+
 ## 资源与超时
 
 AstraBox 当前的 OpenSandbox 创建配方为每个沙箱设置 `4` CPU 和 `4Gi` 内存的运行上限，

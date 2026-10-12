@@ -22,10 +22,10 @@ from astrabox.common.utils.errors import APIError
 from astrabox.core.service.orchestrator.engine.base import EngineOutputAlreadyObserved, EngineStreamDetached
 from astrabox.core.service.orchestrator.engine.deepseek_harness_history import read_history_events
 from astrabox.core.service.orchestrator.runtime.pty_terminal import (
-    ResolvedExecdEndpoint,
     resolve_sandbox_endpoint,
     websocket_header_kwargs,
 )
+from astrabox.seams.sandbox_data import SandboxEndpoint
 
 DSH_API_PORT = 44780
 _REQUEST_TIMEOUT_SECONDS = 30.0
@@ -46,7 +46,7 @@ class DshApiLink:
     """One authenticated connection to the supplier's already-running service."""
 
     def __init__(
-        self, *, endpoint: ResolvedExecdEndpoint, sandbox: Any = None,
+        self, *, endpoint: SandboxEndpoint, sandbox: Any = None,
         http_transport: Any = None,
         observe_only: bool = False,
     ) -> None:
@@ -75,7 +75,7 @@ class DshApiLink:
         endpoint = await resolve_sandbox_endpoint(sandbox, port)
         link = cls(endpoint=endpoint, sandbox=sandbox, observe_only=observe_only)
         try:
-            launch_url = str(await sandbox.files.read_file(launch_url_path) or "").strip()
+            launch_url = (await sandbox.files.read_bytes(launch_url_path)).decode("utf-8").strip()
             await link._authenticate(launch_url)
             await link._attach_downlinks()
         except BaseException:
@@ -94,7 +94,7 @@ class DshApiLink:
         try:
             async with self._http_client() as client:
                 response = await client.get(
-                    f"{self.endpoint.origin}/?{urlencode({'token': tokens[0]})}",
+                    f"{self.endpoint.url}/?{urlencode({'token': tokens[0]})}",
                     follow_redirects=False,
                 )
         except httpx.HTTPError:
@@ -118,7 +118,7 @@ class DshApiLink:
         }
         async with self._http_client() as client:
             try:
-                response = await client.post(f"{self.endpoint.origin}/api/{method}", json=body)
+                response = await client.post(f"{self.endpoint.url}/api/{method}", json=body)
             except httpx.HTTPError as exc:
                 raise EngineStreamDetached(f"deepseek_harness RPC {method!r} transport failed") from exc
         if response.status_code != 200:
@@ -131,7 +131,7 @@ class DshApiLink:
         """Await the image's native attachment restore before opening a Session."""
         async with self._http_client() as client:
             response = await client.post(
-                f"{self.endpoint.origin}/api/astrabox.attachments.restore"
+                f"{self.endpoint.url}/api/astrabox.attachments.restore"
             )
         if response.status_code != 200 or response.json().get("restored") is not True:
             raise EngineStreamDetached(
@@ -326,7 +326,7 @@ class DshApiLink:
         )
 
     def _ws_origin(self) -> str:
-        return self.endpoint.origin.replace("https://", "wss://", 1).replace("http://", "ws://", 1)
+        return self.endpoint.url.replace("https://", "wss://", 1).replace("http://", "ws://", 1)
 
 def _unwrap_result(method: str, body: Any) -> Any:
     """The value of a server-response, or the gateway's error raised."""

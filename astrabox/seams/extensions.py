@@ -25,6 +25,8 @@ the contract without importing AstraBox's API or service layers;
 
 from __future__ import annotations
 
+from astrabox.seams.skills import SkillDescriptor
+
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -101,7 +103,7 @@ class ExtensionRuntimeSelection:
     """Runtime material generated from selected catalog entries."""
 
     mcp_servers: tuple[RuntimeMCPServer, ...] = ()
-    skill_descriptors: tuple[str, ...] = ()
+    skill_descriptors: tuple[SkillDescriptor, ...] = ()
 
 
 @dataclass(frozen=True)

@@ -7,6 +7,8 @@ with an Assistant's own fields.
 
 from __future__ import annotations
 
+from astrabox.seams.skills import SkillDescriptor
+
 from typing import Any
 
 from fastapi import Request
@@ -32,7 +34,7 @@ class AssistantDefaultsFields(BaseModel):
     model_name: str | None = None
     #: Instructions every Assistant receives before its own.
     instructions: str | None = None
-    skills: list[str] | None = None
+    skills: list[SkillDescriptor] | None = None
     mcp_servers: dict[str, Any] | None = None
     packages: list[dict[str, Any]] | None = None
     engine_options: dict[str, Any] | None = None

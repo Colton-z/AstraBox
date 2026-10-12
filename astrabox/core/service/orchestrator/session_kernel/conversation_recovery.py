@@ -190,6 +190,25 @@ def resident_engine_turn_id(snapshot: dict[str, Any] | None) -> str | None:
     return turn_id
 
 
+def snapshot_active_turn_id(snapshot: dict[str, Any] | None) -> str | None:
+    """The turn holding ``snapshot``'s conversation slot, or ``None``.
+
+    A StartTurn is admitted only into the empty slot and every terminal
+    transition clears it (:func:`build_turn_terminal_snapshot_updates`), so the
+    slot is the one record of which turn is running; the session row records
+    no running turn. The slot counts only in an active conversation state, the
+    same test :func:`resolve_active_turn_terminal_authority` applies before a
+    terminal write. A response the engine started on its own holds the slot
+    under its response id (:func:`resident_engine_turn_id`).
+    """
+
+    if not isinstance(snapshot, dict):
+        return None
+    if _clean_text(snapshot.get("conversation_state")) not in _ACTIVE_TURN_TERMINAL_STATES:
+        return None
+    return _clean_text(snapshot.get("current_turn_id")) or None
+
+
 def normalize_turn_recovery_phase(raw: Any) -> str | None:
     text = str(raw or "").strip().upper()
     if not text:

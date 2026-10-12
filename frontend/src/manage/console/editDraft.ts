@@ -1,14 +1,17 @@
+import { ApiError } from '@/api';
+
 import type { EditFieldSpec, EditSectionSpec } from './editFields';
 
 /**
- * What a draft differs from, and what it is still missing.
+ * What a draft differs from, what it is still missing, and what a refusal named.
  *
  * A record page reads and writes the same fields (docs/frontend-design.md §4),
  * so the two questions it has to answer on every keystroke are "has this
- * section changed" and "can it be written yet".
+ * section changed" and "can it be written yet". After a refused write it asks
+ * a third: which field the server's refusal is about.
  *
- * Plain functions rather than a hook: neither question involves React, and a
- * pure function is testable without rendering anything to ask it.
+ * Plain functions rather than a hook: none of the questions involves React,
+ * and a pure function is testable without rendering anything to ask it.
  */
 
 /** JSON rather than `===`: a field's value may be a list or an object. */
@@ -60,6 +63,27 @@ export function missingRequiredFields(
         (Array.isArray(value) && value.length === 0)
       );
     });
+}
+
+/**
+ * The field a refused write names, when it is one of the form's fields.
+ *
+ * The server validates a form's payload field by field
+ * (`astrabox/core/service/orchestrator/schema_validation.py`) and refuses with
+ * `INVALID_REQUEST` and a message that starts with the key it judged: `model is
+ * required`, `packages[0].kind is required`. A nested key names the field that
+ * holds it. Any other refusal names no field, and neither does a key the form
+ * does not show.
+ */
+export function fieldNamedByRefusal(error: unknown, sections: EditSectionSpec[]): string | null {
+  if (!(error instanceof ApiError) || error.code !== 'INVALID_REQUEST') return null;
+  // `ApiError.message` reads `CODE: text`.
+  const named = /^[A-Za-z_][\w.[\]]*/.exec(error.message.slice(error.code.length + 2))?.[0];
+  if (!named) return null;
+  const keys = new Set(sections.flatMap((section) => section.fields.map((field) => field.key)));
+  if (keys.has(named)) return named;
+  const holder = named.split(/[.[]/, 1)[0];
+  return keys.has(holder) ? holder : null;
 }
 
 /**

@@ -28,13 +28,6 @@ from astrabox.core.service.orchestrator.runtime.conversation_identity import (
 )
 
 
-# Single per-sandbox mount of the unified network-storage root (``:/``). Per-conversation
-# storage is a subdirectory of this one mount + a local bind, so no code here
-# issues a second mount or an umount/remount. Matches the root assumed by the
-# batch JSONL exporter (Path("/mnt/nas")).
-NAS_ROOT_MOUNT = "/mnt/nas"
-
-
 def _template_default_repo(template: Any) -> Any:
     if isinstance(template, dict):
         return template.get("default_repo")

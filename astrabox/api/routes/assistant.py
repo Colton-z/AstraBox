@@ -9,6 +9,8 @@ reuses the existing ``/api/v1/sessions/{id}/...`` session endpoints
 
 from __future__ import annotations
 
+from astrabox.seams.skills import SkillDescriptor
+
 from typing import Any
 
 from fastapi import Body, Header, Request
@@ -58,11 +60,11 @@ class InheritedExtensions(BaseModel):
 
     instructions: bool
     #: Skill sources the layers write themselves.
-    skills: list[str]
+    skills: list[SkillDescriptor]
     #: Skill sources the layers select from the extension catalog. They reach
     #: the Assistant only while the deployment runs one
     #: (``/api/v1/extension-provider`` is not null).
-    catalog_skills: list[str]
+    catalog_skills: list[SkillDescriptor]
     mcp_servers: list[str]
     #: How many MCP servers the layers select from extension catalogs, which
     #: likewise need the deployment to run one.
@@ -138,7 +140,7 @@ class Assistant(BaseModel):
     #: ``/extensions``.
     extension_catalog: dict[str, Any] | None = None
     packages: list[dict[str, Any]] | None = None
-    skills: list[str] | None = None
+    skills: list[SkillDescriptor] | None = None
     #: The engine's native configuration documents (Hermes: ``config``, merged
     #: into its config.yaml), as declared by the engine.
     engine_options: dict[str, Any] | None = None

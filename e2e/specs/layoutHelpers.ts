@@ -28,6 +28,7 @@ export const VIEWPORTS = [
 /** Console list routes, each with the testid of the table it must render. */
 export const CONSOLE_ROUTES = [
   { id: "agents", path: "/manage/agents" },
+  { id: "agent-categories", path: "/manage/agent-categories" },
   { id: "deployments", path: "/manage/deployments" },
   { id: "assistants", path: "/manage/assistants" },
   { id: "sessions", path: "/manage/sessions" },
@@ -43,6 +44,13 @@ const iso = (daysAgo: number) =>
 const ROWS = 8;
 const range = <T,>(n: number, f: (i: number) => T): T[] =>
   Array.from({ length: n }, (_, i) => f(i + 1));
+
+const categories = range(ROWS, (i) => ({
+  category_id: `cat_${i}`,
+  name: `Category ${i}`,
+  position: i - 1,
+  agents: i,
+}));
 
 const user = { user_id: "u-1", display_name: "Operator", email: "op@example.com" };
 
@@ -345,6 +353,11 @@ function resolve(pathname: string, query: URLSearchParams): unknown {
       }
       : assistants;
   }
+  // The home page reads the categories and the tags with the Agents and
+  // shows nothing when either read fails, so both answer.
+  if (at("agent-categories")) return categories.map(({ agents: _agents, ...row }) => row);
+  if (at("agent-tags")) return [];
+  if (at("admin", "agent-categories")) return categories;
   if (at("admin", "vaults", "*", "bindings")) return [];
   if (at("admin", "vaults")) return {
     vaults,

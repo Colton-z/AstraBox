@@ -16,6 +16,7 @@ import pytest
 
 import astrabox.providers as providers
 from astrabox.common.utils.errors import APIError
+from astrabox.seams.sandbox_data import SandboxCommandResult
 from astrabox.seams.sandbox_disposal import SandboxDestruction
 from astrabox.core.service.orchestrator.assistant.assistant_service import (
     AssistantService,
@@ -492,29 +493,29 @@ class _WorkspaceReleaseRuntimeManager:
 
         return _Box()
 
-    async def _run_command(self, command: str) -> Any:
+    async def _run_command(self, command: str, **_options: Any) -> Any:
         argv = shlex.split(command)
         programs = {"astrabox-hermes-scheduler", "astrabox-hermes-state-mirror", "astrabox-hermes"}
         if argv[:2] == ["supervisorctl", "stop"] and argv[2] in programs:
             self.stopped_programs.add(argv[2])
             self.calls.append(f"stop:{argv[2]}")
-            return SimpleNamespace(exit_code=0, stdout="", error=None)
+            return SandboxCommandResult(exit_code=0, stdout="", stderr="")
         if argv[:2] == ["bash", "-lc"]:
             program = shlex.split(argv[2])[3].rstrip(";")
             assert program in programs
             self.calls.append(f"status:{program}")
             state = "STOPPED" if program in self.stopped_programs else "RUNNING"
-            return SimpleNamespace(exit_code=0, stdout=f"{program} {state}", error=None)
+            return SandboxCommandResult(exit_code=0, stdout=f"{program} {state}", stderr="")
         if argv[:1] == ["runuser"] and "astrabox-hermes-state-save" in argv:
             assert self.stopped_programs == programs
             self.calls.append("save")
             self.save_commands.append(argv)
             if self.save_error is not None:
                 raise self.save_error
-            return SimpleNamespace(
+            return SandboxCommandResult(
                 exit_code=0,
                 stdout="HERMES_STATE_SAVE_COMPLETE snapshot_id=owner-snapshot",
-                error=None,
+                stderr="",
             )
         raise AssertionError(f"unexpected sandbox command: {command}")
 

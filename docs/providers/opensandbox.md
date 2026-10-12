@@ -121,10 +121,12 @@ then select that image under **Sandbox image or template** in
 **Management console → Environments**. Do not depend on a per-Session setup
 script: a prewarmed sandbox can exist before the Session that claims it.
 
-AstraBox uses OpenSandbox-native command, filesystem, and endpoint APIs. The
-bundled images require AIO because their boot and workload-account lifecycle
-ends in `/opt/gem/run.sh`; a custom base image needs an equivalent lifecycle
-and a matching entrypoint.
+The OpenSandbox provider serves AstraBox's sandbox contract with the execd that
+OpenSandbox starts in every sandbox: files, commands, and long-lived processes
+such as the terminal's shell and the Pi program go to execd, and endpoints come
+from OpenSandbox's endpoint API. The bundled images require AIO because their
+boot and workload-account lifecycle ends in `/opt/gem/run.sh`; a custom base
+image needs an equivalent lifecycle and a matching entrypoint.
 
 The [Container Reference](../container-reference.md) describes the image and
 workspace layout. Every AstraBox-created sandbox carries the platform's measured

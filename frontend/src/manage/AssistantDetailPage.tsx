@@ -91,6 +91,7 @@ export default function AssistantDetailPage() {
   const [savingSection, setSavingSection] = useState<number | null>(null);
   const [savedSection, setSavedSection] = useState<number | null>(null);
   const [saveError, setSaveError] = useState('');
+  const [saveErrorSection, setSaveErrorSection] = useState<number | null>(null);
   const [invalidKeys, setInvalidKeys] = useState<Set<string>>(new Set());
   const savedTimer = useRef<number | null>(null);
 
@@ -209,6 +210,7 @@ export default function AssistantDetailPage() {
 
   const saveSection = async (index: number) => {
     if (!record || !draft) return;
+    setSaveErrorSection(index);
     if (!draft.display_name.trim()) {
       setSaveError(t('manage:assistants.err_name_required'));
       return;
@@ -280,6 +282,7 @@ export default function AssistantDetailPage() {
 
   const runAction = async (action: () => Promise<unknown>) => {
     setActionBusy(true);
+    setSaveErrorSection(null);
     setSaveError('');
     try {
       await action();
@@ -420,7 +423,7 @@ export default function AssistantDetailPage() {
         </ConsoleFactRail>
       }
     >
-      {saveError && <ErrorNote>{saveError}</ErrorNote>}
+      {saveError && saveErrorSection === null && <ErrorNote>{saveError}</ErrorNote>}
       {extensionError && <ErrorNote>{extensionError}</ErrorNote>}
       {staleSelection && hasCatalogSelection(staleSelection) && (
         <UnavailableCatalogSelection
@@ -467,6 +470,7 @@ export default function AssistantDetailPage() {
           note: t('manage:assistants.card_note'),
           dirty: isDirty(section.fields),
           blocked: section.fields.some((f) => invalidKeys.has(f.key)),
+          error: saveErrorSection === index ? saveError : undefined,
           saving: savingSection === index,
           saved: savedSection === index,
           saveLabel: t('common:save'),

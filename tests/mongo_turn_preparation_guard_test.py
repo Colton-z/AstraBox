@@ -38,7 +38,6 @@ async def _store(monkeypatch: pytest.MonkeyPatch) -> tuple[SessionRepository, An
             "user_id": "principal-1",
             "sandbox_backend": "exclusive-provider",
             "sandbox_id": "sandbox-1",
-            "current_turn_id": "turn-1",
             "deleted": False,
         }
     )
@@ -179,17 +178,19 @@ async def test_real_mongo_stale_ambiguous_claim_reaps_its_own_guard(
 ) -> None:
     repo, collection = await _store(monkeypatch)
 
-    async def _advance_turn() -> None:
+    async def _rebind_sandbox() -> None:
+        # The session moves to a replacement sandbox after the claim landed
+        # but before its caller learned so.
         await collection.update_one(
             {"session_id": "session-1"},
-            {"$set": {"current_turn_id": "turn-2"}},
+            {"$set": {"sandbox_id": "sandbox-2"}},
         )
 
     faulting = _FaultingCollection(
         collection,
         method="find_one_and_update",
         matches=_claim_call,
-        after_apply=_advance_turn,
+        after_apply=_rebind_sandbox,
     )
 
     async def _collection(_name: str) -> Any:
@@ -204,7 +205,7 @@ async def test_real_mongo_stale_ambiguous_claim_reaps_its_own_guard(
 
     assert claimed is None
     stored = await collection.find_one({"session_id": "session-1"})
-    assert stored["current_turn_id"] == "turn-2"
+    assert stored["sandbox_id"] == "sandbox-2"
     assert stored.get("turn_preparation_guard") is None
 
 

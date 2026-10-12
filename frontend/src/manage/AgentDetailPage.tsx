@@ -9,14 +9,17 @@ import {
   getAgentAccess,
   getAgentExtensions,
   getAgentSchema,
+  listAgentCategories,
   listAgentEnvironmentModels,
   listAgentEnvironments,
+  listAgentTags,
   listAgents,
   setAgentAccess,
   setAgentExtensions,
   updateAgent,
 } from '@/api';
 import type {
+  AgentCategory,
   AgentConfig,
   AgentDraft,
   AgentExtensionCatalog,
@@ -35,6 +38,7 @@ import {
   useRecordCrumb,
   sectionIsDirty,
   missingRequiredFields,
+  fieldNamedByRefusal,
   revertFields,
   type EditFieldSpec,
   type EditSectionSpec,
@@ -46,7 +50,7 @@ import {
   catalogSelectionOf,
   hasCatalogSelection,
 } from './UnavailableCatalogSelection';
-import { agentDisplayName, agentModelLabel, formatDateTime } from './agentConfig';
+import { agentDisplayName, agentModel, formatDateTime } from './agentConfig';
 import { buildAgentEditSections } from './agentEditConfig';
 import { useFrontendReleaseHold } from '@/hooks/useFrontendReleaseHold';
 import { useExtensionProvider } from '@/hooks/useExtensionProvider';
@@ -54,6 +58,9 @@ import { AgentPrewarmStatus } from './AgentPrewarmStatus';
 
 /** The edit helpers speak plain records; a typed draft is one. */
 const draftRecordOf = (v: unknown) => (v ?? null) as Record<string, unknown> | null;
+
+/** A refused save: the card whose Save was pressed, the reason, and the field it names. */
+type SaveRefusal = { section: number; message: string; field: string | null };
 
 /**
  * One Agent on its own page.
@@ -83,7 +90,9 @@ export default function AgentDetailPage() {
   const [draft, setDraft] = useState<AgentConfig | null>(null);
   const [savingSection, setSavingSection] = useState<number | null>(null);
   const [savedSection, setSavedSection] = useState<number | null>(null);
-  const [saveError, setSaveError] = useState('');
+  // Cleared only when the reader edits the draft or saves again; the reload
+  // that follows a refused save leaves it beside the Save that was pressed.
+  const [refusal, setRefusal] = useState<SaveRefusal | null>(null);
   const [invalidKeys, setInvalidKeys] = useState<Set<string>>(new Set());
   const [extensionOpening, setExtensionOpening] = useState<'mcp' | 'skills' | null>(null);
   const [extensionError, setExtensionError] = useState('');
@@ -100,6 +109,8 @@ export default function AgentDetailPage() {
   } = useExtensionProvider();
 
   const [environments, setEnvironments] = useState<EnvironmentConfig[]>([]);
+  const [categories, setCategories] = useState<AgentCategory[]>([]);
+  const [tagSuggestions, setTagSuggestions] = useState<string[]>([]);
   const [models, setModels] = useState<string[]>([]);
 
   useRecordCrumb(record ? agentDisplayName(record) : t('common:agent'));
@@ -107,16 +118,23 @@ export default function AgentDetailPage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [list, sch, envs] = await Promise.all([
+      // The categories and tags are read with the record, not absorbed: an
+      // Agent's stored categories render by name from this list, and an empty
+      // one would show every category it holds as unavailable.
+      const [list, sch, envs, cats, tags] = await Promise.all([
         listAgents(),
         getAgentSchema().catch(() => null),
         listAgentEnvironments().catch(() => [] as EnvironmentConfig[]),
+        listAgentCategories(),
+        listAgentTags(),
       ]);
       const found = list.find((a) => a.agent_id === agentId) ?? null;
       const access = found?.can_manage ? await getAgentAccess(found.agent_id) : null;
       setRecord(found && access ? { ...found, ...access } : found);
       setSchema(sch);
       setEnvironments(envs);
+      setCategories(cats);
+      setTagSuggestions(tags.map((entry) => entry.tag));
       setError(found ? '' : t('manage:agents.not_found', { name: agentId }));
     } catch (e) {
       setError((e as Error).message);
@@ -165,6 +183,7 @@ export default function AgentDetailPage() {
     if (seededFor.current === agentId && draft) return;
     seededFor.current = agentId;
     setDraft(record ? { ...record } : null);
+    setRefusal(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agentId, record]);
 
@@ -177,8 +196,10 @@ export default function AgentDetailPage() {
           ?.engine_options_schema,
         models,
         catalogName: extensionProvider?.display_name,
+        categories,
+        tagSuggestions,
       }).sections,
-    [schema, draft, environments, models, extensionProvider, t],
+    [schema, draft, environments, models, extensionProvider, categories, tagSuggestions, t],
   );
 
   const isDirty = (fields: EditFieldSpec[]) =>
@@ -280,7 +301,7 @@ export default function AgentDetailPage() {
   const saveSection = async (fields: EditFieldSpec[], index: number) => {
     if (!draft || !record) return;
     setSavingSection(index);
-    setSaveError('');
+    setRefusal(null);
     try {
       const payload = fields.reduce(
         (acc, f) =>
@@ -322,16 +343,27 @@ export default function AgentDetailPage() {
       if (savedTimer.current) window.clearTimeout(savedTimer.current);
       savedTimer.current = window.setTimeout(() => setSavedSection(null), 2600);
     } catch (e) {
-      setSaveError((e as Error).message);
+      setRefusal({
+        section: index,
+        message: (e as Error).message,
+        field: fieldNamedByRefusal(e, sections),
+      });
       await load();
     } finally {
       setSavingSection(null);
     }
   };
 
+  const editDraft = (next: AgentConfig) => {
+    // A control can report a value it did not change (a JSON field does on
+    // blur); only a change is the edit that retires the refusal.
+    if (JSON.stringify(next) !== JSON.stringify(draft)) setRefusal(null);
+    setDraft(next);
+  };
+
   const revertSection = (fields: EditFieldSpec[]) => {
     if (!draft || !record) return;
-    setDraft(
+    editDraft(
       revertFields(fields, draftRecordOf(draft)!, draftRecordOf(record)!) as unknown as AgentConfig,
     );
   };
@@ -414,7 +446,7 @@ export default function AgentDetailPage() {
       }
       rail={
         <ConsoleFactRail>
-          <ConsoleFact label={t('common:model')} value={agentModelLabel(record)} />
+          <ConsoleFact label={t('common:model')} value={agentModel(record) || '—'} />
           <ConsoleFact
             label={t('manage:common_fields.environment')}
             value={String(record.environment_name || '—')}
@@ -426,7 +458,6 @@ export default function AgentDetailPage() {
         </ConsoleFactRail>
       }
     >
-      {saveError && <ErrorNote>{saveError}</ErrorNote>}
       {extensionError && <ErrorNote>{extensionError}</ErrorNote>}
       {canManage && staleSelection && hasCatalogSelection(staleSelection) && (
         <UnavailableCatalogSelection
@@ -446,9 +477,10 @@ export default function AgentDetailPage() {
           sections={sections}
           renderField={extensionField}
           draft={draftRecord ?? {}}
-          onDraftChange={(d) => setDraft(d as unknown as AgentConfig)}
+          onDraftChange={(d) => editDraft(d as unknown as AgentConfig)}
           idPrefix="agent"
           invalidKeys={invalidKeys}
+          refusedKey={refusal?.field}
           onInvalidChange={(key, invalid) =>
             setInvalidKeys((prev) => {
               const next = new Set(prev);
@@ -473,6 +505,7 @@ export default function AgentDetailPage() {
                     field: String(missingRequired[0].label),
                   })
                 : undefined,
+            error: refusal?.section === index ? refusal.message : undefined,
             saving: savingSection === index,
             saved: savedSection === index,
             saveLabel: t('common:save'),

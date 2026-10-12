@@ -27,10 +27,7 @@ from astrabox.core.service.orchestrator.runtime_binding import (
     is_assistant_user_conversation,
     reconcile_session_runtime_binding,
 )
-from astrabox.core.service.orchestrator.runtime.pty_terminal import (
-    PtyTerminal,
-    resolve_execd_endpoint,
-)
+from astrabox.core.service.orchestrator.runtime.pty_terminal import PtyTerminal
 from astrabox.core.service.orchestrator.runtime.sandbox_client import get_underlying_sandbox
 from astrabox.core.service.orchestrator.runtime.terminal_execution import (
     new_isolated_terminal_execution_id,
@@ -343,13 +340,7 @@ class TerminalService:
                 return
 
             try:
-                endpoint = await resolve_execd_endpoint(
-                    get_underlying_sandbox(sandbox)
-                )
-                terminal = PtyTerminal(
-                    endpoint.origin,
-                    headers=endpoint.headers,
-                )
+                terminal = PtyTerminal(get_underlying_sandbox(sandbox).processes)
                 pty_session_id = await _pty_session_for(
                     terminal,
                     session_id,

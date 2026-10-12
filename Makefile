@@ -57,7 +57,7 @@ SANDBOX_BASE_IMAGE  ?= ghcr.io/agent-infra/sandbox:1.11.0
 NPM_REGISTRY        ?= https://registry.npmjs.org/
 
 .PHONY: help install install-py install-web install-channel-gateway dev test test-py test-postgresql test-mongo test-mongo-transactions lint typecheck fmt-check check-e2e-collection \
-        check-comments check-comments-report check-i18n check-upstream check-api-client check-all-in-one check-dockerfile-modes \
+        check-comments check-comments-report check-i18n check-upstream check-api-client check-all-in-one check-dockerfile-modes check-sandbox-seam \
         test-web test-channel-gateway test-layout utilisation build-web build-dist e2e e2e-smoke e2e-browser e2e-live \
         build-agent-image build-assistant-image build-dsh-image build-codex-image build-pi-image build-workspace-mounter-image build-all-in-one-image clean \
         k8s-testbed-up k8s-testbed-status k8s-testbed-down k8s-testbed-purge
@@ -97,13 +97,13 @@ dev: ## Boot the local dev stack: backend (:8000) + frontend (:5173). Ctrl-C sto
 	./scripts/dev.sh
 
 # ── test (the CI unit/lint/typecheck job — no Docker, no secret) ─────────────
-test: check-comments check-i18n check-errors check-credential-seam check-all-in-one check-dockerfile-modes check-api-client lint typecheck test-py test-web ## Full unit gate: static checks + ruff + mypy + pytest + web build/vitest.
+test: check-comments check-i18n check-errors check-credential-seam check-sandbox-seam check-all-in-one check-dockerfile-modes check-api-client lint typecheck test-py test-web ## Full unit gate: static checks + ruff + mypy + pytest + web build/vitest.
 
 test-py: ## Fast unit suite (database-backed and live markers are deselected).
 	$(NODE_TOOLCHAIN) $(PYTEST)
 
 test-postgresql: ## Production PostgreSQL contract (explicit URL or maintained local Compose credentials).
-	$(NODE_TOOLCHAIN) $(PYTEST) -m postgresql tests/postgresql_collection_conformance_test.py tests/postgresql_schema_migrations_test.py tests/postgresql_transcript_sequence_test.py tests/sql_document_transaction_test.py tests/environment_delete_test.py tests/environment_delete_lifecycle_test.py
+	$(NODE_TOOLCHAIN) $(PYTEST) -m postgresql tests/postgresql_collection_conformance_test.py tests/postgresql_schema_migrations_test.py tests/postgresql_transcript_sequence_test.py tests/sql_document_transaction_test.py tests/environment_delete_test.py tests/environment_delete_lifecycle_test.py tests/turn_preparation_turn_authority_test.py tests/runtime_recovery_repository_test.py
 
 test-mongo: ## Opt-in: the mongo conformance suite. Needs a reachable mongod (ASTRABOX_DB_URL=mongodb://…) + `pip install -e '.[mongo]'`.
 	$(NODE_TOOLCHAIN) $(PYTEST) -m mongo
@@ -137,6 +137,9 @@ check-errors: ## Every raised error code has a registry row, against the shrinki
 
 check-credential-seam: ## Credential machinery stays behind the egress seam, against the shrinking baseline.
 	$(PY) scripts/check_credential_seam.py
+
+check-sandbox-seam: ## Platform code imports no sandbox backend's SDK, provider package or server launcher.
+	$(PY) scripts/check_sandbox_seam.py
 
 check-all-in-one: ## Every Compose server setting is refused or passed through by the all-in-one image, whose edges match Compose's.
 	$(PY) scripts/check_all_in_one.py

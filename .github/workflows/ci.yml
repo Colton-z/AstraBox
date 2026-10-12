@@ -96,6 +96,11 @@ jobs:
       - name: Credential seam
         run: python scripts/check_credential_seam.py
 
+      - name: Sandbox seam
+        # Platform code reaches a box only through the sandbox seam; it imports
+        # no backend's SDK, provider package or server launcher.
+        run: python scripts/check_sandbox_seam.py
+
       - name: All-in-one topology
         # Every setting Compose gives the server is refused or passed through
         # by the all-in-one image, whose sandbox edges match Compose's.
@@ -332,6 +337,8 @@ jobs:
           tests/sql_document_transaction_test.py
           tests/environment_delete_test.py
           tests/environment_delete_lifecycle_test.py
+          tests/turn_preparation_turn_authority_test.py
+          tests/runtime_recovery_repository_test.py
 
   # ── mongo-conformance ─────────────────────────────────────────────────────
   # `backend` (above) keeps its own "no Docker, no secret" contract; database

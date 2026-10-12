@@ -1,11 +1,12 @@
-"""``PtyTerminal.run`` drains output that arrives behind the exit notice.
+"""``PtyTerminal.run`` keeps output that arrives behind the exit notice.
 
 The shell-exit control frame and the command's stdout travel the same
 websocket but are produced by different execd internals, and the exit notice
 can overtake stdout still queued behind it. Stopping at the exit frame would
 lose that output while still reporting the command's exit status. These tests
-use a real websocket server because the producer ordering is the contract under
-test; a mocked receive loop cannot exercise it.
+run the terminal over :class:`ExecdProcesses` against a real websocket server
+because the producer ordering is the contract under test; a mocked receive
+loop cannot exercise it.
 """
 
 from __future__ import annotations
@@ -17,10 +18,9 @@ from contextlib import asynccontextmanager
 import httpx
 from websockets.asyncio.server import serve
 
-from astrabox.core.service.orchestrator.runtime.pty_terminal import (
-    PtyTerminal,
-    _STDOUT,
-)
+from astrabox.core.service.orchestrator.runtime.pty_terminal import PtyTerminal
+from astrabox.providers.execd.processes import STDOUT as _STDOUT
+from astrabox.providers.execd.processes import ExecdProcesses
 
 _PTY_ID = "pty-1"
 
@@ -33,8 +33,12 @@ async def test_open_session_bootstraps_only_the_supplied_process_environment() -
         return httpx.Response(201, json={"session_id": _PTY_ID})
 
     terminal = PtyTerminal(
-        "http://execd.example.test",
-        transport=httpx.MockTransport(handler),
+        ExecdProcesses.at_endpoint(
+            "http://execd.example.test",
+            {},
+            sandbox_id="sb-1",
+            http_transport=httpx.MockTransport(handler),
+        )
     )
     opened = await terminal.open_session(
         cwd="/workspace",
@@ -67,9 +71,10 @@ def _http_faces() -> httpx.MockTransport:
 
 @asynccontextmanager
 async def _fake_execd(frames_after_input: list[str | bytes]) -> AsyncIterator[str]:
-    """A real WS server: waits for the command input, then plays ``frames``."""
+    """A real WS server: announces the attach, waits for the command input, then plays ``frames``."""
 
     async def handler(connection) -> None:
+        await connection.send(json.dumps({"type": "connected"}))
         await connection.recv()  # the sentinel-wrapped command
         for frame in frames_after_input:
             await connection.send(frame)
@@ -81,7 +86,9 @@ async def _fake_execd(frames_after_input: list[str | bytes]) -> AsyncIterator[st
 
 
 async def _collect(origin: str) -> list[dict]:
-    terminal = PtyTerminal(origin, transport=_http_faces())
+    terminal = PtyTerminal(
+        ExecdProcesses.at_endpoint(origin, {}, sandbox_id="sb-1", http_transport=_http_faces())
+    )
     return [event async for event in terminal.run(_PTY_ID, "echo HELLO && exit 7")]
 
 

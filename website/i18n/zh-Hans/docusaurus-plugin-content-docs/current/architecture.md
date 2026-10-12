@@ -45,6 +45,18 @@ React 控制台与其他客户端使用同一个 FastAPI 服务。生产镜像�
 沙箱 provider 接口使用 AstraBox 自己的请求类型传递生命周期、网络、权限和受保护凭证，
 不暴露 provider SDK。所选 provider 会转换自己支持的能力，并在任务开始前拒绝其他请求。
 
+沙箱句柄还提供沙箱内的文件，能在沙箱内运行命令、保持长驻进程，并把沙箱端口解析为地址。
+无论使用哪个后端，AstraBox 都通过同一份契约使用它们：文件路径为绝对路径，权限使用 POSIX
+权限位，属主使用账户名；命令是以 root 运行的 shell 命令行，退出码作为数据返回，截止时间由
+调用方一侧把守；长驻进程（例如终端的 shell 或 Pi 程序）可由任一副本按 id 接入，并从字节
+偏移重放输出；端点是一个 URL 加上每个请求都要带的请求头。每个内置镜像都带有 OpenSandbox
+的 execd，AstraBox 自带基于它的契约实现（`astrabox.providers.execd`）：沙箱运行 execd、
+且端点解析能带上请求所需的请求头到达其端口的 provider，可以直接复用这份实现，而不必
+自己转换 SDK。无论哪种方式，`astrabox.testing.sandbox_data_conformance` 都在该 provider
+的真实沙箱上检查这份契约。不支持长驻进程的后端通过 `supports_process_sessions` 声明，
+需要它的 Agent 程序和终端面板会在配置时被拒绝。参见
+[接入新的沙箱 provider](writing-a-sandbox-provider.md)。
+
 一个部署可以安装多个沙箱 provider，并用 `ASTRABOX_SANDBOX_BACKENDS` 启用实际使用的
 那些；`ASTRABOX_SANDBOX_BACKEND` 是未指定后端的 Environment 使用的默认后端。
 Environment 只能选择已启用的后端。仍指向已安装但未启用后端的记录会返回
@@ -211,7 +223,7 @@ OpenTelemetry 配置，不经过出站 Vault 注入。参见 [tracing 配置说�
 
 安装 Provider 包后，可以接入其他 Agent 程序、沙箱后端、模型服务、数据存储、Secret Store、身份提供方、工作区存储、扩展来源、调度器或消息平台，不需要改变 Session API。AstraBox 会在启动时检查 Provider 兼容性，并拒绝未知或不兼容的配置。
 
-扩展方式见[嵌入 AstraBox](embedding.md)、[接入新的 Agent 程序](writing-an-engine-adapter.md)、[接入新的消息平台](writing-a-channel-provider.md)和[接入新的调度器](writing-a-scheduler-provider.md)。
+扩展方式见[嵌入 AstraBox](embedding.md)、[接入新的 Agent 程序](writing-an-engine-adapter.md)、[接入新的消息平台](writing-a-channel-provider.md)、[接入新的调度器](writing-a-scheduler-provider.md)和[接入新的沙箱 provider](writing-a-sandbox-provider.md)。
 
 ## 相关文档
 

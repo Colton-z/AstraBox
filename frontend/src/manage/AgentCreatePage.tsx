@@ -6,16 +6,19 @@ import { useSWRConfig } from 'swr';
 import {
   createAgent,
   getAgentSchema,
+  listAgentCategories,
   listAgentEnvironmentModels,
   listAgentEnvironments,
+  listAgentTags,
 } from '@/api';
-import type { AgentDraft, EnvironmentConfig, FormSchema } from '@/types';
+import type { AgentCategory, AgentDraft, EnvironmentConfig, FormSchema } from '@/types';
 
 import {
   ConsoleCreatePage,
   ConsoleErrorState,
   ConsoleRecordLoading,
   ConsoleRecordPage,
+  fieldNamedByRefusal,
   useRecordCrumb,
 } from './console';
 import { buildAgentDraft } from './agentConfig';
@@ -37,11 +40,16 @@ export default function AgentCreatePage() {
   const [draft, setDraft] = useState<AgentDraft | null>(null);
   const [schema, setSchema] = useState<FormSchema | null>(null);
   const [environments, setEnvironments] = useState<EnvironmentConfig[]>([]);
+  const [categories, setCategories] = useState<AgentCategory[]>([]);
+  const [tagSuggestions, setTagSuggestions] = useState<string[]>([]);
   const [models, setModels] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
   const [saving, setSaving] = useState(false);
+  // A refused create, and the field it names; both stay until the next edit
+  // or create, as a refused save on the record page does.
   const [error, setError] = useState('');
+  const [refusedKey, setRefusedKey] = useState<string | null>(null);
   const [invalidKeys, setInvalidKeys] = useState<Set<string>>(new Set());
 
   useRecordCrumb(t('manage:agents.create_title'));
@@ -50,14 +58,22 @@ export default function AgentCreatePage() {
     setLoading(true);
     setLoadError('');
     try {
-      // Neither of these is optional to the form: without the schema
+      // None of these is optional to the form: without the schema
       // `buildAgentEditSections` has no sections to return and the page renders
-      // a heading over nothing, and without the environment list the
-      // environment picker offers no environment. Absorbing either would report
-      // a fetch that failed as a product that has nothing to show.
-      const [sch, envs] = await Promise.all([getAgentSchema(), listAgentEnvironments()]);
+      // a heading over nothing, without the environment list the environment
+      // picker offers no environment, and without the categories the category
+      // picker offers none. Absorbing any would report a fetch that failed as a
+      // product that has nothing to show.
+      const [sch, envs, cats, tags] = await Promise.all([
+        getAgentSchema(),
+        listAgentEnvironments(),
+        listAgentCategories(),
+        listAgentTags(),
+      ]);
       setSchema(sch);
       setEnvironments(envs);
+      setCategories(cats);
+      setTagSuggestions(tags.map((entry) => entry.tag));
       setDraft(buildAgentDraft(sch));
     } catch (e) {
       setLoadError((e as Error).message);
@@ -106,8 +122,10 @@ export default function AgentCreatePage() {
         models,
         engineOptionsSchema: environments.find((e) => e.name === environmentName)
           ?.engine_options_schema,
+        categories,
+        tagSuggestions,
       }),
-    [schema, draftVisibility, environments, models, environmentName, t],
+    [schema, draftVisibility, environments, models, environmentName, categories, tagSuggestions, t],
   );
 
   if (loading) {
@@ -142,7 +160,15 @@ export default function AgentCreatePage() {
       // there each section owns its own save.
       advancedKeys={advancedKeys}
       draft={draft as unknown as Record<string, unknown>}
-      onDraftChange={(d) => setDraft(d as unknown as AgentDraft)}
+      onDraftChange={(d) => {
+        // A JSON field reports its unchanged value on blur, which is not an
+        // edit and must not retire the refusal.
+        if (JSON.stringify(d) !== JSON.stringify(draft)) {
+          setError('');
+          setRefusedKey(null);
+        }
+        setDraft(d as unknown as AgentDraft);
+      }}
       idPrefix="agent-new"
       invalidKeys={invalidKeys}
       onInvalidChange={(key, invalid) =>
@@ -154,6 +180,7 @@ export default function AgentCreatePage() {
         })
       }
       error={error}
+      refusedKey={refusedKey}
       saving={saving}
       createLabel={t('common:create')}
       blockedReason={name ? undefined : t('manage:agents.err_name_required')}
@@ -161,6 +188,7 @@ export default function AgentCreatePage() {
       onCreate={() => {
         setSaving(true);
         setError('');
+        setRefusedKey(null);
         void createAgent({ ...draft, name }, schema)
           // Straight to the record: what the reader wanted was the agent, and
           // the list they came from cannot show them the one they just made
@@ -169,7 +197,10 @@ export default function AgentCreatePage() {
             void mutate(MANAGE_NAV_COUNT_KEYS.agents);
             navigate(`/manage/agents/${encodeURIComponent(created.agent_id)}`);
           })
-          .catch((e: unknown) => setError((e as Error).message))
+          .catch((e: unknown) => {
+            setError((e as Error).message);
+            setRefusedKey(fieldNamedByRefusal(e, sections));
+          })
           .finally(() => setSaving(false));
       }}
     />

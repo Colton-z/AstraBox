@@ -18,6 +18,8 @@ from astrabox.common.utils.user_context import UserContext
 from astrabox.core.service.orchestrator.event_broker import SessionEventBroker
 from astrabox.core.service.orchestrator.transcript_capability import _signing_key
 from astrabox.persistence.repository.backend import DuplicateKeyError, document_transaction_runner
+from astrabox.seams.sandbox import SandboxUnreachable
+from astrabox.seams.sandbox_data import SandboxFiles
 
 from . import limits
 from .edits import apply_edits
@@ -1169,20 +1171,18 @@ class ArtifactService:
         finally:
             await sandbox.close()
 
-    async def _read_guarded_file(self, filesystem: Any, root: str, path: str) -> str:
+    async def _read_guarded_file(self, filesystem: SandboxFiles, root: str, path: str) -> str:
         target = self._file_service._resolve_client_path(root, path)
         info = await self._file_service._assert_path_resolves_within_root(
             filesystem, root_path=root, target_path=target
         )
-        if self._file_service._entry_type(info) == "directory":
+        if info is None or info.kind == "directory":
             raise invalid("file_path must be a file")
-        if self._file_service._entry_size(info) > limits.CONTENT_BYTES:
+        if info.size > limits.CONTENT_BYTES:
             raise APIError(
                 code="ARTIFACT_CONTENT_TOO_LARGE", message="file exceeds 4 MiB", status_code=413
             )
-        stream = await self._file_service._filesystem_call(
-            "artifact content", filesystem.read_bytes_stream(target), path=target
-        )
+        stream = filesystem.read_chunks(target)
         chunks, size = [], 0
         try:
             async for chunk in stream:
@@ -1194,6 +1194,17 @@ class ArtifactService:
                         status_code=413,
                     )
                 chunks.append(bytes(chunk))
+        except SandboxUnreachable as exc:
+            # An APIError too, but its words are the transport's and stay in the log.
+            raise self._file_service._filesystem_api_error(
+                exc, op_label="artifact content", path=target
+            ) from exc
+        except APIError:
+            raise
+        except Exception as exc:
+            raise self._file_service._filesystem_api_error(
+                exc, op_label="artifact content", path=target
+            ) from exc
         finally:
             await stream.aclose()
         try:

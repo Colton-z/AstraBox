@@ -420,10 +420,15 @@ def _assert_backend_capabilities(payload: dict[str, Any]) -> None:
 
     Every Environment's boxes are created under its networking policy, and the
     platform refuses a create on a backend that cannot enforce one; shared
-    tenancy runs every conversation in an isolated session inside one box.
-    Either would otherwise be refused at the first conversation, long after
-    the Environment was saved.
+    tenancy runs every conversation in an isolated session inside one box;
+    an engine driven over a process's stdin and stdout runs, in a
+    conversation's own box, as one of the box's long-lived processes. Each
+    would otherwise be refused at the first conversation, long after the
+    Environment was saved.
     """
+    from astrabox.core.service.orchestrator.engine.capabilities import (
+        capabilities_for_engine_kind,
+    )
     from astrabox.seams.sandbox import sandbox_for_name, unsupported_sandbox_feature
 
     provider = sandbox_for_name(payload.get("sandbox_backend"))
@@ -442,6 +447,19 @@ def _assert_backend_capabilities(payload: dict[str, Any]) -> None:
                 "sandbox_tenancy 'agent', which runs each conversation in an "
                 "isolated session inside the Agent's box",
                 ("supports_isolated_sessions",),
+            )
+        )
+    engine_kind = str(payload.get("engine_kind") or "").strip()
+    if (
+        tenancy == SANDBOX_TENANCY_CONVERSATION
+        and engine_kind
+        and capabilities_for_engine_kind(engine_kind).requires_process_sessions
+    ):
+        required.append(
+            (
+                f"engine {engine_kind!r} in a conversation's own box, where it runs "
+                "as one of the box's long-lived processes",
+                ("supports_process_sessions",),
             )
         )
     for feature, flags in required:

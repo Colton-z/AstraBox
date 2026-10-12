@@ -1,11 +1,11 @@
 """One WebSocket to a sandbox's resident Hermes backend, carrying JSON-RPC.
 
-The sibling of :class:`ExecdJsonLineChannel`, and deliberately much smaller.
-That one drives a PROCESS: it creates an execd PTY session, demultiplexes the
-binary frames of a terminal into a stdout byte stream, and cuts newline-
-delimited JSON out of the result. This one talks to a SERVICE the image
-already runs — `hermes serve`, published by `astrabox-hermes-forward` — where
-every text frame is one JSON-RPC line and there is nothing to demultiplex.
+The sibling of :class:`ProcessJsonLineChannel`, and deliberately much smaller.
+That one drives a PROCESS: it starts one of the box's long-lived processes,
+reads its stdout as a byte stream, and cuts newline-delimited JSON out of it.
+This one talks to a SERVICE the image already runs — `hermes serve`,
+published by `astrabox-hermes-forward` — where every text frame is one
+JSON-RPC line and there is nothing to demultiplex.
 
 The wire above it is unchanged, which is the whole reason this exists.
 Hermes' own `tui_gateway/ws.py` reuses `tui_gateway.server.dispatch` verbatim
@@ -22,8 +22,8 @@ What it does NOT carry, and the caller must know:
   that was once attributed to `isatty()` and the attribution was refuted here
   — the label arrives over this transport too, and its real cause was the
   adapter merging two vendor events (see `hermes_client.py`).
-* **No offset replay.** execd replays a PTY's bytes from a cursor, which is
-  what turn recovery reconnects at. The pinned Hermes has no equivalent — its
+* **No offset replay.** A box process replays its bytes from a cursor, which
+  is what turn recovery reconnects at. The pinned Hermes has no equivalent — its
   seq-stamped `session.events.since` landed upstream on 2026-08-24 and was
   fixed on 2026-08-25 to deliver events at all, so it is neither released to
   PyPI nor proven. `current_output_offset` therefore answers 0 and a
@@ -44,9 +44,6 @@ import websockets
 from websockets.exceptions import InvalidMessage, InvalidStatus
 
 from astrabox.common.logger.logger_factory import get_logger
-from astrabox.core.service.orchestrator.runtime.execd_json_lines import (
-    ExecdChannelDetached,
-)
 from astrabox.core.service.orchestrator.runtime.pty_terminal import (
     websocket_header_kwargs,
 )
@@ -57,7 +54,7 @@ logger = get_logger(__name__)
 #: enough that a wedged one is reported rather than waited on forever.
 CONNECT_TIMEOUT_SECONDS = 30.0
 
-#: ``(record, offset)`` — the same shape :class:`ExecdJsonLineChannel` calls,
+#: ``(record, offset)`` — the same shape :class:`ProcessJsonLineChannel` calls,
 #: so one protocol reader serves both transports. The offset here is a frame
 #: counter for THIS attachment rather than a resumable cursor; see
 #: :meth:`HermesBackendChannel.current_output_offset`.
@@ -74,7 +71,11 @@ _UPSTREAM_UNREACHABLE_STATUSES = frozenset({502, 503, 504})
 _REFUSAL_BODY_EXCERPT_BYTES = 300
 
 
-class BackendNotListening(ExecdChannelDetached):
+class BackendDetached(RuntimeError):
+    """The connection to the backend is gone; nothing more will arrive on it."""
+
+
+class BackendNotListening(BackendDetached):
     """Nothing is accepting connections at the backend's address yet.
 
     The one connect failure that time can cure: the backend is starting under
@@ -239,7 +240,7 @@ class HermesBackendChannel:
         """Write one JSON object to the backend."""
 
         if not self.is_connected or self._ws is None:
-            raise ExecdChannelDetached(f"{self.label} is not connected")
+            raise BackendDetached(f"{self.label} is not connected")
         message = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         async with self._send_lock:
             await self._ws.send(message)
@@ -296,7 +297,7 @@ class HermesBackendChannel:
             return
         # The socket closed without an error, which for a resident service is
         # still the end of this attachment.
-        await self.fail(ExecdChannelDetached(f"{self.label} closed its socket"))
+        await self.fail(BackendDetached(f"{self.label} closed its socket"))
 
     # ── failure ──────────────────────────────────────────────────────────
     async def fail(self, exc: BaseException) -> None:
@@ -304,13 +305,13 @@ class HermesBackendChannel:
 
         if self._fatal is not None:
             return
-        if not isinstance(exc, (ExecdChannelDetached, RuntimeError)):
+        if not isinstance(exc, RuntimeError):
             # Transport errors reach callers in the engine seam's vocabulary,
-            # the way ExecdJsonLineChannel translates its own: an OSError from
+            # the way ProcessJsonLineChannel translates its own: an OSError from
             # a socket is not something an engine adapter should have to
             # recognise, and one that escaped untranslated would surface as an
             # unhandled error rather than a detached stream.
-            exc = ExecdChannelDetached(f"{self.label} transport detached: {exc}")
+            exc = BackendDetached(f"{self.label} transport detached: {exc}")
         self._fatal = exc
         for future in list(self._pending.values()):
             if not future.done():

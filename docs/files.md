@@ -34,8 +34,8 @@ Content-Type: multipart/form-data
 | Delete     | Delete a file or directory                   |
 | Download   | Download a regular file                      |
 
-> A regular file up to 64 MiB can be downloaded. Directories are managed in
-> place rather than downloaded as archives.
+> A regular file of any size can be downloaded; the download streams from the
+> sandbox. Directories are managed in place rather than downloaded as archives.
 
 ## Upload examples
 
@@ -111,8 +111,9 @@ curl --get \
   -o review.md
 ```
 
-Any regular file in the workspace can be downloaded when it is no larger than
-64 MiB.
+Any regular file in the workspace can be downloaded. The download streams from
+the sandbox while the client reads it, so the server's memory does not limit
+the file's size.
 
 ### Inspect file metadata
 
@@ -165,8 +166,8 @@ They are written directly into the workspace, with no later mount operation.
 
 <b>Q: Which files can I download?</b>
 
-A: Any regular file in the Session workspace can be downloaded when it is no
-larger than 64 MiB, whether it was uploaded by a user or produced by the Agent.
+A: Any regular file in the Session workspace can be downloaded, whatever its
+size, whether it was uploaded by a user or produced by the Agent.
 
 <b>Q: Which file formats are supported?</b>
 

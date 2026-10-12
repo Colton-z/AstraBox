@@ -77,6 +77,28 @@ from typing import Any, Literal, Mapping, Protocol, cast, runtime_checkable
 
 from astrabox.common.utils.errors import APIError
 from astrabox.seams.egress_credentials import SandboxEgressCredentialPlan
+from astrabox.seams.sandbox_data import (
+    ProcessExit,
+    ProcessFrame,
+    ProcessOutput,
+    ProcessReplay,
+    SandboxCommandOutcomeUnknown,
+    SandboxCommandRefused,
+    SandboxCommandResult,
+    SandboxCommands,
+    SandboxDirectorySpec,
+    SandboxEndpoint,
+    SandboxEntry,
+    SandboxEntryKind,
+    SandboxFiles,
+    SandboxPathNotFound,
+    SandboxPathRejected,
+    SandboxProcessAlreadyAttached,
+    SandboxProcessAttachment,
+    SandboxProcessDetached,
+    SandboxProcessReplayGap,
+    SandboxProcesses,
+)
 from astrabox.seams.sandbox_disposal import (
     SandboxClaim,
     SandboxDestruction,
@@ -143,15 +165,6 @@ DESTRUCTION_SETTLE_BUDGET_S = 20.0
 DESTRUCTION_SETTLE_INTERVAL_S = 1.0
 
 
-@runtime_checkable
-class SandboxEndpointRef(Protocol):
-    """What :meth:`SandboxHandle.get_endpoint` returns: an object carrying the
-    resolved endpoint URL/host under ``.endpoint``. Matches both the cloud-SDK
-    endpoint objects and the in-tree ``_Endpoint`` value type."""
-
-    endpoint: str
-
-
 @dataclass(frozen=True, slots=True)
 class SandboxBrowserEndpoint:
     """A sandbox service address that can be handed to a browser.
@@ -170,18 +183,31 @@ class SandboxBrowserEndpoint:
 
 @runtime_checkable
 class SandboxHandle(Protocol):
-    """The duck contract core holds on a created/connected sandbox.
+    """The contract core holds on a created/connected sandbox.
 
-    This is the implicit shape behind the ``Any`` returned by
+    This is the shape behind the handle returned by
     :meth:`SandboxProvider.create_sandbox` / :meth:`SandboxProvider.connect`.
-    Core code relies on exactly two things:
+    Core relies on:
 
     * **identity** — ``sandbox_id`` (``extract_sandbox_id`` probes
       ``code_interpreter_id`` / ``sandbox_id`` / ``id`` in that order; expose at
-      least one, ``sandbox_id`` preferred), and
-    * **endpoint resolution** — ``await get_endpoint(port)`` returning an
-      object with ``.endpoint`` (see :class:`SandboxEndpointRef`); raise when
-      the port is not published rather than returning a wrong address.
+      least one, ``sandbox_id`` preferred);
+    * **endpoint resolution** — ``await get_endpoint(port)`` returning the
+      :class:`SandboxEndpoint` at which the host reaches that in-box port, with
+      every header a request to it needs; raise when the port is not published
+      rather than returning a wrong address. ``await get_signed_endpoint(port,
+      expires_at=...)`` returns one whose URL itself carries a credential valid
+      until ``expires_at``, for a client that cannot send headers; a backend
+      that cannot sign raises the 501 ``SANDBOX_SIGNED_ENDPOINT_UNSUPPORTED``;
+    * **files** — the box's filesystem as :class:`SandboxFiles`;
+    * **commands** — command execution in the box as :class:`SandboxCommands`;
+      and
+    * **processes** — long-lived processes in the box as
+      :class:`SandboxProcesses` (all four types in
+      :mod:`astrabox.seams.sandbox_data`). A handle whose provider does not
+      declare :attr:`SandboxProvider.supports_process_sessions` still has the
+      property and returns :class:`UnsupportedSandboxProcesses`, whose every
+      operation raises the 501 ``SANDBOX_PROCESS_SESSIONS_UNSUPPORTED``.
 
     Two further methods are OPTIONAL and attempted best-effort by the
     terminate path (``await handle.kill()`` then ``await handle.close()``,
@@ -200,28 +226,18 @@ class SandboxHandle(Protocol):
     @property
     def sandbox_id(self) -> str: ...
 
-    async def get_endpoint(self, port: int = ...) -> SandboxEndpointRef: ...
+    @property
+    def files(self) -> SandboxFiles: ...
 
+    @property
+    def commands(self) -> SandboxCommands: ...
 
-@runtime_checkable
-class SandboxEndpointFilesystem(Protocol):
-    """Optional file service at a conversation's provider-owned endpoint.
+    @property
+    def processes(self) -> SandboxProcesses: ...
 
-    The provider resolves routing and supplies its native filesystem API.
-    Callers select the existing service port and its access headers; they do
-    not translate isolated paths into the box's physical filesystem.
-    """
+    async def get_endpoint(self, port: int = ...) -> SandboxEndpoint: ...
 
-    async def get_filesystem(
-        self, port: int, *, headers: Mapping[str, str] | None = None
-    ) -> Any: ...
-
-    async def search_file_paths(
-        self, path: str, pattern: str, *, port: int,
-        headers: Mapping[str, str] | None = None,
-    ) -> list[str]:
-        """Find matching paths in that endpoint's filesystem without SDK types."""
-        ...
+    async def get_signed_endpoint(self, port: int, *, expires_at: datetime) -> SandboxEndpoint: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -908,12 +924,14 @@ class SandboxMemoryHeadroom:
     current_bytes: int
 
 
-class SandboxUnreachable(APIError):
+class SandboxUnreachable(APIError, ConnectionError):
     """The box could not be reached; nothing is proved about whether it exists.
 
     A failed connection is not evidence that a box is gone. Only its control
     plane, or the provider's data-plane assessment, may say that. A caller
     treats the box as unusable for this operation and leaves its records alone.
+    It is a ``ConnectionError`` too, so a data-plane caller can treat it as the
+    transport failure it is without knowing the platform's error type.
     """
 
     def __init__(self, sandbox_id: str, detail: str) -> None:
@@ -943,6 +961,47 @@ class SandboxProbeFailed(APIError):
         )
         self.sandbox_id = sandbox_id
         self.probe = probe
+
+
+class UnsupportedSandboxProcesses:
+    """The ``processes`` of a handle whose backend has no process sessions.
+
+    Every operation raises the 501 ``SANDBOX_PROCESS_SESSIONS_UNSUPPORTED``
+    naming the backend, so a feature that reaches it fails at once rather than
+    with an error about a missing attribute. A provider that does not declare
+    :attr:`SandboxProvider.supports_process_sessions` returns one from its
+    handle's ``processes``.
+    """
+
+    def __init__(self, backend: str) -> None:
+        self._backend = str(backend)
+
+    def _refusal(self) -> APIError:
+        return APIError(
+            code="SANDBOX_PROCESS_SESSIONS_UNSUPPORTED",
+            message=f"sandbox backend {self._backend!r} has no process sessions",
+            status_code=501,
+        )
+
+    async def start(self, command: str, *, cwd: str | None) -> str:
+        raise self._refusal()
+
+    async def exists(self, process_id: str) -> bool:
+        raise self._refusal()
+
+    async def output_offset(self, process_id: str) -> int:
+        raise self._refusal()
+
+    async def attach(
+        self, process_id: str, *, since: int, takeover: bool
+    ) -> SandboxProcessAttachment:
+        raise self._refusal()
+
+    async def signal(self, process_id: str, name: str) -> None:
+        raise self._refusal()
+
+    async def close(self, process_id: str) -> None:
+        raise self._refusal()
 
 
 class SandboxResourcesUnsupported(APIError):
@@ -1070,11 +1129,6 @@ class SandboxProvider(ABC):
     conversation_bootstrap_transport: str = "sidecar_http"
     requires_https_git: bool = False
     endpoint_is_authoritative: bool = False
-    #: The shared assistant workspace root (``/home/conversations``) is already
-    #: present in the box (baked into the image / bound at create), so the runtime
-    #: must NOT attempt a network-storage (NAS) mount for it. Default False (cloud
-    #: backends mount the shared root at runtime).
-    assistant_workspace_root_preprovisioned: bool = False
     #: A create carries one caller-supplied immutable assignment id, and a later
     #: replica can find the resulting resource by that id without scanning the
     #: provider's full inventory. A caller must refuse multi-replica create on a
@@ -1168,6 +1222,14 @@ class SandboxProvider(ABC):
     #: cannot list leaves its abandoned boxes to its own expiry, and startup
     #: says so. Registration checks that both reads are implemented.
     supports_inventory_listing: bool = False
+    #: Whether this backend's handles run long-lived processes that any
+    #: replica can attach to by id, replay output from a byte offset, and take
+    #: over (:class:`SandboxProcesses`). The standard implementation over the
+    #: image's execd provides all of it. The terminal of a conversation with
+    #: its own box, and an engine that speaks over a process's stdin and
+    #: stdout in such a box, need it, so an Agent or Environment that would
+    #: use either on a backend without it is refused when it is saved.
+    supports_process_sessions: bool = False
     #: Environment variables only this provider reads. When the provider is
     #: installed but not enabled, setting one does nothing, so startup warns
     #: about each one that is set.
@@ -1527,7 +1589,7 @@ class SandboxProvider(ABC):
             endpoint_str = cache.get(int(port)) if isinstance(cache, dict) else None
             if not endpoint_str:
                 endpoint = await sandbox.get_endpoint(int(port))
-                endpoint_str = getattr(endpoint, "endpoint", None)
+                endpoint_str = endpoint.url
                 if endpoint_str:
                     if not isinstance(cache, dict):
                         cache = {}
@@ -1785,6 +1847,19 @@ class SandboxProvider(ABC):
         if not value.startswith(("http://", "https://")):
             value = f"https://{value}"
         return SandboxBrowserEndpoint(endpoint=value)
+
+    def endpoint_names_sandbox(self, endpoint: str) -> str | None:
+        """The id of the sandbox that ``endpoint`` addresses, when the address says so.
+
+        A persisted endpoint is checked against the sandbox it is meant to
+        reach before it is used, because an address can outlive the box it
+        named (see docs/maintainers/sandbox-address-reuse-risk.md). How an
+        address encodes a box is this backend's knowledge. The default answers
+        ``None``, meaning the address does not say, and the caller then
+        resolves the endpoint again from the sandbox id instead of using it.
+        """
+        _ = endpoint
+        return None
 
     # --- control-plane inventory (the read-only ops face) ----------------------
     # Three optional reads that let an operator see a backend's sandboxes as a
@@ -2140,12 +2215,31 @@ class SandboxProvider(ABC):
         so ``None`` is an answer, not a failure. Raises
         :class:`SandboxUnreachable` when the box cannot be reached and
         :class:`SandboxProbeFailed` when its answer cannot be read.
+
+        The default reads the box's cgroup v2 files through its ``commands``.
+        ``memory.max`` is the literal ``max`` when nothing set a limit, which is
+        ``None``; any other answer that is not two byte counts is a reading
+        defect and fails the placement that relied on it, rather than quietly
+        turning packing off.
         """
-        _ = sandbox_id
-        raise APIError(
-            code="SANDBOX_ISOLATION_UNSUPPORTED",
-            message=f"sandbox backend {self.name!r} cannot read a box's memory",
-            status_code=501,
+        result = await self._probe_box(
+            sandbox_id,
+            probe="memory",
+            command="cat /sys/fs/cgroup/memory.max /sys/fs/cgroup/memory.current",
+        )
+        lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+        if result.exit_code == 0 and len(lines) == 2 and lines[1].isdigit():
+            if lines[0] == "max":
+                return None
+            if lines[0].isdigit():
+                return SandboxMemoryHeadroom(limit_bytes=int(lines[0]), current_bytes=int(lines[1]))
+        raise SandboxProbeFailed(
+            sandbox_id,
+            probe="memory",
+            detail=(
+                f"exit {result.exit_code}, cgroup v2 memory.max and memory.current "
+                f"read as {result.output[:200]!r}"
+            ),
         )
 
     async def read_listening_ports(self, sandbox_id: str) -> frozenset[int]:
@@ -2154,13 +2248,67 @@ class SandboxProvider(ABC):
         Raises :class:`SandboxUnreachable` when the box cannot be reached, so a
         placement into a box that cannot answer is refused instead of being made
         without its port-collision check.
+
+        The default reads ``/proc/net/tcp`` and ``/proc/net/tcp6`` through the
+        box's ``commands`` rather than a tool (``ss`` and ``netstat`` are not
+        in every image): state ``0A`` is LISTEN and the local address is
+        ``HEX_IP:HEX_PORT``. A box without IPv6 has no ``/proc/net/tcp6``,
+        which makes ``cat`` exit non-zero after printing the IPv4 table, so the
+        table's own header, not the exit status, decides whether the box
+        answered.
         """
-        _ = sandbox_id
-        raise APIError(
-            code="SANDBOX_ISOLATION_UNSUPPORTED",
-            message=f"sandbox backend {self.name!r} cannot read a box's listening ports",
-            status_code=501,
+        result = await self._probe_box(
+            sandbox_id, probe="listening ports", command="cat /proc/net/tcp /proc/net/tcp6"
         )
+        if "local_address" not in result.stdout:
+            raise SandboxProbeFailed(
+                sandbox_id,
+                probe="listening ports",
+                detail=f"/proc/net/tcp read as {result.output[:200]!r}",
+            )
+        ports: set[int] = set()
+        for line in result.stdout.splitlines():
+            fields = line.split()
+            if len(fields) < 4 or fields[3] != "0A":
+                continue
+            local = fields[1].rsplit(":", 1)
+            if len(local) != 2:
+                continue
+            try:
+                ports.add(int(local[1], 16))
+            except ValueError:
+                continue
+        return frozenset(ports)
+
+    async def _probe_box(self, sandbox_id: str, *, probe: str, command: str) -> SandboxCommandResult:
+        """Run one read-only command in the box for a probe and return how it ended.
+
+        A box gone for good keeps the ``SANDBOX_GONE`` its ``connect`` raised.
+        Any other failure to connect or to reach the box proves nothing about
+        whether it exists and is :class:`SandboxUnreachable`; a run the box
+        refused, or gave no status for, is :class:`SandboxProbeFailed`.
+        """
+        try:
+            handle = await self.connect(sandbox_id)
+        except SandboxUnreachable:
+            raise
+        except APIError as exc:
+            if exc.code == "SANDBOX_GONE":
+                raise
+            raise SandboxUnreachable(sandbox_id, exc.message) from exc
+        except Exception as exc:
+            raise SandboxUnreachable(sandbox_id, str(exc)) from exc
+        try:
+            return await handle.commands.run(command)
+        except SandboxUnreachable:
+            raise
+        except Exception as exc:
+            raise SandboxProbeFailed(sandbox_id, probe=probe, detail=str(exc)) from exc
+        finally:
+            close = getattr(handle, "close", None)
+            if callable(close):
+                with contextlib.suppress(Exception):
+                    await close()
 
     async def describe_sandbox(self, sandbox_id: str) -> SandboxDescriptor:
         """The control plane's description of one sandbox by id."""
@@ -2219,8 +2367,6 @@ SANDBOX_CAPABILITY_RULES: tuple[SandboxCapabilityRule, ...] = (
             "stream_in_isolated_session",
             "close_isolated_session",
             "count_active_isolated_sessions",
-            "read_memory_headroom",
-            "read_listening_ports",
         ),
     ),
     SandboxCapabilityRule(
@@ -2244,6 +2390,9 @@ SANDBOX_CAPABILITY_RULES: tuple[SandboxCapabilityRule, ...] = (
     SandboxCapabilityRule("supports_egress_credential_injection", ("apply_credential_vault",)),
     SandboxCapabilityRule("supports_create_network_policy", ("admit_runtime_egress",)),
     SandboxCapabilityRule("supports_inventory_listing", ("list_sandboxes", "describe_sandbox")),
+    # The process face lives on the handle, so the provider has no method to
+    # implement for it; the row makes registration check the flag's type.
+    SandboxCapabilityRule("supports_process_sessions", ()),
     SandboxCapabilityRule(
         "supports_turn_preparation",
         ("prepare_turn", "owns_sandbox"),
@@ -2710,10 +2859,31 @@ __all__ = [
     "SandboxCapabilityRule",
     "SandboxClientPoolReadiness",
     "SandboxDataPlaneAssessment",
+    "SandboxCommandOutcomeUnknown",
+    "SandboxCommandRefused",
+    "SandboxCommandResult",
+    "SandboxCommands",
+    "SandboxDirectorySpec",
+    "SandboxEndpoint",
+    "SandboxEntry",
+    "SandboxEntryKind",
+    "SandboxFiles",
     "SandboxMemoryHeadroom",
+    "SandboxPathNotFound",
+    "SandboxPathRejected",
     "SandboxProbeFailed",
+    "SandboxProcessAlreadyAttached",
+    "SandboxProcessAttachment",
+    "SandboxProcessDetached",
+    "SandboxProcessReplayGap",
+    "SandboxProcesses",
+    "ProcessExit",
+    "ProcessFrame",
+    "ProcessOutput",
+    "ProcessReplay",
     "SandboxResourcesUnsupported",
     "SandboxUnreachable",
+    "UnsupportedSandboxProcesses",
     "register_sandbox",
     "set_default_sandbox_backend",
     "set_enabled_sandbox_backends",

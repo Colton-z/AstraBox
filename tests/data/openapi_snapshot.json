@@ -1,6 +1,35 @@
 {
   "components": {
     "schemas": {
+      "AdminAgentCategory": {
+        "description": "A category with the number of Agents it holds.",
+        "properties": {
+          "agents": {
+            "title": "Agents",
+            "type": "integer"
+          },
+          "category_id": {
+            "title": "Category Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "position": {
+            "title": "Position",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "category_id",
+          "name",
+          "position",
+          "agents"
+        ],
+        "title": "AdminAgentCategory",
+        "type": "object"
+      },
       "AdminApiWorkspaceResult": {
         "additionalProperties": true,
         "description": "What a wake or hibernate did to one assistant's workspace.\n\nOnly ``assistant_id`` is this surface's own. The rest of the object is the\nworkspace state\n(:meth:`~astrabox.core.service.orchestrator.assistant.assistant_service.AssistantService.wake_workspace`\n/ ``hibernate_workspace``), which differs per branch — a wake that found a\nready box reports different facts from one that started a bootstrap — so it\nis carried rather than flattened into one shape that would be wrong for\nmost of them.",
@@ -1621,6 +1650,62 @@
         "title": "AgentAccess",
         "type": "object"
       },
+      "AgentCategory": {
+        "description": "One Agent category, in the administrator's order (``position``, from 0).",
+        "properties": {
+          "category_id": {
+            "title": "Category Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "position": {
+            "title": "Position",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "category_id",
+          "name",
+          "position"
+        ],
+        "title": "AgentCategory",
+        "type": "object"
+      },
+      "AgentCategoryName": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "AgentCategoryName",
+        "type": "object"
+      },
+      "AgentCategoryOrder": {
+        "additionalProperties": false,
+        "properties": {
+          "category_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Category Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "category_ids"
+        ],
+        "title": "AgentCategoryOrder",
+        "type": "object"
+      },
       "AgentConnectorState": {
         "properties": {
           "agent_id": {
@@ -1792,6 +1877,24 @@
           "name"
         ],
         "title": "AgentExtensionItem",
+        "type": "object"
+      },
+      "AgentFavorite": {
+        "properties": {
+          "agent_id": {
+            "title": "Agent Id",
+            "type": "string"
+          },
+          "favorited": {
+            "title": "Favorited",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "agent_id",
+          "favorited"
+        ],
+        "title": "AgentFavorite",
         "type": "object"
       },
       "AgentFormField": {
@@ -2161,7 +2264,7 @@
       },
       "AgentRecord": {
         "additionalProperties": true,
-        "description": "One stored Agent as these routes project it.\n\nThe Agent document is open — ``AgentService._sanitize`` passes through\nevery key that is not internal — so the fields named here are the ones the\nconsole addresses by name, and ``extra=\"allow\"`` carries the rest. Their\ntypes are the ones ``agent_schema.AGENT_FIELD_SCHEMA`` enforces on write,\nplus the identity and ownership fields ``AgentConfigService`` stamps.\n``artifacts_enabled`` is always present because a read reports the switch\nas it takes effect, including for an Agent stored without it.\n\n``can_manage`` is computed per viewer and therefore present only on the\nreads that compute it (list and get), not on a write's echo of the record.",
+        "description": "One stored Agent as these routes project it.\n\nThe Agent document is open — ``AgentService._sanitize`` passes through\nevery key that is not internal — so the fields named here are the ones the\nconsole addresses by name, and ``extra=\"allow\"`` carries the rest. Their\ntypes are the ones ``agent_schema.AGENT_FIELD_SCHEMA`` enforces on write,\nplus the identity and ownership fields ``AgentConfigService`` stamps.\n``artifacts_enabled`` is always present because a read reports the switch\nas it takes effect, including for an Agent stored without it.\n\n``can_manage`` is computed per viewer and therefore present only on the\nreads that compute it (list and get), not on a write's echo of the record;\n``favorited`` likewise, on the full list.",
         "properties": {
           "admins": {
             "anyOf": [
@@ -2216,6 +2319,20 @@
               }
             ],
             "title": "Can Manage"
+          },
+          "categories": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Categories"
           },
           "claude_options": {
             "anyOf": [
@@ -2331,6 +2448,17 @@
             ],
             "title": "Extension Catalog"
           },
+          "favorited": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Favorited"
+          },
           "idle_hibernate_seconds": {
             "anyOf": [
               {
@@ -2421,7 +2549,15 @@
             "anyOf": [
               {
                 "items": {
-                  "type": "string"
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "additionalProperties": true,
+                      "type": "object"
+                    }
+                  ]
                 },
                 "type": "array"
               },
@@ -2586,6 +2722,24 @@
           "agent_id"
         ],
         "title": "AgentRuntimeView",
+        "type": "object"
+      },
+      "AgentTag": {
+        "properties": {
+          "agents": {
+            "title": "Agents",
+            "type": "integer"
+          },
+          "tag": {
+            "title": "Tag",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tag",
+          "agents"
+        ],
+        "title": "AgentTag",
         "type": "object"
       },
       "ApiEnvelope_AdminApiWorkspaceResult_": {
@@ -3072,6 +3226,28 @@
         "title": "ApiEnvelope[AgentAccess]",
         "type": "object"
       },
+      "ApiEnvelope_AgentCategory_": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/AgentCategory"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[AgentCategory]",
+        "type": "object"
+      },
       "ApiEnvelope_AgentConnectorState_": {
         "properties": {
           "code": {
@@ -3136,6 +3312,28 @@
           "data"
         ],
         "title": "ApiEnvelope[AgentExtensionCatalog]",
+        "type": "object"
+      },
+      "ApiEnvelope_AgentFavorite_": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/AgentFavorite"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[AgentFavorite]",
         "type": "object"
       },
       "ApiEnvelope_AgentFormSchema_": {
@@ -3796,6 +3994,28 @@
           "data"
         ],
         "title": "ApiEnvelope[CurrentUser]",
+        "type": "object"
+      },
+      "ApiEnvelope_DeletedAgentCategory_": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/DeletedAgentCategory"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[DeletedAgentCategory]",
         "type": "object"
       },
       "ApiEnvelope_DeletedChannelAccountLink_": {
@@ -5014,6 +5234,58 @@
         "title": "ApiEnvelope[dict[str, bool]]",
         "type": "object"
       },
+      "ApiEnvelope_list_AdminAgentCategory__": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/AdminAgentCategory"
+            },
+            "title": "Data",
+            "type": "array"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[list[AdminAgentCategory]]",
+        "type": "object"
+      },
+      "ApiEnvelope_list_AgentCategory__": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/AgentCategory"
+            },
+            "title": "Data",
+            "type": "array"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[list[AgentCategory]]",
+        "type": "object"
+      },
       "ApiEnvelope_list_AgentEnvironmentOption__": {
         "properties": {
           "code": {
@@ -5064,6 +5336,32 @@
           "data"
         ],
         "title": "ApiEnvelope[list[AgentRecord]]",
+        "type": "object"
+      },
+      "ApiEnvelope_list_AgentTag__": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/AgentTag"
+            },
+            "title": "Data",
+            "type": "array"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[list[AgentTag]]",
         "type": "object"
       },
       "ApiEnvelope_list_Assistant__": {
@@ -6298,7 +6596,15 @@
             "anyOf": [
               {
                 "items": {
-                  "type": "string"
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "additionalProperties": true,
+                      "type": "object"
+                    }
+                  ]
                 },
                 "type": "array"
               },
@@ -6516,7 +6822,15 @@
             "anyOf": [
               {
                 "items": {
-                  "type": "string"
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "additionalProperties": true,
+                      "type": "object"
+                    }
+                  ]
                 },
                 "type": "array"
               },
@@ -6680,7 +6994,15 @@
             "anyOf": [
               {
                 "items": {
-                  "type": "string"
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "additionalProperties": true,
+                      "type": "object"
+                    }
+                  ]
                 },
                 "type": "array"
               },
@@ -8137,6 +8459,24 @@
         "title": "DeleteSessionFilesRequest",
         "type": "object"
       },
+      "DeletedAgentCategory": {
+        "properties": {
+          "category_id": {
+            "title": "Category Id",
+            "type": "string"
+          },
+          "unbound_agents": {
+            "title": "Unbound Agents",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "category_id",
+          "unbound_agents"
+        ],
+        "title": "DeletedAgentCategory",
+        "type": "object"
+      },
       "DeletedChannelAccountLink": {
         "description": "The participant whose link is gone; ``deleted`` is false if it had none.",
         "properties": {
@@ -8594,7 +8934,15 @@
           },
           "catalog_skills": {
             "items": {
-              "type": "string"
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              ]
             },
             "title": "Catalog Skills",
             "type": "array"
@@ -8624,7 +8972,15 @@
           },
           "skills": {
             "items": {
-              "type": "string"
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              ]
             },
             "title": "Skills",
             "type": "array"
@@ -11607,7 +11963,7 @@
   "info": {
     "summary": "Self-hosted agent runtime that runs installed Agent programs in isolated sandboxes and streams responses over the AI SDK Data Stream Protocol (SSE).",
     "title": "AstraBox",
-    "version": "0.1.6"
+    "version": "0.1.7"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -11765,6 +12121,184 @@
           }
         },
         "summary": "Admin Api List Sessions"
+      }
+    },
+    "/api/v1/admin/agent-categories": {
+      "get": {
+        "operationId": "list_admin_agent_categories_api_v1_admin_agent_categories_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_list_AdminAgentCategory__"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Admin Agent Categories"
+      },
+      "post": {
+        "operationId": "create_agent_category_api_v1_admin_agent_categories_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentCategoryName"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_AgentCategory_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Agent Category"
+      }
+    },
+    "/api/v1/admin/agent-categories/order": {
+      "put": {
+        "operationId": "reorder_agent_categories_api_v1_admin_agent_categories_order_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentCategoryOrder"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_list_AgentCategory__"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reorder Agent Categories"
+      }
+    },
+    "/api/v1/admin/agent-categories/{category_id}": {
+      "delete": {
+        "operationId": "delete_agent_category_api_v1_admin_agent_categories__category_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "category_id",
+            "required": true,
+            "schema": {
+              "title": "Category Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_DeletedAgentCategory_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Agent Category"
+      },
+      "put": {
+        "operationId": "rename_agent_category_api_v1_admin_agent_categories__category_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "category_id",
+            "required": true,
+            "schema": {
+              "title": "Category Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentCategoryName"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_AgentCategory_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Rename Agent Category"
       }
     },
     "/api/v1/admin/agent-schema": {
@@ -14152,6 +14686,24 @@
         "summary": "Archive Credential"
       }
     },
+    "/api/v1/agent-categories": {
+      "get": {
+        "operationId": "list_agent_categories_api_v1_agent_categories_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_list_AgentCategory__"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Agent Categories"
+      }
+    },
     "/api/v1/agent-configuration/environments": {
       "get": {
         "description": "Secret-free Environment choices for the Agent form.",
@@ -14228,6 +14780,24 @@
           }
         },
         "summary": "Get Agent Configuration Schema"
+      }
+    },
+    "/api/v1/agent-tags": {
+      "get": {
+        "operationId": "list_agent_tags_api_v1_agent_tags_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_list_AgentTag__"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Agent Tags"
       }
     },
     "/api/v1/agents": {
@@ -14846,6 +15416,82 @@
           }
         },
         "summary": "Set Agent Extensions"
+      }
+    },
+    "/api/v1/agents/{agent_id}/favorite": {
+      "delete": {
+        "operationId": "unfavorite_agent_api_v1_agents__agent_id__favorite_delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "title": "Agent Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_AgentFavorite_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Unfavorite Agent"
+      },
+      "put": {
+        "operationId": "favorite_agent_api_v1_agents__agent_id__favorite_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "title": "Agent Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_AgentFavorite_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Favorite Agent"
       }
     },
     "/api/v1/agents/{agent_id}/hibernate": {

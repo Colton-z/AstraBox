@@ -15,12 +15,17 @@ Open **Console → Agents**, create or open an Agent, and select Skills in the
 
 | Method | Where | Description |
 | --- | --- | --- |
-| Catalog Skill | **Skill configuration** on the Agent detail page, when the deployment runs an [extension catalog](adding-tools.md#extension-catalog) | Select a reusable Git-backed Skill from the deployment's catalog |
+| Catalog Skill | **Skill configuration** on the Agent detail page, when the deployment runs an [extension catalog](adding-tools.md#extension-catalog) | Select a reusable Skill from the deployment's catalog |
 | Direct Git source | **MCP, Skills and Plugins** on the Agent create or edit page | Add a repository URL with an optional revision and subdirectory |
+| Structured source | The same Skills field | Configure SSH Git with an approved deploy key, or content from a deployment-installed provider |
+
+The direct Skills field is a JSON array of Git strings or source objects. See
+[Skill content providers](providers/skill-content.md) for the object format,
+SSH credentials and installing a non-Git provider.
 
 ## Versioning model
 
-Skills use a Git source and an optional revision:
+Git Skills use a repository and an optional revision:
 
 - **Skill source** — a repository URL with an optional `@ref` and `#path`, for
   example `https://github.com/example/skills.git@main#skills/code-review`.
@@ -28,8 +33,12 @@ Skills use a Git source and an optional revision:
   change until the Agent is edited.
 - **Unpinned revision** — omitting the ref follows the repository's default
   branch; a branch or tag follows that named ref when a runtime is prepared.
-- **Catalog Skill** — the catalog supplies the Git source behind an entry; the
+- **Catalog Skill** — the catalog supplies the source behind an entry; the
   Agent stores the selection.
+
+A structured source names its provider and version explicitly. The provider
+resolves that version to immutable content before AstraBox checks its cache;
+access is checked on every preparation, including cache hits.
 
 AstraBox does not create a second Skill-content format. It prepares the Skill
 in the native Skill directory used by the selected Agent program.
@@ -86,25 +95,27 @@ description: Perform structured code reviews and produce improvement suggestions
 ## Create a Skill
 
 Create the Skill directory in a Git repository and commit its complete content.
-Record the repository URL, revision, and subdirectory. AstraBox loads Skills
-from Git rather than accepting a separate zip upload.
+Record the repository URL, revision, and subdirectory. A deployment-installed
+content provider can also supply a versioned Skill directory from another
+source. AstraBox has no separate Skill zip-upload endpoint.
 
 When the catalog's provider has a management page, **Manage Skills in** the
-catalog on the Agent detail page opens it; use it to add a Git-backed Skill to
+catalog on the Agent detail page opens it; use it to add a Skill to
 the catalog.
 
 ## Bind to an Agent
 
 Open the Agent in the web console. To use a catalog Skill, select it under
-**Skill configuration** and save. To use a direct Git source, add its
-descriptor to the Skills field under **MCP, Skills and Plugins** and save that
-section. A deployment that runs no extension catalog offers only direct Git
-sources.
+**Skill configuration** and save. To use a direct source, add its Git string
+or source object to the JSON array in the Skills field under
+**MCP, Skills and Plugins** and save that section. Direct sources do not
+require an extension catalog.
 
 ## Versioning
 
-To publish a new Skill revision, commit the changes. Update the Agent's Git ref
-or the catalog entry when that revision should be used.
+For a Git Skill, commit the changes and update the Agent's Git ref or the
+catalog entry when that revision should be used. For another source provider,
+publish through that supplier and update the source object's version.
 An already-running Agent program is not rewritten in place; when AstraBox first
 prepares or rebuilds a Session runtime, it resolves the Agent's current Skill
 sources.
@@ -116,7 +127,7 @@ remain pinned.
 
 ## Get a Skill
 
-Open the Agent detail page. Direct Git sources appear in the Skills field
+Open the Agent detail page. Direct sources appear in the Skills field
 under **MCP, Skills and Plugins**, and the selected catalog Skills in the
 catalog picker beside it.
 
@@ -151,8 +162,8 @@ configuration that the program does not consume.
 
 **Q: Is there a size limit on a Skill zip?**
 
-A: AstraBox does not upload Skills as zip archives. Repository and sandbox
-limits apply to the Git content loaded into the runtime.
+A: AstraBox does not upload Skills as zip archives. The source provider and
+sandbox limits apply to the content loaded into the runtime.
 
 ## Next steps
 

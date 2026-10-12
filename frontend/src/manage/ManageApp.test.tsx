@@ -99,6 +99,17 @@ describe('management integrations permissions', () => {
     expect(api.adminNavigationSummary).not.toHaveBeenCalled();
     expect(badgeFor('Agents')?.textContent).toBe('1');
     expect(screen.queryByRole('alert')).toBeNull();
+    // Defining Agent categories is an administrator's write; a visitor is not
+    // offered a page whose every action would be refused.
+    expect(screen.queryByRole('link', { name: 'Agent categories' })).toBeNull();
+  });
+
+  it('offers Agent categories to a platform administrator, beside Agents', async () => {
+    renderSidebar('/manage/agents');
+
+    await screen.findByRole('link', { name: 'Agent categories' });
+    const links = screen.getAllByRole('link').map((link) => link.textContent);
+    expect(links.indexOf('Agent categories')).toBe(links.indexOf('Agents') + 1);
   });
 
   it('waits for the user role before reading administrator APIs', async () => {

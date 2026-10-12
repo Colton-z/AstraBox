@@ -237,19 +237,24 @@ class SessionService:
 
         created = await self._sessions_repo.create_session(payload)
 
-        if user.display_name and user.user_id:
-            try:
-                await UserProfileRepository().upsert_if_absent(
-                    user_id=user.user_id,
-                    display_name=user.display_name,
-                )
-            except Exception:
-                pass
-
         clean = dict(created) if isinstance(created, dict) else dict(payload)
         clean.pop("sandbox_callback_token", None)
         clean.pop("vault_ids", None)
         return clean
+
+    async def record_user_profile(self, user: UserContext) -> None:
+        """Keep the display name a verified identity carries, for showing the user to others.
+
+        Called where a request is admitted, with the identity the request was
+        verified as; the command a worker executes later carries only the user
+        id. An identity without a display name (a service or channel account)
+        records nothing. The name is for display; authorization does not read it.
+        """
+        if user.display_name and user.user_id:
+            await UserProfileRepository().upsert_if_absent(
+                user_id=user.user_id,
+                display_name=user.display_name,
+            )
 
     async def must_get_owned_session(self, user: UserContext, session_id: str) -> dict[str, Any]:
         """The ownership gate every user-facing session path funnels through.

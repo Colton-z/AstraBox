@@ -116,6 +116,7 @@ async def test_the_worker_answers_the_refusal_instead_of_replacing_again() -> No
             session={"session_id": SESSION_ID},
             session_id=SESSION_ID,
             requested_command_id=COMMAND_ID,
+            turn_id="turn-1",
             permission_mode=None,
             **extra,
         )
@@ -159,6 +160,7 @@ async def test_a_turn_settled_during_the_replacement_is_not_delivered() -> None:
             session={"session_id": SESSION_ID},
             session_id=SESSION_ID,
             requested_command_id=COMMAND_ID,
+            turn_id="turn-1",
             permission_mode=None,
         )
 

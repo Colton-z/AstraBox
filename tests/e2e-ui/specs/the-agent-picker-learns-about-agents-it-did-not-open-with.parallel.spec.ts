@@ -287,7 +287,7 @@ test('the open agent picker shows an agent created elsewhere and drops one delet
   ).toEqual([]);
   await expect(newCard, 'the card must be on screen, not merely in the document').toBeVisible();
   await expect(
-    newCard.getByRole('button'),
+    newCard.getByTestId('agent-start'),
     'a learned Agent must be startable, not a card without its action',
   ).toBeEnabled();
   expect(

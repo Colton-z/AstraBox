@@ -100,7 +100,7 @@ test('session sandbox replacement preserves the conversation identity and thread
       await page.goto(appPath('/agents'));
       await expect(card, 'the agent must be offered on the picker').toBeVisible({ timeout: 30_000 });
       // One button per card — the Badge, title and model line are all spans.
-      await card.getByRole('button').click();
+      await card.getByTestId('agent-start').click();
       // The console navigates to the conversation it just created, and that
       // route IS the user-visible identity of the conversation.
       await page.waitForURL((url) => /\/sessions\/[^/]+$/.test(url.pathname), { timeout: 120_000 });

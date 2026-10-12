@@ -1,3 +1,4 @@
+import { skillSourceLabel } from '@/types';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Download, RefreshCw, Trash2 } from 'lucide-react';
@@ -156,7 +157,7 @@ export default function SessionDetailPage() {
   }
 
   const killable = detail.state !== 'TERMINATED' && detail.state !== 'DELETED';
-  const skills = joinList(detail.template_skills);
+  const skills = joinList(detail.template_skills?.map(skillSourceLabel));
   const mcp = joinList(detail.template_mcp_servers);
   const mcpConfig = formatMcpConfig(detail.template_mcp_config);
 

@@ -1,17 +1,19 @@
-"""Session file panel over OpenSandbox execd's native Filesystem API.
+"""Session file panel over the box's files face (``SandboxFiles``).
 
-These tests pin the host-side adapter without an AIO server, port 8080, or an
+These tests pin the host-side service without an AIO server, port 8080, or an
 in-sandbox command runner. The product-level browser journey is covered by the
-Playwright file-panel spec; this module keeps filesystem mapping, ownership,
-binary fidelity, response bounds and symlink containment cheap to diagnose.
+Playwright file-panel spec, and the files contract itself by the live suite in
+``astrabox.testing.sandbox_data_conformance``; this module keeps filesystem
+mapping, ownership, binary fidelity, download streaming and symlink containment
+cheap to diagnose.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import io
 from contextlib import asynccontextmanager
 import posixpath
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any
@@ -19,85 +21,81 @@ from typing import Any
 import pytest
 
 from astrabox.common.utils.errors import APIError
-from astrabox.core.service.orchestrator import session_file_service as module
-from astrabox.core.service.orchestrator.session_file_service import SessionFileService
+from astrabox.core.service.orchestrator.session_file_service import (
+    FileDownload,
+    SessionFileService,
+    SessionFileStreamBroken,
+)
 from astrabox.providers import register_builtin_providers
+from astrabox.seams.sandbox import SandboxUnreachable
+from astrabox.seams.sandbox_data import (
+    SandboxDirectorySpec,
+    SandboxEntry,
+    SandboxPathNotFound,
+    SandboxPathRejected,
+)
 
 
-@dataclass
-class _Info:
-    path: str
-    entry_type: str
-    size: int = 0
-    modified_at: datetime = datetime(2026, 8, 6, tzinfo=timezone.utc)
-
-
-class _FilesystemError(Exception):
-    def __init__(self, status_code: int) -> None:
-        super().__init__(f"filesystem status {status_code}")
-        self.status_code = status_code
+def _entry(path: str, kind: Any, size: int = 0) -> SandboxEntry:
+    return SandboxEntry(
+        path=path,
+        kind=kind,
+        size=size,
+        mode=0o750 if kind == "directory" else 0o640,
+        owner="root",
+        group="root",
+        modified_at=datetime(2026, 8, 6, tzinfo=timezone.utc),
+    )
 
 
 class _Filesystem:
+    """A box's files as the seam shapes them, recording each call."""
+
     def __init__(self, *roots: str) -> None:
         self.roots = tuple(roots or ("/workspace",))
-        self.entries: dict[str, _Info] = {
-            root: _Info(root, "directory") for root in self.roots
+        self.entries: dict[str, SandboxEntry] = {
+            root: _entry(root, "directory") for root in self.roots
         }
         self.content: dict[str, bytes] = {}
         self.calls: list[tuple[str, Any]] = []
         self.last_write_data: Any = None
         self.fail_list_with: Exception | None = None
 
-    async def get_file_info(self, paths: list[str]) -> dict[str, _Info]:
-        self.calls.append(("get_file_info", list(paths)))
-        return {path: self.entries[path] for path in paths if path in self.entries}
+    async def read_bytes(self, path: str) -> bytes:
+        self.calls.append(("read_bytes", path))
+        if path not in self.content:
+            raise SandboxPathNotFound(path)
+        return self.content[path]
 
-    async def list_directory(self, entry: Any) -> list[_Info]:
-        self.calls.append(("list_directory", entry))
-        if self.fail_list_with is not None:
-            raise self.fail_list_with
-        parent = posixpath.normpath(entry.path)
-        return [
-            info
-            for path, info in self.entries.items()
-            if path != parent and posixpath.dirname(path) == parent
-        ]
+    async def read_chunks(self, path: str):
+        self.calls.append(("read_chunks", path))
+        if path not in self.content:
+            raise SandboxPathNotFound(path)
+        payload = self.content[path]
+        for offset in range(0, len(payload), 3):
+            yield payload[offset : offset + 3]
 
-    async def write_file(
+    async def write_bytes(
         self,
         path: str,
         data: Any,
         *,
-        encoding: str = "utf-8",
-        mode: int = 0o755,
+        mode: int = 0o644,
         owner: str | None = None,
         group: str | None = None,
     ) -> None:
         self.calls.append(
-            (
-                "write_file",
-                {
-                    "path": path,
-                    "encoding": encoding,
-                    "mode": mode,
-                    "owner": owner,
-                    "group": group,
-                },
-            )
+            ("write_bytes", {"path": path, "mode": mode, "owner": owner, "group": group})
         )
         self.last_write_data = data
-        payload = data.read() if hasattr(data, "read") else data
-        if isinstance(payload, str):
-            payload = payload.encode(encoding)
-        body = bytes(payload)
+        body = bytes(data.read() if hasattr(data, "read") else data)
         self.content[path] = body
-        self.entries[path] = _Info(path, "file", size=len(body))
+        self.entries[path] = _entry(path, "file", size=len(body))
 
-    async def create_directories(self, entries: list[Any]) -> None:
-        self.calls.append(("create_directories", entries))
-        for entry in entries:
-            target = posixpath.normpath(entry.path)
+    async def make_directories(self, specs: list[SandboxDirectorySpec]) -> None:
+        self.calls.append(("make_directories", list(specs)))
+        for spec in specs:
+            target = posixpath.normpath(spec.path)
             current = "/"
             for part in target.strip("/").split("/"):
                 current = posixpath.join(current, part)
@@ -105,64 +103,64 @@ class _Filesystem:
                     current == root or current.startswith(f"{root}/")
                     for root in self.roots
                 ):
-                    self.entries.setdefault(current, _Info(current, "directory"))
+                    self.entries.setdefault(current, _entry(current, "directory"))
 
-    async def move_files(self, entries: list[Any]) -> None:
-        self.calls.append(("move_files", entries))
-        for entry in entries:
-            src, dest = entry.src, entry.dest
-            affected = [path for path in self.entries if path == src or path.startswith(f"{src}/")]
-            if not affected:
-                raise _FilesystemError(404)
-            for old in sorted(affected, key=len):
-                new = f"{dest}{old[len(src) :]}"
-                info = self.entries.pop(old)
-                self.entries[new] = _Info(
-                    new,
-                    info.entry_type,
-                    size=info.size,
-                    modified_at=info.modified_at,
-                )
-                if old in self.content:
-                    self.content[new] = self.content.pop(old)
-
-    async def delete_files(self, paths: list[str]) -> None:
-        self.calls.append(("delete_files", list(paths)))
+    async def stat(self, paths: list[str]) -> dict[str, SandboxEntry]:
+        self.calls.append(("stat", list(paths)))
         for path in paths:
-            self.entries.pop(path, None)
-            self.content.pop(path, None)
+            if path not in self.entries:
+                raise SandboxPathNotFound(path)
+        return {path: self.entries[path] for path in paths}
 
-    async def delete_directories(self, paths: list[str]) -> None:
-        self.calls.append(("delete_directories", list(paths)))
+    async def list_directory(self, path: str) -> list[SandboxEntry]:
+        self.calls.append(("list_directory", path))
+        if self.fail_list_with is not None:
+            raise self.fail_list_with
+        parent = posixpath.normpath(path)
+        return [
+            entry
+            for found, entry in self.entries.items()
+            if found != parent and posixpath.dirname(found) == parent
+        ]
+
+    async def search(self, root: str, pattern: str) -> list[str]:
+        self.calls.append(("search", (root, pattern)))
+        return []
+
+    async def move(self, source: str, destination: str) -> None:
+        self.calls.append(("move", (source, destination)))
+        affected = [
+            path for path in self.entries if path == source or path.startswith(f"{source}/")
+        ]
+        if not affected:
+            raise SandboxPathNotFound(source)
+        for old in sorted(affected, key=len):
+            new = f"{destination}{old[len(source) :]}"
+            self.entries[new] = dataclasses.replace(self.entries.pop(old), path=new)
+            if old in self.content:
+                self.content[new] = self.content.pop(old)
+
+    async def remove(self, paths: list[str]) -> None:
+        self.calls.append(("remove", list(paths)))
         for target in paths:
             for path in list(self.entries):
                 if path == target or path.startswith(f"{target}/"):
                     self.entries.pop(path, None)
                     self.content.pop(path, None)
 
-    async def read_bytes_stream(self, path: str, **_kwargs: Any) -> Any:
-        self.calls.append(("read_bytes_stream", path))
-        if path not in self.content:
-            raise _FilesystemError(404)
-        payload = self.content[path]
 
-        async def _chunks():
-            for offset in range(0, len(payload), 3):
-                yield payload[offset : offset + 3]
-
-        return _chunks()
+async def _read_all(download: FileDownload) -> bytes:
+    try:
+        return b"".join([chunk async for chunk in download])
+    finally:
+        await download.aclose()
 
 
 class _Box:
-    """A sandbox with Filesystem only: deliberately no AIO endpoint or shell."""
+    """A sandbox handle with files only: deliberately no AIO endpoint or shell."""
 
     def __init__(self, filesystem: _Filesystem) -> None:
         self.files = filesystem
-
-
-class _Wrapper:
-    def __init__(self, sandbox: _Box) -> None:
-        self.sandbox = sandbox
         self.closed = False
 
     async def close(self) -> None:
@@ -216,14 +214,14 @@ class _Service(SessionFileService):
                 ),
             },
         }
-        self.box = _Wrapper(_Box(filesystem))
+        self.box = _Box(filesystem)
 
     @asynccontextmanager
     async def _resolve_session_context(self, *_args: Any, **_kwargs: Any):
         yield self.session, self.box, "/workspace"
 
 
-async def test_full_file_journey_uses_only_execd_filesystem() -> None:
+async def test_full_file_journey_uses_only_the_box_files() -> None:
     filesystem = _Filesystem()
     service = _Service(filesystem)
     user = object()
@@ -231,21 +229,14 @@ async def test_full_file_journey_uses_only_execd_filesystem() -> None:
     empty = await service.list_entries(user, "s-1")
     assert empty["entries"] == []
     list_call = next(value for name, value in filesystem.calls if name == "list_directory")
-    assert list_call.path == "/workspace"
-    assert list_call.depth == 1
+    assert list_call == "/workspace"
 
     created = await service.create_directory(user, "s-1", path="artifacts")
     assert created["path"] == "/workspace/artifacts"
-    mkdir_entry = next(value[0] for name, value in filesystem.calls if name == "create_directories")
-    assert mkdir_entry.model_dump(exclude={"data"}) == {
-        "path": "/workspace/artifacts",
-        # OpenSandbox transports the octal digits as an integer, not Python's
-        # decimal value for an octal literal.
-        "mode": 750,
-        "owner": "conv_s1",
-        "group": "conv_s1",
-        "encoding": "utf-8",
-    }
+    mkdir_spec = next(value[0] for name, value in filesystem.calls if name == "make_directories")
+    assert mkdir_spec == SandboxDirectorySpec(
+        path="/workspace/artifacts", mode=0o750, owner="conv_s1", group="conv_s1"
+    )
 
     body = b"\x00binary\r\nwith a trailing newline\n"
     upload = _Upload("source.bin", body)
@@ -258,11 +249,10 @@ async def test_full_file_journey_uses_only_execd_filesystem() -> None:
     assert uploaded["uploaded_count"] == 1
     assert uploaded["entries"][0]["path"] == "/workspace/artifacts/source.bin"
     assert filesystem.last_write_data is upload.file
-    write_call = next(value for name, value in filesystem.calls if name == "write_file")
+    write_call = next(value for name, value in filesystem.calls if name == "write_bytes")
     assert write_call == {
         "path": "/workspace/artifacts/source.bin",
-        "encoding": "utf-8",
-        "mode": 640,
+        "mode": 0o640,
         "owner": "conv_s1",
         "group": "conv_s1",
     }
@@ -285,13 +275,13 @@ async def test_full_file_journey_uses_only_execd_filesystem() -> None:
         dest_path="artifacts/renamed.bin",
     )
     assert moved["dest_path"] == "/workspace/artifacts/renamed.bin"
-    downloaded, filename = await service.download_file(
+    download = await service.download_file(
         user,
         "s-1",
         path="artifacts/renamed.bin",
     )
-    assert filename == "renamed.bin"
-    assert downloaded == body
+    assert (download.filename, download.size) == ("renamed.bin", len(body))
+    assert await _read_all(download) == body
 
     deleted_file = await service.delete_paths(
         user,
@@ -334,8 +324,8 @@ async def test_shared_conversations_expose_one_root_without_sharing_backing_file
 
     assert filesystem.content[f"{first_root}/same.txt"] == b"first"
     assert filesystem.content[f"{second_root}/same.txt"] == b"second"
-    first_body, _ = await first.download_file(object(), "first", path="same.txt")
-    second_body, _ = await second.download_file(object(), "second", path="same.txt")
+    first_body = await _read_all(await first.download_file(object(), "first", path="same.txt"))
+    second_body = await _read_all(await second.download_file(object(), "second", path="same.txt"))
     assert first_body == b"first"
     assert second_body == b"second"
 
@@ -358,7 +348,7 @@ async def test_assistant_file_api_maps_the_owner_profile_without_persisting_it_o
 
     source_root = assistant_workspace_dir("owner-1", "assistant-1")
     filesystem = _Filesystem(source_root)
-    filesystem.entries[f"{source_root}/notes.txt"] = _Info(
+    filesystem.entries[f"{source_root}/notes.txt"] = _entry(
         f"{source_root}/notes.txt",
         "file",
         size=5,
@@ -392,7 +382,7 @@ async def test_assistant_file_api_maps_the_owner_profile_without_persisting_it_o
             return session
 
         async def connect(self, *_args: Any, **_kwargs: Any):
-            return _Wrapper(_Box(filesystem))
+            return _Box(filesystem)
 
     listing = await AssistantService().list_entries(object(), "assistant-session")
 
@@ -401,12 +391,12 @@ async def test_assistant_file_api_maps_the_owner_profile_without_persisting_it_o
         "/workspace/notes.txt"
     ]
     list_call = next(value for name, value in filesystem.calls if name == "list_directory")
-    assert list_call.path == source_root
+    assert list_call == source_root
 
 
 async def test_symlink_cannot_redirect_reads_but_can_be_renamed_or_deleted() -> None:
     filesystem = _Filesystem()
-    filesystem.entries["/workspace/outside"] = _Info("/workspace/outside", "symlink")
+    filesystem.entries["/workspace/outside"] = _entry("/workspace/outside", "symlink")
     service = _Service(filesystem)
 
     with pytest.raises(APIError) as raised:
@@ -420,7 +410,7 @@ async def test_symlink_cannot_redirect_reads_but_can_be_renamed_or_deleted() -> 
         src_path="outside",
         dest_path="renamed-link",
     )
-    assert filesystem.entries["/workspace/renamed-link"].entry_type == "symlink"
+    assert filesystem.entries["/workspace/renamed-link"].kind == "symlink"
     await service.delete_paths(object(), "s-1", paths=["renamed-link"])
     assert "/workspace/renamed-link" not in filesystem.entries
 
@@ -437,22 +427,47 @@ async def test_mutations_cannot_remove_or_move_the_session_root() -> None:
     assert move_error.value.code == "INVALID_REQUEST"
 
 
-async def test_download_is_capped_while_streaming() -> None:
+@pytest.mark.parametrize(
+    ("listed_size", "served", "lost"),
+    [(9, b"123456789abc", False), (12, b"123456789", False), (9, b"123", True)],
+    ids=["file-grew", "file-shrank", "box-lost"],
+)
+async def test_a_download_that_breaks_after_its_headers_never_reads_as_complete(
+    listed_size: int, served: bytes, lost: bool
+) -> None:
+    """The response already promised ``listed_size`` bytes when these fail.
+
+    The file changes after its metadata was read, or the box goes away after
+    the first chunk. No error response can follow the headers any more, so the
+    stream must fail before it has handed over every promised byte: a client
+    that received ``Content-Length`` bytes would take the download as complete.
+    """
+
     filesystem = _Filesystem()
-    filesystem.entries["/workspace/growing.bin"] = _Info("/workspace/growing.bin", "file", size=0)
-    filesystem.content["/workspace/growing.bin"] = b"123456789"
-    service = _Service(filesystem)
-    with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(module, "_FILESYSTEM_MAX_RESPONSE_BYTES", 8)
-        with pytest.raises(APIError) as raised:
-            await service.download_file(object(), "s-1", path="growing.bin")
-    assert raised.value.status_code == 502
-    assert "host cap" in raised.value.message
+    filesystem.entries["/workspace/f.bin"] = _entry("/workspace/f.bin", "file", size=listed_size)
+    filesystem.content["/workspace/f.bin"] = served
+    if lost:
+        async def served_then_lost(_path: str):
+            yield served
+            raise SandboxUnreachable("sandbox-1", "connection reset by peer")
+
+        filesystem.read_chunks = served_then_lost  # type: ignore[method-assign]
+    download = await _Service(filesystem).download_file(object(), "s-1", path="f.bin")
+    delivered = b""
+    with pytest.raises(SessionFileStreamBroken) as raised:
+        async for chunk in download:
+            delivered += chunk
+    await download.aclose()
+
+    assert len(delivered) < listed_size
+    assert not download.complete
+    if lost:
+        assert isinstance(raised.value.__cause__, SandboxUnreachable)
 
 
 async def test_filesystem_statuses_are_mapped_without_exposing_transport_details() -> None:
     filesystem = _Filesystem()
-    filesystem.fail_list_with = _FilesystemError(500)
+    filesystem.fail_list_with = SandboxPathRejected("filesystem status 500")
     service = _Service(filesystem)
     with pytest.raises(APIError) as raised:
         await service.list_entries(object(), "s-1")
@@ -461,40 +476,55 @@ async def test_filesystem_statuses_are_mapped_without_exposing_transport_details
     assert "filesystem status 500" not in raised.value.message
 
 
-def test_a_handle_without_the_native_filesystem_fails_loudly() -> None:
+async def test_a_box_lost_mid_download_answers_without_transport_words() -> None:
+    """The unreachable error is an APIError too; the stream reader still maps it."""
+
+    filesystem = _Filesystem()
+    filesystem.entries["/workspace/file.bin"] = _entry("/workspace/file.bin", "file", size=3)
+
+    async def unreachable(_path: str):
+        raise SandboxUnreachable("sandbox-1", "All connection attempts failed")
+        yield b""
+
+    filesystem.read_chunks = unreachable  # type: ignore[method-assign]
+    service = _Service(filesystem)
     with pytest.raises(APIError) as raised:
-        SessionFileService._resolve_filesystem(object())
-    assert raised.value.status_code == 502
-    assert "OpenSandbox filesystem API" in raised.value.message
+        await service.download_file(object(), "s-1", path="file.bin")
+    assert (raised.value.code, raised.value.status_code) == ("SANDBOX_UNREACHABLE", 503)
+    assert "All connection attempts failed" not in raised.value.message
 
 
+@pytest.mark.parametrize(
+    ("failure", "status"),
+    [
+        (
+            SandboxUnreachable(
+                "sandbox-1", "Network connectivity error: All connection attempts failed"
+            ),
+            503,
+        ),
+        (RuntimeError("Network connectivity error: All connection attempts failed"), 502),
+    ],
+    ids=["unreachable", "unexpected"],
+)
 def test_a_filesystem_failure_logs_the_vendors_own_words(
-    caplog: pytest.LogCaptureFixture,
+    caplog: pytest.LogCaptureFixture, failure: Exception, status: int
 ) -> None:
-    """One vendor class covers several different failures.
+    """A failure's own words go to the log, and only there.
 
-    `SandboxInternalException` is raised for an unreachable box, a refused path
-    and an internal fault alike, so the class alone cannot say which happened.
-    It went to the log without its text, leaving an operator with a 502 that
-    named the operation and nothing about why — which is what a live
-    `files/list` produced.
-
-    The log, not the response: the response is a boundary and keeps it.
+    An operator needs the text to tell an unreachable box from an internal
+    fault, which a response naming only the operation cannot do. The response
+    is a boundary and keeps the words out.
     """
-
-    class SandboxInternalException(Exception):
-        pass
 
     with caplog.at_level("WARNING"):
         error = SessionFileService._filesystem_api_error(
-            SandboxInternalException(
-                "Network connectivity error: All connection attempts failed"
-            ),
+            failure,
             op_label="file metadata lookup",
             path="/workspace",
         )
 
-    assert error.status_code == 502
+    assert error.status_code == status
     assert "All connection attempts failed" not in error.message, (
         "the transport's words must not cross the response boundary"
     )
@@ -509,7 +539,7 @@ def test_a_recognised_status_still_answers_in_its_own_terms() -> None:
     already say something precise are left alone."""
 
     missing = SessionFileService._filesystem_api_error(
-        SimpleNamespace(status_code=404),  # type: ignore[arg-type]
+        SandboxPathNotFound("/workspace/absent.txt"),
         op_label="file metadata lookup",
         path="/workspace/absent.txt",
     )
@@ -562,7 +592,7 @@ def _file_transport(*, parked: bool = False):
             self._sessions_repo = repo
             self._session_locks = {}
             self.filesystem = filesystem
-            self.handles: list[_Wrapper] = []
+            self.handles: list[_Box] = []
             self.resumes: list[str] = []
             self.resume_result = True
             self.during_resume = None
@@ -576,7 +606,7 @@ def _file_transport(*, parked: bool = False):
         async def connect_sandbox_only(self, sandbox_id: str):
             assert sandbox_id == 'same-box'
             assert repo.session['sandbox_parked_at'] is None
-            handle = _Wrapper(_Box(self.filesystem))
+            handle = _Box(self.filesystem)
             self.handles.append(handle)
             return handle
 
@@ -597,7 +627,7 @@ def _file_transport(*, parked: bool = False):
 
 async def test_file_listing_wakes_original_box_and_preserves_ready_state() -> None:
     service, manager, repo, user = _file_transport(parked=True)
-    manager.filesystem.entries['/workspace/kept.txt'] = _Info('/workspace/kept.txt', 'file')
+    manager.filesystem.entries['/workspace/kept.txt'] = _entry('/workspace/kept.txt', 'file')
 
     listing = await service.list_entries(user, 's-1')
 
@@ -616,21 +646,24 @@ async def test_file_request_resolves_new_endpoint_after_another_reader_wakes_sam
     service, manager, repo, user = _file_transport()
     await service.list_entries(user, 's-1')
     manager.filesystem = _Filesystem()
-    manager.filesystem.entries['/workspace/new.txt'] = _Info('/workspace/new.txt', 'file', 3)
+    manager.filesystem.entries['/workspace/new.txt'] = _entry('/workspace/new.txt', 'file', 3)
     manager.filesystem.content['/workspace/new.txt'] = b'new'
     # Another worker already completed resume: neither the ID nor the parked
     # mark tells this reader that its previous connection is now obsolete.
-    body, name = await service.download_file_for_session(repo.session, path='new.txt')
-    assert (body, name) == (b'new', 'new.txt')
+    download = await service.download_file_for_session(repo.session, path='new.txt')
     assert manager.resumes == []
     assert len(manager.handles) == 2
     assert manager.handles[0] is not manager.handles[1]
+    # The body is still to be sent, so the connection it reads from stays open
+    # until the download is closed.
+    assert not manager.handles[1].closed
+    assert (await _read_all(download), download.filename) == (b'new', 'new.txt')
     assert all(handle.closed for handle in manager.handles)
 
 
 async def test_file_connection_closes_after_filesystem_failure() -> None:
     service, manager, _repo, user = _file_transport()
-    manager.filesystem.fail_list_with = _FilesystemError(503)
+    manager.filesystem.fail_list_with = SandboxPathRejected("filesystem status 503")
     with pytest.raises(APIError):
         await service.list_entries(user, 's-1')
     assert len(manager.handles) == 1 and manager.handles[0].closed

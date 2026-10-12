@@ -125,6 +125,15 @@ and invokes AIO's `/opt/gem/run.sh`; Codex and DeepSeek Harness use
 Changing only the derived image's Docker `ENTRYPOINT` does not change
 that platform-supplied command.
 
+Every bundled image also carries OpenSandbox's execution service, execd
+`v1.1.0`, at `/opt/astrabox/opensandbox/execd`, with OpenSandbox's
+`bootstrap.sh` launcher and the image's isolation policy, `isolation.toml`,
+beside it. AstraBox reaches a sandbox's files, commands, and long-lived
+processes, such as the terminal's shell and the Pi program, through an execd on
+port `44772`: OpenSandbox starts one in every sandbox it creates, and when a
+Pi Agent shares one sandbox across conversations, the image's copy runs each
+conversation's own execd. A custom image keeps these files.
+
 ## Resources and timeouts
 
 AstraBox's current OpenSandbox create recipe gives every sandbox limits of `4`

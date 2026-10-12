@@ -26,6 +26,7 @@ from astrabox.core.service.orchestrator.engine.frame_scope import (
 from astrabox.core.service.orchestrator.engine_turn import (
     iter_engine_client_events,
 )
+from astrabox.core.service.orchestrator.turn_service import TurnService
 from astrabox.seams import sandbox as sandbox_seam
 from astrabox.seams.sandbox import register_sandbox
 
@@ -140,6 +141,12 @@ def _consumed() -> dict[str, Any]:
 
 async def _drive(client: _Client) -> tuple[list[dict[str, Any]], _Repo]:
     repo = _Repo()
+    # The journey-test provider prepares nothing, so the write needs no
+    # snapshot repository.
+    turn_service = object.__new__(TurnService)
+    turn_service._input_delivery_locks = {}
+    turn_service._sessions_repo = repo  # type: ignore[assignment]
+    turn_service._session_snapshots_repo = None
     runtime = SimpleNamespace(
         lock=asyncio.Lock(),
         current_task=None,
@@ -177,6 +184,7 @@ async def _drive(client: _Client) -> tuple[list[dict[str, Any]], _Repo]:
                 "consumption_confirmed": False,
             },
             sessions_repo=repo,  # type: ignore[arg-type]
+            prepare_engine_write=turn_service.prepared_engine_write,
             broker=object(),  # type: ignore[arg-type]
         )
     ]

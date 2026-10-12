@@ -25,6 +25,7 @@ import pytest
 from astrabox.common.utils.errors import APIError
 from astrabox.core.model.astrabox_models import AgentView
 from astrabox.core.service.orchestrator.engine import hermes
+from astrabox.seams.sandbox_data import SandboxCommandResult
 
 
 class _Box:
@@ -44,33 +45,24 @@ class _Box:
         self._fresh = fresh
         self._restart_output = restart_output
 
-    async def run(self, command: str, **_kwargs: Any) -> Any:
+    async def run(self, command: str, **_kwargs: Any) -> SandboxCommandResult:
         self.commands.append(command)
         if "PROCESS_UNCHANGED" in command:
-            return SimpleNamespace(error=None, stdout=f"{self._standing}\n")
+            return _ok(self._standing)
         if "supervisorctl" in command:
             self.events.append("restart")
-            return SimpleNamespace(error=None, stdout=self._restart_output)
+            return _ok(self._restart_output)
         if " publish " in command:
-            return SimpleNamespace(
-                error=None, stdout=f"HERMES_PROFILE_INITIALIZED fresh={int(self._fresh)}\n"
-            )
+            return _ok(f"HERMES_PROFILE_INITIALIZED fresh={int(self._fresh)}")
         if "astrabox-hermes-config-merge" in command:
             self.events.append("merge_in_place")
-            # As execd delivers it: one stdout event per printed line, each
-            # without its newline. The merge prints the SOUL marker first.
-            return SimpleNamespace(
-                error=None,
-                exit_code=0,
-                logs=SimpleNamespace(
-                    stdout=[
-                        SimpleNamespace(text="ASTRABOX_HERMES_SOUL_READY"),
-                        SimpleNamespace(text="ASTRABOX_HERMES_CONFIG_READY"),
-                    ],
-                    stderr=[],
-                ),
-            )
-        return SimpleNamespace(error=None, stdout="HERMES_PROFILE_READY\n")
+            # The merge prints the SOUL marker first, then the config marker.
+            return _ok("ASTRABOX_HERMES_SOUL_READY\nASTRABOX_HERMES_CONFIG_READY")
+        return _ok("HERMES_PROFILE_READY")
+
+
+def _ok(stdout: str) -> SandboxCommandResult:
+    return SandboxCommandResult(exit_code=0, stdout=stdout, stderr="")
 
 
 @pytest.mark.asyncio
@@ -81,7 +73,7 @@ async def test_the_box_is_asked_which_process_configuration_it_runs(verdict: str
     box = _Box(standing=verdict)
 
     answer = await hermes._hermes_process_standing(
-        box.run,
+        box,
         env_path="/home/u/.hermes/astrabox-hermes.env",
         digest_path="/home/u/.hermes/astrabox-hermes-process.sha256",
         digest="d" * 64,
@@ -101,13 +93,13 @@ async def test_an_unreadable_standing_answer_fails_loudly() -> None:
     """Not knowing is not the same as unchanged."""
 
     class _Mute(_Box):
-        async def run(self, command: str, **_kwargs: Any) -> Any:
+        async def run(self, command: str, **_kwargs: Any) -> SandboxCommandResult:
             self.commands.append(command)
-            return SimpleNamespace(error=None, stdout="")
+            return _ok("")
 
     with pytest.raises(APIError) as excinfo:
         await hermes._hermes_process_standing(
-            _Mute().run, env_path="/p/env", digest_path="/p/digest", digest="x" * 64
+            _Mute(), env_path="/p/env", digest_path="/p/digest", digest="x" * 64
         )
 
     assert excinfo.value.code == "HERMES_PROFILE_SETUP_FAILED"
@@ -120,7 +112,7 @@ async def test_a_refused_restart_is_an_error_not_a_shrug() -> None:
     box = _Box(restart_output="astrabox-hermes: ERROR (no such process)")
 
     with pytest.raises(APIError) as excinfo:
-        await hermes._restart_hermes_backend(box.run)
+        await hermes._restart_hermes_backend(box)
 
     assert excinfo.value.code == "HERMES_GATEWAY_START_FAILED"
 

@@ -97,10 +97,10 @@ export async function createRunViaComposer(
     : options.first();
   await expect(card).toBeVisible();
 
-  // The card's only button creates the session and navigates to the RunView.
+  // The card's start button creates the session and navigates to the RunView.
   await Promise.all([
     page.waitForURL(/\/sessions\/[0-9a-f-]{36}/i, { timeout: 30_000 }),
-    card.getByRole("button").click(),
+    card.getByTestId("agent-start").click(),
   ]);
 
   // RunView only mounts once the session leaves CREATING (a cold sandbox

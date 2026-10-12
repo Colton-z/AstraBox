@@ -36,7 +36,12 @@ export { ConsoleCard, ConsoleFactRail, ConsoleFact } from './ConsoleCard';
 export { ConsoleRecordPage } from './ConsoleRecordPage';
 export { ConsoleCreatePage } from './ConsoleCreatePage';
 export { ConsoleEditSections, type SectionCardProps } from './ConsoleEditSections';
-export { sectionIsDirty, missingRequiredFields, revertFields } from './editDraft';
+export {
+  sectionIsDirty,
+  missingRequiredFields,
+  fieldNamedByRefusal,
+  revertFields,
+} from './editDraft';
 export { RecordCrumbProvider, useRecordCrumb } from './recordCrumb';
 export { EditFieldControl } from './EditFieldControl';
 export {

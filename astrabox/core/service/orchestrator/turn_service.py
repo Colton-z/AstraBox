@@ -27,6 +27,7 @@ from astrabox.core.service.orchestrator.engine.base import (
     EngineChildResourceReconciler,
     EngineChildRunControl,
     EngineClient,
+    EngineInputCommand,
     EnginePermissionModes,
     bound_engine_client_manifest,
 )
@@ -61,6 +62,10 @@ from astrabox.core.service.orchestrator.session_kernel.permission_lifecycle impo
 )
 from astrabox.core.service.orchestrator.runtime_ensure import RuntimeEnsure
 from astrabox.core.service.orchestrator.agent_config_service import AgentConfigService
+from astrabox.core.service.orchestrator.turn_preparation import (
+    prepared_sandbox_turn,
+    sandbox_turn_context,
+)
 from astrabox.seams.sandbox import TURN_PREPARATION_FAILED
 
 logger = get_logger(__name__)
@@ -117,6 +122,53 @@ def _sandbox_gone_refusal(session: dict[str, Any]) -> str:
         "the sandbox this conversation was on is gone, and this message was "
         "not delivered; send a new message to continue on a new sandbox"
     )
+
+
+def _preparation_refusal(failure: APIError) -> InputDeliveryRefused:
+    """A delivery's answer when its input could not be prepared for the engine.
+
+    It keeps the failure's code, status and evidence, so the caller still
+    receives the user action a provider asked for (``evidence["user_action"]``).
+    """
+
+    return InputDeliveryRefused(
+        code=failure.code,
+        message=failure.message,
+        status_code=failure.status_code,
+        data=failure.data,
+        user_message=failure.user_message,
+        debug_message=failure.debug_message,
+        evidence=failure.evidence,
+    )
+
+
+class _PreparedHandoff:
+    """The engine client as one delivery pass hands inputs to it.
+
+    ``prepare`` runs once, before the first input this client has not taken
+    yet, and its preparation stays in force for the rest of the pass. A
+    re-send of an input the client already took writes nothing to the engine,
+    so it needs no preparation.
+    """
+
+    def __init__(
+        self,
+        engine_client: EngineClient,
+        *,
+        handed: set[str],
+        prepare: Callable[[], Awaitable[None]],
+    ) -> None:
+        self._engine_client = engine_client
+        self._handed = handed
+        self._prepare = prepare
+        self._prepared = False
+
+    async def deliver(self, command: EngineInputCommand) -> None:
+        if command.command_id not in self._handed and not self._prepared:
+            await self._prepare()
+            self._prepared = True
+        await self._engine_client.deliver(command)
+        self._handed.add(command.command_id)
 
 
 class TurnService:
@@ -481,6 +533,7 @@ class TurnService:
                     user=user,
                     session=session,
                     session_id=session_id,
+                    turn_id=turn_id,
                     permission_mode=permission_mode,
                     delivery_command=delivery_command,
                 )
@@ -550,6 +603,7 @@ class TurnService:
             client_message_id=client_message_id,
             delivery_command=delivery_command,
             sessions_repo=self._sessions_repo,
+            prepare_engine_write=self.prepared_engine_write,
             broker=self._broker,
             answer_continuation=answer_continuation,
             # Only a continuation needs it, and only it pays for the read: the
@@ -667,6 +721,7 @@ class TurnService:
         user: UserContext,
         session: dict[str, Any],
         session_id: str,
+        turn_id: str,
         permission_mode: str | None,
         delivery_command: dict[str, Any],
     ) -> dict[str, Any]:
@@ -689,6 +744,7 @@ class TurnService:
             session=session,
             session_id=session_id,
             requested_command_id=command_id,
+            turn_id=turn_id,
             permission_mode=permission_mode,
         )
         open_rows = await self.pending_input_rows(
@@ -713,6 +769,7 @@ class TurnService:
         session: dict[str, Any],
         session_id: str,
         requested_command_id: str,
+        turn_id: str,
         permission_mode: str | None,
         on_refused: Callable[[InputDeliveryRefused], Awaitable[None]] | None = None,
     ) -> Any:
@@ -725,6 +782,14 @@ class TurnService:
         delivery of that command (the worker's, or the same message sent again)
         answers the settled outcome instead of attaching, or replacing, a
         runtime for it (``InputAlreadySettled``).
+
+        An engine may act on an input as soon as its client takes it, so before
+        this pass hands the engine client an input it has not taken yet, the
+        runtime refreshes its input credentials (``prepare_engine_input``) and
+        the sandbox is prepared for ``turn_id`` (``prepared_sandbox_turn``),
+        whose guard stays held for the rest of the pass. A preparation that
+        fails refuses the delivery the same way: the input is not handed over,
+        and ``on_refused`` settles the turn first.
         """
 
         lock = self._input_delivery_locks.setdefault(session_id, asyncio.Lock())
@@ -781,10 +846,40 @@ class TurnService:
                     getattr(runtime, "isolated_session_id", None),
                 ),
             )
-            delivered = await DeliveryCoordinator(outbox).deliver_pending(
-                session_id,
-                engine_client,
-            )
+            try:
+                async with contextlib.AsyncExitStack() as preparation:
+
+                    async def prepare() -> None:
+                        try:
+                            if runtime.prepare_engine_input is not None:
+                                await runtime.prepare_engine_input()
+                            await preparation.enter_async_context(
+                                prepared_sandbox_turn(
+                                    sandbox_turn_context(
+                                        session=session,
+                                        session_id=session_id,
+                                        runtime=runtime,
+                                        turn_id=turn_id,
+                                    ),
+                                    sessions_repo=self._sessions_repo,
+                                    session_snapshots_repo=self._session_snapshots_repo,
+                                )
+                            )
+                        except APIError as exc:
+                            raise _preparation_refusal(exc) from None
+
+                    delivered = await DeliveryCoordinator(outbox).deliver_pending(
+                        session_id,
+                        _PreparedHandoff(
+                            engine_client,
+                            handed=runtime.handed_input_command_ids,
+                            prepare=prepare,
+                        ),
+                    )
+            except InputDeliveryRefused as refused:
+                if on_refused is not None:
+                    await on_refused(refused)
+                raise
             if requested_command_id not in delivered:
                 existing_delivery = await self._session_events_repo.list_events(
                     session_id,
@@ -804,6 +899,39 @@ class TurnService:
                         f"{requested_command_id!r}"
                     )
             return runtime
+
+    @contextlib.asynccontextmanager
+    async def prepared_engine_write(
+        self,
+        *,
+        session: dict[str, Any],
+        session_id: str,
+        runtime: Any,
+        turn_id: str,
+    ) -> AsyncIterator[None]:
+        """Prepare the sandbox for an engine write made outside a delivery pass.
+
+        A turn's ``begin_delivery`` is the first write of its input for an
+        engine client that holds inputs on the host until a turn begins. It
+        runs under this session's delivery lock, like every delivery pass, so
+        two preparations from this server wait for each other instead of
+        meeting at the durable guard as a conflict; the guard excludes other
+        servers.
+        """
+
+        lock = self._input_delivery_locks.setdefault(session_id, asyncio.Lock())
+        async with lock:
+            async with prepared_sandbox_turn(
+                sandbox_turn_context(
+                    session=session,
+                    session_id=session_id,
+                    runtime=runtime,
+                    turn_id=turn_id,
+                ),
+                sessions_repo=self._sessions_repo,
+                session_snapshots_repo=self._session_snapshots_repo,
+            ):
+                yield
 
     def input_delivery_in_progress(self, session_id: str) -> bool:
         """Whether this server is delivering this conversation's input right now.

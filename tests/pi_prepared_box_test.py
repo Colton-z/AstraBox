@@ -33,6 +33,7 @@ from typing import Any
 import pytest
 from unittest.mock import AsyncMock
 
+from astrabox.seams.sandbox_data import SandboxCommandResult
 from astrabox.common.utils.errors import APIError
 from astrabox.core.service.orchestrator.agent import prepared_boxes as pb
 from astrabox.core.service.orchestrator.agent import prepared_slots as ps
@@ -161,13 +162,13 @@ class _Files:
         self.reads: list[str] = []
         self.writes: list[tuple[str, bytes]] = []
 
-    async def read_file(self, path: str) -> str:
+    async def read_bytes(self, path: str) -> bytes:
         self.reads.append(path)
         if self._content is None:
             raise FileNotFoundError(path)
-        return self._content
+        return self._content.encode("utf-8")
 
-    async def write_file(
+    async def write_bytes(
         self,
         path: str,
         content: bytes,
@@ -186,9 +187,9 @@ class _Commands:
     def __init__(self) -> None:
         self.ran: list[str] = []
 
-    async def run(self, command: str) -> Any:
+    async def run(self, command: str, **_options: Any) -> Any:
         self.ran.append(command)
-        return SimpleNamespace(error=None, exit_code=0, stdout="", stderr="")
+        return SandboxCommandResult(exit_code=0, stdout="", stderr="")
 
 
 def _box(content: str | None, sandbox_id: str = "box-77") -> Any:

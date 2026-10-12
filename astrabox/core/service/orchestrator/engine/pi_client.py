@@ -1,9 +1,9 @@
-"""Pi engine client over an execd JSON-lines pipe.
+"""Pi engine client over a JSON-lines pipe to a box process.
 
 Pi's supported headless surface is ``pi --mode rpc``: commands as JSON lines
 on stdin, responses and events as JSON lines on stdout. AstraBox runs one such
-process per conversation behind an execd pipe session, so pi opens no port and
-no platform credential is copied into the sandbox.
+process per conversation as one of the box's long-lived processes, so pi opens
+no port and no platform credential is copied into the sandbox.
 
 Three of pi's readings drive this client, and each is the vendor's own:
 
@@ -34,10 +34,8 @@ import contextlib
 import json
 import time
 from collections import deque
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator
 from typing import Any
-
-import httpx
 
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.core.service.orchestrator.engine.base import (
@@ -77,10 +75,10 @@ from astrabox.core.service.orchestrator.engine.pi_child_transcript import PiChil
 from astrabox.core.service.orchestrator.engine.pi_pipe import PiRpcProcess, PiWireRecord
 from astrabox.core.service.orchestrator.engine.resident_relay import ResidentRelay
 from astrabox.core.service.orchestrator.runtime.pty_terminal import (
-    EXECD_PORT,
-    ResolvedExecdEndpoint,
     resolve_sandbox_endpoint,
 )
+from astrabox.providers.execd import EXECD_PORT, ExecdFiles, ExecdProcesses
+from astrabox.seams.sandbox_data import SandboxFiles, SandboxProcesses
 
 ENGINE_KIND = "pi"
 
@@ -213,7 +211,7 @@ class PiEngineClient:
     def __init__(
         self,
         *,
-        endpoint: ResolvedExecdEndpoint,
+        processes: SandboxProcesses,
         platform_session_id: str,
         cwd: str,
         command: str,
@@ -221,15 +219,13 @@ class PiEngineClient:
         pty_session_id: str | None = None,
         switch_prepared_session: bool = False,
         output_checkpoint: ResidentOutputCheckpoint | None = None,
-        http_transport: httpx.AsyncBaseTransport | None = None,
         resident_output_sink: ResidentOutputSink | None = None,
         event_sink: EngineEventSink | None = None,
-        filesystem: Any = None,
-        search_file_paths: Callable[[str, str], Awaitable[list[str]]] | None = None,
+        files: SandboxFiles | None = None,
         session_root: str | None = None,
         subagent_temp_root: str | None = None,
     ) -> None:
-        self._endpoint = endpoint
+        self._processes = processes
         self._resident_output_sink = resident_output_sink
         self._event_sink = event_sink
         #: The one reader of this process's wire, started with the process.
@@ -241,10 +237,8 @@ class PiEngineClient:
         self._configured_pty_session_id = str(pty_session_id or "").strip() or None
         self._switch_prepared_session = switch_prepared_session
         self._output_checkpoint = output_checkpoint
-        self._filesystem = filesystem
-        self._search_file_paths = search_file_paths
+        self._files = files
         self._session_root = session_root
-        self._http_transport = http_transport
         self._process: PiRpcProcess | None = None
         self._engine_session_key: str | None = None
         self._closed = False
@@ -273,9 +267,9 @@ class PiEngineClient:
         self._child_resources = PiChildResources()
         self._streaming = False
         self._child_transcript = (
-            PiChildTranscriptCapture(filesystem=filesystem, session_root=session_root,
+            PiChildTranscriptCapture(filesystem=files, session_root=session_root,
                                      temp_root=subagent_temp_root, sink=event_sink)
-            if filesystem is not None and session_root and subagent_temp_root and event_sink is not None else None
+            if files is not None and session_root and subagent_temp_root and event_sink is not None else None
         )
 
     # ── identity ─────────────────────────────────────────────────────────
@@ -298,11 +292,10 @@ class PiEngineClient:
         if self._process is not None and self._process.is_connected:
             return self._process
         process = PiRpcProcess(
-            endpoint=self._endpoint,
+            processes=self._processes,
             cwd=self._cwd,
             command=self._command,
             pty_session_id=self._configured_pty_session_id,
-            http_transport=self._http_transport,
         )
         self._process = process
         if self._output_checkpoint is None and self._configured_pty_session_id:
@@ -329,17 +322,14 @@ class PiEngineClient:
 
     async def _resume_prepared_session(self, process: PiRpcProcess) -> None:
         """Use Pi's native switch before the parked child accepts user input."""
-        if (
-            not self._resume_session_key or not self._session_root
-            or self._filesystem is None or self._search_file_paths is None
-        ):
+        if not self._resume_session_key or not self._session_root or self._files is None:
             raise PiProtocolError("prepared resume has no native Session file source")
         matches = []
-        for path in await self._search_file_paths(
+        for path in await self._files.search(
             self._session_root, f"*_{self._resume_session_key}.jsonl",
         ):
-            content = await self._filesystem.read_file(path)
-            first_line = str(content).splitlines()[0] if content else ""
+            content = (await self._files.read_bytes(path)).decode("utf-8")
+            first_line = content.splitlines()[0] if content else ""
             if not first_line:
                 continue
             header = json.loads(first_line)
@@ -1076,7 +1066,7 @@ class PiEngineClient:
                 await process.detach()
 
     async def dispose(self) -> bool:
-        """Final teardown: destroy the PTY session behind this conversation."""
+        """Final teardown: stop the box process behind this conversation."""
 
         self._closed = True
         relay = self._relay
@@ -1236,7 +1226,7 @@ async def connect_pi_client(
     session_root: str,
     subagent_temp_root: str,
 ) -> PiEngineClient:
-    """Resolve the sandbox's execd endpoint and build a client against it.
+    """Build a client on the box process that runs, or will run, pi.
 
     ``pty_session_id`` names a pipe that already holds an initialized pi — a
     prepared unit's parked child. The client then attaches instead of creating,
@@ -1244,19 +1234,24 @@ async def connect_pi_client(
     it the first use creates the pipe and pays that startup inline.
     """
 
-    endpoint = await resolve_sandbox_endpoint(sandbox, port)
+    files: SandboxFiles
+    processes: SandboxProcesses
     if port != EXECD_PORT:
         if not service_credential:
             raise RuntimeError("isolated pi service has no platform control credential")
-        endpoint = ResolvedExecdEndpoint(
-            origin=endpoint.origin,
-            headers={**endpoint.headers, "X-EXECD-ACCESS-TOKEN": service_credential},
+        endpoint = await resolve_sandbox_endpoint(sandbox, port)
+        headers = {**endpoint.headers, "X-EXECD-ACCESS-TOKEN": service_credential}
+        # The conversation's own execd, from the image, serves its pipe and
+        # its Session files.
+        processes = ExecdProcesses.at_endpoint(
+            endpoint.url, headers, sandbox_id=sandbox.sandbox_id
         )
-    filesystem_headers = (
-        {"X-EXECD-ACCESS-TOKEN": service_credential} if port != EXECD_PORT else None
-    )
+        files = ExecdFiles.at_endpoint(endpoint.url, headers, sandbox_id=sandbox.sandbox_id)
+    else:
+        processes = sandbox.processes
+        files = sandbox.files
     return PiEngineClient(
-        endpoint=endpoint,
+        processes=processes,
         platform_session_id=platform_session_id,
         cwd=cwd,
         command=command,
@@ -1268,12 +1263,7 @@ async def connect_pi_client(
         event_sink=event_sink,
         session_root=session_root,
         subagent_temp_root=subagent_temp_root,
-        filesystem=await sandbox.get_filesystem(
-            port, headers=filesystem_headers,
-        ),
-        search_file_paths=lambda path, pattern: sandbox.search_file_paths(
-            path, pattern, port=port, headers=filesystem_headers,
-        ),
+        files=files,
     )
 
 

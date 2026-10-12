@@ -14,6 +14,7 @@ from typing import Any
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.time_utils import parse_iso, plus_seconds_iso, utcnow, utcnow_iso
 from astrabox.common.utils.user_context import UserContext
+from astrabox.core.service.orchestrator.session_file_service import FileDownload
 from astrabox.core.service.orchestrator.session_public_projection import (
     project_public_message_page,
     project_shared_session,
@@ -189,7 +190,7 @@ class SessionShareService:
             "has_more": bool(page.get("has_more")),
         }
 
-    async def download_shared_file(self, token: str, *, path: str) -> tuple[bytes, str]:
+    async def download_shared_file(self, token: str, *, path: str) -> FileDownload:
         session = await self._resolve_shared_session(token)
         if not bool((session.get("share") or {}).get("allow_download")):
             raise APIError(code="SHARE_DOWNLOAD_DISABLED", message="file download is not allowed for this share", status_code=403)

@@ -10,6 +10,7 @@ exposes beneath that boundary.
 
 from __future__ import annotations
 
+import shlex
 import time
 from datetime import timedelta
 from types import SimpleNamespace
@@ -17,6 +18,7 @@ from typing import Any
 from unittest import mock
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 from opensandbox.exceptions import SandboxApiException
 
@@ -38,6 +40,8 @@ from astrabox.seams.sandbox import (
     SandboxNetworkPolicy,
     sandbox_installation_id,
 )
+from astrabox.seams.sandbox_data import SandboxCommandResult
+from tests._execd_fakes import ExecdRun, ScriptedExecdCommands
 
 _BASE_URL = "http://opensandbox.test:8080"
 
@@ -54,37 +58,6 @@ def _lifecycle_base_url_env(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 # ── SDK fakes ────────────────────────────────────────────────────────────────
-
-
-def _execution(*, exit_code: int | None, stdout: str = "", stderr: str = "") -> Any:
-    from opensandbox.models.execd import Execution, ExecutionLogs, OutputMessage
-
-    logs = ExecutionLogs(
-        stdout=([OutputMessage(text=stdout, timestamp=0, is_error=False)] if stdout else []),
-        stderr=([OutputMessage(text=stderr, timestamp=0, is_error=True)] if stderr else []),
-    )
-    return Execution(exit_code=exit_code, logs=logs, error=None)
-
-
-class _FakeCommands:
-    """Scripted execd: results keyed by substring of the command, else default."""
-
-    def __init__(
-        self,
-        *,
-        by_substring: dict[str, Any] | None = None,
-        default: Any = None,
-    ) -> None:
-        self.calls: list[tuple[str, Any]] = []
-        self._by_substring = by_substring or {}
-        self._default = default
-
-    async def run(self, command: str, *, opts: Any = None, handlers: Any = None) -> Any:
-        self.calls.append((command, opts))
-        for needle, execution in self._by_substring.items():
-            if needle in command:
-                return execution
-        return self._default if self._default is not None else _execution(exit_code=0)
 
 
 class _FakeFiles:
@@ -106,11 +79,11 @@ class _FakeSdkSandbox:
         endpoint_headers: dict[str, str] | None = None,
         signed_endpoint: str | None = None,
         signed_endpoint_headers: dict[str, str] | None = None,
-        commands: _FakeCommands | None = None,
+        commands: ScriptedExecdCommands | None = None,
         files: _FakeFiles | None = None,
     ) -> None:
         self.id = "sb-1"
-        self.commands = commands or _FakeCommands()
+        self.commands = commands or ScriptedExecdCommands()
         self.files = files or _FakeFiles()
         self.kill_calls = 0
         self.close_calls = 0
@@ -281,42 +254,30 @@ async def test_no_cwd_skips_the_predir_step() -> None:
 
 
 @pytest.mark.parametrize(
-    "transient_error",
+    "converging",
     [
-        "empty sse stream",
-        (
+        # A stream that ends without an exit status.
+        ExecdRun(exit_code=None),
+        # A stream cut off mid-response.
+        httpx.RemoteProtocolError(
             "peer closed connection without sending complete message body "
             "(incomplete chunked read)"
         ),
-        # One probe's two-second timeout is transient within the overall
-        # readiness budget; it does not establish a permanent startup failure.
-        (
-            "open_sandbox execd command did not complete within 2s: "
-            "'sh -lc :'"
-        ),
     ],
+    ids=["no-exit-status", "cut-off"],
 )
 async def test_create_waits_for_execd_command_stream_without_retrying_user_work(
     monkeypatch: pytest.MonkeyPatch,
-    transient_error: str,
+    converging: ExecdRun | Exception,
 ) -> None:
     monkeypatch.setattr(executor_module, "_EXECD_COMMAND_READY_POLL_SECONDS", 0)
-    fake_sdk = _FakeSdkSandbox()
-    fake_sdk.commands.run = AsyncMock(
-        side_effect=[
-            RuntimeError(transient_error),
-            _execution(exit_code=0),
-        ]
-    )
+    commands = ScriptedExecdCommands(converging, ExecdRun())
+    fake_sdk = _FakeSdkSandbox(commands=commands)
     with mock.patch.object(executor_module, "Sandbox") as sandbox_cls:
         sandbox_cls.create = AsyncMock(return_value=fake_sdk)
         await _build(_create_spec(requires_command_channel=True))
 
-    assert fake_sdk.commands.run.await_count == 2
-    assert [call.args for call in fake_sdk.commands.run.await_args_list] == [
-        ("sh -lc :",),
-        ("sh -lc :",),
-    ]
+    assert commands.commands == ["sh -lc :", "sh -lc :"]
 
 
 async def test_a_create_that_asks_for_no_command_channel_does_not_prove_one() -> None:
@@ -329,49 +290,52 @@ async def test_a_create_that_asks_for_no_command_channel_does_not_prove_one() ->
     caller that does not, none.
     """
     fake_sdk = _FakeSdkSandbox()
-    fake_sdk.commands.run = AsyncMock(return_value=_execution(exit_code=0))
     with mock.patch.object(executor_module, "Sandbox") as sandbox_cls:
         sandbox_cls.create = AsyncMock(return_value=fake_sdk)
         await _build(_create_spec(requires_command_channel=False))
 
-    assert fake_sdk.commands.run.await_count == 0
+    assert fake_sdk.commands.commands == []
 
 
-async def test_execd_command_readiness_does_not_retry_an_unknown_failure() -> None:
-    fake_sdk = _FakeSdkSandbox()
-    fake_sdk.commands.run = AsyncMock(side_effect=RuntimeError("permission denied"))
+@pytest.mark.parametrize(
+    "failure",
+    [
+        RuntimeError("permission denied"),
+        # execd refusing the command is an answer, not a stream still converging.
+        SandboxApiException("access token rejected", status_code=401),
+    ],
+    ids=["unknown", "refused"],
+)
+async def test_execd_command_readiness_does_not_retry_a_real_failure(
+    failure: Exception,
+) -> None:
+    commands = ScriptedExecdCommands(failure)
+    fake_sdk = _FakeSdkSandbox(commands=commands)
 
-    with pytest.raises(RuntimeError, match="readiness probe failed.*permission denied"):
+    with pytest.raises(RuntimeError, match="readiness probe failed"):
         await executor_module._wait_for_execd_command_stream(
             OpenSandboxHandle(fake_sdk),
             session_id="s1",
         )
 
-    fake_sdk.commands.run.assert_awaited_once()
+    assert commands.commands == ["sh -lc :"]
 
 
 async def test_execd_command_readiness_retries_its_bounded_probe_deadline(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(executor_module, "_EXECD_COMMAND_READY_POLL_SECONDS", 0)
-    fake_sdk = _FakeSdkSandbox()
-    fake_sdk.commands.run = AsyncMock(
-        side_effect=[
-            TimeoutError("command stream did not settle in this attempt"),
-            _execution(exit_code=0),
-        ]
+    commands = ScriptedExecdCommands(
+        TimeoutError("command stream did not settle in this attempt"), ExecdRun()
     )
+    fake_sdk = _FakeSdkSandbox(commands=commands)
 
     await executor_module._wait_for_execd_command_stream(
         OpenSandboxHandle(fake_sdk),
         session_id="s1",
     )
 
-    assert fake_sdk.commands.run.await_count == 2
-    assert [call.args for call in fake_sdk.commands.run.await_args_list] == [
-        ("sh -lc :",),
-        ("sh -lc :",),
-    ]
+    assert commands.commands == ["sh -lc :", "sh -lc :"]
 
 
 class _FakeLifecycleManager:
@@ -430,8 +394,9 @@ async def test_execd_readiness_failure_destroys_the_just_created_sandbox(
         "SandboxManager",
         _FakeLifecycleManager.factory(manager),
     )
-    fake_sdk = _FakeSdkSandbox()
-    fake_sdk.commands.run = AsyncMock(side_effect=RuntimeError("permission denied"))
+    fake_sdk = _FakeSdkSandbox(
+        commands=ScriptedExecdCommands(RuntimeError("permission denied"))
+    )
 
     with mock.patch.object(executor_module, "Sandbox") as sandbox_cls:
         sandbox_cls.create = AsyncMock(return_value=fake_sdk)
@@ -592,7 +557,7 @@ async def test_platform_resolves_the_image_started_service_without_launching_it(
         resolve_sandbox_websocket_endpoint,
     )
 
-    commands = _FakeCommands()
+    commands = ScriptedExecdCommands()
     fake_sdk = _FakeSdkSandbox(endpoint="box.test:9001", commands=commands)
     handle = OpenSandboxHandle(fake_sdk)  # type: ignore[arg-type]
 
@@ -665,8 +630,8 @@ async def test_provider_waits_in_box_for_the_image_service_port(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _ = monkeypatch
-    exec_collect = AsyncMock(return_value=(0, b"", b""))
-    handle = SimpleNamespace(exec_collect=exec_collect)
+    run = AsyncMock(return_value=SandboxCommandResult(exit_code=0, stdout="", stderr=""))
+    handle = SimpleNamespace(commands=SimpleNamespace(run=run))
 
     await OpenSandboxSandboxProvider()._await_inbox_service_ready(
         handle,
@@ -674,8 +639,8 @@ async def test_provider_waits_in_box_for_the_image_service_port(
         timeout_seconds=7,
     )
 
-    exec_collect.assert_awaited_once()
-    command = exec_collect.await_args.args[0]
+    run.assert_awaited_once()
+    command = shlex.split(run.await_args.args[0])
     assert command[:2] == ["python3", "-c"]
     assert "socket.create_connection" in command[2]
     assert "time.monotonic()+7" in command[2]
@@ -687,7 +652,13 @@ async def test_image_service_readiness_failure_reports_the_probe_error(
 ) -> None:
     _ = monkeypatch
     handle = SimpleNamespace(
-        exec_collect=AsyncMock(return_value=(7, b"", b"Traceback: boom"))
+        commands=SimpleNamespace(
+            run=AsyncMock(
+                return_value=SandboxCommandResult(
+                    exit_code=7, stdout="", stderr="Traceback: boom"
+                )
+            )
+        )
     )
 
     with pytest.raises(APIError, match="Traceback: boom") as caught:
@@ -802,8 +773,10 @@ async def test_a_service_whose_readiness_probe_hangs_fails_loud(
 ) -> None:
     _ = monkeypatch
     handle = SimpleNamespace(
-        exec_collect=AsyncMock(
-            side_effect=TimeoutError("execd stopped returning while the image booted")
+        commands=SimpleNamespace(
+            run=AsyncMock(
+                side_effect=TimeoutError("execd stopped returning while the image booted")
+            )
         )
     )
 
@@ -821,8 +794,10 @@ async def test_a_service_whose_readiness_probe_hangs_fails_loud(
 async def test_a_dead_image_service_fails_without_host_side_revival() -> None:
     """The host detects a dead image service; it never assembles or revives it."""
 
-    exec_collect = AsyncMock(return_value=(7, b"", b"connection refused"))
-    handle = SimpleNamespace(exec_collect=exec_collect)
+    run = AsyncMock(
+        return_value=SandboxCommandResult(exit_code=7, stdout="", stderr="connection refused")
+    )
+    handle = SimpleNamespace(commands=SimpleNamespace(run=run))
 
     with pytest.raises(APIError):
         await OpenSandboxSandboxProvider()._await_inbox_service_ready(
@@ -831,7 +806,7 @@ async def test_a_dead_image_service_fails_without_host_side_revival() -> None:
             timeout_seconds=1,
         )
 
-    command = exec_collect.await_args.args[0][2]
+    command = shlex.split(run.await_args.args[0])[2]
     assert "socket.create_connection" in command
     assert "serve-conversation" not in command
     assert "sandbox_runner.py" not in command

@@ -13,6 +13,9 @@ is exposed via ``provisioned_runtime_identity`` for the caller to persist.
 
 from __future__ import annotations
 
+from astrabox.seams.skills import SkillDescriptor
+from astrabox.core.service.orchestrator.runtime.skill_sources import normalize_skills
+
 import asyncio
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -51,11 +54,11 @@ from astrabox.core.service.orchestrator.workspace.base import (
 )
 
 
-def _template_skills(template: Any) -> list[str]:
+def _template_skills(template: Any) -> list[SkillDescriptor]:
     skills = getattr(template, "skills", None)
     if skills is None and isinstance(template, dict):
         skills = template.get("skills")
-    return [str(item).strip() for item in (skills or []) if str(item).strip()]
+    return normalize_skills(skills)
 
 
 def build_conversation_identity(

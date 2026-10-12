@@ -106,6 +106,7 @@ async def _drive(
             emit_timing=lambda *args, **kwargs: None,
             client_message_id=None,
             sessions_repo=_Repo(),  # type: ignore[arg-type]
+            prepare_engine_write=object(),  # type: ignore[arg-type]
             broker=object(),  # type: ignore[arg-type]
             answer_continuation=True,
             parked_engine_anchor=parked_engine_anchor,

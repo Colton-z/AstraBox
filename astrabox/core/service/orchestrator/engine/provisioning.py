@@ -601,18 +601,18 @@ async def resolve_sandbox_websocket_endpoint(sandbox: Any, port: int) -> str:
     """
 
     endpoint = await sandbox.get_endpoint(int(port))
-    if dict(getattr(endpoint, "headers", None) or {}):
+    if endpoint.headers:
         settings = load_astrabox_settings()
         expires_at = datetime.now(timezone.utc) + timedelta(
             seconds=int(settings.sandbox_endpoint_url_ttl_seconds)
         )
         endpoint = await sandbox.get_signed_endpoint(int(port), expires_at=expires_at)
-        if dict(getattr(endpoint, "headers", None) or {}):
+        if endpoint.headers:
             raise RuntimeError(
                 "signed sandbox endpoint still requires routing headers the "
                 f"engine transport cannot carry (sandbox={sandbox.sandbox_id})"
             )
-    base = str(endpoint.endpoint).rstrip("/")
+    base = endpoint.url
     if base.startswith("https://"):
         return "wss://" + base[len("https://") :]
     if base.startswith("http://"):
@@ -955,10 +955,10 @@ async def deliver_in_box_service_token(
         raise RuntimeError(
             f"the seat carries no home or account to deliver {file_name} into"
         )
-    await sandbox.files.write_file(
+    await sandbox.files.write_bytes(
         f"{home_dir.rstrip('/')}/{file_name}",
         token.encode("ascii"),
-        mode=600,
+        mode=0o600,
         owner=linux_user,
         group=linux_user,
     )
@@ -1001,20 +1001,20 @@ async def write_engine_env_file(
         )
     service_credential = engine_service_credential(request, runtime_identity)
     if service_credential is not None:
-        await sandbox.files.write_file(
+        await sandbox.files.write_bytes(
             f"{home_dir.rstrip('/')}/{SERVICE_CREDENTIAL_FILE_NAME}",
             service_credential.encode("ascii"),
-            mode=600,
+            mode=0o600,
             owner=linux_user,
             group=linux_user,
         )
     body = "".join(
         f"export {key}={shlex.quote(value)}\n" for key, value in sorted(engine_env.items())
     ).encode("utf-8")
-    await sandbox.files.write_file(
+    await sandbox.files.write_bytes(
         f"{home_dir.rstrip('/')}/{ENGINE_ENV_FILE_NAME}",
         body,
-        mode=600,
+        mode=0o600,
         owner=linux_user,
         group=linux_user,
     )
@@ -1111,15 +1111,6 @@ async def create_shared_agent_sandbox(
             code="AGENT_PREWARM_CONFIG_INVALID",
             message="shared Agent-box creation requires an Agent id",
             status_code=500,
-        )
-    if not bool(getattr(backend_adapter, "supports_correlated_create", False)):
-        raise APIError(
-            code="SANDBOX_CORRELATED_CREATE_UNSUPPORTED",
-            message=(
-                f"sandbox backend {backend_adapter.name!r} cannot recover an "
-                "Agent-box create whose platform worker exits"
-            ),
-            status_code=501,
         )
     planned_mounts = await plan_workspace_mounts(
         subject_kind="deployment_runtime",
@@ -2158,15 +2149,6 @@ async def provision_engine_sandbox(
         session_id, workspace_plan=workspace_plan
     )
     backend_adapter = sandbox_for_name(persisted_backend)
-    if not bool(getattr(backend_adapter, "supports_correlated_create", False)):
-        raise APIError(
-            code="SANDBOX_CORRELATED_CREATE_UNSUPPORTED",
-            message=(
-                f"sandbox backend {backend_adapter.name!r} cannot recover a "
-                "create whose worker exits before publication"
-            ),
-            status_code=501,
-        )
 
     # Recovery precedes every placement or pool claim. A worker may have
     # created this command's exact box and died before publishing it; taking a
@@ -2179,15 +2161,35 @@ async def provision_engine_sandbox(
     # and the provider lookup lists every sandbox on the backend, so a first
     # execution records itself and skips the lookup. Outside a startup command
     # there is no durable record of earlier executions, and the lookup runs.
+    #
+    # A backend that cannot look a box up by its assignment cannot answer
+    # whether an earlier execution made one. Such an execution is refused
+    # rather than allowed to make a second box on a guess; the person starts
+    # the conversation again, as a new command.
     ownership = current_recovery(session_id)
     first_execution = (
         ownership is not None
         and ownership.assignment_id == assignment_id
         and await ownership.claim_first_provider_attempt()
     )
-    recovered_assignment = (
-        None if first_execution else await backend_adapter.find_sandbox_by_assignment(assignment_id)
-    )
+    if bool(getattr(backend_adapter, "supports_correlated_create", False)):
+        recovered_assignment = (
+            None
+            if first_execution
+            else await backend_adapter.find_sandbox_by_assignment(assignment_id)
+        )
+    elif ownership is not None and not first_execution:
+        raise APIError(
+            code="SANDBOX_CREATE_INTERRUPTED",
+            message=(
+                f"an earlier start of this conversation reached sandbox backend "
+                f"{backend_adapter.name!r} and did not finish, and the backend cannot "
+                "look up whether it made a box; start the conversation again"
+            ),
+            status_code=409,
+        )
+    else:
+        recovered_assignment = None
 
     runtime_identity = (
         plan_conversation_identity(

@@ -28,11 +28,10 @@ test.describe("live-gate selector contract", () => {
 
     await expect(page.getByText("Production services")).toHaveCount(0);
 
-    // The helper clicks the card's only button rather than matching its label,
-    // which is translated. If the card grows a second button — a menu, a link —
-    // that click becomes ambiguous and the live gate fails on a strict-mode
-    // violation, so the count is part of the contract.
-    expect(await cards.first().getByRole("button").count()).toBe(1);
+    // The helper starts a conversation through the card's start button, found
+    // by its test id rather than its translated label, so each card has
+    // exactly one.
+    expect(await cards.first().getByTestId("agent-start").count()).toBe(1);
   });
 
   test("an Assistant conversation request exposes no Vault selection", async ({ page }) => {

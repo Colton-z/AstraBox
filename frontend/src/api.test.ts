@@ -99,7 +99,8 @@ it('uploads voice audio with its MIME type and session identity without a provid
   const [url, init] = fetch.mock.calls[0] as [string, RequestInit];
   expect(url).toBe('/api/v1/sessions/session-voice/speech-input');
   const headers = new Headers(init.headers);
-  expect(headers.get('content-type')).toContain('multipart/form-data; boundary=');
+  expect(headers.has('content-type')).toBe(false);
+  expect(init.body).toBeInstanceOf(FormData);
   expect(headers.has('authorization')).toBe(false);
   expect(init.credentials).toBe('include');
   const request = new Request('http://test/upload', init);
@@ -346,16 +347,12 @@ describe('a route that answers 204', () => {
 });
 
 describe('a multipart upload', () => {
-  it('keeps the boundary the platform generated, and the file bytes it framed', async () => {
+  it('passes the original files to fetch without buffering the multipart body', async () => {
     const mockFetch = stubFetchResolved(jsonResponse({
       code: 'OK',
       message: 'ok',
       data: { path: '/workspace', paths: ['note.bin'] },
     }));
-    // A byte no UTF-8 decode survives intact. Reading the body back off the
-    // request as text rather than as bytes corrupts exactly this, and the
-    // corruption is invisible at every other layer — the request still has a
-    // body, the server still answers, and the file that lands is wrong.
     const raw = new Uint8Array([0x00, 0xff, 0xfe, 0x41]);
     const file = new File([raw], 'note.bin', { type: 'application/octet-stream' });
 
@@ -363,15 +360,10 @@ describe('a multipart upload', () => {
 
     const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
     expect(url).toBe('/api/v1/sessions/session-1/files/upload');
-    const contentType = String((init.headers as Headers).get('content-type'));
-    expect(contentType).toMatch(/^multipart\/form-data; boundary=/);
-
-    // The body is parsed back with the header that framed it: the boundary has
-    // to still describe these bytes, and the bytes have to still be the file's.
-    const sent = new Response(init.body as ArrayBuffer, {
-      headers: { 'content-type': contentType },
-    });
-    const form = await sent.formData();
+    expect(new Headers(init.headers).has('content-type')).toBe(false);
+    expect(init.body).toBeInstanceOf(FormData);
+    const form = init.body as FormData;
+    expect(form.get('files')).toBe(file);
     expect(form.get('path')).toBe('/workspace');
     const received = form.get('files') as File;
     expect(new Uint8Array(await received.arrayBuffer())).toEqual(raw);

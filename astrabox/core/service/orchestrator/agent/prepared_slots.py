@@ -21,6 +21,9 @@ the vendor process; this module composes them and owns the seat ledger.
 
 from __future__ import annotations
 
+from astrabox.seams.skills import SkillDescriptor
+from astrabox.core.service.orchestrator.runtime.skill_sources import normalize_skills
+
 import asyncio
 import contextlib
 import json
@@ -399,11 +402,11 @@ async def _retire_unless_handing_off(
     )
 
 
-def _template_skills(template: Any) -> list[str]:
+def _template_skills(template: Any) -> list[SkillDescriptor]:
     skills = getattr(template, "skills", None)
     if skills is None and isinstance(template, dict):
         skills = template.get("skills")
-    return [str(item).strip() for item in (skills or []) if str(item).strip()]
+    return normalize_skills(skills)
 
 
 #: Where a pool box keeps the seats prepared in it until an Agent takes it. The
@@ -493,10 +496,10 @@ async def prepare_pool_seats(
                 ),
                 status_code=503,
             )
-        await handle.files.write_file(
+        await handle.files.write_bytes(
             POOL_SEATS_RECEIPT,
             json.dumps(seats).encode(),
-            mode=600,
+            mode=0o600,
             owner="root",
             group="root",
         )
@@ -862,7 +865,7 @@ async def _adopt_pool_box(template: Any, *, runtime_manager: Any, repo: Any) -> 
         return False
     provider = sandbox_for_template(template)
     try:
-        seats = json.loads(await acquired.sandbox.files.read_file(POOL_SEATS_RECEIPT))
+        seats = json.loads(await acquired.sandbox.files.read_bytes(POOL_SEATS_RECEIPT))
         if not isinstance(seats, list) or not seats or any(
             not isinstance(seat, dict) or seat.get("sandbox_id") != acquired.sandbox_id
             for seat in seats
@@ -1789,18 +1792,18 @@ async def _runner_uri_for(handle: Any, port: int) -> str:
     """
 
     endpoint = await handle.get_endpoint(port)
-    if dict(getattr(endpoint, "headers", None) or {}):
+    if endpoint.headers:
         settings = load_astrabox_settings()
         expires_at = datetime.now(timezone.utc) + timedelta(
             seconds=int(settings.sandbox_endpoint_url_ttl_seconds)
         )
         endpoint = await handle.get_signed_endpoint(port, expires_at=expires_at)
-        if dict(getattr(endpoint, "headers", None) or {}):
+        if endpoint.headers:
             raise RuntimeError(
                 "signed runner endpoint still requires routing headers the "
                 f"runner link cannot carry (sandbox={handle.sandbox_id})"
             )
-    base = str(endpoint.endpoint).rstrip("/")
+    base = endpoint.url
     if base.startswith("https://"):
         return "wss://" + base[len("https://") :]
     if base.startswith("http://"):

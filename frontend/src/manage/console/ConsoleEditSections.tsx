@@ -15,6 +15,8 @@ export type SectionCardProps = {
   dirty?: boolean;
   blocked?: boolean;
   blockedReason?: React.ReactNode;
+  /** Why the server refused this card's last save (see `ConsoleCard`). */
+  error?: React.ReactNode;
   saving?: boolean;
   saved?: boolean;
   saveLabel?: string;
@@ -35,6 +37,10 @@ export type SectionCardProps = {
  * because each is an independent write against a live row (§4); a create page
  * has one act and one control for it. So the page says what a card carries
  * beyond its fields, through `cardProps`, and this renders the fields.
+ *
+ * `refusedKey` is the field a refused write named (`fieldNamedByRefusal`). The
+ * refusal itself is shown where the write was asked for; the field it names,
+ * which can sit in another card, is marked so the reader can find it.
  */
 export function ConsoleEditSections({
   sections,
@@ -43,6 +49,7 @@ export function ConsoleEditSections({
   idPrefix,
   invalidKeys,
   onInvalidChange,
+  refusedKey,
   cardProps,
   renderField,
 }: {
@@ -53,6 +60,7 @@ export function ConsoleEditSections({
   idPrefix: string;
   invalidKeys: Set<string>;
   onInvalidChange: (key: string, invalid: boolean) => void;
+  refusedKey?: string | null;
   cardProps?: (section: EditSectionSpec, index: number) => SectionCardProps;
   renderField?: (field: EditFieldSpec, row: React.ReactNode) => React.ReactNode;
 }) {
@@ -62,6 +70,7 @@ export function ConsoleEditSections({
       {sections.map((section, i) => (
         <ConsoleCard key={i} title={section.label} {...(cardProps?.(section, i) ?? {})}>
           {section.fields.map((f) => {
+            const refused = f.key === refusedKey;
             const row = (
               <ConsoleFieldRow
                 label={f.label}
@@ -72,7 +81,13 @@ export function ConsoleEditSections({
                 help={f.example && f.editable !== false && !f.disabled ? (
                   <>{f.help}{f.help && ' '}{t('manage:console.example_tab_hint')}</>
                 ) : f.help}
-                error={invalidKeys.has(f.key) ? t('manage:console.json_invalid') : undefined}
+                error={
+                  invalidKeys.has(f.key)
+                    ? t('manage:console.json_invalid')
+                    : refused
+                      ? t('manage:console.field_refused')
+                      : undefined
+                }
               >
                 <EditFieldControl
                   id={`${idPrefix}-${f.key}`}
@@ -83,7 +98,7 @@ export function ConsoleEditSections({
                   // The line under the field and the border around it are one
                   // complaint: a field that will not save must not look exactly
                   // like the ones that will.
-                  invalid={invalidKeys.has(f.key)}
+                  invalid={invalidKeys.has(f.key) || refused}
                 />
               </ConsoleFieldRow>
             );

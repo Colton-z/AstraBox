@@ -1,4 +1,8 @@
-"""Seeded defaults stay live references; explicitly authored values stay pins."""
+"""Seeded rows leave organization and backend to live resolution and pin the model.
+
+Explicitly authored values stay pins. The model is the exception among the
+seeded defaults: every Agent names one, so the seed writes the deployment's.
+"""
 
 from __future__ import annotations
 
@@ -99,10 +103,14 @@ register_model_endpoint(_PassthroughModelEndpoint())
 
 
 @pytest.mark.asyncio
-async def test_seeded_rows_do_not_copy_deployment_defaults(
+async def test_seeded_rows_name_the_deployment_model_and_copy_no_other_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A fresh store follows later deployment changes until someone chooses a pin."""
+    """A fresh store follows later backend and organization changes, not model ones.
+
+    Every Agent write requires a model, so a seeded Agent without one could not
+    be saved from the console; the seed gives each the deployment's model.
+    """
     agents = _SeedAgentRepository()
     environment = _SeedEnvironmentRepository()
     provider = SimpleNamespace(
@@ -132,9 +140,12 @@ async def test_seeded_rows_do_not_copy_deployment_defaults(
         "seeded Agents must resolve catalogs in the current request/deployment "
         "organization, not the hardcoded default tenant"
     )
-    assert all("model" not in row for row in agents.rows), (
-        "seeded Agents must resolve the current deployment model, not preserve "
-        "the model selected when the store was first created"
+    assert [row.get("model") for row in agents.rows] == [
+        "deployment-model",
+        "deployment-model",
+    ], (
+        "each seeded Agent must store the deployment's model: an Agent without "
+        "one fails every save and is refused when it is resolved for work"
     )
     research = next(row for row in agents.rows if row["name"] == "Investment Research")
     assert research["engine_options"] == {"sdk_options": {"strict_mcp_config": True}}, (

@@ -16,6 +16,7 @@ from typing import Any
 
 import pytest
 
+from astrabox.seams.sandbox_data import SandboxCommandResult
 from astrabox.common.utils.errors import APIError, error_spec
 from astrabox.core.model import AgentView
 from astrabox.core.service.orchestrator import author_boundary
@@ -387,11 +388,11 @@ class _Commands:
         self.calls: list[str] = []
         self._results = list(results)
 
-    async def run(self, command: str) -> Any:
+    async def run(self, command: str, **_options: Any) -> Any:
         self.calls.append(command)
         if self._results:
             return self._results.pop(0)
-        return SimpleNamespace(error=None, exit_code=0, stdout="")
+        return SandboxCommandResult(exit_code=0, stdout="", stderr="")
 
 
 async def test_a_failed_clone_takes_its_deploy_key_back_out(
@@ -402,8 +403,8 @@ async def test_a_failed_clone_takes_its_deploy_key_back_out(
     monkeypatch.setattr(_git_clone, "_underlying_requires_https_git", lambda _sandbox: False)
     commands = _Commands(
         [
-            SimpleNamespace(error=None, exit_code=0, stdout=""),
-            SimpleNamespace(error="exit 128", exit_code=128, stdout=""),
+            SandboxCommandResult(exit_code=0, stdout="", stderr=""),
+            SandboxCommandResult(exit_code=128, stdout="", stderr=""),
         ]
     )
 

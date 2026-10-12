@@ -63,6 +63,7 @@ export default function EnvironmentDetailPage() {
   const [savingSection, setSavingSection] = useState<number | null>(null);
   const [savedSection, setSavedSection] = useState<number | null>(null);
   const [saveError, setSaveError] = useState('');
+  const [saveErrorSection, setSaveErrorSection] = useState<number | null>(null);
   const [invalidKeys, setInvalidKeys] = useState<Set<string>>(new Set());
   const savedTimer = useRef<number | null>(null);
 
@@ -143,6 +144,7 @@ export default function EnvironmentDetailPage() {
 
   const saveSection = async (fields: EditFieldSpec[], index: number) => {
     if (!draft || !record) return;
+    setSaveErrorSection(index);
     setSavingSection(index);
     setSaveError('');
     try {
@@ -216,6 +218,7 @@ export default function EnvironmentDetailPage() {
             action: <span data-testid="environment-delete">{t('common:confirm_delete')}</span>,
             onConfirm: () => {
               setDeleting(true);
+              setSaveErrorSection(null);
               setSaveError('');
               void deleteAdminEnvironment(record.name)
                 .then(() => {
@@ -239,7 +242,7 @@ export default function EnvironmentDetailPage() {
         </ConsoleFactRail>
       }
     >
-      {saveError && <ErrorNote>{saveError}</ErrorNote>}
+      {saveError && saveErrorSection === null && <ErrorNote>{saveError}</ErrorNote>}
       <ConsoleEditSections
         sections={sections}
         draft={draftRecord ?? {}}
@@ -268,6 +271,7 @@ export default function EnvironmentDetailPage() {
                   field: String(missingRequired[0].label),
                 })
               : undefined,
+          error: saveErrorSection === index ? saveError : undefined,
           saving: savingSection === index,
           saved: savedSection === index,
           saveLabel: t('common:save'),

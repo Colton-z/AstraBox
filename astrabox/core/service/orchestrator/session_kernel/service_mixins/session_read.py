@@ -46,10 +46,9 @@ from astrabox.core.service.orchestrator.session_kernel.conversation_recovery imp
     coerce_int as _coerce_int,
     needs_turn_recovery as _needs_recovery,
     normalize_live_source_cursor,
+    snapshot_active_turn_id,
 )
 from astrabox.core.service.orchestrator.session_kernel.service_mixins._helpers import (
-    _ACTIVE_CONVERSATION_SNAPSHOT_STATES,
-    _ACTIVE_SESSION_STATES,
     _completed_turn_has_terminal_frame_proof,
 )
 
@@ -435,7 +434,6 @@ class SessionReadRenderingMixin:
                 snapshot=snapshot,
             )
             active_turn_id = self._resolve_active_turn_id_for_messages(
-                session=base_session,
                 snapshot=snapshot,
                 pending_interaction=pending_interaction,
             )
@@ -567,7 +565,6 @@ class SessionReadRenderingMixin:
                 snapshot=snapshot,
             )
             active_turn_id = self._resolve_active_turn_id_for_messages(
-                session=base_session,
                 snapshot=snapshot,
                 pending_interaction=pending_interaction,
             )
@@ -890,24 +887,13 @@ class SessionReadRenderingMixin:
     @staticmethod
     def _resolve_active_turn_id_for_messages(
         *,
-        session: dict[str, Any] | None,
         snapshot: dict[str, Any] | None,
         pending_interaction: dict[str, Any] | None,
     ) -> str | None:
         pending_turn_id = str((pending_interaction or {}).get("turn_id") or "").strip()
         if pending_turn_id:
             return pending_turn_id
-
-        snapshot_conversation_state = str((snapshot or {}).get("conversation_state") or "").strip()
-        snapshot_turn_id = str((snapshot or {}).get("current_turn_id") or "").strip()
-        if snapshot_turn_id and snapshot_conversation_state in _ACTIVE_CONVERSATION_SNAPSHOT_STATES:
-            return snapshot_turn_id
-
-        base_state = str((session or {}).get("state") or "").strip()
-        base_turn_id = str((session or {}).get("current_turn_id") or "").strip()
-        if base_turn_id and base_state in _ACTIVE_SESSION_STATES:
-            return base_turn_id
-        return None
+        return snapshot_active_turn_id(snapshot)
 
     async def _build_active_turn_overlay_message(
         self,

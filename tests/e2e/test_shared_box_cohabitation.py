@@ -139,7 +139,7 @@ async def main():
     seats = [s for s in row.get('_prepared_slots') or [] if s.get('state') == 'prepared']
     if not seats:
         handle = await sandbox_for_name(row['_client_pool_backend']).connect(sys.argv[2])
-        seats = json.loads(await handle.files.read_file(POOL_SEATS_RECEIPT))
+        seats = json.loads(await handle.files.read_bytes(POOL_SEATS_RECEIPT))
     seat = min(seats, key=lambda s: str(s.get('prepared_at') or ''))
     print(json.dumps({'isolated_session_id': seat.get('isolated_session_id')}))
 asyncio.run(main())

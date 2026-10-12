@@ -84,6 +84,7 @@ async def _pending(**kwargs: Any) -> dict[str, Any]:
         emit_timing=lambda *a, **k: None,
         client_message_id=None,
         sessions_repo=_Repo(),  # type: ignore[arg-type]
+        prepare_engine_write=object(),  # type: ignore[arg-type]
         broker=SimpleNamespace(publish=lambda *a, **k: None),  # type: ignore[arg-type]
         answer_continuation=True,
         parked_engine_anchor={"engine_turn_id": "engine-turn-1"},

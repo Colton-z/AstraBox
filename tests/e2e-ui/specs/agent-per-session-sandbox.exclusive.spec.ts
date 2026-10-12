@@ -91,7 +91,7 @@ test('per-session: each conversation gets its own sandbox and the agent holds no
     /** Click "start conversation" on the card; returns the conversation it opened. */
     const startConversationFromCard = async (): Promise<string> => {
       // One button per card — the Badge, title and model line are all spans.
-      await card.getByRole('button').click();
+      await card.getByTestId('agent-start').click();
       // The console navigates to the conversation it just created, and that
       // route IS the user-visible identity of the conversation.
       await page.waitForURL((url) => /\/sessions\/[^/]+$/.test(url.pathname), { timeout: 120_000 });

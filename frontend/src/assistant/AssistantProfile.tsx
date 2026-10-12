@@ -1,3 +1,4 @@
+import { skillSourceLabel } from '@/types';
 import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -144,8 +145,8 @@ export function AssistantProfile({ assistantId }: { assistantId: string }) {
   // out rather than claimed either way.
   const catalogRuns = extensionProvider.provider === undefined ? undefined : extensionProvider.provider !== null;
   const inheritedNames = Array.from(new Set([
-    ...(inherited?.skills ?? []),
-    ...(catalogRuns ? inherited?.catalog_skills ?? [] : []),
+    ...(inherited?.skills ?? []).map(skillSourceLabel),
+    ...(catalogRuns ? inherited?.catalog_skills ?? [] : []).map(skillSourceLabel),
     ...(inherited?.mcp_servers ?? []),
   ]));
   const catalogSelections = (inherited?.catalog_mcp_servers ?? 0) + (inherited?.catalog_skills?.length ?? 0);
@@ -282,7 +283,7 @@ export function AssistantProfile({ assistantId }: { assistantId: string }) {
 
           <Section title={t('chat:assistant_profile.its_own')}>
             <Names
-              names={[...(record?.skills ?? []), ...Object.keys(record?.mcp_servers ?? {})]}
+              names={[...(record?.skills ?? []).map(skillSourceLabel), ...Object.keys(record?.mcp_servers ?? {})]}
               empty={t('chat:assistant_profile.nothing_own')}
             />
             <Link

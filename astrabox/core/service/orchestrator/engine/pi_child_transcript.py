@@ -26,6 +26,7 @@ from astrabox.core.service.orchestrator.tool_result_semantics import (
     TOOL_RESULT_STATE_ERROR,
     tool_result_block,
 )
+from astrabox.seams.sandbox_data import SandboxFiles
 
 STORED_CHILD_SOURCE = "pi.child-transcript-source"
 
@@ -66,7 +67,7 @@ def _stored_message_content(message: dict[str, Any]) -> list[dict[str, Any]]:
 class PiChildTranscriptCapture:
     """Retain vendor file links while the native process can still read them."""
 
-    def __init__(self, *, filesystem: Any, session_root: str, temp_root: str, sink: EngineEventSink,
+    def __init__(self, *, filesystem: SandboxFiles, session_root: str, temp_root: str, sink: EngineEventSink,
                  owner_session_file: str | None = None) -> None:
         self._filesystem = filesystem
         self._session_root = session_root
@@ -156,7 +157,7 @@ class PiChildTranscriptCapture:
             selected.add(str(reply["asyncId"]))
         for run_id in selected:
             target = self._runs[run_id]
-            status = json.loads(await self._filesystem.read_file(target["path"]))
+            status = json.loads(await self._filesystem.read_bytes(target["path"]))
             if not isinstance(status, dict) or status.get("runId") != run_id or status.get("sessionId") != target["owner"]:
                 raise PiChildRunError("Pi child status does not belong to the launched run and owner")
             await self._persist("status", {

@@ -118,8 +118,10 @@ curl -fsSL https://raw.githubusercontent.com/Colton-z/AstraBox/main/scripts/inst
 | OpenAI 兼容服务 | `OPENAI_COMPATIBLE_BASE_URL`、`OPENAI_COMPATIBLE_API_KEY`、`ANTHROPIC_MODEL` | `openai-compatible/<模型 ID>` |
 | 暂不配置 | 不写入任何设置 | 之后在控制台的**集成服务**中添加路由 |
 
-`ANTHROPIC_MODEL` 是部署的默认模型：内置 Agent 在选择自己的模型之前都使用它；Agent
-自行选择模型时，填写最后一列的模型名。设置了 `ANTHROPIC_BASE_URL` 时，部署通过网关的
+`ANTHROPIC_MODEL` 是部署的默认模型：全新安装用它创建内置 Agent；Agent 自行选择模型时，
+填写最后一列的模型名。每个 Agent 都保存自己运行的模型，之后修改 `ANTHROPIC_MODEL`
+不会改变已有 Agent 的模型；请在各 Agent 的页面中选择新模型。设置了
+`ANTHROPIC_BASE_URL` 时，部署通过网关的
 `anthropic/` 路由提供默认模型。选择 DeepSeek 时，部署还会识别该端点，并把同一个凭证
 提供给网关中 DeepSeek 的 OpenAI 协议路由，供其他 Agent 程序使用。
 
@@ -140,7 +142,7 @@ Anthropic 兼容端点，优先使用它。
 | `ASTRABOX_IMAGE_PREFIX` | 保存同一批镜像的镜像仓库前缀，组件名会追加在其后，默认 `ghcr.io/colton-z/astrabox-`。 |
 | `ASTRABOX_INSTALL_MODEL_PROVIDER` | `anthropic`、`deepseek`、`anthropic-compatible`、`openai-compatible` 或 `none`。 |
 | `ASTRABOX_INSTALL_MODEL_API_KEY` | 模型服务的 API Key。 |
-| `ASTRABOX_INSTALL_MODEL_NAME` | 内置 Agent 使用的模型 ID。DeepSeek 默认为 `deepseek-flash`。 |
+| `ASTRABOX_INSTALL_MODEL_NAME` | 写入为 `ANTHROPIC_MODEL` 的模型 ID，全新安装用它创建内置 Agent。DeepSeek 默认为 `deepseek-flash`。 |
 | `ASTRABOX_INSTALL_MODEL_BASE_URL` | Anthropic 兼容或 OpenAI 兼容服务的 Base URL。 |
 | `ASTRABOX_INSTALL_TEAM_LOGIN` | `casdoor` 表示随服务运行内置的 Casdoor 登录服务；`none` 表示不启用登录。 |
 | `ASTRABOX_CONSOLE_ORIGIN` | 启用团队登录时：控制台的公网 URL，例如 `https://astrabox.example.com`。 |

@@ -16,9 +16,6 @@ Pinned here:
   provisioning shape fails bootstrap composition validation loudly;
 * the lifecycle error taxonomy: probe four-state (never raises), idempotent
   kill on 404, monotonic renew, fail-loud expires_at, dead-box fast connect;
-* the execd LINE EVENT MODEL → bytes reassembly, every measured shape, with the
-  two lossy ones asserting their loss (the file panel's status split depends on
-  interior line boundaries surviving);
 * key hygiene: the API key never appears in an exception's str/repr;
 * the control-plane INVENTORY face: paging at the source, the create-metadata
   round trip that is the only thing tying a live box to a session, the
@@ -28,7 +25,6 @@ Pinned here:
 
 from __future__ import annotations
 
-import asyncio
 import json
 import re
 from datetime import datetime, timedelta, timezone
@@ -48,9 +44,7 @@ from astrabox.providers.open_sandbox._metadata import (
     session_metadata_value,
 )
 from astrabox.providers.open_sandbox.sandbox import (
-    EXECD_LINE_EVENT_MODEL,
     OpenSandboxDataPlane,
-    OpenSandboxEndpoint,
     OpenSandboxHandle,
     OpenSandboxSandboxProvider,
 )
@@ -667,45 +661,27 @@ async def test_handle_get_endpoint_normalizes_and_memoizes() -> None:
     assert first is second
     assert calls == [8000]
     # Scheme comes from the deployment's lifecycle base URL (http here).
-    assert first.endpoint == f"http://{_EXECD_HOST}:8000"
+    assert first.url == f"http://{_EXECD_HOST}:8000"
     assert first.headers == {"X-Route": "r1"}
 
 
-@pytest.mark.parametrize("origin", [
-    "https://isolated.test:9000",
-    "http://gateway.test/sandboxes/sb-1/proxy/9000",
-])
-async def test_conversation_filesystem_uses_sdk_routing_and_access_headers(origin: str) -> None:
-    from opensandbox.config import ConnectionConfig
+def test_an_endpoint_names_its_sandbox_only_in_an_opensandbox_address_shape() -> None:
+    """The persisted-endpoint check asks the backend, which knows its address shapes.
 
-    requests: list[httpx.Request] = []
+    An address that says nothing about its box is not taken as naming one,
+    so the caller resolves the endpoint again by sandbox id.
+    """
+    provider = OpenSandboxSandboxProvider()
+    box = "0123456789abcdef0123456789ABCDEF"
 
-    def receive(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        return httpx.Response(200, content=b'{"runId":"native-run"}\n')
-
-    transport = httpx.MockTransport(receive)
-
-    class _FakeSdk:
-        id = "sb-1"
-        connection_config = ConnectionConfig(transport=transport)
-
-        async def get_endpoint(self, port: int) -> SimpleNamespace:
-            assert port == 9000
-            return SimpleNamespace(endpoint=origin, headers={"X-Route": "conversation"})
-
-    handle = OpenSandboxHandle(_FakeSdk())  # type: ignore[arg-type]
-    files = await handle.get_filesystem(9000, headers={"X-EXECD-ACCESS-TOKEN": "test-only"})
-    try:
-        assert await files.read_file("/workspace/native/status.json") == '{"runId":"native-run"}\n'
-        request, = requests
-        assert str(request.url).split("?")[0] == origin + "/files/download"
-        assert request.url.params["path"] == "/workspace/native/status.json"
-        assert request.headers["X-Route"] == "conversation"
-        assert request.headers["X-EXECD-ACCESS-TOKEN"] == "test-only"
-        assert files.connection_config.transport is transport
-    finally:
-        await transport.aclose()
+    assert provider.endpoint_names_sandbox(f"sandbox-{box}.astrabox.svc:44772") == box.lower()
+    assert provider.endpoint_names_sandbox(f"{box}-8000.gateway.example.test") == box.lower()
+    assert (
+        provider.endpoint_names_sandbox(f"http://lifecycle.test/sandboxes/{box}/proxy/8000")
+        == box.lower()
+    )
+    assert provider.endpoint_names_sandbox("http://172.18.0.5:44772") is None
+    assert provider.endpoint_names_sandbox(f"sandbox-{box[:-1]}.astrabox.svc") is None
 
 
 def test_build_dataplane_three_branches() -> None:
@@ -808,170 +784,6 @@ async def test_resolve_browser_endpoint_uses_the_sdk_signed_url_operation() -> N
     assert fake.endpoint_queries[-1]["use_server_proxy"] == ["false"]
 
 
-# ── handle exec/file faces ───────────────────────────────────────────────────
-
-
-class _FakeCommands:
-    def __init__(self, execution: Any) -> None:
-        self.execution = execution
-        self.commands: list[str] = []
-
-    async def run(self, command: str, **kwargs: Any) -> Any:
-        self.commands.append(command)
-        return self.execution
-
-
-class _FakeFiles:
-    def __init__(self) -> None:
-        self.written: list[tuple[str, bytes]] = []
-
-    async def write_file(self, path: str, data: Any) -> None:
-        self.written.append((path, bytes(data)))
-
-
-def _fake_sdk_sandbox(execution: Any) -> Any:
-    return SimpleNamespace(id="sb-1", commands=_FakeCommands(execution), files=_FakeFiles())
-
-
-def _execution(
-    *,
-    exit_code: int | None,
-    stdout: str = "",
-    stderr: str = "",
-    error: tuple[str, str] | None = None,
-) -> Any:
-    from opensandbox.models.execd import (
-        Execution,
-        ExecutionError,
-        ExecutionLogs,
-        OutputMessage,
-    )
-
-    logs = ExecutionLogs(
-        stdout=[OutputMessage(text=stdout, timestamp=0, is_error=False)] if stdout else [],
-        stderr=[OutputMessage(text=stderr, timestamp=0, is_error=True)] if stderr else [],
-    )
-    execution_error = ExecutionError(name=error[0], value=error[1], timestamp=0) if error else None
-    return Execution(exit_code=exit_code, logs=logs, error=execution_error)
-
-
-async def test_exec_collect_joins_argv_and_collects_streams() -> None:
-    sdk = _fake_sdk_sandbox(_execution(exit_code=0, stdout="out", stderr="err"))
-    handle = OpenSandboxHandle(sdk)
-    code, out, err = await handle.exec_collect(["echo", "a b"])
-    assert (code, out, err) == (0, b"out", b"err")
-    assert sdk.commands.commands == ["echo 'a b'"]
-
-
-async def test_exec_collect_infers_exit_code_from_the_error_value() -> None:
-    sdk = _fake_sdk_sandbox(_execution(exit_code=None, error=("CommandFailed", "exit status 7")))
-    code, _, _ = await OpenSandboxHandle(sdk).exec_collect(["false"])
-    assert code == 7
-
-
-async def test_exec_collect_nonnumeric_error_maps_to_one_with_the_text_on_stderr() -> None:
-    sdk = _fake_sdk_sandbox(_execution(exit_code=None, error=("ExecdError", "session vanished")))
-    code, _, err = await OpenSandboxHandle(sdk).exec_collect(["true"])
-    assert code == 1
-    assert b"session vanished" in err
-
-
-async def test_exec_collect_max_output_keeps_the_tail() -> None:
-    sdk = _fake_sdk_sandbox(_execution(exit_code=0, stdout="0123456789"))
-    _, out, _ = await OpenSandboxHandle(sdk).exec_collect(["cat"], max_output=4)
-    assert out == b"6789"
-
-
-# ── execd line-event model → byte reassembly ────────────────────────────────
-#
-# The reassembly rule ``exec_collect`` applies is reverse-engineered from
-# measured execd behavior, NOT from a published contract (execd documents no
-# event-per-line semantics). These tests exist to (a) pin the five measured
-# shapes, faithful and unfaithful alike, and (b) go RED if the upstream
-# semantics ever move, instead of letting the file panel silently mis-split a
-# response body from the status code appended after it.
-
-
-def _events_execution(
-    *,
-    exit_code: int | None = 0,
-    stdout: tuple[str, ...] = (),
-    stderr: tuple[str, ...] = (),
-) -> Any:
-    """An ``Execution`` whose logs carry EXACTLY the given per-line events."""
-    from opensandbox.models.execd import Execution, ExecutionLogs, OutputMessage
-
-    return Execution(
-        exit_code=exit_code,
-        logs=ExecutionLogs(
-            stdout=[OutputMessage(text=text, timestamp=0, is_error=False) for text in stdout],
-            stderr=[OutputMessage(text=text, timestamp=0, is_error=True) for text in stderr],
-        ),
-        error=None,
-    )
-
-
-@pytest.mark.parametrize(
-    ("command", "events", "expected"),
-    EXECD_LINE_EVENT_MODEL,
-    ids=[row[0] for row in EXECD_LINE_EVENT_MODEL],
-)
-async def test_exec_collect_reassembles_every_measured_execd_shape(
-    command: str, events: tuple[str, ...], expected: bytes
-) -> None:
-    """Each measured shape, through the real handle, on BOTH streams.
-
-    Three rows are faithful. Two are not, and assert the LOSS on purpose:
-
-    * ``printf 'only\\n'`` → ``b'only'``: execd emits no event for a trailing
-      newline, so it cannot be recovered;
-    * ``printf 'no-newline'`` → ``b'no-newline'``: identical reassembly to the
-      row above, i.e. the two inputs are indistinguishable on this face;
-    * ``printf 'a\\r\\nb\\n200'`` → ``b'a\\nb\\n200'``: a CR is consumed with the
-      LF that follows it.
-
-    These are inherent limits of a line-event output stream — execd's design
-    choice, which this adapter adapts to. ``exec_collect`` is therefore for
-    line-shaped in-box output only (readiness probes, log tails, stderr reads);
-    a caller needing exact bytes uses the ``files`` API (``put_bytes`` /
-    ``read_bytes``), and a caller needing an in-box HTTP surface addresses that
-    surface's endpoint directly.
-    """
-    _ = command
-    sdk = _fake_sdk_sandbox(_events_execution(stdout=events, stderr=events))
-    code, out, err = await OpenSandboxHandle(sdk).exec_collect(["sh", "-c", "x"])
-    assert (code, out, err) == (0, expected, expected)
-
-
-async def test_exec_collect_keeps_every_interior_line_boundary() -> None:
-    # Each execd event carries a line boundary. Joining without a separator
-    # would produce b'hello200' and break line-oriented readers.
-    sdk = _fake_sdk_sandbox(_events_execution(stdout=("hello", "200")))
-    _code, out, _err = await OpenSandboxHandle(sdk).exec_collect(["sh", "-c", "x"])
-    assert out == b"hello\n200"
-
-    # …and the empty-line event is a boundary of its own rather than a literal
-    # "\n" line, so a blank line in the output survives as a blank line.
-    sdk = _fake_sdk_sandbox(_events_execution(stdout=("body", "\n", "200")))
-    _code, out, _err = await OpenSandboxHandle(sdk).exec_collect(["sh", "-c", "x"])
-    assert out == b"body\n\n200"
-
-
-async def test_exec_collect_max_output_trims_after_reassembly() -> None:
-    # The cap is a byte cap on the reassembled stream, so it can land mid-line;
-    # it must not be applied per event (which would keep whole lines and blow
-    # the bound).
-    sdk = _fake_sdk_sandbox(_events_execution(stdout=("abcd", "efgh")))
-    _code, out, _err = await OpenSandboxHandle(sdk).exec_collect(["cat"], max_output=6)
-    assert out == b"d\nefgh"
-
-
-async def test_put_bytes_writes_verbatim() -> None:
-    sdk = _fake_sdk_sandbox(_execution(exit_code=0))
-    await OpenSandboxHandle(sdk).put_bytes("/tmp/blob.bin", b"\x00\x01binary")
-    assert sdk.files.written == [("/tmp/blob.bin", b"\x00\x01binary")]
-
-
 # ── create_sandbox (the SandboxProvider provisioning seam) ───────────────────
 #
 # This is the platform's provider provisioning seam. The platform composes an
@@ -984,10 +796,10 @@ async def test_put_bytes_writes_verbatim() -> None:
 def _probe_error_sse(exit_code: int) -> str:
     """An execd error event whose value carries the process exit code.
 
-    The command stream never carries ``exit_code`` itself; ``exec_collect``
-    infers a non-zero code from the error payload's trailing integer (the
-    behaviour ``test_exec_collect_infers_exit_code_from_the_error_value``
-    pins). This is the same shape, produced on the wire.
+    The command stream never carries ``exit_code`` itself; execd reports a
+    non-zero exit as an error event whose value is the code, which is what the
+    commands face reads (``tests/execd_commands_test.py``). This is that shape,
+    produced on the wire.
     """
     return (
         'data: {"type":"error","timestamp":0,'
@@ -1287,7 +1099,7 @@ async def test_create_sandbox_returns_a_handle_that_reconnects_by_id() -> None:
     rebound = await _provider(fake).connect(sandbox_id)
     assert rebound.sandbox_id == sandbox_id
     endpoint = await rebound.get_endpoint(8642)
-    assert endpoint.endpoint == f"http://{_EXECD_HOST}:8642"
+    assert endpoint.url == f"http://{_EXECD_HOST}:8642"
     await rebound.close()
 
 
@@ -1550,23 +1362,6 @@ async def test_api_key_never_appears_in_exception_text(
     assert key not in str(err.value)
     assert key not in repr(err.value)
     assert "***" in str(err.value)
-
-
-# ── execd host-side deadline ─────────────────────────────────────────────────
-
-
-async def test_exec_collect_enforces_a_host_side_deadline() -> None:
-    # The SDK's execd streaming client deliberately has no read timeout, so
-    # without the host-side bound a non-terminating in-box command (or a
-    # half-open host→box connection) would hang the ensure path forever.
-    class _HangingCommands:
-        async def run(self, command: str, **kwargs: Any) -> Any:
-            await asyncio.sleep(3600)
-
-    sdk = SimpleNamespace(id="sb-1", commands=_HangingCommands(), files=None)
-    handle = OpenSandboxHandle(sdk)  # type: ignore[arg-type]
-    with pytest.raises(TimeoutError, match="did not complete within"):
-        await handle.exec_collect(["sleep", "3600"], timeout=0.05)
 
 
 # ── key hygiene beyond the provider lifecycle face ───────────────────────────

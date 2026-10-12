@@ -584,7 +584,7 @@ test('an idle conversation does not park a box holding the Agent\'s prepared slo
   // The real entry point. One button per card — the badge, title and model line
   // are all spans — so the button is addressed by role and no localized string
   // is read anywhere in this spec, which is why it pins no locale.
-  await card.getByRole('button').click();
+  await card.getByTestId('agent-start').click();
   await page.waitForURL((url) => /\/sessions\/[^/]+$/.test(url.pathname), {
     timeout: ARRIVAL_TIMEOUT_MS,
   });

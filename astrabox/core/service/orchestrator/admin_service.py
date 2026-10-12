@@ -41,6 +41,9 @@ from astrabox.core.service.orchestrator.admin_error_capture import list_runtime_
 from astrabox.core.service.orchestrator.engine.capabilities import (
     capabilities_for_engine_kind,
 )
+from astrabox.core.service.orchestrator.session_kernel.conversation_recovery import (
+    snapshot_active_turn_id,
+)
 from astrabox.core.service.orchestrator.runtime_binding import (
     is_assistant_user_conversation,
     runtime_subject_kind,
@@ -794,7 +797,6 @@ class AdminService:
             "severity": "error" if runtime_unavailable or last_error else "warning",
             "state": state or None,
             "session_id": session_id,
-            "turn_id": str(session.get("current_turn_id") or "").strip() or None,
             "sandbox_id": str(session.get("sandbox_id") or "").strip() or None,
             "user_id": str(session.get("user_id") or "").strip() or None,
             "display_name": str(display_row.get("display_name") or "").strip() or None,
@@ -841,6 +843,14 @@ class AdminService:
             item = self._summarize_session_error(row, nick_map=nick_map)
             if item is not None:
                 errors.append(item)
+        # The turn a session is running is recorded in its conversation
+        # snapshot; the row these summaries come from carries none.
+        snapshots = await self._session_snapshots_repo.get_snapshots_batch(
+            [str(item["session_id"]) for item in errors],
+            projection={"session_id": 1, "conversation_state": 1, "current_turn_id": 1},
+        )
+        for item in errors:
+            item["turn_id"] = snapshot_active_turn_id(snapshots.get(str(item["session_id"])))
 
         # Runtime errors captured at the logging layer (e.g. MCP runtime failures)
         # that never land in session state — see admin_error_capture.
@@ -1058,7 +1068,9 @@ class AdminService:
         messages = [self._summarize_message(item) for item in raw_messages]
         turns = self._build_turn_summaries(messages)
 
-        current_turn_id = str(session.get("current_turn_id") or "").strip()
+        current_turn_id = snapshot_active_turn_id(
+            await self._session_snapshots_repo.get_snapshot(session_id)
+        ) or ""
         selected_turn_id = str(turn_id or "").strip() or current_turn_id
         if not selected_turn_id and turns:
             selected_turn_id = str(turns[0].get("turn_id") or "").strip()

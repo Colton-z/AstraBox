@@ -21,9 +21,7 @@ from astrabox.core.service.orchestrator.engine.codex_link import (
     CodexAppServerLink,
     CodexRpcError,
 )
-from astrabox.core.service.orchestrator.runtime.pty_terminal import (
-    ResolvedExecdEndpoint,
-)
+from astrabox.seams.sandbox_data import SandboxEndpoint
 
 
 class FakeAppServer:
@@ -79,7 +77,7 @@ class FakeAppServer:
 
 async def _link(port: int) -> CodexAppServerLink:
     link = CodexAppServerLink(
-        endpoint=ResolvedExecdEndpoint(origin=f"http://127.0.0.1:{port}", headers={}),
+        endpoint=SandboxEndpoint(url=f"http://127.0.0.1:{port}", headers={}),
         forward_token="forward-token",
     )
     await link._attach()

@@ -140,7 +140,7 @@ class _Files:
         self.writes: list[tuple[str, bytes, dict[str, Any]]] = []
         self._events = events
 
-    async def write_file(self, path: str, body: bytes, **kwargs: Any) -> None:
+    async def write_bytes(self, path: str, body: bytes, **kwargs: Any) -> None:
         self.writes.append((path, body, kwargs))
         if self._events is not None:
             self._events.append(f"write:{path}")
@@ -254,7 +254,7 @@ async def test_prepare_claim_cold_start_and_reattach_present_the_same_token(
     ]
     assert {body for _path, body, _kwargs in files.writes} == {expected.encode("ascii")}
     assert all(
-        kwargs == {"mode": 600, "owner": "agent", "group": "agent"}
+        kwargs == {"mode": 0o600, "owner": "agent", "group": "agent"}
         for _path, _body, kwargs in files.writes
     )
 
@@ -385,7 +385,7 @@ async def test_codex_writes_the_credential_where_its_seat_is_set_up_and_presents
         (
             f"/home/agent/{CODEX_FORWARD_TOKEN_FILE_NAME}",
             token.encode("ascii"),
-            {"mode": 600, "owner": "agent", "group": "agent"},
+            {"mode": 0o600, "owner": "agent", "group": "agent"},
         )
     ]
     assert connects == [token], "the probe must pass the same forwarder check a claim does"

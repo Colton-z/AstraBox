@@ -98,6 +98,8 @@ const sidebars: SidebarsConfig = {
         'writing-an-engine-adapter',
         'writing-a-channel-provider',
         'writing-a-scheduler-provider',
+        'writing-a-sandbox-provider',
+        'providers/skill-content',
       ],
     },
   ],

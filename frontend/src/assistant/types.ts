@@ -1,3 +1,4 @@
+import type { SkillDescriptor } from '@/types';
 import type { components } from '../api/schema';
 
 /**
@@ -42,7 +43,7 @@ export interface AssistantRecord {
   system?: string | null;
   timezone?: string | null;
   mcp_servers?: Record<string, unknown> | null;
-  skills?: string[] | null;
+  skills?: SkillDescriptor[] | null;
   packages?: Record<string, unknown>[] | null;
   engine_options?: Record<string, unknown> | null;
   /** MCP servers selected from extension catalogs, as stored: `{provider, item_id}` rows. */

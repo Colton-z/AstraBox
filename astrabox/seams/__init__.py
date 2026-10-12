@@ -40,9 +40,10 @@ from __future__ import annotations
 #: class; the entry-point loaders compare it against this value at registration
 #: and fail loud on mismatch, so an incompatible plugin is rejected at bootstrap
 #: instead of failing mid-turn with an AttributeError.
-SEAMS_API_VERSION = 5
+SEAMS_API_VERSION = 6
 
 from astrabox.seams.extensions import ExtensionProvider
+from astrabox.seams.skills import SkillContentProvider, SkillSource, ResolvedSkillSource
 from astrabox.seams.identity import WebIdentityResolver
 from astrabox.seams.model import ModelEndpoint, ModelEndpointProvider
 from astrabox.seams.repository import AsyncDocumentCollection
@@ -87,6 +88,9 @@ __all__ = [
     "ModelEndpoint",
     # extension catalog and runtime bindings
     "ExtensionProvider",
+    "SkillContentProvider",
+    "SkillSource",
+    "ResolvedSkillSource",
     # secret store (vault secret material at rest)
     "SecretStore",
     # resident-sidecar generation fencing

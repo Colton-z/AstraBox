@@ -1,3 +1,4 @@
+import { skillSourceLabel } from '@/types';
 // Build the read-only session drawer's view sections from a session detail (+ an
 // optional loaded trace). Sessions are operational records — you inspect a run, you
 // don't edit it — so this only produces DrawerSectionSpec[] (no edit config). The
@@ -30,7 +31,7 @@ export function buildSessionSections(
   trace: AdminSessionTrace | null,
 ): import('./console').DrawerSectionSpec[] {
   const d = detail ?? summary;
-  const skills = detail ? joinList(detail.template_skills) : '';
+  const skills = detail ? joinList(detail.template_skills?.map(skillSourceLabel)) : '';
   const mcp = detail ? joinList(detail.template_mcp_servers) : '';
 
   const sections: import('./console').DrawerSectionSpec[] = [

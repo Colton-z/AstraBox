@@ -85,7 +85,7 @@ from astrabox.core.service.orchestrator.runtime.sandbox_client import extract_sa
 from astrabox.core.service.orchestrator.runtime.sandbox_script_writer import (
     install_verified_text_script,
 )
-from astrabox.core.service.orchestrator.runtime.pty_terminal import EXECD_PORT
+from astrabox.providers.execd import EXECD_PORT
 
 logger = get_logger(__name__)
 
@@ -605,7 +605,7 @@ async def _await_rendered_models_config(sandbox: Any, *, model: str) -> None:
     while True:
         raw = ""
         try:
-            raw = str(await sandbox.files.read_file(PI_MODELS_CONFIG_PATH) or "")
+            raw = (await sandbox.files.read_bytes(PI_MODELS_CONFIG_PATH)).decode("utf-8")
         except Exception as exc:  # noqa: BLE001 - the absent file reads as an error
             detail = f"{type(exc).__name__}: {exc}"
         if raw.strip():
@@ -810,6 +810,9 @@ class PiEngineAdapter(EngineAdapter):
             ),
             conversation_placement=CONVERSATION_PLACEMENT_PER_ACCOUNT,
             default_runtime_image=release_image(PI_RUNTIME_IMAGE_COMPONENT),
+            # `pi --mode rpc` is driven over its stdin and stdout, and in a
+            # conversation's own box that pipe is a box process.
+            requires_process_sessions=True,
             # Pi writes each conversation to one append-only JSONL file under
             # its session directory and offers none of it over the RPC surface,
             # so the box is the only place that conversation exists and a

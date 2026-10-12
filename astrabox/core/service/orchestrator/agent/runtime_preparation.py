@@ -96,8 +96,8 @@ async def prepare_pool_runtime(sandbox: Any, *, template: Any, manager: Any) -> 
         )
         # This receipt belongs to this live runtime, not to supplier inventory or
         # SessionStore. Destroying the box invalidates it; no persistent volume is needed.
-        await sandbox.files.write_file(
-            POOL_RUNTIME_RECEIPT, json.dumps(manifest).encode(), mode=600, owner="root", group="root",
+        await sandbox.files.write_bytes(
+            POOL_RUNTIME_RECEIPT, json.dumps(manifest).encode(), mode=0o600, owner="root", group="root",
         )
     except BaseException:
         with _suppress_and_log("pool runtime binding delete", slot_id):
@@ -142,7 +142,7 @@ async def read_pool_runtime_receipt(
 ) -> dict[str, Any]:
     """Read an acquired box's transient receipt, never a second pool inventory."""
 
-    manifest = json.loads(await sandbox.files.read_file(POOL_RUNTIME_RECEIPT))
+    manifest = json.loads(await sandbox.files.read_bytes(POOL_RUNTIME_RECEIPT))
     if not isinstance(manifest, dict) or any(
         manifest.get(key) != value
         for key, value in {

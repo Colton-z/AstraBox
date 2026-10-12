@@ -15,6 +15,7 @@ from astrabox.common.utils.errors import APIError
 from astrabox.core.service.orchestrator.runtime.sandbox_script_writer import (
     install_verified_text_script,
 )
+from astrabox.seams.sandbox_data import SandboxCommandResult
 
 
 class _CommandChannel:
@@ -25,19 +26,19 @@ class _CommandChannel:
         self.outputs: list[str] = []
         self.commands = self
 
-    async def run(self, command: str) -> Any:
+    async def run(self, command: str, **_options: Any) -> SandboxCommandResult:
         self.calls.append(command)
         writing = "base64.b64decode" in command
         publishing = "os.replace(" in command
         releasing = '"released": True' in command
         if "os.mkdir(lock_path)" in command and self.fault == "acquire":
-            return SimpleNamespace(error="lock acquisition refused", logs=None)
+            return SandboxCommandResult(exit_code=1, stdout="", stderr="lock acquisition refused")
         if writing and self.fault == "write":
             raise OSError("command transport lost during write")
         if writing and self.fault == "later_write" and len(self.calls) == 3:
-            return SimpleNamespace(error="second chunk rejected", logs=None)
+            return SandboxCommandResult(exit_code=1, stdout="", stderr="second chunk rejected")
         if releasing and self.fault == "release":
-            return SimpleNamespace(error="lock release refused", logs=None)
+            return SandboxCommandResult(exit_code=1, stdout="", stderr="lock release refused")
         if publishing and self.fault in {"truncate", "same_size", "missing"}:
             staged, = self.target.parent.glob(f"{self.target.name}.tmp.*")
             if self.fault == "missing":
@@ -55,12 +56,10 @@ class _CommandChannel:
         )
         stdout, stderr = await process.communicate()
         self.outputs.append(stdout.decode() + stderr.decode())
-        return SimpleNamespace(
-            error=f"exit {process.returncode}" if process.returncode else None,
-            logs=SimpleNamespace(
-                stdout=[SimpleNamespace(text=stdout.decode())],
-                stderr=[SimpleNamespace(text=stderr.decode())],
-            ),
+        return SandboxCommandResult(
+            exit_code=int(process.returncode or 0),
+            stdout=stdout.decode(),
+            stderr=stderr.decode(),
         )
 
 

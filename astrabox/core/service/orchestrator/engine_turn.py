@@ -70,8 +70,10 @@ from astrabox.core.service.orchestrator.engine.interaction_contract import (
 from astrabox.core.service.orchestrator.stream_errors import (
     IncompleteStreamError as _IncompleteStreamError,
 )
-from astrabox.core.service.orchestrator.turn_preparation import prepared_sandbox_turn
-from astrabox.seams.sandbox import TURN_PREPARATION_FAILED, SandboxTurnContext
+from astrabox.seams.sandbox import (
+    TURN_PREPARATION_FAILED,
+    TURN_PREPARATION_USER_ACTION_REQUIRED,
+)
 
 logger = get_logger(__name__)
 
@@ -89,6 +91,7 @@ async def iter_engine_client_events(
     client_message_id: str | None,
     delivery_command: dict[str, Any] | None = None,
     sessions_repo: SessionRepository,
+    prepare_engine_write: Callable[..., contextlib.AbstractAsyncContextManager[None]],
     broker: SessionEventBroker,
     answer_continuation: bool = False,
     parked_engine_anchor: dict[str, Any] | None = None,
@@ -122,6 +125,11 @@ async def iter_engine_client_events(
     runtime can carry a turn, AstraBox supplies its opaque durable engine
     identity to ``bind_conversation``. The adapter must prove it resumed that
     native conversation; UI messages are never used as engine checkpoints.
+
+    ``begin_delivery`` runs inside ``prepare_engine_write``
+    (``TurnService.prepared_engine_write``): for an engine client that holds
+    inputs on the host until a turn begins, it is the input's first write to
+    the engine.
     """
     engine_kind = str(getattr(runtime, "engine_kind", "") or "").strip().lower()
     if not engine_kind:
@@ -167,12 +175,6 @@ async def iter_engine_client_events(
         input_consumption_observed = answer_continuation
         try:
             try:
-                if not answer_continuation:
-                    prepare_engine_input = getattr(
-                        runtime, "prepare_engine_input", None
-                    )
-                    if prepare_engine_input is not None:
-                        await prepare_engine_input()
                 if answer_continuation:
                     # Re-enter the parked turn's stream. No sandbox turn
                     # preparation and no new FIFO delivery: the input was delivered
@@ -237,28 +239,11 @@ async def iter_engine_client_events(
                             input_consumed=True,
                         )
                 else:
-                    principal_id = session.get("user_id")
-                    async with prepared_sandbox_turn(
-                        SandboxTurnContext(
-                            sandbox_backend=str(
-                                session.get("sandbox_backend") or ""
-                            ).strip().lower(),
-                            sandbox_id=(
-                                str(getattr(runtime, "sandbox_id", "") or "").strip()
-                                or str(session.get("sandbox_id") or "").strip()
-                            ),
-                            session_id=session_id,
-                            principal_id=(
-                                principal_id.strip()
-                                if isinstance(principal_id, str)
-                                else ""
-                            ),
-                            turn_id=turn_id,
-                            engine_kind=engine_kind,
-                            dispatch_attempt_id=str(uuid.uuid4()),
-                            sandbox_handle=getattr(runtime, "sandbox", None),
-                        ),
-                        sessions_repo=sessions_repo,
+                    async with prepare_engine_write(
+                        session=session,
+                        session_id=session_id,
+                        runtime=runtime,
+                        turn_id=turn_id,
                     ):
                         if delivery_command is not None:
                             command_sequence = delivery_command.get("sequence")
@@ -335,15 +320,19 @@ async def iter_engine_client_events(
                 # fact as a loss while streaming: recovery owns the verdict.
                 raise
             except BaseException as exc:
-                if isinstance(exc, APIError) and exc.code == TURN_PREPARATION_FAILED:
+                if isinstance(exc, APIError) and exc.code in (
+                    TURN_PREPARATION_FAILED,
+                    TURN_PREPARATION_USER_ACTION_REQUIRED,
+                ):
                     logger.warning(
                         "engine turn preparation failed session=%s turn=%s "
-                        "detail=%s",
+                        "code=%s detail=%s",
                         session_id,
                         turn_id,
+                        exc.code,
                         exc.debug_message,
                     )
-                    error_code = TURN_PREPARATION_FAILED
+                    error_code = exc.code
                     error_message = exc.user_message
                 else:
                     logger.exception(

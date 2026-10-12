@@ -20,6 +20,7 @@ from astrabox.persistence.repository.keyset import (
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.user_context import UserContext, default_org_id
+from astrabox.core.service.orchestrator.agent import agent_catalog
 from astrabox.core.model import AgentState
 from astrabox.core.service.orchestrator.agent_access import can_manage_agent, can_view_agent
 from astrabox.core.service.orchestrator.agent_schema import (
@@ -221,9 +222,50 @@ class AgentService:
         """
         await self.ensure_bootstrap()
         rows = await self._agent_repo.list_all_agents()
+        favorites = await agent_catalog.favorite_repository().agent_ids_for(user.user_id)
         return [
-            self._user_view(user, r) for r in rows if can_view_agent(r, user.user_id, user.roles)
+            {**self._user_view(user, r), "favorited": str(r.get("agent_id") or "") in favorites}
+            for r in rows
+            if can_view_agent(r, user.user_id, user.roles)
         ]
+
+    async def set_favorite(self, user: UserContext, agent_id: str, *, favorite: bool) -> dict[str, Any]:
+        """Favorite or unfavorite an Agent the caller may see; repeating either is a no-op."""
+        await self._must_view(user, agent_id)
+        repo = agent_catalog.favorite_repository()
+        if favorite:
+            await repo.add(user.user_id, agent_id)
+        else:
+            await repo.remove(user.user_id, agent_id)
+        return {"agent_id": agent_id, "favorited": favorite}
+
+    async def list_agent_tags(self, user: UserContext) -> list[dict[str, Any]]:
+        """The tags of the Agents the caller may see, most used first."""
+        rows = await self._agent_repo.list_all_agents()
+        return agent_catalog.tag_counts(
+            r for r in rows if can_view_agent(r, user.user_id, user.roles)
+        )
+
+    async def category_agent_counts(self) -> dict[str, int]:
+        """How many Agents each category holds, for the administrator."""
+        counts: dict[str, int] = {}
+        for row in await self._agent_repo.list_all_agents():
+            for category_id in row.get("categories") or []:
+                counts[str(category_id)] = counts.get(str(category_id), 0) + 1
+        return counts
+
+    async def unbind_category(self, category_id: str) -> int:
+        """Take a category off every Agent that has it; the number of Agents changed."""
+        changed = 0
+        for row in await self._agent_repo.list_all_agents():
+            categories = [str(c) for c in row.get("categories") or []]
+            if category_id in categories:
+                await self._agent_repo.update_agent(
+                    str(row["agent_id"]),
+                    {"categories": [c for c in categories if c != category_id]},
+                )
+                changed += 1
+        return changed
 
     async def list_agents_page(
         self,
@@ -531,6 +573,7 @@ class AgentService:
         if retirement is not None:
             await retirement
         await self._agent_repo.soft_delete(agent_id, user.user_id)
+        await agent_catalog.favorite_repository().remove_agent(agent_id)
         agent["state"] = AgentState.DELETED.value
         agent["expires_at"] = None
         # The pointer is cleared only on a confirmed destruction, by the same

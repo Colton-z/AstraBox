@@ -17,6 +17,10 @@ from astrabox.core.service.orchestrator.runtime.conversation_identity import (
 
 _SCRIPT_COMMAND_CHUNK_SIZE = 16_000
 
+#: How long the host waits for the install lock: the lock command's own wait
+#: in the box, and room for it to report.
+_INSTALL_LOCK_TIMEOUT_SECONDS = 180.0
+
 
 def _underlying_sandbox(sandbox: Any) -> Any:
     current = sandbox
@@ -28,22 +32,6 @@ def _underlying_sandbox(sandbox: Any) -> Any:
         seen.add(ident)
         current = getattr(current, "sandbox")
     return current
-
-
-def _extract_command_log_text(result: Any) -> str:
-    logs = getattr(result, "logs", None)
-    if logs is None:
-        return ""
-
-    chunks: list[str] = []
-    for stream_name in ("stdout", "stderr"):
-        stream = getattr(logs, stream_name, None)
-        if not stream:
-            continue
-        for item in stream:
-            text = getattr(item, "text", None)
-            chunks.append(str(item if text is None else text))
-    return "".join(chunks)
 
 
 def _python_heredoc_command(script: str) -> str:
@@ -204,34 +192,27 @@ async def install_verified_text_script(
             status_code=500,
         )
     path = identity_path_to_source(runtime_identity, path)
-    target_sandbox = _underlying_sandbox(sandbox)
-    commands = getattr(target_sandbox, "commands", None)
-    run_fn = getattr(commands, "run", None) if commands is not None else None
-    if not callable(run_fn):
-        raise APIError(
-            code=error_code,
-            message=f"{error_message}: sandbox command runner is unavailable",
-            status_code=502,
-        )
+    commands = _underlying_sandbox(sandbox).commands
     lock_path = f"{path}.install.lock"
     temp_path = f"{path}.tmp.{uuid.uuid4().hex}"
     lock_acquired = False
     try:
-        lock_result = await run_fn(_acquire_install_lock_command(lock_path, path))
-        if getattr(lock_result, "error", None):
-            output = _extract_command_log_text(lock_result)
+        lock_result = await commands.run(
+            _acquire_install_lock_command(lock_path, path),
+            timeout=_INSTALL_LOCK_TIMEOUT_SECONDS,
+        )
+        if lock_result.exit_code != 0:
             raise RuntimeError(
-                f"{getattr(lock_result, 'error', None)}; output={output[:1000]!r}"
+                f"exit_code={lock_result.exit_code}; output={lock_result.output[:1000]!r}"
             )
         lock_acquired = True
         for command in _write_text_file_commands(temp_path, content):
-            result = await run_fn(command)
-            if getattr(result, "error", None):
-                output = _extract_command_log_text(result)
+            result = await commands.run(command)
+            if result.exit_code != 0:
                 raise RuntimeError(
-                    f"{getattr(result, 'error', None)}; output={output[:1000]!r}"
+                    f"exit_code={result.exit_code}; output={result.output[:1000]!r}"
                 )
-        publish_result = await run_fn(
+        publish_result = await commands.run(
             _publish_text_file_command(
                 temp_path=temp_path,
                 target_path=path,
@@ -240,10 +221,10 @@ async def install_verified_text_script(
                 owner_user=owner_user,
             )
         )
-        if getattr(publish_result, "error", None):
-            output = _extract_command_log_text(publish_result)
+        if publish_result.exit_code != 0:
             raise RuntimeError(
-                f"{getattr(publish_result, 'error', None)}; output={output[:1000]!r}"
+                f"exit_code={publish_result.exit_code}; "
+                f"output={publish_result.output[:1000]!r}"
             )
     except Exception as exc:
         raise APIError(
@@ -253,14 +234,14 @@ async def install_verified_text_script(
         ) from exc
     finally:
         if lock_acquired:
-            release_result = await run_fn(_release_install_lock_command(lock_path))
-            if getattr(release_result, "error", None):
-                output = _extract_command_log_text(release_result)
+            release_result = await commands.run(_release_install_lock_command(lock_path))
+            if release_result.exit_code != 0:
                 raise APIError(
                     code=error_code,
                     message=(
                         f"{error_message}: failed to release script install lock: "
-                        f"{getattr(release_result, 'error', None)}; output={output[:1000]!r}"
+                        f"exit_code={release_result.exit_code}; "
+                        f"output={release_result.output[:1000]!r}"
                     ),
                     status_code=502,
                 )

@@ -18,6 +18,8 @@ the adapter keeps the default ``prepare_runtime`` refusal from ``EngineAdapter``
 
 from __future__ import annotations
 
+from astrabox.core.service.orchestrator.runtime.skill_sources import normalize_skills, skill_cache_dir
+
 import asyncio
 import contextlib
 import base64
@@ -71,7 +73,6 @@ from astrabox.core.service.orchestrator.engine.hermes_gateway import (
     wait_until_backend_idle,
 )
 from astrabox.core.service.orchestrator.runtime.pty_terminal import (
-    EXECD_PORT,
     resolve_sandbox_endpoint,
 )
 from astrabox.core.service.orchestrator.runtime.models import SessionRuntime
@@ -92,12 +93,11 @@ from astrabox.core.service.orchestrator.runtime.mcp_servers import (
     binding_mcp_server_definitions,
 )
 from astrabox.core.service.orchestrator.runtime.conversation_identity import (
-    AGENT_RUNTIME_SKILL_CACHE_DIR,
     prepare_agent_runtime_skill_cache,
     normalize_runtime_identity,
     plan_assistant_profile_identity,
-    run_sandbox_command,
 )
+from astrabox.seams.sandbox_data import SandboxCommandResult, SandboxCommands
 
 
 HERMES_RUNTIME_IMAGE_COMPONENT = "sandbox-hermes"
@@ -218,29 +218,18 @@ _HERMES_INBOX_READY_TIMEOUT_S = 90
 async def _await_hermes_inbox_ready(
     sandbox: Any, *, timeout_s: int | None = None
 ) -> None:
-    """Block until the box's command server accepts an exec, or fail loud.
+    """Block until the box's command service runs a command, or fail loud.
 
-    Uses the neutral ``commands.run`` seam, backed by OpenSandbox execd for this
-    provider. ``timeout_s`` defaults to the module constant, resolved at call
-    time.
-
-    The per-probe timeout goes through :func:`run_sandbox_command` rather than
-    onto ``commands.run`` directly. Adapters disagree about how a timeout is
-    spelled, and the SDK's own ``CommandsAdapter.run`` takes only
-    ``opts=RunCommandOpts(...)`` — passing ``timeout_in_millis`` to it raises
-    ``TypeError`` on every probe, so a loop that called it directly would never
-    see a ready box and would always spend the full deadline before failing.
+    Each attempt is a no-op through the box's commands face with a five-second
+    deadline of its own. ``timeout_s`` defaults to the module constant,
+    resolved at call time.
     """
     effective_s = _HERMES_INBOX_READY_TIMEOUT_S if timeout_s is None else timeout_s
     deadline = time.monotonic() + float(effective_s)
     last_exc: BaseException | None = None
     while True:
         try:
-            await run_sandbox_command(
-                getattr(getattr(sandbox, "commands", None), "run", None),
-                "true",
-                timeout_in_millis=5000,
-            )
+            await sandbox.commands.run("true", timeout=5.0)
             return
         except Exception as exc:  # noqa: BLE001 — box still booting; retry to deadline
             last_exc = exc
@@ -557,7 +546,7 @@ class HermesEngineAdapter(EngineAdapter):
         # answers, so this resolves an address rather than starting anything.
         endpoint = await resolve_sandbox_endpoint(sandbox, HERMES_BACKEND_PORT)
         return await resolve_gateway_handle(
-            url=hermes_backend_ws_url(endpoint.origin),
+            url=hermes_backend_ws_url(endpoint.url),
             headers=hermes_backend_headers(
                 endpoint.headers, _hermes_backend_token(normalized)
             ),
@@ -569,7 +558,7 @@ class HermesEngineAdapter(EngineAdapter):
     async def quiesce_and_save_runtime_state(
         self, sandbox: Any, *, runtime_identity: dict[str, Any]
     ) -> None:
-        run_fn = getattr(getattr(sandbox, "commands", None), "run", None)
+        commands: SandboxCommands = sandbox.commands
         phase = "hermes_stop_state_mirror"
         try:
             for program, phase in (
@@ -580,11 +569,8 @@ class HermesEngineAdapter(EngineAdapter):
             ):
                 # Re-entering a failed save can find an already stopped service.
                 # The supervisor's read-back, not its stop command text, is proof.
-                await run_sandbox_command(
-                    run_fn, "supervisorctl stop " + shlex.quote(program)
-                )
-                status = await run_sandbox_command(
-                    run_fn,
+                await commands.run("supervisorctl stop " + shlex.quote(program))
+                status = await commands.run(
                     "bash -lc " + shlex.quote(
                         "status=0; supervisorctl status " + shlex.quote(program)
                         + '; status=$?; if [ "$status" -ne 0 ] '
@@ -592,11 +578,10 @@ class HermesEngineAdapter(EngineAdapter):
                     ),
                 )
                 if (
-                    getattr(status, "error", None)
-                    or getattr(status, "exit_code", None) != 0
+                    status.exit_code != 0
                     or re.fullmatch(
                         re.escape(program) + r"\s+STOPPED(?:\s+[^\n]*)?",
-                        _hermes_command_output(status).strip(),
+                        status.output.strip(),
                     ) is None
                 ):
                     raise RuntimeError("supervisor did not confirm STOPPED")
@@ -620,16 +605,13 @@ class HermesEngineAdapter(EngineAdapter):
                 "astrabox-hermes-state-save", profile_env,
                 runtime_identity["linux_user"], runtime_identity["home_dir"],
             ])
-            result = await run_sandbox_command(run_fn, command)
+            # A save is as long as the profile's native state is large.
+            result = await commands.run(command, timeout=None)
             markers = [
-                line for line in _hermes_command_output(result).splitlines()
+                line for line in result.output.splitlines()
                 if re.fullmatch(r"HERMES_STATE_SAVE_COMPLETE snapshot_id=\S+", line)
             ]
-            if (
-                getattr(result, "error", None)
-                or getattr(result, "exit_code", None) != 0
-                or len(markers) != 1
-            ):
+            if result.exit_code != 0 or len(markers) != 1:
                 raise RuntimeError("native state save did not confirm its snapshot")
         except Exception as exc:
             raise APIError(
@@ -650,9 +632,6 @@ class HermesEngineAdapter(EngineAdapter):
         names; only the ones an owner reads are carried.
         """
 
-        run_fn = getattr(getattr(sandbox, "commands", None), "run", None)
-        if run_fn is None:
-            raise RuntimeError("sandbox cannot run commands")
         profile_env = posixpath.join(runtime_identity["config_dir"], _HERMES_PROFILE_ENV_FILENAME)
         command = shlex.join([
             "runuser", "-u", runtime_identity["linux_user"], "--", "env",
@@ -661,13 +640,12 @@ class HermesEngineAdapter(EngineAdapter):
             'set -euo pipefail; source "$1"; exec "$HERMES_VENV/bin/python" -c "$2"',
             "astrabox-hermes-cron-list", profile_env, _CRON_JOBS_LISTER,
         ])
-        result = await run_sandbox_command(run_fn, command)
-        output = _hermes_command_output(result)
-        # The command channel replays stderr into the same stream, so Hermes'
-        # own log lines can land next to the answer; it is found by its marker
-        # and read as one JSON value from there.
+        result = await sandbox.commands.run(command)
+        output = result.output
+        # Hermes' own log lines can land next to the answer, so it is found by
+        # its marker and read as one JSON value from there.
         start = output.rfind(_CRON_JOBS_MARKER)
-        if getattr(result, "error", None) or getattr(result, "exit_code", 0) not in (0, None) or start < 0:
+        if result.exit_code != 0 or start < 0:
             raise RuntimeError("Hermes did not list its cron jobs: " + output.strip()[-400:])
         jobs, _end = json.JSONDecoder().raw_decode(output, start + len(_CRON_JOBS_MARKER))
         return [
@@ -783,8 +761,8 @@ def _build_hermes_workspace_identity(
     )
     identity["stage_evidence"] = {
         "hermes_profile_key": profile_key,
-        "hermes_control_transport": "opensandbox_execd_pty",
-        "hermes_control_port": EXECD_PORT,
+        "hermes_control_transport": "hermes_serve_websocket",
+        "hermes_control_port": HERMES_BACKEND_PORT,
     }
     return identity
 
@@ -825,14 +803,7 @@ async def _prepare_hermes_profile(
             message="hermes profile identity is missing required fields",
             status_code=500,
         )
-    command_runner = getattr(sandbox, "commands", None)
-    run_fn = getattr(command_runner, "run", None) if command_runner is not None else None
-    if not callable(run_fn):
-        raise APIError(
-            code="HERMES_PROFILE_UNSUPPORTED",
-            message="sandbox command runner is required to prepare the Hermes profile",
-            status_code=502,
-        )
+    commands: SandboxCommands = sandbox.commands
 
     overwrite_blob = _build_hermes_config_overwrite(
         deployment_settings,
@@ -894,7 +865,7 @@ async def _prepare_hermes_profile(
         normalized["config_dir"], _HERMES_PROCESS_DIGEST_FILENAME
     )
     standing = await _hermes_process_standing(
-        run_fn,
+        commands,
         env_path=profile_env_path,
         digest_path=process_digest_path,
         digest=process_digest,
@@ -920,7 +891,9 @@ async def _prepare_hermes_profile(
         content=profile_env_content,
         runtime_identity=normalized,
     )
-    result = await run_fn(
+    # The setup merges the profile and places its packages, so it is as long
+    # as what the Assistant carries.
+    result = await commands.run(
         "bash -lc "
         + shlex.quote(
             'set -euo pipefail; source "$1"; exec bash "$2" "$3"'
@@ -930,16 +903,16 @@ async def _prepare_hermes_profile(
         + " "
         + shlex.quote(_HERMES_PROFILE_SETUP_SCRIPT_PATH)
         + " "
-        + shlex.quote(normalized["workspace_source_dir"])
+        + shlex.quote(normalized["workspace_source_dir"]),
+        timeout=None,
     )
-    error = getattr(result, "error", None)
-    output = _hermes_command_output(result)
-    if error or "HERMES_PROFILE_READY" not in output:
+    output = result.output
+    if result.exit_code != 0 or "HERMES_PROFILE_READY" not in output:
         raise APIError(
             code="HERMES_PROFILE_SETUP_FAILED",
             message=(
                 "failed to prepare Hermes profile: "
-                f"{error or 'missing readiness marker'}; output={output[:2000]!r}"
+                f"{_hermes_failure(result)}; output={output[:2000]!r}"
             ),
             status_code=502,
         )
@@ -950,14 +923,15 @@ async def _prepare_hermes_profile(
             message="Hermes profile initialization requires the actual sandbox id",
             status_code=500,
         )
-    initialized = await run_fn(
+    initialized = await commands.run(
         "bash -lc " + shlex.quote(
             'set -euo pipefail; exec "$HERMES_VENV/bin/python" "$1" publish '
             '--profile-env "$2" --sandbox-id "$3"'
         ) + " _ " + shlex.quote(_HERMES_STATE_BOOTSTRAP)
-        + " " + shlex.quote(profile_env_path) + " " + shlex.quote(sandbox_id)
+        + " " + shlex.quote(profile_env_path) + " " + shlex.quote(sandbox_id),
+        timeout=None,
     )
-    if getattr(initialized, "error", None) or "HERMES_PROFILE_INITIALIZED" not in _hermes_command_output(initialized):
+    if initialized.exit_code != 0 or "HERMES_PROFILE_INITIALIZED" not in initialized.output:
         raise APIError(
             code="HERMES_PROFILE_SETUP_FAILED",
             message="failed to publish this box's Hermes profile initialization",
@@ -966,16 +940,16 @@ async def _prepare_hermes_profile(
     # A freshly initialized box has not started Hermes yet: publishing just
     # released `astrabox-hermes-serve`, which merges this profile and then
     # starts the backend under it.
-    running = "fresh=0" in _hermes_command_output(initialized)
+    running = "fresh=0" in initialized.output
     if running and standing == "PROCESS_UNCHANGED":
         # The recorded digest already names this process configuration.
         await _apply_hermes_profile_in_place(
-            run_fn, normalized=normalized, profile_env_path=profile_env_path
+            commands, normalized=normalized, profile_env_path=profile_env_path
         )
         return process_digest
     if running and standing == "PROCESS_CHANGED":
         await wait_until_backend_idle()
-        await _restart_hermes_backend(run_fn)
+        await _restart_hermes_backend(commands)
     await install_verified_text_script(
         sandbox,
         path=process_digest_path,
@@ -1000,11 +974,7 @@ async def _prepare_hermes_extensions(
     managed scope.
     """
 
-    skills = [
-        str(item).strip()
-        for item in (getattr(template, "skills", None) or [])
-        if str(item or "").strip()
-    ]
+    skills = normalize_skills(getattr(template, "skills", None))
     await asyncio.gather(
         prepare_agent_runtime_skill_cache(get_underlying_sandbox(sandbox), skills),
         prepare_agent_runtime_plugin_cache(
@@ -1022,7 +992,7 @@ async def _prepare_hermes_extensions(
         ),
     }
     if skills:
-        env[_HERMES_SKILLS_CACHE_ENV] = AGENT_RUNTIME_SKILL_CACHE_DIR
+        env[_HERMES_SKILLS_CACHE_ENV] = skill_cache_dir(skills)
     plugins = _hermes_plugin_placements(template)
     if plugins:
         env[_HERMES_PLUGINS_ENV] = json.dumps(plugins, ensure_ascii=False, sort_keys=True)
@@ -1217,7 +1187,7 @@ _HERMES_SCHEDULER_PROGRAM = "astrabox-hermes-scheduler"
 
 
 async def _hermes_process_standing(
-    run_fn: Any, *, env_path: str, digest_path: str, digest: str
+    commands: SandboxCommands, *, env_path: str, digest_path: str, digest: str
 ) -> str:
     """Whether the box's backend can serve this profile without a restart.
 
@@ -1238,11 +1208,11 @@ async def _hermes_process_standing(
         'elif [ -f "$2" ] && [ "$(cat "$2")" = "$3" ]; then echo PROCESS_UNCHANGED; '
         'else echo PROCESS_CHANGED; fi'
     )
-    result = await run_fn(
+    result = await commands.run(
         "bash -lc " + shlex.quote(probe) + " _ " + shlex.quote(env_path)
         + " " + shlex.quote(digest_path) + " " + shlex.quote(digest)
     )
-    output = _hermes_command_output(result)
+    output = result.output
     for verdict in ("PROCESS_UNCHANGED", "PROCESS_CHANGED", "ABSENT"):
         if verdict in output:
             return verdict
@@ -1257,7 +1227,7 @@ async def _hermes_process_standing(
 
 
 async def _apply_hermes_profile_in_place(
-    run_fn: Any, *, normalized: dict[str, Any], profile_env_path: str
+    commands: SandboxCommands, *, normalized: dict[str, Any], profile_env_path: str
 ) -> None:
     """Write the per-session inputs into the running backend's profile.
 
@@ -1281,29 +1251,23 @@ async def _apply_hermes_profile_in_place(
         "astrabox-hermes-config-merge", profile_env_path,
         _HERMES_CONFIG_MERGE_SCRIPT_PATH,
     ])
-    result = await run_fn(command)
-    # execd delivers each printed line as its own stdout event and the text
-    # joins them with no separator, so the config marker follows the SOUL
-    # marker on the same "line"; it is matched as a substring, like every
-    # other marker this module reads.
-    output = _hermes_command_output(result)
-    if (
-        getattr(result, "error", None)
-        or getattr(result, "exit_code", 0) not in (0, None)
-        or not any(marker in output for marker in _HERMES_CONFIG_MERGE_MARKERS)
+    result = await commands.run(command, timeout=None)
+    output = result.output
+    if result.exit_code != 0 or not any(
+        marker in output for marker in _HERMES_CONFIG_MERGE_MARKERS
     ):
         raise APIError(
             code="HERMES_PROFILE_SETUP_FAILED",
             message=(
                 "failed to apply the changed Hermes profile to the running "
-                f"backend: {getattr(result, 'error', None) or 'no merge marker'}; "
+                f"backend: {_hermes_failure(result, missing='no merge marker')}; "
                 f"output={output[:2000]!r}"
             ),
             status_code=502,
         )
 
 
-async def _restart_hermes_backend(run_fn: Any) -> None:
+async def _restart_hermes_backend(commands: SandboxCommands) -> None:
     """Restart the resident backend so it re-reads its process configuration.
 
     Hermes fixes its environment (the model API key among it) and its MCP
@@ -1319,18 +1283,19 @@ async def _restart_hermes_backend(run_fn: Any) -> None:
     attach that follows spends its bounded wait on the backend coming back.
     """
 
-    result = await run_fn(
+    # Each program may take its supervisor stop wait before starting again.
+    result = await commands.run(
         "bash -lc "
         + shlex.quote(
             "set -euo pipefail; exec supervisorctl restart "
             + _HERMES_BACKEND_PROGRAM
             + " "
             + _HERMES_SCHEDULER_PROGRAM
-        )
+        ),
+        timeout=None,
     )
-    error = getattr(result, "error", None)
-    output = _hermes_command_output(result)
-    if error or "started" not in output:
+    output = result.output
+    if result.exit_code != 0 or "started" not in output:
         raise APIError(
             # The registered code for "the resident gateway is not up under
             # the profile this host just wrote", which is exactly what a
@@ -1339,7 +1304,8 @@ async def _restart_hermes_backend(run_fn: Any) -> None:
             code="HERMES_GATEWAY_START_FAILED",
             message=(
                 "the Hermes backend did not restart for a changed profile, so it "
-                f"would keep serving the old one: {error or 'no start marker'}; "
+                f"would keep serving the old one: "
+                f"{_hermes_failure(result, missing='no start marker')}; "
                 f"output={output[:2000]!r}"
             ),
             status_code=502,
@@ -1407,24 +1373,22 @@ def _cron_run_output_reader(
     (``cron/jobs.py`` at the pinned commit) and serves no endpoint for it.
     """
 
-    run_fn = getattr(getattr(sandbox, "commands", None), "run", None)
-    if run_fn is None or not identity:
+    if sandbox is None or not identity:
         return None
     root = posixpath.join(normalize_runtime_identity(identity)["config_dir"], "cron", "output")
 
     async def read(job_id: str) -> CronRunOutput | None:
         if not _CRON_JOB_ID.fullmatch(job_id) or job_id in {".", ".."}:
             return None
-        result = await run_sandbox_command(
-            run_fn,
+        result = await sandbox.commands.run(
             shlex.join([
                 "bash", "-c", 'exec "$HERMES_VENV/bin/python" -c "$1" "$2"',
                 "hermes-cron-output", _CRON_RUN_READER, posixpath.join(root, job_id),
             ]),
         )
-        if getattr(result, "error", None) or getattr(result, "exit_code", 0) not in (0, None):
+        if result.exit_code != 0:
             return None
-        printed = [line for line in _hermes_command_output(result).splitlines() if line.startswith("{")]
+        printed = [line for line in result.stdout.splitlines() if line.startswith("{")]
         if not printed:
             return None
         run = json.loads(printed[-1])
@@ -1433,20 +1397,12 @@ def _cron_run_output_reader(
     return read
 
 
-def _hermes_command_output(result: Any) -> str:
-    chunks: list[str] = []
-    for attr in ("stdout", "output"):
-        value = getattr(result, attr, None)
-        if value:
-            chunks.append(str(value))
-    logs = getattr(result, "logs", None)
-    for stream_name in ("stdout", "stderr"):
-        stream = getattr(logs, stream_name, None) if logs is not None else None
-        for item in stream or []:
-            text = getattr(item, "text", None)
-            if text:
-                chunks.append(str(text))
-    return "".join(chunks)
+def _hermes_failure(result: SandboxCommandResult, *, missing: str = "missing readiness marker") -> str:
+    """Why a Hermes command's result is not the answer: its exit status, or ``missing``."""
+
+    if result.exit_code != 0:
+        return f"exit_code={result.exit_code}"
+    return missing
 
 
 def _hermes_credential_request(model_access: ResolvedModelAccess) -> ModelCredentialRequest:

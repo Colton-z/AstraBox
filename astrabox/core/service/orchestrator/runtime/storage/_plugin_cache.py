@@ -8,6 +8,8 @@ cache. ``AGENT_RUNTIME_CACHE_LOCAL_ROOT`` is unused (zero readers).
 
 from __future__ import annotations
 
+from astrabox.seams.skills import SkillDescriptor
+
 import base64
 import hashlib
 import json
@@ -16,6 +18,7 @@ from typing import Any
 
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
+from astrabox.seams.sandbox_data import SandboxCommandResult
 from astrabox.core.service.orchestrator.runtime.conversation_identity import (
     AGENT_RUNTIME_CONVERSATION_BOOTSTRAP_SCRIPT,
     CONVERSATION_BOOTSTRAP_TRANSPORT_SIDECAR_HTTP,
@@ -30,11 +33,6 @@ from astrabox.core.service.orchestrator.runtime.packages import (
     template_packages,
 )
 
-from astrabox.core.service.orchestrator.runtime.storage._command_result import (
-    _ensure_command_success,
-    _extract_command_output_text,
-    _extract_command_stream_text,
-)
 from astrabox.core.service.orchestrator.runtime.storage._default_repo import (
     _build_default_repo_bootstrap_payload,
 )
@@ -168,22 +166,15 @@ async def prepare_agent_runtime_plugin_cache(
             message="cannot prepare plugin repo cache: no underlying sandbox",
             status_code=502,
         )
-    commands = getattr(underlying, "commands", None)
-    run_fn = getattr(commands, "run", None) if commands is not None else None
-    if not callable(run_fn):
-        raise APIError(
-            code="AGENT_RUNTIME_PLUGIN_CACHE_FAILED",
-            message="sandbox command runner is required to prepare plugin repo cache",
-            status_code=502,
-        )
-
     if not repos:
         return
 
+    commands = underlying.commands
     cache_hash = _plugin_repo_cache_hash(repos)
-    ready_result = await run_fn(f"bash -lc {shlex.quote(_plugin_repo_cache_ready_script(repos, cache_hash))}")
-    ready_output = _extract_command_output_text(ready_result)
-    if getattr(ready_result, "error", None) is None and "AGENT_RUNTIME_PLUGIN_CACHE_READY" in ready_output:
+    ready_result = await commands.run(
+        f"bash -lc {shlex.quote(_plugin_repo_cache_ready_script(repos, cache_hash))}"
+    )
+    if ready_result.exit_code == 0 and "AGENT_RUNTIME_PLUGIN_CACHE_READY" in ready_result.stdout:
         return
 
     cache_dir = AGENT_RUNTIME_PACKAGE_CACHE_DIR
@@ -200,12 +191,17 @@ mkdir -p "$cache_dir/repos" "$cache_dir/.ssh"
 chmod 700 "$cache_dir/.ssh"
 printf 'AGENT_RUNTIME_PLUGIN_CACHE_BUILDING hash=%s\\n' {shlex.quote(cache_hash)}
 """
-    setup_result = await run_fn(f"bash -lc {shlex.quote(setup_script)}")
-    _ensure_command_success(
-        setup_result,
-        "AGENT_RUNTIME_PLUGIN_CACHE_FAILED",
-        "failed to initialize plugin repo cache",
-    )
+    # Clearing a previous build's staging tree is as long as that tree.
+    setup_result = await commands.run(f"bash -lc {shlex.quote(setup_script)}", timeout=None)
+    if setup_result.exit_code != 0:
+        raise APIError(
+            code="AGENT_RUNTIME_PLUGIN_CACHE_FAILED",
+            message=(
+                "failed to initialize plugin repo cache: "
+                f"exit_code={setup_result.exit_code}; output={setup_result.output[:2000]!r}"
+            ),
+            status_code=502,
+        )
 
     for index, repo in enumerate(repos):
         label = f"cached packages[{index}]"
@@ -242,9 +238,10 @@ printf 'AGENT_RUNTIME_PLUGIN_CACHE_BUILDING hash=%s\\n' {shlex.quote(cache_hash)
 
         for plugin_path in repo.get("paths") or ["."]:
             plugin_dir = target if plugin_path == "." else f"{target}/{plugin_path}"
-            path_probe = await run_fn(f"test -d {shlex.quote(plugin_dir)} && echo EXISTS || echo MISSING")
-            path_probe_output = _extract_command_output_text(path_probe)
-            if "EXISTS" not in path_probe_output:
+            path_probe = await commands.run(
+                f"test -d {shlex.quote(plugin_dir)} && echo EXISTS || echo MISSING"
+            )
+            if "EXISTS" not in path_probe.stdout:
                 raise APIError(
                     code="PACKAGE_INVALID",
                     message=f"{label}.paths entry {plugin_path!r} does not exist in cloned repo",
@@ -262,19 +259,26 @@ rm -rf "$cache_dir/.ssh"
 chmod -R a+rX,go-w "$cache_dir"
 printf 'AGENT_RUNTIME_PLUGIN_CACHE_READY hash=%s cached=0\\n' {shlex.quote(cache_hash)}
 """
-    finalize_result = await run_fn(f"bash -lc {shlex.quote(finalize_script)}")
-    finalize_output = _extract_command_output_text(finalize_result)
-    if getattr(finalize_result, "error", None) or "AGENT_RUNTIME_PLUGIN_CACHE_READY" not in finalize_output:
+    # The permissions change once per file of the cache.
+    finalize_result = await commands.run(f"bash -lc {shlex.quote(finalize_script)}", timeout=None)
+    finalize_output = finalize_result.output
+    if finalize_result.exit_code != 0 or "AGENT_RUNTIME_PLUGIN_CACHE_READY" not in finalize_output:
         raise APIError(
             code="AGENT_RUNTIME_PLUGIN_CACHE_FAILED",
             message=(
                 "failed to finalize plugin repo cache: "
-                f"error={getattr(finalize_result, 'error', None) or 'missing readiness marker'}; "
+                f"error={_exit_or_missing(finalize_result)}; "
                 f"output={finalize_output[:2000]!r}"
             ),
             status_code=502,
         )
     return
+
+
+def _exit_or_missing(result: SandboxCommandResult) -> str:
+    if result.exit_code != 0:
+        return f"exit_code={result.exit_code}"
+    return "missing readiness marker"
 
 
 def _engine_extensions(template: Any) -> tuple[Any, Any]:
@@ -317,7 +321,7 @@ async def bootstrap_conversation_runtime_from_agent_cache(
     *,
     get_underlying_sandbox_fn: Any,
     runtime_identity: dict[str, Any],
-    skills: list[str] | tuple[str, ...] | None = None,
+    skills: list[SkillDescriptor] | tuple[SkillDescriptor, ...] | None = None,
     default_repo_target_cwd: str | None = None,
     sidecar_endpoint: str | None = None,
     bootstrap_transport: str = CONVERSATION_BOOTSTRAP_TRANSPORT_SIDECAR_HTTP,

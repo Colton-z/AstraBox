@@ -29,6 +29,9 @@ from tests.e2e._sandbox_helpers import (
 
 HEALTH_TIMEOUT_S = float(os.getenv("ASTRABOX_E2E_HEALTH_TIMEOUT", "60"))
 MAX_E2E_TEST_SECONDS = 180
+E2E_TEST_BUDGETS = {
+    "tests/e2e/test_files.py::test_a_file_larger_than_the_servers_memory_budget_round_trips": 600,
+}
 #: Left to a poll loop so it can refuse in its own words. pytest-timeout kills
 #: the process where it stands, so a helper that polls right up to the ceiling
 #: reports nothing at all — and what it had seen is the entire diagnostic.
@@ -44,27 +47,29 @@ def pytest_configure(config: pytest.Config) -> None:
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
-    """Apply one fixed timeout to every live test and reject local overrides."""
+    """Apply owner-approved live budgets and reject test-local overrides."""
     for item in items:
         if item.get_closest_marker("e2e") is None:
             continue
         if item.get_closest_marker("timeout") is not None:
             raise pytest.UsageError(
-                f"{item.nodeid} overrides the fixed {MAX_E2E_TEST_SECONDS}s live E2E timeout"
+                f"{item.nodeid} overrides its centrally assigned live E2E timeout"
             )
-        item.add_marker(pytest.mark.timeout(MAX_E2E_TEST_SECONDS))
+        item.add_marker(pytest.mark.timeout(_live_test_budget(item.nodeid)))
+
+
+def _live_test_budget(nodeid: str) -> int:
+    return E2E_TEST_BUDGETS.get(nodeid, MAX_E2E_TEST_SECONDS)
 
 
 @pytest.fixture
-def live_test_deadline() -> float:
+def live_test_deadline(request: pytest.FixtureRequest) -> float:
     """The monotonic time by which a polling helper must have given its verdict.
 
-    The live E2E timeout is one fixed value for every test and deliberately not
-    overridable, so a helper cannot be handed a duration: it has no way to know
-    what the turn and the box kill already spent. It gets an absolute deadline
-    from here instead, set to stop short of the ceiling.
+    Helpers share the centrally assigned test budget. An absolute deadline
+    accounts for work already spent and stops short of the hard ceiling.
     """
-    return time.monotonic() + MAX_E2E_TEST_SECONDS - LIVE_TEST_REPORTING_MARGIN_S
+    return time.monotonic() + _live_test_budget(request.node.nodeid) - LIVE_TEST_REPORTING_MARGIN_S
 
 
 def _wait_health(base_url: str) -> None:

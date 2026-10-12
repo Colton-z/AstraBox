@@ -209,6 +209,12 @@ class EngineRuntimeCapabilities:
     #: Saving anything the declaration does not accept would create an inert
     #: knob, so it is refused.
     extensions: EngineExtensions = EngineExtensions()
+    #: Whether a conversation with its own box runs the engine as one of
+    #: the box's long-lived processes, which the platform attaches to over
+    #: stdin and stdout (``SandboxHandle.processes``). An Environment that
+    #: pairs such an engine with conversation tenancy is refused on a
+    #: backend that does not declare ``supports_process_sessions``.
+    requires_process_sessions: bool = False
 
 
 def validate_runtime_profile_declaration(
@@ -461,6 +467,10 @@ def validate_engine_capabilities(
                 f"engine_kind={normalized_kind!r} permission-mode default "
                 f"{default_mode!r} is not in permission_modes"
             )
+    if not isinstance(capabilities.requires_process_sessions, bool):
+        raise ValueError(
+            f"engine_kind={normalized_kind!r} requires_process_sessions must be bool"
+        )
     validate_engine_extensions(normalized_kind, capabilities.extensions)
     session_log = capabilities.session_log
     if session_log is not None:

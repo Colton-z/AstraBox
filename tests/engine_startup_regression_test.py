@@ -33,7 +33,7 @@ class _SandboxFiles:
     def __init__(self) -> None:
         self.writes: list[str] = []
 
-    async def write_file(self, path: str, _body: bytes, **_kwargs: Any) -> None:
+    async def write_bytes(self, path: str, _body: bytes, **_kwargs: Any) -> None:
         self.writes.append(path)
 
 

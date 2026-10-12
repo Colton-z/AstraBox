@@ -42,7 +42,7 @@ def _source(status: dict) -> dict:
 @pytest.mark.parametrize("mission", [True, False])
 async def test_native_history_launch_restores_status_linkage_without_a_new_model_turn(mission):
     status = _status()
-    files = SimpleNamespace(read_file=AsyncMock(return_value=json.dumps(status)))
+    files = SimpleNamespace(read_bytes=AsyncMock(return_value=json.dumps(status).encode()))
     sink = SimpleNamespace(persist_event=AsyncMock())
     capture = PiChildTranscriptCapture(filesystem=files, session_root=ROOT, temp_root=TEMP_ROOT,
                                       sink=sink, owner_session_file=OWNER)
@@ -51,7 +51,7 @@ async def test_native_history_launch_restores_status_linkage_without_a_new_model
         launch["details"].pop("mission")
     assert await capture.observe({"type": "message", "message": launch}) == []
     assert await capture.observe(launch) == []
-    files.read_file.assert_called_with(STATUS_PATH)
+    files.read_bytes.assert_called_with(STATUS_PATH)
     sink.persist_event.assert_awaited_once()
     stored = sink.persist_event.call_args.kwargs["payload"]["message"]
     assert stored["status"] == status
@@ -67,9 +67,9 @@ async def test_status_read_errors_are_diagnostics_not_relay_failures(failure):
         status["runId"] = "other"
     if failure == "foreign-owner":
         status["sessionId"] = "/other/session.jsonl"
-    files = SimpleNamespace(read_file=AsyncMock(return_value=json.dumps(status)))
+    files = SimpleNamespace(read_bytes=AsyncMock(return_value=json.dumps(status).encode()))
     if failure == "read":
-        files.read_file.side_effect = OSError("supplier file unavailable")
+        files.read_bytes.side_effect = OSError("supplier file unavailable")
     sink = SimpleNamespace(persist_event=AsyncMock())
     capture = PiChildTranscriptCapture(filesystem=files, session_root=ROOT, temp_root=TEMP_ROOT,
                                       sink=sink, owner_session_file=OWNER)
@@ -83,7 +83,7 @@ async def test_status_read_errors_are_diagnostics_not_relay_failures(failure):
 async def test_native_snapshot_discovers_async_worker_history_without_a_parent_launch_result():
     status = _status()
     status["state"] = "running"
-    files = SimpleNamespace(read_file=AsyncMock(return_value=json.dumps(status)))
+    files = SimpleNamespace(read_bytes=AsyncMock(return_value=json.dumps(status).encode()))
     sink = SimpleNamespace(persist_event=AsyncMock())
     capture = PiChildTranscriptCapture(filesystem=files, session_root=ROOT, temp_root=TEMP_ROOT,
                                       sink=sink, owner_session_file=OWNER)
@@ -93,7 +93,7 @@ async def test_native_snapshot_discovers_async_worker_history_without_a_parent_l
                       "children": [{"id": "step:0", "kind": "step", "state": "running"}]}]}),
     ]}
     assert await capture.observe(snapshot) == []
-    files.read_file.assert_awaited_once_with(f"{TEMP_ROOT}/async-subagent-runs/run/status.json")
+    files.read_bytes.assert_awaited_once_with(f"{TEMP_ROOT}/async-subagent-runs/run/status.json")
     stored = sink.persist_event.call_args.kwargs["payload"]["message"]
     assert stored["status"] == status
     scopes = [{"subpath": "pi/native-child/session.jsonl", "entries": [
@@ -106,10 +106,10 @@ async def test_native_snapshot_discovers_async_worker_history_without_a_parent_l
         [{"type": "text", "text": "real running answer " * 100}],
     ]
     assert await capture.observe(snapshot) == []
-    files.read_file.assert_awaited_once()
+    files.read_bytes.assert_awaited_once()
     sink.persist_event.assert_awaited_once()
     assert await capture.observe(_launch()) == []
-    files.read_file.assert_awaited_with(STATUS_PATH)
+    files.read_bytes.assert_awaited_with(STATUS_PATH)
 
 
 def test_database_native_history_retains_full_prompt_and_acceptance_report_not_artifact_preview():

@@ -7,6 +7,189 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-10-11
+
+**Upgrading:**
+
+- an Agent's tags (`display_meta.tags`) are at most five, each at most 32
+  characters, and are stored lower case with words joined by `-`. An Agent
+  that carries more is refused when it is next saved until its tags are cut.
+- a sandbox provider package must give its handle the declared data-plane
+  faces: `files` (`SandboxFiles`), `commands` (`SandboxCommands`), `processes`
+  (`SandboxProcesses`, or `UnsupportedSandboxProcesses` from a provider that
+  does not declare `supports_process_sessions`), `get_endpoint` returning a
+  `SandboxEndpoint`, and `get_signed_endpoint`. Core no longer reads the
+  OpenSandbox SDK's objects off a handle. A provider whose boxes run the
+  image's execd builds the first three from `astrabox.providers.execd`; see
+  [Add a sandbox provider](docs/writing-a-sandbox-provider.md). The seam
+  contract version is 6, one past the extension provider change.
+- Agents stored without a model are given the deployment's current model when
+  the server upgrades, and no longer follow later changes to the deployment's
+  model. Resolving an Agent that still has no model returns
+  `409 AGENT_MODEL_REQUIRED`.
+
+### Added
+- Skills accept structured sources and deployment-installed content providers
+  through `astrabox.providers.skills`; Git uses the same acquisition and cache
+  path. SSH Git Skills accept approved named deploy keys with verified host
+  keys and invocation-scoped credential cleanup. See
+  [Skill content providers](docs/providers/skill-content.md).
+
+- The home page lists Agents under tabs: **Favorites**, **All**, then the
+  Agent categories a platform administrator defines and orders on the console's
+  **Agent categories** page (`/api/v1/admin/agent-categories`). Whoever may
+  manage an Agent lists it under any number of categories (`categories`, ids
+  from `GET /api/v1/agent-categories`) and gives it up to five tags
+  (`display_meta.tags`), stored lower case with words joined by `-`. A search
+  box matches names, tags, categories and descriptions within the current tab,
+  and clicking a tag on a card filters by it. Each user favorites Agents with
+  the star on their cards (`PUT`/`DELETE /api/v1/agents/{agent_id}/favorite`);
+  the home page opens on the last tab the user chose, or on Favorites when the
+  user has any. `GET /api/v1/agent-tags` lists the tags of the Agents the
+  caller may see. Deleting a category takes it off its Agents.
+
+- `astrabox.testing.sandbox_data_conformance` checks, on a live box, that a
+  sandbox handle's `files`, `commands` and `processes` keep the contract core
+  relies on: exact bytes whole and streamed, the mode and ownership a write or
+  directory creation gives, `lstat` kinds, one-level listing, name search,
+  moves that refuse an existing destination, removal that never follows a
+  symlink, and literal paths; for commands a shell command line run as root,
+  the exit status as data, stdout and stderr apart, the environment passed
+  literally, an empty stdin, a signal as a negative status, and a deadline
+  that raises `TimeoutError` and stops the command in the box; and, for a
+  provider that declares `supports_process_sessions` (`PROCESSES_CONTRACT`),
+  stdin in and the exit as the last frame, a reattach that replays from an
+  offset, one holder unless another takes over, a replay that never starts
+  past its cursor, a signal that reaches only a running process, `close` that
+  stops a process and forgets it, and an exited process that runs again when
+  attached. A provider binds it in its own live tests; the built-in
+  OpenSandbox provider runs it on each engine image in the E2E suite.
+
+### Changed
+- A sandbox backend that cannot look a sandbox up by its create assignment
+  (no `supports_correlated_create`) creates sandboxes; every create path used
+  to refuse it with `501 SANDBOX_CORRELATED_CREATE_UNSUPPORTED` at the first
+  conversation. AstraBox creates each sandbox once on it: a create that raises
+  fails the start with that error, and a start a platform restart interrupted
+  is refused with `409 SANDBOX_CREATE_INTERRUPTED` rather than creating a
+  second sandbox; a sandbox the backend made for that start is left to the
+  backend's own expiry. See
+  [Add a sandbox provider](docs/writing-a-sandbox-provider.md).
+
+- `SandboxProvider.read_memory_headroom` and `read_listening_ports` have
+  default implementations that read the box's cgroup v2 memory files and
+  `/proc/net/tcp` through its `commands`, so a provider that declares
+  `supports_isolated_sessions` no longer has to write them.
+- A sandbox handle carries the box's files as a declared contract,
+  `SandboxHandle.files` (`SandboxFiles` in `astrabox.seams.sandbox_data`):
+  absolute paths taken literally, POSIX permission bits such as `0o640`,
+  account names, and three typed failures, `SandboxPathNotFound`,
+  `SandboxPathRejected` and `SandboxUnreachable`, which is now also a
+  `ConnectionError`. The built-in provider implements it over the execd every
+  bundled image carries, with `astrabox.providers.execd.ExecdFiles`, which
+  another provider whose boxes run execd can reuse. A third-party sandbox
+  provider's handle must provide `files`; the handle methods `get_filesystem`
+  and `search_file_paths` (`SandboxEndpointFilesystem`) are removed.
+- A sandbox handle runs commands through a declared contract,
+  `SandboxHandle.commands` (`SandboxCommands`): one shell command line run as
+  root, with an optional environment and a deadline kept on the caller's side,
+  answered with a `SandboxCommandResult` of exit status, stdout and stderr. A
+  non-zero exit is data; the box refusing the command raises
+  `SandboxCommandRefused`, a run it gives no exit status for raises
+  `SandboxCommandOutcomeUnknown`, and an unreachable box `SandboxUnreachable`.
+  Core no longer passes the OpenSandbox SDK's `RunCommandOpts` or
+  `ExecutionHandlers` or reads its `Execution`. The built-in provider implements
+  the contract with `astrabox.providers.execd.ExecdCommands`; a third-party
+  sandbox provider's handle must provide `commands`. A command whose report
+  carried no exit status is no longer taken for a success.
+- A sandbox handle's `get_endpoint(port)` returns a `SandboxEndpoint`
+  (`astrabox.seams.sandbox_data`): an absolute `http(s)` URL and the headers
+  every request to it carries. `get_signed_endpoint(port, expires_at=...)` is
+  part of the handle contract and returns one whose URL carries a credential
+  until `expires_at`; a backend that cannot sign raises the 501
+  `SANDBOX_SIGNED_ENDPOINT_UNSUPPORTED`. `SandboxEndpointRef` is removed. A
+  provider says which sandbox one of its endpoint strings names with
+  `SandboxProvider.endpoint_names_sandbox`; a persisted endpoint whose backend
+  cannot tell is resolved again from the sandbox id without the "discard
+  unverifiable sandbox endpoint" warning.
+- A sandbox handle runs long-lived processes through a declared contract,
+  `SandboxHandle.processes` (`SandboxProcesses`): a process started from one
+  shell command line is named by an id that any replica can attach to; one
+  attachment holds it at a time and another may take it over; its output,
+  stdout and stderr together, is numbered in bytes, and an attachment replays
+  it from an offset the box still holds or fails with
+  `SandboxProcessReplayGap`; `signal` and `close` act by id. The terminal of a
+  conversation with its own box and the pi engine use it instead of execd's
+  PTY API. A provider declares `SandboxProvider.supports_process_sessions`;
+  the built-in provider implements the contract with
+  `astrabox.providers.execd.ExecdProcesses`, and a provider without it returns
+  `UnsupportedSandboxProcesses`, whose every operation raises the 501
+  `SANDBOX_PROCESS_SESSIONS_UNSUPPORTED`.
+- An Environment that pairs the pi engine with conversation tenancy, and an
+  Agent that turns on the terminal panel in such an Environment, are refused
+  with `400` on a sandbox backend that does not declare
+  `supports_process_sessions`, instead of failing at the first conversation.
+  An engine says it runs as a box process with
+  `EngineRuntimeCapabilities.requires_process_sessions`.
+- The file panel answers `503 SANDBOX_UNREACHABLE` when the box cannot be
+  reached, where it answered 502; a refusal by the box stays a 502, with the
+  box's reason in the server log. A path holding `$` is refused, where the
+  panel read or wrote another path. Deleting a symlink removes the link
+  itself, including a link to a directory, which failed, and a link to
+  nothing, which reported success and stayed.
+
+### Removed
+
+- The runtime NAS mount of the shared Assistant root,
+  `EnginePlatform.mount_assistant_workspace_storage` and its implementation,
+  which nothing called, and the `assistant_workspace_root_preprovisioned`
+  sandbox provider declaration that only it read.
+
+### Fixed
+- Channel sender allowlists and account links show the selected provider's
+  identity format. Generic JSON accepts the original `sender` value; Satori
+  uses `platform:user-id`.
+
+- Administrators see the name a signed-in user's identity provider gives for
+  the conversations that user starts, where they saw the user id. A failure to
+  store the name fails the start instead of being ignored.
+- An `astrabox.yaml` exported with `astrabox export` applies again, where the
+  server refused it. `apply` sets an Agent's `display_name`, `icon` and `tags`
+  inside `display_meta`, keeping the stored members the file does not name.
+- An Agent edit that loses a race with a concurrent edit is refused with
+  `409 AGENT_VERSION_CONFLICT` whatever it changes; one that changed only a
+  name, description, tag or category was dropped and reported as saved.
+- The Agents a new installation seeds could not be saved from the console
+  (`model is required`). They are created with the deployment's model, and
+  existing ones are given it when the server upgrades.
+- A failed Agent, Environment or Assistant save shows its error beside the
+  Save that was pressed. Agent forms also mark the field the error names
+  until the next edit or save.
+- A turn on a sandbox provider that declares `supports_turn_preparation` runs
+  the provider's `prepare_turn` and reaches the engine, where every such turn
+  was refused with `TURN_PREPARATION_FAILED`.
+- Such a provider's `prepare_turn`, and the refresh of a conversation's MCP
+  credentials, finish before each message is handed to the engine, including a
+  message sent while a turn is running. A message whose sandbox cannot be
+  prepared or whose credential cannot be refreshed is refused when it is sent,
+  with `TURN_PREPARATION_FAILED`, `409 TURN_PREPARATION_USER_ACTION_REQUIRED`
+  (the provider's user action in `error.evidence.user_action`) or the
+  credential's error such as `VAULT_CREDENTIAL_EXPIRED`, and never reaches the
+  engine.
+- A user action a provider's `prepare_turn` asks for while a turn begins ends
+  the turn with `TURN_PREPARATION_USER_ACTION_REQUIRED` and the provider's
+  message, where it was reported as `ENGINE_INPUT_DELIVERY_FAILED`.
+- The console's session record and **Errors** page name a session's running
+  turn (`current_turn_id` of `GET /api/v1/admin/sessions/{session_id}/trace`,
+  `turn_id` of `GET /api/v1/admin/errors`), where both showed none.
+- Conversation and share-link file downloads stream a file of any size from
+  the sandbox, where a file above 64 MiB was refused with
+  `502 AGENT_RUNTIME_ERROR`. A failure after the download has started closes
+  the connection short of its `Content-Length`. An upload now waits for the
+  sandbox's answer for a time that grows with the file, where a large upload
+  could fail with `503 SANDBOX_UNREACHABLE` while the sandbox was still
+  writing it into place.
+
 ## [0.1.6] - 2026-10-10
 
 **Upgrading:**

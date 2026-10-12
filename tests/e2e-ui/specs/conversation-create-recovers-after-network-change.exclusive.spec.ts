@@ -53,7 +53,7 @@ test('Agent conversation create survives a lost response without creating a dupl
   await page.goto(appPath('/agents'), { waitUntil: 'domcontentloaded' });
   const card = page.locator(`[data-testid="agent-option"][data-agent-name="${name}"]`);
   await expect(card).toBeVisible({ timeout: 30_000 });
-  await card.getByRole('button').click();
+  await card.getByTestId('agent-start').click();
   await page.waitForURL((url) => /\/sessions\/[^/]+$/.test(url.pathname), {
     timeout: 30_000,
   });

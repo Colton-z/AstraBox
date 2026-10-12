@@ -44,6 +44,7 @@ import {
 } from './console';
 import {
   channelEditField,
+  channelParticipantHelp,
   channelExecutionModeField,
   channelExecutionUserField,
   channelFieldValues,
@@ -317,13 +318,13 @@ export default function DeploymentDetailPage() {
               required: Boolean(deployment.assistant_id),
               idTag: 'allowed_participants',
               rows: 2,
-              placeholder: 'telegram:123456789',
+              placeholder: channelProvider?.participant_example || undefined,
               get: (value: Record<string, unknown>) => value.allowed_participants,
               set: (value: Record<string, unknown>, next: unknown) => ({
                 ...value,
                 allowed_participants: next,
               }),
-              help: t('manage:deployments.allowed_participants_help'),
+              help: `${t('manage:deployments.allowed_participants_help')} ${channelParticipantHelp(t, channelProvider)}`,
             },
             ...channelProvider.config_fields.map((field) =>
               channelEditField(field, 'channel_config'),
@@ -776,6 +777,7 @@ export default function DeploymentDetailPage() {
         <DeploymentAccountLinks
           agentId={deployment.agent_id}
           deploymentId={deployment.deployment_id}
+          provider={channelProvider}
         />
       )}
 

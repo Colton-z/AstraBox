@@ -99,9 +99,10 @@ Docker 挂载点下的目录；而工作区视图数据卷只有在容器按名�
 不要依赖每个 Session 单独执行的初始化脚本：预热沙箱可能在使用它的 Session 出现之前
 就已经创建。
 
-AstraBox 使用 OpenSandbox 原生命令、文件系统和端点 API。内置镜像仍以 AIO 负责启动和
-工作负载账户生命周期，最终进入 `/opt/gem/run.sh`；自定义基础镜像需要提供等效生命周期，
-并配置匹配的 entrypoint。
+OpenSandbox provider 通过 OpenSandbox 在每个沙箱中启动的 execd 实现 AstraBox 的沙箱契约：
+文件、命令以及终端的 shell、Pi 程序这类长驻进程都交给 execd，端点来自 OpenSandbox 的端点
+API。内置镜像仍以 AIO 负责启动和工作负载账户生命周期，最终进入 `/opt/gem/run.sh`；自定义
+基础镜像需要提供等效生命周期，并配置匹配的 entrypoint。
 
 [容器参考](../container-reference.md)说明镜像与工作区约定。AstraBox 创建的每个沙箱都使用
 平台统一的资源规格：运行上限为 `4` CPU 和 `4Gi` 内存，调度请求为 `200m` CPU 和

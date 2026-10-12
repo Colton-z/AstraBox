@@ -482,7 +482,8 @@ validate_model_settings() {
 
 # Writes the settings each service is reached through in the bundled gateway
 # (containers/litellm/config.yaml). ANTHROPIC_MODEL is the deployment's default
-# model: the seeded Agents use it until an Agent selects its own. With an
+# model: a new installation creates its seeded Agents with it, and each Agent
+# keeps the model it was saved with when this changes. With an
 # ANTHROPIC_BASE_URL set, the deployment serves it through the gateway's
 # `anthropic/*` routes (astrabox/deploy/onebox.py).
 write_model_settings() {

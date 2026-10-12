@@ -16,9 +16,6 @@ from astrabox.core.service.orchestrator.runtime.conversation_identity import (
     normalize_runtime_identity,
 )
 
-from astrabox.core.service.orchestrator.runtime.storage._command_result import (
-    _extract_command_output_text,
-)
 from astrabox.core.service.orchestrator.runtime.storage._git_clone import (
     _clone_git_repo_in_sandbox,
     _resolve_author_deploy_key,
@@ -174,8 +171,7 @@ async def clone_default_repo(
     quoted_target = shlex.quote(target)
     probe_cmd = f"test -d {quoted_target}/.git && echo EXISTS || echo MISSING"
     probe = await underlying.commands.run(command_for_identity(probe_cmd, identity))
-    probe_output = _extract_command_output_text(probe)
-    if "EXISTS" in probe_output:
+    if "EXISTS" in probe.stdout:
         logger.info("default_repo already cloned, skip session=%s target=%s", session_id, target)
         return
 

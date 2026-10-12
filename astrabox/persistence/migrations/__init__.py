@@ -199,6 +199,65 @@ async def _v5_key_agents_for_the_list_order(get_collection: GetCollection) -> No
     logger.info("schema migration keyed %d Agent row(s) for the list order", keyed)
 
 
+async def _v6_give_agents_the_deployment_model(get_collection: GetCollection) -> None:
+    """Write the deployment's default model into each live Agent row that names none.
+
+    Every Agent write requires ``model``, and resolving an Agent without one
+    for work is refused (``AGENT_MODEL_REQUIRED``). A row without one ran on
+    the deployment's default model, so it is given that value
+    (``RuntimeConfigResolver.default_model_name``) and keeps it when the
+    deployment's model changes later. Since every other write requires a
+    model, such rows are the Agents an installation seeded before the seed
+    wrote one. A blank value counts as none, as it does on write. Rows that
+    name a model and deleted rows, which no reader resolves, are left alone,
+    so a repeated run changes nothing.
+
+    Raises when a row needs a model and the deployment configures none.
+    """
+    from astrabox.common.utils.settings import load_astrabox_settings
+    from astrabox.core.service.orchestrator.runtime.config_resolver import (
+        RuntimeConfigResolver,
+    )
+
+    settings = load_astrabox_settings()
+    collection = await get_collection(settings.agents_collection)
+    modelless = [
+        document
+        async for document in collection.find({"deleted": {"$ne": True}})
+        if not str(document.get("model") or "").strip()
+    ]
+    if not modelless:
+        logger.info("schema migration found no Agent row without a model")
+        return
+    model = RuntimeConfigResolver(settings).default_model_name()
+    if not model:
+        raise RuntimeError(
+            f"{len(modelless)} Agent row(s) name no model and this deployment "
+            "configures no default model to give them; set ANTHROPIC_MODEL (or "
+            "ASTRABOX_MODEL_NAME) and start again"
+        )
+    given = 0
+    for document in modelless:
+        agent_id = str(document.get("agent_id") or "").strip()
+        identity = {"agent_id": agent_id} if agent_id else {"_id": document.get("_id")}
+        # Matched against the value read, so an Agent saved with a model of its
+        # own since then keeps it.
+        unchanged = (
+            {"model": document["model"]}
+            if "model" in document
+            else {"model": {"$exists": False}}
+        )
+        result = await collection.update_one(
+            {**identity, **unchanged}, {"$set": {"model": model}}
+        )
+        given += int(getattr(result, "modified_count", 0) or 0)
+    logger.info(
+        "schema migration gave %d Agent row(s) the deployment's default model %r",
+        given,
+        model,
+    )
+
+
 MIGRATIONS: list[Migration] = [
     Migration(
         1,
@@ -224,6 +283,11 @@ MIGRATIONS: list[Migration] = [
         5,
         "key Agent rows stored before the Agent list's case-insensitive order",
         _v5_key_agents_for_the_list_order,
+    ),
+    Migration(
+        6,
+        "give live Agent rows that name no model the deployment's default model",
+        _v6_give_agents_the_deployment_model,
     ),
 ]
 

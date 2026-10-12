@@ -1,3 +1,4 @@
+import { skillSourceLabel, type SkillDescriptor } from '@/types';
 import { useTranslation } from 'react-i18next';
 
 import { ErrorNote } from '@/components/shell';
@@ -7,7 +8,7 @@ import { ConsoleDangerButton } from './console';
 export interface CatalogSelection {
   /** `{provider, item_id}` assignment rows. */
   mcpServers: Array<{ provider: string; itemId: string }>;
-  /** The Git sources the selected catalog Skills compiled to, else their ids. */
+  /** The sources the selected catalog Skills compiled to, else their ids. */
   skills: string[];
 }
 
@@ -32,7 +33,7 @@ export function catalogSelectionOf(record: Record<string, unknown> | null | unde
   });
   const snapshot = record?.extension_catalog;
   const stored = snapshot && typeof snapshot === 'object' ? (snapshot as Record<string, unknown>) : {};
-  const sources = strings(stored.skills);
+  const sources = Array.isArray(stored.skills) ? (stored.skills as SkillDescriptor[]).map(skillSourceLabel) : [];
   return { mcpServers, skills: sources.length > 0 ? sources : strings(stored.skill_ids) };
 }
 

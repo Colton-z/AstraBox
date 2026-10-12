@@ -122,17 +122,7 @@ export default function AgentsListPage() {
       key: 'model',
       intent: 'identifier',
       header: t('common:model'),
-      // An agent that names no model runs on the one the deployment
-      // configured: resolve_model_config() fills model_name from
-      // ASTRABOX_MODEL_NAME at turn time. A dash would read as a data hole, so
-      // the cell names that behaviour instead. It is a word, not an identity,
-      // so it leaves the column's mono face.
-      cell: (row) =>
-        agentModel(row) ? (
-          <span className="text-muted-foreground">{agentModel(row)}</span>
-        ) : (
-          <span className="font-sans text-muted-foreground">{t('common:model_deployment_default')}</span>
-        ),
+      cell: (row) => <span className="text-muted-foreground">{agentModel(row) || '—'}</span>,
     },
     {
       // Which environment an agent runs on decides its engine, its sandbox

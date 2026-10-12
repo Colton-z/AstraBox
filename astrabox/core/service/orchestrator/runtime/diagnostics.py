@@ -68,24 +68,6 @@ def normalize_diag_text(raw: str) -> str:
     return " ; ".join(lines)
 
 
-def extract_command_log_text(result: Any) -> str:
-    logs = getattr(result, "logs", None)
-    if logs is None:
-        return ""
-
-    chunks: list[str] = []
-    for stream_name in ("stdout", "stderr"):
-        stream = getattr(logs, stream_name, None)
-        if not stream:
-            continue
-        for item in stream:
-            text = getattr(item, "text", None)
-            if text is None:
-                text = str(item)
-            chunks.append(str(text))
-    return "".join(chunks)
-
-
 def _compact_lifecycle_diagnostic_section(raw: str, *, keep_tail: bool) -> str:
     text = normalize_diag_text(raw)
     if len(text) <= _LIFECYCLE_DIAGNOSTIC_SECTION_MAX_CHARS:
@@ -140,20 +122,16 @@ async def run_sandbox_diag_command(
     command: str,
     timeout_seconds: float = 6.0,
 ) -> str:
-    command_runner = getattr(sandbox, "commands", None)
-    if command_runner is None:
-        return ""
+    """What one diagnostic command printed, or nothing when the box cannot answer.
 
-    run_fn = getattr(command_runner, "run", None)
-    if not callable(run_fn):
-        return ""
-
+    A hint for a startup failure report, so a box that cannot run it costs the
+    report this hint rather than the report itself.
+    """
     try:
-        result = await asyncio.wait_for(run_fn(command), timeout=timeout_seconds)
+        result = await sandbox.commands.run(command, timeout=timeout_seconds)
     except Exception:
         return ""
-
-    return extract_command_log_text(result)
+    return str(result.output)
 
 
 async def collect_runtime_start_diagnostics(

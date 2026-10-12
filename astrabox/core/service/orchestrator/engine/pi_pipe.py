@@ -1,10 +1,10 @@
-"""Pi's half of the execd pipe: which record answers which command.
+"""Pi's half of its process pipe: which record answers which command.
 
 ``pi --mode rpc`` speaks newline-delimited JSON on stdin/stdout, which is
-exactly what :class:`ExecdJsonLineChannel` carries. The channel owns the pipe
-— the PTY resource, the byte cursor and its replay gap, LF record framing, the
-stderr tail, one terminal failure. This module owns what a record *means* to
-pi, and nothing else.
+exactly what :class:`ProcessJsonLineChannel` carries. The channel owns the
+pipe — the box process, the byte cursor, LF record framing, the stderr tail,
+one terminal failure. This module owns what a record *means* to pi, and
+nothing else.
 
 Two readings are pi's own and are stated here rather than assumed:
 
@@ -29,19 +29,17 @@ import asyncio
 from dataclasses import dataclass
 from typing import Any
 
-import httpx
-
 from astrabox.core.service.orchestrator.engine.base import (
     EngineOutputAlreadyObserved,
     EngineStreamDetached,
 )
-from astrabox.core.service.orchestrator.runtime.execd_json_lines import (
-    ExecdChannelAlreadyAttached,
-    ExecdChannelDetached,
-    ExecdJsonLineChannel,
+from astrabox.core.service.orchestrator.runtime.process_json_lines import (
+    ProcessJsonLineChannel,
 )
-from astrabox.core.service.orchestrator.runtime.pty_terminal import (
-    ResolvedExecdEndpoint,
+from astrabox.seams.sandbox_data import (
+    SandboxProcessAlreadyAttached,
+    SandboxProcessDetached,
+    SandboxProcesses,
 )
 
 _RPC_TIMEOUT_SECONDS = 120.0
@@ -61,42 +59,36 @@ class PiWireRecord:
 
 
 class PiRpcProcess:
-    """One ``pi --mode rpc`` process behind one execd pipe session."""
+    """One ``pi --mode rpc`` process, one of its box's long-lived processes."""
 
     def __init__(
         self,
         *,
-        endpoint: ResolvedExecdEndpoint,
+        processes: SandboxProcesses,
         cwd: str,
         command: str,
         pty_session_id: str | None = None,
-        http_transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
-        self._channel = ExecdJsonLineChannel(
-            endpoint=endpoint,
+        self._channel = ProcessJsonLineChannel(
+            processes=processes,
             cwd=cwd,
             command=command,
             label="pi RPC",
             on_record=self._on_record,
             on_failure=self._on_failure,
-            pty_session_id=pty_session_id,
-            http_transport=http_transport,
+            process_id=pty_session_id,
         )
         self._records: asyncio.Queue[PiWireRecord | BaseException] = asyncio.Queue()
         self._fatal: BaseException | None = None
 
     # ── delegated pipe state ─────────────────────────────────────────────
     @property
-    def endpoint(self) -> ResolvedExecdEndpoint:
-        return self._channel.endpoint
-
-    @property
     def cwd(self) -> str:
         return self._channel.cwd
 
     @property
     def pty_session_id(self) -> str | None:
-        return self._channel.pty_session_id
+        return self._channel.process_id
 
     @property
     def is_connected(self) -> bool:
@@ -214,9 +206,9 @@ class PiRpcProcess:
     async def _on_failure(self, exc: BaseException) -> None:
         if self._fatal is not None:
             return
-        if isinstance(exc, ExecdChannelAlreadyAttached):
+        if isinstance(exc, SandboxProcessAlreadyAttached):
             self._fatal = EngineOutputAlreadyObserved(str(exc))
-        elif isinstance(exc, ExecdChannelDetached):
+        elif isinstance(exc, SandboxProcessDetached):
             self._fatal = EngineStreamDetached(str(exc))
         else:
             self._fatal = exc

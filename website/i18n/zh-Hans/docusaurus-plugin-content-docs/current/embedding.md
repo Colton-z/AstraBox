@@ -204,8 +204,9 @@ Deployment、应用扩展、就绪与排空、管理台或任何 HTTP 能力时�
 
 可用 Provider 接口见[系统架构](architecture.md#plugin-interfaces)。适配器指南分别介绍
 [Agent 程序](writing-an-engine-adapter.md)、
-[消息平台](writing-a-channel-provider.md)和
-[调度器](writing-a-scheduler-provider.md)。
+[消息平台](writing-a-channel-provider.md)、
+[调度器](writing-a-scheduler-provider.md)和
+[沙箱 provider](writing-a-sandbox-provider.md)。
 
 ## 进程与安全要求
 

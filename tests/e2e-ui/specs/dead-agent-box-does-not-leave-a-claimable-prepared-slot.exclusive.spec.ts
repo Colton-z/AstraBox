@@ -291,7 +291,7 @@ test('an out-of-band Agent box death withdraws its prepared slot and the next co
   });
   // The real entry point. `api.startConversation` takes the same server path
   // but would not show whether a user can get there.
-  await card.getByRole('button').click();
+  await card.getByTestId('agent-start').click();
 
   // Resolve the click with a union rather than a bare wait, so a start the
   // picker refuses reports what the page said instead of a navigation timeout.

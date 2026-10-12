@@ -1,4 +1,5 @@
 import { cn } from '@/lib/utils';
+import { ErrorNote } from '@/components/shell';
 import { Button } from '@/components/ui/button';
 import { Card, CardAction, CardContent, CardFooter, CardHeader } from '@/components/ui/card';
 import { ConsoleSavedTag } from './ConsoleForm';
@@ -23,6 +24,7 @@ export function ConsoleCard({
   dirty = false,
   blocked = false,
   blockedReason,
+  error,
   saving = false,
   saved = false,
   saveLabel,
@@ -48,6 +50,14 @@ export function ConsoleCard({
   /** This card cannot be written yet — `blockedReason` says what is missing. */
   blocked?: boolean;
   blockedReason?: React.ReactNode;
+  /**
+   * Why the server refused the last save of these fields. It stands at the
+   * end of the fields, directly above the Save that was pressed, and stays
+   * until the page clears it: a refusal shown anywhere else on a long page is
+   * out of view when the reader is at the button, and a card that only lost
+   * its spinner reads as saved.
+   */
+  error?: React.ReactNode;
   saving?: boolean;
   saved?: boolean;
   saveLabel?: React.ReactNode;
@@ -80,7 +90,10 @@ export function ConsoleCard({
       </CardHeader>
       {/* CardContent carries the horizontal padding and nothing else, so the
           24px between a card's fields is re-supplied here. */}
-      <CardContent className="flex flex-col gap-(--card-spacing)">{children}</CardContent>
+      <CardContent className="flex flex-col gap-(--card-spacing)">
+        {children}
+        {error && <ErrorNote>{error}</ErrorNote>}
+      </CardContent>
       {(note || onSave) && (
         /* The foot is a shallower band than the body it closes: 12px against 24. */
         <CardFooter className="justify-between gap-4 rounded-b-lg bg-muted px-(--card-spacing) py-3">

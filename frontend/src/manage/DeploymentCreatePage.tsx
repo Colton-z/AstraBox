@@ -22,6 +22,7 @@ import {
 } from './console';
 import {
   channelEditField,
+  channelParticipantHelp,
   channelExecutionModeField,
   channelExecutionUserField,
   channelFieldValues,
@@ -238,13 +239,13 @@ export default function DeploymentCreatePage() {
           required: onAssistant,
           idTag: 'allowed_participants',
           rows: 2,
-          placeholder: 'telegram:123456789',
+          placeholder: selectedProvider?.participant_example || undefined,
           get: (value: Record<string, unknown>) => value.allowed_participants,
           set: (value: Record<string, unknown>, next: unknown) => ({
             ...value,
             allowed_participants: next,
           }),
-          help: t('manage:deployments.allowed_participants_help'),
+          help: `${t('manage:deployments.allowed_participants_help')} ${channelParticipantHelp(t, selectedProvider)}`,
         },
         ...selectedProvider.config_fields.map((field) =>
           channelEditField(field, 'channel_config'),

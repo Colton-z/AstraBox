@@ -123,9 +123,12 @@ for capability declarations, consent, isolation, and size limits.
 
 AstraBox does not impose one global JSON request-body limit across every route.
 The reverse proxy may set a deployment-wide limit, and individual endpoints
-enforce limits required by their resource. File uploads are streamed. A single
-Files API download is limited to 64 MiB so one response cannot consume
-unbounded API-process memory.
+enforce limits required by their resource. File uploads and downloads stream:
+an upload is spooled to a temporary file on the server and then streamed into
+the sandbox, and a download streams from the sandbox as the client reads it.
+AstraBox sets no size limit on either. An upload needs free disk space for the
+file on the server and, while the sandbox writes it into place, twice its size
+in the sandbox.
 
 When operating behind a proxy, configure its request, response, and streaming
 timeouts for the largest operation the deployment permits. Return `413` from

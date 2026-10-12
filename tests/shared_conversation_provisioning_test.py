@@ -29,7 +29,7 @@ class _Files:
         self.log = log
         self.written: dict[str, dict[str, Any]] = {}
 
-    async def write_file(
+    async def write_bytes(
         self,
         path: str,
         body: bytes,
@@ -426,7 +426,7 @@ async def test_engine_env_and_mirror_are_delivered_before_launch(
     record = sandbox.files.written[path]
     assert record["owner"] == "conv_abc"
     assert record["group"] == "conv_abc"
-    assert record["mode"] == 600
+    assert record["mode"] == 0o600
     body = record["body"].decode("utf-8")
     assert "export DEEPSEEK_API_KEY=placeholder-cred" in body
     assert "export DEEPSEEK_BASE_URL=https://gw.test" in body

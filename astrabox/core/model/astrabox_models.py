@@ -1,4 +1,5 @@
 from dataclasses import asdict, dataclass, field
+from astrabox.seams.skills import SkillDescriptor
 from enum import Enum
 from typing import Any
 
@@ -110,7 +111,7 @@ class AgentView:
     #: Whether this Agent's conversations receive the built-in ``artifacts``
     #: tools. Assistants have no such switch and keep the default.
     artifacts_enabled: bool = True
-    skills: list[str] = field(default_factory=list)
+    skills: list[SkillDescriptor] = field(default_factory=list)
     #: Opaque options interpreted only by the selected engine adapter.
     engine_options: dict[str, Any] | None = None
     default_repo: dict[str, Any] | None = None
@@ -120,7 +121,7 @@ class AgentView:
     #: without a ``provider`` are the author's own, and the runtime admits
     #: their hosts only within what an administrator made available. Empty
     #: means every Skill is the author's.
-    catalog_skills: tuple[str, ...] = ()
+    catalog_skills: tuple[SkillDescriptor, ...] = ()
     #: Administrator-managed credential policy. This is carried only on the
     #: internal runtime view and is never exposed through Agent/Assistant APIs.
     credential_vault_ids: list[str] = field(default_factory=list)
@@ -177,7 +178,6 @@ class AgentView:
     entrypoint: str | None = None
     display_name: str | None = None
     icon: str | None = None
-    tags: list[str] = field(default_factory=list)
     use_cases: list[str] = field(default_factory=list)
     #: Environment-owned outbound reachability. The runtime parses this product
     #: shape into the provider-neutral sandbox seam; credential bindings are a

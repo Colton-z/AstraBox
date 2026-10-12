@@ -13,10 +13,10 @@ import websockets
 from astrabox.common.utils.errors import APIError
 from astrabox.core.service.orchestrator.engine.base import EngineOutputAlreadyObserved, EngineStreamDetached
 from astrabox.core.service.orchestrator.engine.deepseek_harness_link import DshApiError, DshApiLink
-from astrabox.core.service.orchestrator.runtime.pty_terminal import ResolvedExecdEndpoint
+from astrabox.seams.sandbox_data import SandboxEndpoint
 
 
-_ENDPOINT = ResolvedExecdEndpoint(origin="http://box.test:44780", headers={"X-Route": "box"})
+_ENDPOINT = SandboxEndpoint(url="http://box.test:44780", headers={"X-Route": "box"})
 
 
 def _link(handler: Any) -> DshApiLink:
@@ -167,8 +167,7 @@ async def _serve(
 
 
 def _link_for(server: Any) -> DshApiLink:
-    return DshApiLink(endpoint=ResolvedExecdEndpoint(
-        origin=f"http://127.0.0.1:{server.sockets[0].getsockname()[1]}", headers={"Cookie": "native=signed"},
+    return DshApiLink(endpoint=SandboxEndpoint(url=f"http://127.0.0.1:{server.sockets[0].getsockname()[1]}", headers={"Cookie": "native=signed"},
     ))
 
 
@@ -345,8 +344,7 @@ async def test_only_an_observer_conflict_is_reported_as_an_existing_collector(
         raise AssertionError("rejected handshake must never upgrade")
 
     server = await websockets.serve(handler, "127.0.0.1", 0, process_request=reject)
-    link = DshApiLink(endpoint=ResolvedExecdEndpoint(
-        origin=f"http://127.0.0.1:{server.sockets[0].getsockname()[1]}", headers={},
+    link = DshApiLink(endpoint=SandboxEndpoint(url=f"http://127.0.0.1:{server.sockets[0].getsockname()[1]}", headers={},
     ), observe_only=observe_only)
     try:
         expected = EngineOutputAlreadyObserved if observe_only and status == 409 else websockets.exceptions.InvalidStatus

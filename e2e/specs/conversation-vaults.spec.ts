@@ -256,7 +256,7 @@ test("an admin-managed credential is inherited by Agent conversations without us
         candidate.request().method() === "POST"
         && candidate.url().includes(`/api/v1/agents/${agent.agent_id}/conversations`),
       ),
-      agentCard.getByRole("button").click(),
+      agentCard.getByTestId("agent-start").click(),
     ]);
     expect(conversationRequest.postData()).toBeNull();
     const created = await responseData<{ session_id: string }>(

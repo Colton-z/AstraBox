@@ -146,17 +146,6 @@ class EnginePlatform(Protocol):
         """Clone the resolved Agent's default repository into its workspace."""
         ...
 
-    async def mount_assistant_workspace_storage(
-        self,
-        sandbox: Any,
-        *,
-        user_id: str,
-        assistant_id: str,
-        engine_kind: str,
-    ) -> None:
-        """Mount the platform-owned persistent Assistant workspace."""
-        ...
-
     async def prepare_workspace_storage(
         self,
         sandbox: Any,

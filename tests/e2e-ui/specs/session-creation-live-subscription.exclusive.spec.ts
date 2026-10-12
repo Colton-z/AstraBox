@@ -173,7 +173,7 @@ test('agent_chat creation waits for READY before opening the SDK live subscripti
       `[data-testid="agent-option"][data-agent-name="${agent.name}"]`,
     );
     await expect(card).toBeVisible({ timeout: 30_000 });
-    await card.getByRole('button').click();
+    await card.getByTestId('agent-start').click();
     await page.waitForURL((url) => /\/sessions\/[^/]+$/.test(url.pathname), {
       timeout: 180_000,
     });

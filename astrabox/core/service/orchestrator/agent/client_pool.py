@@ -17,6 +17,8 @@ and idle expiry are the pool's for both.
 
 from __future__ import annotations
 
+from astrabox.core.service.orchestrator.runtime.skill_sources import normalize_skills
+
 import asyncio
 import re
 import uuid
@@ -445,11 +447,7 @@ async def build_agent_client_pool_plan(
             ),
             prepare_agent_runtime_skill_cache(
                 get_underlying_sandbox(handle),
-                [
-                    str(item).strip()
-                    for item in (_value(template, "skills", []) or [])
-                    if str(item or "").strip()
-                ],
+                normalize_skills(_value(template, "skills", [])),
             ),
         )
         if conversation_owned:

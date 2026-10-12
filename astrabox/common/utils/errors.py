@@ -502,6 +502,16 @@ for _code, _status, _category, _retryable, _owner in (
         False,
         "platform",
     ),
+    # A feature reached the long-lived processes of a backend that has none
+    # (SandboxProvider.supports_process_sessions). Retrying cannot add them;
+    # the deployment selects a backend that has them for that feature.
+    (
+        "SANDBOX_PROCESS_SESSIONS_UNSUPPORTED",
+        501,
+        "runtime.sandbox",
+        False,
+        "platform",
+    ),
     (
         "SANDBOX_CLIENT_POOL_UNAVAILABLE",
         503,
@@ -535,6 +545,15 @@ for _code, _status, _category, _retryable, _owner in (
     # released, so it is retryable; the message names the ceiling, its use and
     # its limit.
     ("SANDBOX_CAPACITY_EXHAUSTED", 429, "runtime.sandbox", True, "platform"),
+    # An Agent category id names no category, or a new name is one another
+    # category already has (names are compared without regard to case).
+    ("AGENT_CATEGORY_NOT_FOUND", 404, "request", False, "client"),
+    ("AGENT_CATEGORY_NAME_TAKEN", 409, "request", False, "client"),
+    # A conversation start was re-executed after a platform restart on a
+    # sandbox backend that cannot look a box up by its assignment, so whether
+    # the earlier execution made a box is unknown. The same command is never
+    # retried; starting the conversation again is a new command.
+    ("SANDBOX_CREATE_INTERRUPTED", 409, "runtime.startup", False, "platform"),
     # Port 8080 is the sandbox's control API, not an application preview.
     ("EXPOSE_PORT_RESERVED", 400, "request", False, "client"),
     ("AGENT_RUNTIME_GENERATION_CONFLICT", 409, "state", True, "platform"),
@@ -626,6 +645,11 @@ for _code, _status, _category, _retryable, _owner in (
     # ASTRABOX_DEPLOY_KEY_SECRET_NAMES. The author picks a listed key, or an
     # administrator lists this one.
     ("AGENT_DEPLOY_KEY_NOT_ALLOWED", 403, "configuration.agent", False, "template"),
+    # A stored Agent names no model. Every write requires one and schema
+    # migration 6 gives one to rows stored without it, so only a row written
+    # past both reaches this. Resolving it anyway would run the deployment's
+    # default model in its place; whoever manages the Agent sets its model.
+    ("AGENT_MODEL_REQUIRED", 409, "configuration.agent", False, "template"),
     # A deployment configured a storage medium that cannot hold an exclusive
     # write claim for a workspace that needs one. Nobody's request is wrong, so
     # no 4xx: an operator changes the provider or the medium. Raised where the

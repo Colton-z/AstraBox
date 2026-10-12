@@ -58,10 +58,10 @@ from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
 from astrabox.core.service.orchestrator.engine.base import EngineStreamDetached
 from astrabox.core.service.orchestrator.runtime.pty_terminal import (
-    ResolvedExecdEndpoint,
     resolve_sandbox_endpoint,
     websocket_header_kwargs,
 )
+from astrabox.seams.sandbox_data import SandboxEndpoint
 
 logger = get_logger(__name__)
 
@@ -108,7 +108,7 @@ class CodexAppServerLink:
     def __init__(
         self,
         *,
-        endpoint: ResolvedExecdEndpoint,
+        endpoint: SandboxEndpoint,
         forward_token: str,
         connector: Any = None,
     ) -> None:
@@ -158,7 +158,7 @@ class CodexAppServerLink:
         return dict(self._server_info) if self._server_info else None
 
     async def _attach(self) -> None:
-        origin = self.endpoint.origin
+        origin = self.endpoint.url
         url = ("wss://" + origin[len("https://"):]) if origin.startswith("https://") else (
             "ws://" + origin[len("http://"):]
         )

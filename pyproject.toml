@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "astrabox"
-version = "0.1.6"
+version = "0.1.7"
 description = "AstraBox Community — an open, self-hosted agent runtime that streams a sandboxed coding agent to your frontend over the AI-SDK Data-Stream-Protocol."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -198,6 +198,9 @@ codex = "astrabox.core.service.orchestrator.engine.codex:CodexEngineAdapter"
 # bundled `direct` passthrough — see the reasoning in astrabox/providers/model.py.
 [project.entry-points."astrabox.providers.model"]
 litellm = "astrabox.providers.model:LiteLLMModelEndpointProvider"
+
+[project.entry-points."astrabox.providers.skills"]
+git = "astrabox.providers.skill_git:GitSkillContentProvider"
 
 [project.entry-points."astrabox.providers.extensions"]
 litellm = "astrabox.providers.litellm_extensions:LiteLLMExtensionProvider"

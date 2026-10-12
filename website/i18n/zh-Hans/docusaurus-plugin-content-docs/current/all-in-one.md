@@ -45,7 +45,7 @@ chmod 600 ~/.config/astrabox/model.env
 | Anthropic 兼容服务 | `ANTHROPIC_BASE_URL=` 服务地址、`ANTHROPIC_API_KEY=` 它的 Key、`ANTHROPIC_MODEL=` 它的模型 ID |
 | OpenAI 兼容服务 | `OPENAI_COMPATIBLE_BASE_URL=` 服务地址、`OPENAI_COMPATIBLE_API_KEY=` 它的 Key、`ANTHROPIC_MODEL=openai-compatible/` 加上它的模型 ID |
 
-`ANTHROPIC_MODEL` 是预置 Agent 使用的模型。这些设置与安装脚本写入的相同；
+`ANTHROPIC_MODEL` 是首次启动创建预置 Agent 时使用的模型。这些设置与安装脚本写入的相同；
 [连接模型](models.md)说明了它们背后的网关路由。如果暂时不接模型服务，第 2 步去掉
 `--env-file` 这一行，之后在**管理台 → 集成服务 → LiteLLM 网关**中添加路由。
 

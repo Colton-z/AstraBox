@@ -23,6 +23,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from astrabox.common.utils.errors import APIError
+from astrabox.seams.sandbox_data import SandboxCommandResult
 from astrabox.seams.sandbox_disposal import SandboxDestruction
 from astrabox.common.utils.user_context import UserContext
 from astrabox.core.service.orchestrator.assistant.assistant_service import (
@@ -403,28 +404,28 @@ class _Runtime:
     async def connect_sandbox_only(self, sandbox_id: str) -> Any:
         assert sandbox_id not in self.gone
 
-        async def run(command: str) -> Any:
+        async def run(command: str, **_options: Any) -> Any:
             self.sandbox_commands.append(command)
             argv = shlex.split(command)
             programs = {"astrabox-hermes-scheduler", "astrabox-hermes-state-mirror", "astrabox-hermes"}
             if argv[:2] == ["supervisorctl", "stop"] and argv[2] in programs:
                 self.stopped_programs.add(argv[2])
                 self.save_operations.append(f"stop:{argv[2]}")
-                return SimpleNamespace(exit_code=0, stdout="", error=None)
+                return SandboxCommandResult(exit_code=0, stdout="", stderr="")
             if argv[:2] == ["bash", "-lc"]:
                 program = shlex.split(argv[2])[3].rstrip(";")
                 assert program in programs
                 self.save_operations.append(f"status:{program}")
                 state = "STOPPED" if program in self.stopped_programs else "RUNNING"
-                return SimpleNamespace(exit_code=0, stdout=f"{program} {state}", error=None)
+                return SandboxCommandResult(exit_code=0, stdout=f"{program} {state}", stderr="")
             if argv[:1] == ["runuser"] and "astrabox-hermes-state-save" in argv:
                 assert self.stopped_programs == programs
                 failed = self.native_save_fails
                 self.save_operations.append("save_failed" if failed else "save_complete")
-                return SimpleNamespace(
+                return SandboxCommandResult(
                     exit_code=1 if failed else 0,
                     stdout="" if failed else "HERMES_STATE_SAVE_COMPLETE snapshot_id=wake-snapshot",
-                    error=None,
+                    stderr="",
                 )
             raise AssertionError(f"unexpected sandbox command: {command}")
 

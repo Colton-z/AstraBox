@@ -1,3 +1,4 @@
+import type { SkillDescriptor } from '@/types';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -42,7 +43,7 @@ interface DefaultsDraft {
   environment_name: string;
   model_name: string;
   instructions: string;
-  skills: string[];
+  skills: SkillDescriptor[];
   mcp_servers: Record<string, unknown> | undefined;
   packages: unknown[] | undefined;
   engine_options: Record<string, unknown>;

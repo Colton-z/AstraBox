@@ -12,7 +12,8 @@ import { expect, test } from '@playwright/test';
 
 import { AstraApi } from '../fixtures/astraApi';
 import { documentsByField } from '../fixtures/dbOracle';
-import { apiPath } from '../fixtures/env';
+import { apiPath, appPath } from '../fixtures/env';
+import { channelCallback } from '../fixtures/channelCallback';
 import { call, deployedApiClient, issueToken, json, requiredEnvironment } from '../fixtures/oidcMachine';
 import { PlatformApi } from '../fixtures/platformApi';
 import { satoriSource } from '../fixtures/satoriSource';
@@ -22,13 +23,15 @@ import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
 const sessions = trackSessions();
 let agentId = '';
 let deploymentId = '';
+let genericDeploymentId = '';
 onPassOnly(async ({ request }) => {
+  if (genericDeploymentId) await new PlatformApi(request).deleteDeployment(agentId, genericDeploymentId);
   if (deploymentId) await new PlatformApi(request).deleteDeployment(agentId, deploymentId);
   if (agentId) await new AstraApi(request).deleteAgent(agentId);
 });
 
 test('linked participants run as their own accounts, and anyone else is refused with a notice', async ({
-  request, playwright,
+  request, playwright, page,
 }, info) => {
   const api = new AstraApi(request);
   const platform = new PlatformApi(request);
@@ -36,6 +39,7 @@ test('linked participants run as their own accounts, and anyone else is refused 
     baseURL: requiredEnvironment('ASTRABOX_E2E_CONSOLE_URL'),
     storageState: { cookies: [], origins: [] },
   });
+  const recipient = await channelCallback();
   let source: Awaited<ReturnType<typeof satoriSource>> | undefined;
   try {
     const discovery = await json(
@@ -62,12 +66,49 @@ test('linked participants run as their own accounts, and anyone else is refused 
     await api.setAgentAccess(agentId, {
       visibility: 'allowlist', admins: [], allowed_user_ids: [member.user_id],
     });
+    // Generic JSON identities are the raw sender, with no platform prefix.
+    await page.goto(appPath('/manage/deployments/new'));
+    await page.getByLabel('Trigger', { exact: true }).selectOption('channel:generic_json');
+    await expect(page.getByText(/the request's sender value, exactly as sent/)).toBeVisible();
+    await expect(page.getByLabel('Allowed senders', { exact: true })).toHaveAttribute('placeholder', 'user123');
+    await page.getByLabel('Trigger', { exact: true }).selectOption('channel:satori');
+    await expect(page.getByText(/platform:user-id, as Satori names the platform and the user/)).toBeVisible();
+    const generic = await platform.createDeployment(agentId, {
+      scene: 'channel:generic_json', prompt_prefix: '', execution_mode: 'linked',
+      allowed_participants: ['user123'],
+    });
+    genericDeploymentId = generic.deployment_id;
+    await page.goto(appPath(`/manage/deployments/${genericDeploymentId}`));
+    await expect(page.getByText(/the request's sender value, exactly as sent/)).toHaveCount(2);
+    await page.getByLabel('Sender', { exact: true }).fill('user123');
+    await page.getByLabel('AstraBox user ID', { exact: true }).fill(admin.user_id);
+    await page.getByRole('button', { name: 'Link', exact: true }).click();
+    await expect(page.getByRole('cell', { name: 'user123', exact: true })).toBeVisible();
+    const marker = `RAW_${id.slice(0, 8)}`;
+    for (const sender of ['generic_json:user123', 'other-user', 'user123']) {
+      const response = await request.post(apiPath(`/deployments/${genericDeploymentId}/trigger`), {
+        headers: { 'x-channel-secret': String(generic.secret) },
+        data: { sender, conversation_id: id, message_id: `${id}-${sender}`,
+          text: `Reply with exactly ${marker}. Do not use tools.`,
+          reply: { callback_url: recipient.url } },
+      });
+      expect(response.ok(), await response.text()).toBe(true);
+      const receipt = (await response.json()).data;
+      expect(receipt.status).toBe(sender === 'user123' ? 'accepted' : 'ignored');
+      if (sender === 'user123') sessions.push(String(receipt.session_id));
+      else expect(receipt.session_id ?? '').toBe('');
+    }
+    await expect.poll(() => recipient.deliveries.map((item) => item.text), { timeout: 60_000 })
+      .toContainEqual(expect.stringContaining(marker));
+    expect(recipient.errors).toEqual([]);
     deploymentId = (await platform.createDeployment(agentId, {
       scene: 'channel:satori', prompt_prefix: '', attention_policy: 'mentions',
       execution_mode: 'linked',
       channel_config: { endpoint: live.endpoint }, credentials: { token: live.token },
     })).deployment_id;
     await live.waitConnected();
+    await page.goto(appPath(`/manage/deployments/${deploymentId}`));
+    await expect(page.getByText(/platform:user-id, as Satori names the platform and the user/)).toHaveCount(2);
 
     const linksRoute = `/admin/agents/${agentId}/deployments/${deploymentId}/account-links`;
     const denied = await call(machine, token.value, 'PUT', linksRoute, {
@@ -141,7 +182,7 @@ test('linked participants run as their own accounts, and anyone else is refused 
     expect(JSON.stringify(memberMessages.payload)).toContain(memberToken);
     expect(JSON.stringify(memberMessages.payload)).not.toContain('Which token was that?');
     expect(documentsByField('sessions', '$.agent_id', agentId).map((item) => String(item.session_id)).sort())
-      .toEqual([memberSession, adminSession].sort());
+      .toEqual([...sessions].sort());
   } finally {
     await info.attach('channel-linked-accounts-evidence', {
       body: JSON.stringify({
@@ -151,6 +192,7 @@ test('linked participants run as their own accounts, and anyone else is refused 
       contentType: 'application/json',
     });
     await source?.close();
+    await recipient.close();
     await machine.dispose();
   }
 });

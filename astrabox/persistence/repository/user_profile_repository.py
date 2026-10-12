@@ -17,24 +17,22 @@ _COLLECTION_NAME = "user_profiles"
 class UserProfileRepository:
 
     async def upsert_if_absent(self, user_id: str, display_name: str) -> None:
+        """Record a user's display name once; a stored profile is never overwritten.
+
+        One atomic upsert, so two first conversations of the same user cannot
+        both insert. A store failure propagates to the caller.
+        """
         if not user_id or not display_name:
             return
-
-        async def _upsert() -> None:
-            collection = await get_async_collection(_COLLECTION_NAME)
-            existing = await collection.find_one({"_id": user_id})
-            if existing is not None:
-                return
-            await collection.insert_one({
-                "_id": user_id,
-                "display_name": display_name,
-                "created_at": utcnow_iso(),
-            })
-
-        try:
-            await run_mongo_with_retry("user_profiles.upsert_if_absent", _upsert)
-        except Exception:
-            logger.debug("user_profiles upsert skipped (duplicate or error) user_id=%s", user_id)
+        collection = await get_async_collection(_COLLECTION_NAME)
+        await run_mongo_with_retry(
+            "user_profiles.upsert_if_absent",
+            lambda: collection.update_one(
+                {"_id": user_id},
+                {"$setOnInsert": {"display_name": display_name, "created_at": utcnow_iso()}},
+                upsert=True,
+            ),
+        )
 
     async def batch_get_display_names(self, user_ids: list[str]) -> dict[str, str]:
         """Return {user_id: display_name} for all matching user_ids."""

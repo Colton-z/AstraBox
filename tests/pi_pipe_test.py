@@ -1,6 +1,6 @@
-"""Pi's reading of the execd pipe.
+"""Pi's reading of its process pipe.
 
-The transport itself is proven in ``execd_json_lines_test.py``. What is
+The transport itself is proven in ``process_json_lines_test.py``. What is
 verified here is only what pi adds: which record answers which command, that
 an unmatched response is reported rather than swallowed, and that a dead pipe
 reaches the platform as an engine-seam failure rather than as a runtime type
@@ -17,8 +17,7 @@ import pytest
 
 from astrabox.core.service.orchestrator.engine.base import EngineStreamDetached
 from astrabox.core.service.orchestrator.engine.pi_pipe import PiRpcProcess
-from astrabox.core.service.orchestrator.runtime.execd_json_lines import STDOUT
-from astrabox.core.service.orchestrator.runtime.pty_terminal import ResolvedExecdEndpoint
+from astrabox.seams.sandbox_data import ProcessOutput
 
 
 class _Socket:
@@ -28,28 +27,28 @@ class _Socket:
         self.sent: list[dict[str, Any]] = []
 
     async def send(self, payload: bytes) -> None:
-        assert payload[0] == 0x00, "commands must be written as stdin frames"
-        self.sent.append(json.loads(payload[1:].decode("utf-8")))
+        assert payload.endswith(b"\n"), "each command is one line"
+        self.sent.append(json.loads(payload.decode("utf-8")))
 
-    async def close(self) -> None:
+    async def detach(self) -> None:
         return None
 
 
 def _process(socket: Any = None) -> PiRpcProcess:
     process = PiRpcProcess(
-        endpoint=ResolvedExecdEndpoint(origin="http://sandbox.test", headers={}),
+        processes=object(),  # type: ignore[arg-type]
         cwd="/workspace",
         command="pi --mode rpc",
         pty_session_id="pty-1",
     )
     if socket is not None:
-        process._channel._ws = socket
+        process._channel._attachment = socket
     return process
 
 
 async def _feed(process: PiRpcProcess, record: dict[str, Any]) -> None:
-    await process._channel._handle_binary_frame(
-        bytes([STDOUT]) + json.dumps(record).encode("utf-8") + b"\n"
+    await process._channel._handle_frame(
+        ProcessOutput(stream="stdout", data=json.dumps(record).encode("utf-8") + b"\n")
     )
 
 
@@ -169,7 +168,7 @@ async def test_a_dead_pipe_crosses_the_seam_as_an_engine_stream_detachment() -> 
         async def send(self, _payload: bytes) -> None:
             raise OSError("pipe closed")
 
-        async def close(self) -> None:
+        async def detach(self) -> None:
             return None
 
     process = _process(_Broken())

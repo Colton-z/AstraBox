@@ -6,20 +6,14 @@ avoid sensitivity to dataclass module metadata under some import setups.
 
 import base64
 import contextlib
-import contextvars
 import hashlib
-import inspect
 import json
 import posixpath
 import re
 import shlex
 import zlib
-from datetime import timedelta
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
-
-from opensandbox.models.execd import ExecutionHandlers, RunCommandOpts
 
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
@@ -32,15 +26,29 @@ from astrabox.seams.sandbox import (
     SANDBOX_TENANCY_CONVERSATION,
     sandbox_for_sandbox,
 )
+from astrabox.seams.sandbox_data import (
+    SandboxCommandOutcomeUnknown,
+    SandboxCommandRefused,
+    SandboxCommandResult,
+)
+
+from astrabox.core.service.orchestrator.runtime.skill_sources import (
+    AGENT_RUNTIME_SKILL_CACHE_DIR as AGENT_RUNTIME_SKILL_CACHE_DIR,
+    normalize_skills,
+    prepare_agent_runtime_skill_cache as prepare_agent_runtime_skill_cache,
+    skill_cache_dir,
+    skill_manifest as _skill_manifest,
+    skill_repo_egress_hosts as skill_repo_egress_hosts,
+)
+from astrabox.providers.skill_git import _parse_skill_descriptor as _parse_skill_descriptor
+from astrabox.seams.skills import SkillDescriptor
 
 logger = get_logger(__name__)
 
-AGENT_RUNTIME_SKILL_CACHE_DIR = "/opt/conversation-runtime/claude-skills-cache"
+#: How long the installed conversation bootstrap may run. It clones the default
+#: repository and links the plugin cache, so it is network-bound.
+_BOOTSTRAP_TIMEOUT_SECONDS = 300.0
 
-# Skill-cache prep fetches each Agent-declared skill's content over the network
-# (via git clone); several skills can exceed the default 60s exec timeout, so give
-# it the same generous budget as the bootstrap.
-_SKILL_CACHE_PREP_TIMEOUT_MS = 300_000
 AGENT_RUNTIME_CONVERSATION_BOOTSTRAP_SCRIPT = "/usr/local/bin/astrabox-provision-conversation"
 ASSISTANT_PROFILE_BOOTSTRAP_SCRIPT = "/usr/local/bin/astrabox-provision-assistant-profile"
 AGENT_RUNTIME_CONVERSATION_BOOTSTRAP_API_PATH = "/conversation/bootstrap"
@@ -888,7 +896,7 @@ def command_for_identity(command: str, identity: dict[str, Any] | None) -> str:
 def _build_conversation_bootstrap_env(
     normalized: dict[str, Any],
     *,
-    skills: list[str] | tuple[str, ...] | None = None,
+    skills: list[SkillDescriptor] | tuple[SkillDescriptor, ...] | None = None,
     skills_target: str | None = None,
     install_script: str | None = None,
     restart_script: str | None = None,
@@ -916,11 +924,11 @@ def _build_conversation_bootstrap_env(
     if uid is not None and gid is not None:
         env["CONV_UID"] = str(int(uid))
         env["CONV_GID"] = str(int(gid))
-    skill_items = [str(item).strip() for item in (skills or []) if str(item).strip()]
+    skill_items = normalize_skills(skills)
     if skill_items:
         manifest = _skill_manifest(skill_items)
         env["CONV_SKILL_MANIFEST_B64"] = base64.b64encode(manifest.encode("utf-8")).decode("ascii")
-        env["CONV_SKILL_CACHE_DIR"] = AGENT_RUNTIME_SKILL_CACHE_DIR
+        env["CONV_SKILL_CACHE_DIR"] = skill_cache_dir(skill_items)
         if not str(skills_target or "").strip():
             raise APIError(
                 code="CONVERSATION_BOOTSTRAP_FAILED",
@@ -1027,6 +1035,32 @@ def _ready_identity_from_bootstrap_output(
     return ready
 
 
+async def _run_identity_command(
+    sandbox: Any,
+    command: str,
+    *,
+    env: dict[str, str] | None = None,
+    timeout: float | None,
+    error_code: str,
+    error_message: str,
+) -> SandboxCommandResult:
+    """Run one identity command, reporting a run that gave no answer under ``error_code``.
+
+    A box that cannot be reached raises its own ``SandboxUnreachable``; a
+    deadline, a refusal, or a missing exit status is this step failing.
+    """
+    try:
+        result: SandboxCommandResult = await sandbox.commands.run(
+            command, env=env, timeout=timeout
+        )
+    except (TimeoutError, SandboxCommandRefused, SandboxCommandOutcomeUnknown) as exc:
+        detail = f"{error_message}: {exc}"
+        if env:
+            detail += f"; env={_env_shape(env)}"
+        raise APIError(code=error_code, message=detail, status_code=502) from exc
+    return result
+
+
 async def _run_installed_conversation_bootstrap_script_via_command(
     sandbox: Any,
     env: dict[str, str],
@@ -1035,15 +1069,6 @@ async def _run_installed_conversation_bootstrap_script_via_command(
     error_message: str,
     assistant_profile: bool = False,
 ) -> str:
-    command_runner = getattr(sandbox, "commands", None)
-    run_fn = getattr(command_runner, "run", None) if command_runner is not None else None
-    if not callable(run_fn):
-        raise APIError(
-            code=error_code,
-            message=f"{error_message}: sandbox command runner is unavailable",
-            status_code=502,
-        )
-
     # `2>&1` because the script's readiness marker goes to stdout and its
     # failure line goes to stderr, and those are the two answers this call has.
     # Keeping them on one channel means a failure arrives with the line that
@@ -1053,30 +1078,21 @@ async def _run_installed_conversation_bootstrap_script_via_command(
         if assistant_profile else AGENT_RUNTIME_CONVERSATION_BOOTSTRAP_SCRIPT
     )
     command = f"bash {shlex.quote(script)} 2>&1"
-    bootstrap_timeout_ms = 300_000
-    streamed: list[str] = []
-
-    async def _keep(message: Any) -> None:
-        text = getattr(message, "text", None)
-        streamed.append(str(text if text is not None else message))
-
-    result = await run_sandbox_command(
-        run_fn,
+    result = await _run_identity_command(
+        sandbox,
         command,
-        envs=env,
-        timeout_in_millis=bootstrap_timeout_ms,
-        handlers=ExecutionHandlers(on_stdout=_keep, on_stderr=_keep),
+        env=env,
+        timeout=_BOOTSTRAP_TIMEOUT_SECONDS,
+        error_code=error_code,
+        error_message=error_message,
     )
-    error = getattr(result, "error", None)
-    output = _command_output(result, streamed=streamed)
-    if error or "CONVERSATION_BOOTSTRAP_READY" not in output:
+    output = _command_output(result)
+    if result.exit_code != 0 or "CONVERSATION_BOOTSTRAP_READY" not in output:
         raise APIError(
             code=error_code,
             message=(
-                f"{error_message}: "
-                f"{error or 'missing readiness marker'}; "
-                f"command={command!r}; dispatch={_last_dispatch_branch()}; "
-                f"env={_env_shape(env)}; output={output[:2000]!r}"
+                f"{error_message}: {_failure_reason(result)}; "
+                f"command={command!r}; env={_env_shape(env)}; output={output[:2000]!r}"
             ),
             status_code=502,
         )
@@ -1089,7 +1105,7 @@ async def run_conversation_bootstrap_script(
     *,
     sidecar_endpoint: str | None = None,
     bootstrap_transport: str = CONVERSATION_BOOTSTRAP_TRANSPORT_SIDECAR_HTTP,
-    skills: list[str] | tuple[str, ...] | None = None,
+    skills: list[SkillDescriptor] | tuple[SkillDescriptor, ...] | None = None,
     skills_target: str | None = None,
     install_script: str | None = None,
     restart_script: str | None = None,
@@ -1283,15 +1299,6 @@ async def provision_conversation_identity(sandbox: Any, identity: dict[str, Any]
             message="runtime_identity is missing required fields",
             status_code=500,
         )
-    command_runner = getattr(sandbox, "commands", None)
-    run_fn = getattr(command_runner, "run", None) if command_runner is not None else None
-    if not callable(run_fn):
-        raise APIError(
-            code="CONVERSATION_IDENTITY_UNSUPPORTED",
-            message="sandbox command runner is required to provision conversation identity",
-            status_code=502,
-        )
-
     user = normalized["linux_user"]
     home = normalized["home_dir"]
     workspace = normalized["workspace_source_dir"]
@@ -1323,13 +1330,18 @@ establish_conversation_identity_root
 	gid=$(id -g "$user")
 printf 'CONVERSATION_IDENTITY_READY user=%s uid=%s gid=%s home=%s workspace=%s\\n' "$user" "$uid" "$gid" "$home" "$workspace"
 """
-    result = await run_fn(f"bash -lc {shlex.quote(script)}")
-    error = getattr(result, "error", None)
+    result = await _run_identity_command(
+        sandbox,
+        f"bash -lc {shlex.quote(script)}",
+        timeout=None,
+        error_code="CONVERSATION_IDENTITY_UNSUPPORTED",
+        error_message="failed to provision conversation identity",
+    )
     output = _command_output(result)
-    if error or "CONVERSATION_IDENTITY_READY" not in output:
+    if result.exit_code != 0 or "CONVERSATION_IDENTITY_READY" not in output:
         raise APIError(
             code="CONVERSATION_IDENTITY_UNSUPPORTED",
-            message=f"failed to provision conversation identity: {error or 'missing readiness marker'}; output={output[:2000]!r}",
+            message=f"failed to provision conversation identity: {_failure_reason(result)}; output={output[:2000]!r}",
             status_code=502,
         )
     ready = dict(normalized)
@@ -1351,243 +1363,6 @@ printf 'CONVERSATION_IDENTITY_READY user=%s uid=%s gid=%s home=%s workspace=%s\\
     return ready
 
 
-def _parse_skill_descriptor(descriptor: str) -> tuple[str, str, str, str]:
-    """Parse a git skill descriptor ``<repo>@<ref>#<path>`` into
-    ``(repo, ref, path, name)``.
-
-    ``<repo>`` is required; ``@<ref>`` (branch/tag/commit) and ``#<path>`` (skill
-    dir inside the repo) are optional. The ref split is authority-aware so the
-    user in an SSH URL (``git@host:org/repo``) is not mistaken for a ref
-    delimiter. An HTTP(S) URL carrying credentials is refused: the descriptor is
-    stored in the Agent and its cache manifest and echoed in clone errors, so a
-    private HTTPS source authenticates through an ``http_basic`` Vault
-    credential that the egress sidecar adds outside the sandbox. Fails loud on a
-    malformed descriptor so a bad Agent entry never reaches a sandbox exec.
-    """
-    raw = descriptor.strip()
-    if not raw:
-        raise APIError(
-            code="AGENT_RUNTIME_SKILL_CACHE_FAILED",
-            message="skill descriptor must not be empty",
-            status_code=500,
-        )
-    repo_ref, _, path = raw.partition("#")
-    path = path.strip().strip("/")
-    scheme_match = re.match(r"^[A-Za-z][A-Za-z0-9+.\-]*://", repo_ref)
-    if scheme_match:
-        authority_start = scheme_match.end()
-        authority_end = repo_ref.find("/", authority_start)
-        if authority_end == -1:
-            authority_end = len(repo_ref)
-        userinfo_at = repo_ref.rfind("@", authority_start, authority_end)
-        scheme = scheme_match.group(0)[:-3].lower()
-        if userinfo_at != -1 and scheme in {"http", "https"}:
-            host = repo_ref[userinfo_at + 1:authority_end]
-            raise APIError(
-                code="AGENT_RUNTIME_SKILL_CACHE_FAILED",
-                message=(
-                    f"skill source {scheme}://{host}/… embeds credentials in its URL; "
-                    "keep the URL clean and assign an HTTP Basic (Git HTTPS) Vault "
-                    "credential for the repository to the Agent instead"
-                ),
-                status_code=500,
-            )
-        search_from = userinfo_at + 1 if userinfo_at != -1 else authority_start
-    else:
-        colon = repo_ref.find(":")
-        first_at = repo_ref.find("@")
-        if first_at != -1 and (colon == -1 or first_at < colon):
-            search_from = first_at + 1
-        else:
-            search_from = 0
-    ref_at = repo_ref.find("@", search_from)
-    if ref_at != -1:
-        repo = repo_ref[:ref_at].strip()
-        ref = repo_ref[ref_at + 1:].strip()
-    else:
-        repo = repo_ref.strip()
-        ref = ""
-    if not repo:
-        raise APIError(
-            code="AGENT_RUNTIME_SKILL_CACHE_FAILED",
-            message=f"skill descriptor is missing a repo: {descriptor!r}",
-            status_code=500,
-        )
-    if "@" in ref or "#" in ref:
-        raise APIError(
-            code="AGENT_RUNTIME_SKILL_CACHE_FAILED",
-            message=f"skill descriptor has a malformed ref: {descriptor!r}",
-            status_code=500,
-        )
-    if path:
-        name = posixpath.basename(path)
-    else:
-        repo_trimmed = repo[:-4] if repo.endswith(".git") else repo
-        name = re.split(r"[/:]", repo_trimmed)[-1]
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name):
-        raise APIError(
-            code="AGENT_RUNTIME_SKILL_CACHE_FAILED",
-            message=f"skill descriptor derived an invalid name {name!r} from {descriptor!r}",
-            status_code=500,
-        )
-    return repo, ref, path, name
-
-
-def skill_repo_egress_hosts(skills: list[str] | tuple[str, ...] | None) -> list[str]:
-    """Return the Git origins required by the existing Skills installer."""
-    hosts: list[str] = []
-    for item in skills or ():
-        descriptor = str(item).strip()
-        if not descriptor:
-            continue
-        repo, _, _, _ = _parse_skill_descriptor(descriptor)
-        if "://" in repo:
-            parsed = urlsplit(repo)
-            host = "" if parsed.scheme == "file" else parsed.hostname or ""
-        else:
-            match = re.fullmatch(r"(?:[^@\s/:]+@)?([^/:\s]+):.+", repo)
-            host = match.group(1) if match else ""
-        if host and host.lower() not in hosts:
-            hosts.append(host.lower())
-    return hosts
-
-
-def _skill_descriptor_table(skill_items: list[str]) -> str:
-    """Render skill descriptors into a base64 table for the in-sandbox git loop
-    (one row per skill, rows newline-joined; the five columns repo, ref, path,
-    name, is_sha are joined by the 0x1f unit separator — not a tab, which is
-    IFS-whitespace and would collapse an empty ref/path field on the shell side).
-
-    Each descriptor is parsed here so a malformed entry fails loud in Python
-    before any sandbox exec; ``is_sha`` marks a full/short commit SHA ref so the
-    loop clones then detaches instead of a shallow branch clone.
-    """
-    rows: list[str] = []
-    for descriptor in skill_items:
-        repo, ref, path, name = _parse_skill_descriptor(descriptor)
-        is_sha = "1" if re.fullmatch(r"[0-9a-fA-F]{7,40}", ref) else "0"
-        rows.append("\x1f".join((repo, ref, path, name, is_sha)))
-    return base64.b64encode(("\n".join(rows) + "\n").encode("utf-8")).decode("ascii")
-
-
-async def prepare_agent_runtime_skill_cache(
-    sandbox: Any,
-    skills: list[str] | tuple[str, ...] | None,
-) -> None:
-    skill_items = [str(item).strip() for item in (skills or []) if str(item).strip()]
-    if not skill_items:
-        return
-    command_runner = getattr(sandbox, "commands", None)
-    run_fn = getattr(command_runner, "run", None) if command_runner is not None else None
-    if not callable(run_fn):
-        raise APIError(
-            code="CONVERSATION_IDENTITY_UNSUPPORTED",
-            message="sandbox command runner is required to prepare agent runtime skill cache",
-            status_code=502,
-        )
-
-    manifest = _skill_manifest(skill_items)
-    manifest_b64 = base64.b64encode(manifest.encode("utf-8")).decode("ascii")
-    manifest_hash = hashlib.sha256(manifest.encode("utf-8")).hexdigest()
-    skills_table_b64 = _skill_descriptor_table(skill_items)
-    cache_dir = AGENT_RUNTIME_SKILL_CACHE_DIR
-    script = f"""
-set -euo pipefail
-cache_dir={shlex.quote(cache_dir)}
-lock_dir="$cache_dir.lock"
-desired_hash={shlex.quote(manifest_hash)}
-desired_manifest=$(printf %s {shlex.quote(manifest_b64)} | base64 -d)
-if test -f "$cache_dir/.skill-cache-hash" && test "$(cat "$cache_dir/.skill-cache-hash")" = "$desired_hash"; then
-  printf 'AGENT_RUNTIME_SKILL_CACHE_READY hash=%s cached=1\\n' "$desired_hash"
-  exit 0
-fi
-mkdir -p "$(dirname "$cache_dir")"
-locked=0
-for attempt in $(seq 1 180); do
-  if mkdir "$lock_dir" 2>/dev/null; then
-    locked=1
-    break
-  fi
-  if test -f "$cache_dir/.skill-cache-hash" && test "$(cat "$cache_dir/.skill-cache-hash")" = "$desired_hash"; then
-    printf 'AGENT_RUNTIME_SKILL_CACHE_READY hash=%s cached=1\\n' "$desired_hash"
-    exit 0
-  fi
-  sleep 1
-done
-test "$locked" = "1"
-# Stage the clone in a LOCAL dir, never under cache_dir: when cache_dir is bind-mounted
-# onto a shared network cache, writing many small skill files directly onto it is slow
-# (~100ms+ each, minutes total). git clone into a local staging dir (fast), then bulk-`mv` the
-# finished tree onto cache_dir (one cross-fs copy). Per-PID so concurrent sandboxes don't clash.
-tmp_dir="/tmp/awt-skill-cache-stage.$$"
-cleanup() {{
-  rm -rf "$tmp_dir"
-  rmdir "$lock_dir" 2>/dev/null || true
-}}
-trap cleanup EXIT
-if test -f "$cache_dir/.skill-cache-hash" && test "$(cat "$cache_dir/.skill-cache-hash")" = "$desired_hash"; then
-  printf 'AGENT_RUNTIME_SKILL_CACHE_READY hash=%s cached=1\\n' "$desired_hash"
-  exit 0
-fi
-# Each declared skill is a git descriptor (<repo>@<ref>#<path>). Clone each into a
-# dot-prefixed staging subdir (so it is NOT itself picked up as a skill dir), copy the
-# declared path (or the whole repo) to "$tmp_dir/<name>", then drop the clone (.git and
-# the rest of the repo). Under `set -euo pipefail` any clone/test failure exits loud.
-command -v git >/dev/null
-rm -rf "$tmp_dir"
-mkdir -p "$tmp_dir"
-skills_table="$(printf %s {shlex.quote(skills_table_b64)} | base64 -d)"
-while IFS="$(printf '\\037')" read -r skill_repo skill_ref skill_path skill_name skill_is_sha; do
-  [ -n "$skill_repo" ] || continue
-  clone_dir="$tmp_dir/.clone-$skill_name"
-  rm -rf "$clone_dir"
-  if [ -z "$skill_ref" ]; then
-    git clone --depth 1 -- "$skill_repo" "$clone_dir"
-  elif [ "$skill_is_sha" = "1" ]; then
-    git clone -- "$skill_repo" "$clone_dir"
-    git -C "$clone_dir" checkout --detach "$skill_ref"
-  else
-    git clone --depth 1 --branch "$skill_ref" -- "$skill_repo" "$clone_dir"
-  fi
-  if [ -n "$skill_path" ]; then
-    skill_src="$clone_dir/$skill_path"
-  else
-    skill_src="$clone_dir"
-  fi
-  test -d "$skill_src"
-  rm -rf "$tmp_dir/$skill_name"
-  cp -a "$skill_src" "$tmp_dir/$skill_name"
-  rm -rf "$clone_dir"
-done <<SKILLS_EOF
-$skills_table
-SKILLS_EOF
-printf '%s' "$desired_manifest" > "$tmp_dir/.skill-manifest"
-printf '%s\\n' "$desired_hash" > "$tmp_dir/.skill-cache-hash"
-chmod -R a+rX,go-w "$tmp_dir"
-rm -rf "$cache_dir"
-mv "$tmp_dir" "$cache_dir"
-printf 'AGENT_RUNTIME_SKILL_CACHE_READY hash=%s cached=0\\n' "$desired_hash"
-"""
-    # No command env: each skill's git credential (if any) rides in its clone URL.
-    result = await run_sandbox_command(
-        run_fn,
-        f"bash -lc {shlex.quote(script)}",
-        envs=None,
-        timeout_in_millis=_SKILL_CACHE_PREP_TIMEOUT_MS,
-    )
-    error = getattr(result, "error", None)
-    output = _command_output(result)
-    if error or "AGENT_RUNTIME_SKILL_CACHE_READY" not in output:
-        raise APIError(
-            code="AGENT_RUNTIME_SKILL_CACHE_FAILED",
-            message=(
-                "failed to prepare agent runtime skill cache: "
-                f"error={error or 'missing readiness marker'}; output={output[:2000]!r}"
-            ),
-            status_code=502,
-        )
-
-
 def _env_shape(env: dict[str, str] | None) -> str:
     """The environment as names and lengths — never values.
 
@@ -1599,52 +1374,21 @@ def _env_shape(env: dict[str, str] | None) -> str:
     return "{" + ", ".join(f"{name}:{len(str(value))}" for name, value in items) + "}"
 
 
-#: Which branch of :func:`run_sandbox_command` served the current task's most
-#: recent call. The three differ in what they can deliver — env, timeout,
-#: handlers — so a failure that does not name the branch leaves the reader
-#: unable to tell a command that failed from one dispatched without its inputs.
-#: Task-local storage matters because concurrent bootstraps must not report one
-#: another's dispatch evidence.
-_DISPATCH_BRANCH: contextvars.ContextVar[str] = contextvars.ContextVar(
-    "conversation_bootstrap_dispatch_branch",
-    default="<none recorded>",
-)
-
-
-def _last_dispatch_branch() -> str:
-    return _DISPATCH_BRANCH.get()
-
-
-def _command_output(result: Any, *, streamed: list[str] | None = None) -> str:
+def _command_output(result: SandboxCommandResult) -> str:
     """Everything the command said, and a statement when it said nothing.
 
-    ``streamed`` is what the caller collected from the wire as it arrived; the
-    accumulator is read as well so callers without stream handlers retain the
-    command output. An empty capture is stated explicitly, keeping a silent
-    command distinct from a platform that failed to capture its output.
-    Separate captures have line boundaries so stderr cannot extend a structured
-    readiness field at the end of stdout. Chunks within one capture stay intact.
+    An empty capture is stated explicitly, keeping a silent command distinct
+    from a platform that failed to capture its output. stdout and stderr stay
+    on separate lines, so stderr cannot extend a structured readiness field at
+    the end of stdout.
     """
-    logs = getattr(result, "logs", None)
-    streams: list[str] = ["".join(streamed)] if streamed else []
-    if logs is not None:
-        for stream in ("stdout", "stderr"):
-            parts: list[str] = []
-            for item in getattr(logs, stream, []) or []:
-                text = getattr(item, "text", None)
-                parts.append(str(text if text is not None else item))
-            if parts:
-                streams.append("".join(parts))
-    if not streams:
-        streams.append("<no stdout or stderr captured from the sandbox command>")
-    error = getattr(result, "error", None)
-    if error:
-        streams.append(str(error))
-    return "\n".join(streams)
+    return result.output or "<no stdout or stderr captured from the sandbox command>"
 
 
-def _skill_manifest(skill_items: list[str]) -> str:
-    return "\n".join(skill_items) + "\n"
+def _failure_reason(result: SandboxCommandResult) -> str:
+    if result.exit_code != 0:
+        return f"exit_code={result.exit_code}"
+    return "missing readiness marker"
 
 
 def _parse_identity_ready_line(output: str) -> dict[str, int]:
@@ -1767,107 +1511,17 @@ async def _sidecar_endpoint(sandbox: Any, port: int = 8000) -> str:
                 message=f"conversation bootstrap sidecar endpoint resolution failed: {exc}",
                 status_code=502,
             ) from exc
-        endpoint = str(getattr(endpoint_info, "endpoint", endpoint_info) or "").strip()
-        if endpoint:
-            if not isinstance(cache, dict):
-                cache = {}
-                with contextlib.suppress(Exception):
-                    candidate._astrabox_endpoint_cache = cache
-            cache[int(port)] = endpoint
-            return endpoint
+        if not isinstance(cache, dict):
+            cache = {}
+            with contextlib.suppress(Exception):
+                candidate._astrabox_endpoint_cache = cache
+        cache[int(port)] = endpoint_info.url
+        return endpoint_info.url
     raise APIError(
         code="CONVERSATION_BOOTSTRAP_API_UNAVAILABLE",
         message="conversation bootstrap requires resident sidecar endpoint",
         status_code=502,
     )
-
-
-def _sandbox_run_fn(sandbox: Any) -> Any:
-    candidates = []
-    if sandbox is not None:
-        candidates.append(sandbox)
-        underlying = getattr(sandbox, "sandbox", None)
-        if underlying is not None and underlying is not sandbox:
-            candidates.append(underlying)
-    for candidate in candidates:
-        commands = getattr(candidate, "commands", None)
-        run_fn = getattr(commands, "run", None) if commands is not None else None
-        if callable(run_fn):
-            return run_fn
-    return None
-
-
-async def run_sandbox_command(
-    run_fn: Any,
-    command: str,
-    *,
-    envs: dict[str, str] | None = None,
-    timeout_in_millis: int | None = None,
-    handlers: Any = None,
-) -> Any:
-    """Single exec chokepoint: deliver ``envs``/``timeout`` to whichever run-command
-    convention the resolved sandbox adapter exposes — never silently drop env.
-
-    The two backends disagree on how a command's environment is passed:
-      - one backend: ``sandbox.commands.run`` is the sandbox SDK ``CommandsAdapter.run``,
-        which accepts only ``opts=RunCommandOpts(envs=, timeout=timedelta)`` and rejects
-        ``envs=`` with ``TypeError``.
-      - the other backend: a wrapper adapter's ``run`` accepts ``envs=``/``timeout_in_millis=``
-        natively and has a ``**_`` that would silently swallow an ``opts=`` kwarg.
-
-    Dispatch on the run callable's parameter names (the same introspection
-    ``terminal_service._supports_handlers`` uses), never ``try/except TypeError``:
-    the wrapper's ``**_`` makes a wrong-form call succeed while dropping env, so only the name
-    check distinguishes "accepts opts" from "swallows opts". When the adapter exposes
-    neither convention, deliver env by inlining ``env K=V … command`` — genuine
-    delivery on any shell runner, never a silent drop."""
-    if not callable(run_fn):
-        raise APIError(
-            code="AGENT_RUNTIME_SANDBOX_EXEC_UNSUPPORTED",
-            message="sandbox command runner is unavailable",
-            status_code=502,
-        )
-    clean_envs = {k: v for k, v in (envs or {}).items() if v is not None} or None
-    try:
-        params = inspect.signature(run_fn).parameters
-    except (TypeError, ValueError):
-        params = {}
-
-    _DISPATCH_BRANCH.set(
-        "opts"
-        if "opts" in params
-        else "envs"
-        if "envs" in params
-        else "inline-env"
-        if clean_envs is not None
-        else "bare"
-    )
-    if "opts" in params:  # one backend (SDK CommandsAdapter)
-        opts_kwargs: dict[str, Any] = {}
-        if clean_envs is not None:
-            opts_kwargs["envs"] = clean_envs
-        if timeout_in_millis is not None:
-            opts_kwargs["timeout"] = timedelta(milliseconds=int(timeout_in_millis))
-        opts = RunCommandOpts(**opts_kwargs) if opts_kwargs else None
-        # Handlers only where the adapter declares them: a wrapper with `**_`
-        # would swallow the kwarg and lose the stream silently, which is the
-        # failure this exists to prevent.
-        if handlers is not None and "handlers" in params:
-            return await run_fn(command, opts=opts, handlers=handlers)
-        return await run_fn(command, opts=opts)
-
-    if "envs" in params:  # the other backend (wrapper adapter)
-        call_kwargs: dict[str, Any] = {}
-        if clean_envs is not None:
-            call_kwargs["envs"] = clean_envs
-        if timeout_in_millis is not None:
-            call_kwargs["timeout_in_millis"] = int(timeout_in_millis)
-        return await run_fn(command, **call_kwargs)
-
-    if clean_envs is not None:  # no env kwarg → inline into the command (still delivers env)
-        env_args = " ".join(shlex.quote(f"{k}={v}") for k, v in clean_envs.items())
-        return await run_fn(f"env {env_args} {command}")
-    return await run_fn(command)  # nothing to deliver; call bare regardless of convention
 
 
 def conversation_identity_from_plan(

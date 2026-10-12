@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from astrabox.seams.skills import SkillDescriptor
+
 from typing import Any, Literal
 
 from fastapi import Body, Header, Request
@@ -46,7 +48,8 @@ class AgentRecord(BaseModel):
     as it takes effect, including for an Agent stored without it.
 
     ``can_manage`` is computed per viewer and therefore present only on the
-    reads that compute it (list and get), not on a write's echo of the record.
+    reads that compute it (list and get), not on a write's echo of the record;
+    ``favorited`` likewise, on the full list.
     """
 
     # `model` is an Agent field; pydantic's default
@@ -57,11 +60,13 @@ class AgentRecord(BaseModel):
     name: str | None = None
     description: str | None = None
     use_cases: list[str] | None = None
+    #: Ids of the Agent categories it is listed under.
+    categories: list[str] | None = None
     display_meta: dict[str, Any] | None = None
     model: str | None = None
     system: str | None = None
     claude_options: dict[str, Any] | None = None
-    skills: list[str] | None = None
+    skills: list[SkillDescriptor] | None = None
     mcp_servers: dict[str, Any] | None = None
     #: MCP servers selected from extension catalogs, as stored:
     #: ``{provider, item_id}`` rows. Written only through ``/extensions``.
@@ -87,6 +92,8 @@ class AgentRecord(BaseModel):
     created_at: str | None = None
     updated_at: str | None = None
     can_manage: bool | None = None
+    #: Whether the caller has favorited it; on the full list only.
+    favorited: bool | None = None
 
 
 class AgentListPage(BaseModel):

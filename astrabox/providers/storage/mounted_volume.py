@@ -21,9 +21,6 @@ from astrabox.common.logger.logger_factory import get_logger
 from astrabox.core.service.orchestrator.runtime.sandbox_client import (
     get_underlying_sandbox,
 )
-from astrabox.core.service.orchestrator.runtime.storage._command_result import (
-    _extract_command_output_text,
-)
 from astrabox.seams.storage import StorageMountPlan, StorageProvider, WorkspaceRef, register_storage
 
 logger = get_logger(__name__)
@@ -74,11 +71,9 @@ class MountedVolumeStorage(StorageProvider):
         # answers a different question: the directory exists on the container
         # root filesystem too, which is precisely the unsafe state to refuse.
         underlying = get_underlying_sandbox(box)
-        commands = getattr(underlying, "commands", None)
-        if commands is None or not callable(getattr(commands, "run", None)):
+        if underlying is None:
             raise RuntimeError(
-                f"cannot confirm the workspace mount for {ref.key()!r}: this "
-                f"sandbox exposes no command channel"
+                f"cannot confirm the workspace mount for {ref.key()!r} without a sandbox handle"
             )
         quoted = shlex.quote(box_path)
         probe = (
@@ -88,8 +83,8 @@ class MountedVolumeStorage(StorageProvider):
             '*) case "$p" in "$target"|"$target"/*) '
             'echo "MOUNTED:$target" ;; *) echo UNMOUNTED ;; esac ;; esac'
         )
-        result = await commands.run(f"sh -c {shlex.quote(probe)}")
-        output = _extract_command_output_text(result)
+        result = await underlying.commands.run(f"sh -c {shlex.quote(probe)}")
+        output = result.output
         if "MOUNTED" not in output or "UNMOUNTED" in output:
             raise RuntimeError(
                 f"workspace {ref.key()!r} is not mounted at {box_path!r} in this "

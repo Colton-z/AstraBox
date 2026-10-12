@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from astrabox.providers.open_sandbox.sandbox import ReportedExitStatus
+from astrabox.providers.execd.commands import ReportedExitStatus
 
 
 def test_the_exit_status_survives_a_transport_error_behind_it() -> None:

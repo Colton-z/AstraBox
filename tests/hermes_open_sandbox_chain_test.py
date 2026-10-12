@@ -45,7 +45,6 @@ from astrabox.providers.open_sandbox.sandbox import (
     OpenSandboxSandboxProvider,
 )
 from astrabox.providers.sandbox_image import SANDBOX_SELF_DESCRIPTION
-from astrabox.core.service.orchestrator.runtime.pty_terminal import EXECD_PORT
 from astrabox.seams.model import ResolvedModelAccess
 from astrabox.seams.storage import StorageMountPlan
 from astrabox.seams.egress_credentials import (
@@ -640,41 +639,6 @@ async def test_assistant_restore_provisions_a_real_box_and_keeps_resume_key(
     # …and the box survives startup.
     assert wire.killed == []
     await runtime.sandbox.close()
-
-
-async def test_hermes_uses_execd_instead_of_publishing_an_application_port(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # The custom host talks to Hermes through OpenSandbox's injected execd PTY.
-    # No Hermes HTTP or dashboard port belongs in the sandbox create request.
-    events: list[str] = []
-    wire = _FakeLifecycleWire()
-    manager = _Manager(events)
-    _bind_real_backend(monkeypatch, wire, events)
-    adapter = hermes.HermesEngineAdapter()
-    monkeypatch.setattr(
-        adapter, "_start_engine", lambda *_a, **_k: _noop_engine(events)
-    )
-
-    runtime = await _start(
-        manager,
-        adapter,
-        session_id="session-1",
-        assignment_id="assignment-1",
-        template=_template(),
-    )
-
-    (body,) = wire.create_bodies
-    assert "8642" not in json.dumps(body)
-    assert "9119" not in json.dumps(body)
-    endpoint = await runtime.sandbox.get_endpoint(EXECD_PORT)
-    assert endpoint.endpoint == f"http://{_EXECD_HOST}:{EXECD_PORT}"
-    await runtime.sandbox.close()
-
-
-async def _noop_engine(events: list[str]) -> Any:
-    events.append("engine_started")
-    return _FakeEngineClient()
 
 
 async def test_a_post_create_failure_keeps_the_allocation_named_for_the_platform(

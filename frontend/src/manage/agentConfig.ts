@@ -1,5 +1,4 @@
 // Shared read helpers for the management-side Agent pages.
-import i18n from '@/i18n';
 import type { AgentConfig, AgentDraft, FormSchema } from '@/types';
 
 // Re-export the console's locale-neutral mono date formatter so every manage
@@ -21,25 +20,40 @@ export function agentDisplayName(a: AgentConfig): string {
 // `model` is a first-class required Agent field, so callers do not need to
 // inspect the runtime-only `model_config` object (agent_schema.py).
 /**
- * The model this agent pins, or '' when it pins none.
+ * The model this agent names.
  *
- * Empty is not missing — it means the deployment's default is used, which is a
- * different fact from "unknown" and reads differently to the reader. The
- * placeholder is not this function's business: a sentinel here forces every
- * caller to either test for it (`=== '—'`) or print a dash that contradicts the
- * list beside it. {@link agentModelLabel} owns the wording.
+ * Every stored Agent names one; the server refuses to run an Agent that does
+ * not (`AGENT_MODEL_REQUIRED`), so an empty answer is a record to repair, not
+ * a deployment default.
  */
 export function agentModel(a: AgentConfig): string {
   return asString(a.model).trim();
 }
 
-/** What the reader is shown for {@link agentModel} — never a bare dash. */
-export function agentModelLabel(a: AgentConfig): string {
-  return agentModel(a) || i18n.t('common:model_deployment_default');
-}
-
 export function agentUpdatedAt(a: AgentConfig): string {
   return asString(a.updated_at);
+}
+
+/**
+ * The most tags one Agent carries, and the longest tag in characters — the
+ * server's `MAX_AGENT_TAGS` and `MAX_TAG_LENGTH`
+ * (astrabox/core/service/orchestrator/agent/agent_catalog.py), which refuses a
+ * save past either.
+ */
+export const MAX_AGENT_TAGS = 5;
+export const MAX_AGENT_TAG_LENGTH = 32;
+
+/**
+ * One tag in the form the server stores it (`normalize_tag` in the same
+ * module): no leading `#`, lower case, and each run of whitespace joined into
+ * one `-`, so one word is one tag.
+ *
+ * The server lower-cases with Python's `casefold`, which also folds a few
+ * letters `toLowerCase` keeps (`ß` to `ss`); for those the saved record shows
+ * the server's form.
+ */
+export function normalizeAgentTag(raw: string): string {
+  return raw.trim().replace(/^#+/, '').trim().toLowerCase().replace(/\s+/g, '-');
 }
 
 export function isEmptyValue(value: unknown): boolean {

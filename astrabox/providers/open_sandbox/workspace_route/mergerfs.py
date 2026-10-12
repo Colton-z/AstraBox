@@ -13,9 +13,6 @@ from typing import Any
 
 from astrabox.common.utils.settings import load_astrabox_settings
 from astrabox.core.service.orchestrator.runtime.sandbox_client import get_underlying_sandbox
-from astrabox.core.service.orchestrator.runtime.storage._command_result import (
-    _extract_command_output_text,
-)
 from astrabox.seams.sandbox import SANDBOX_INSTALLATION_METADATA_KEY, sandbox_installation_id
 from astrabox.seams.storage import (
     WORKSPACE_ASSIGNMENT_METADATA_KEY,
@@ -328,10 +325,9 @@ class MergerfsWorkspaceRouter(WorkspaceRoute):
         """Require the promised filesystem, not merely any mounted directory."""
         underlying = get_underlying_sandbox(box)
         if underlying is None:
-            raise RuntimeError("cannot confirm mergerfs without a sandbox command channel")
-        commands = underlying.commands
-        result = await commands.run("findmnt -n -o FSTYPE -T " + shlex.quote(box_path))
-        if _extract_command_output_text(result).strip() != "fuse.mergerfs":
+            raise RuntimeError("cannot confirm mergerfs without a sandbox handle")
+        result = await underlying.commands.run("findmnt -n -o FSTYPE -T " + shlex.quote(box_path))
+        if result.stdout.strip() != "fuse.mergerfs":
             message = f"workspace {ref.key()!r} at {box_path!r} is not a mergerfs view"
             external = existing_lifecycle_service_url()
             if external:

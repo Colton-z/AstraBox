@@ -326,15 +326,40 @@ def _apply_agent(
     changed = _changed_fields(spec.fields, existing, paths)
     action = _verdict(existing, changed)
     if write and action == ACTION_CREATE:
-        client.post("/api/v1/agents", json=dict(spec.fields))
+        client.post("/api/v1/agents", json=request_body(spec.fields, paths, None))
     elif write and action == ACTION_UPDATE:
         assert existing is not None
-        body = dict(spec.fields)
+        body = request_body(spec.fields, paths, existing)
         stored_version = existing.get("version")
         if stored_version is not None:
             body["version"] = stored_version
         client.put(f"/api/v1/agents/{existing['agent_id']}", json=body)
     return _result(spec, action, changed)
+
+
+def request_body(
+    fields: Mapping[str, Any],
+    paths: Mapping[str, str],
+    existing: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """The write request for a document's fields, each placed at its schema path.
+
+    A document names a field by its ``key`` (``display_name``); the write takes
+    it where the deployment stores it (``display_meta.display_name``). A write
+    replaces a nested object whole, so the stored members the document does not
+    name are carried into it unchanged.
+    """
+    body: dict[str, Any] = {}
+    for key, value in fields.items():
+        head, _, rest = paths.get(key, key).partition(".")
+        if not rest:
+            body[head] = value
+            continue
+        if head not in body:
+            stored = existing.get(head) if existing is not None else None
+            body[head] = dict(stored) if isinstance(stored, Mapping) else {}
+        body[head][rest] = value
+    return body
 
 
 def match_agent(client: ApiClient, name: str) -> Mapping[str, Any] | None:

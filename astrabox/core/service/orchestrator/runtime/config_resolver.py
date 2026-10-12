@@ -258,7 +258,7 @@ def resolve_network_policy(
 
     # A catalog-resolved MCP server is the one carrying `provider`; the view
     # builder refuses that field on an author's own server.
-    catalog_skills = set(getattr(template, "catalog_skills", ()) or ())
+    catalog_skills = getattr(template, "catalog_skills", ()) or ()
     engine_hosts = _engine_install_hosts(template)
     check_author_egress_hosts(
         networking,
@@ -322,6 +322,22 @@ class RuntimeConfigResolver:
         # Single source: model_config.model_name.
         model_config_payload = self.resolve_model_config(template.model_config or {})
         return str(model_config_payload.get("model_name") or "").strip() or None
+
+    def default_model_name(self) -> str | None:
+        """The deployment's default model: what a configuration naming none requests.
+
+        ``ASTRABOX_MODEL_NAME`` overrides the configured ``model_name``
+        (``ANTHROPIC_MODEL``). The selected endpoint provider can still replace
+        it during resolution, as it can any requested model. Every stored Agent
+        names its own model, so this answers for an Assistant that selects
+        none, for title and summary requests, and for the model a new
+        installation seeds its Agents with.
+        """
+        return (
+            str(os.getenv("ASTRABOX_MODEL_NAME", "")).strip()
+            or str(self._settings.model_name or "").strip()
+            or None
+        )
 
     def resolve_remote_cwd(self) -> str | None:
         """The base cwd the agent works in, absent a per-conversation workspace.
@@ -431,11 +447,9 @@ class RuntimeConfigResolver:
             elif self._settings.model_base_url:
                 payload["base_url"] = self._settings.model_base_url
         if not payload.get("model_name"):
-            env_model_name = str(os.getenv("ASTRABOX_MODEL_NAME", "")).strip()
-            if env_model_name:
-                payload["model_name"] = env_model_name
-            elif self._settings.model_name:
-                payload["model_name"] = self._settings.model_name
+            default_model = self.default_model_name()
+            if default_model:
+                payload["model_name"] = default_model
         if not payload.get("api_key_secret_name"):
             env_secret_name = str(
                 os.getenv("ASTRABOX_MODEL_API_KEY_SECRET_NAME", "")

@@ -9,6 +9,7 @@ from astrabox.core.service.orchestrator.runtime.diagnostics import (
     read_lifecycle_diagnostics,
 )
 from astrabox.seams.sandbox import SandboxDiagnostics
+from astrabox.seams.sandbox_data import SandboxCommandResult
 
 
 @pytest.mark.asyncio
@@ -35,7 +36,7 @@ async def test_runtime_failure_keeps_lifecycle_evidence_when_execd_is_dead() -> 
             )
 
     class Commands:
-        async def run(self, _command: str) -> Any:
+        async def run(self, _command: str, **_options: Any) -> Any:
             order.append("command")
             raise ConnectionError("execd is gone")
 
@@ -66,15 +67,12 @@ async def test_runtime_failure_still_uses_in_box_hint_when_lifecycle_report_fail
             assert scope in {"inspect", "events", "logs"}
             raise RuntimeError("control plane unavailable")
 
-    result = SimpleNamespace(
-        logs=SimpleNamespace(
-            stdout=[SimpleNamespace(text="runner failed before initialize")],
-            stderr=[],
-        )
+    result = SandboxCommandResult(
+        exit_code=0, stdout="runner failed before initialize", stderr=""
     )
     sandbox = SimpleNamespace(
         id="sb-2",
-        commands=SimpleNamespace(run=lambda _command: _async_value(result)),
+        commands=SimpleNamespace(run=lambda _command, **_options: _async_value(result)),
     )
 
     detail = await collect_runtime_start_diagnostics(

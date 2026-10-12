@@ -56,9 +56,9 @@ For another service, write these lines instead:
 | Anthropic-compatible | `ANTHROPIC_BASE_URL=` the service's URL, `ANTHROPIC_API_KEY=` its key, `ANTHROPIC_MODEL=` its model ID |
 | OpenAI-compatible | `OPENAI_COMPATIBLE_BASE_URL=` the service's URL, `OPENAI_COMPATIBLE_API_KEY=` its key, `ANTHROPIC_MODEL=openai-compatible/` followed by its model ID |
 
-`ANTHROPIC_MODEL` is the model the seeded Agents use. These are the same
-settings the installer writes; [Connect a model](models.md) explains the
-gateway routes behind them. To start without a model service, leave out the
+`ANTHROPIC_MODEL` is the model the first start creates the seeded Agents with.
+These are the same settings the installer writes; [Connect a model](models.md)
+explains the gateway routes behind them. To start without a model service, leave out the
 `--env-file` line in Step 2 and add routes later under **Management console >
 Integrated services > LiteLLM gateway**.
 

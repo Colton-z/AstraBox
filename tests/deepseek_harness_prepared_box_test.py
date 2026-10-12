@@ -546,7 +546,7 @@ def test_a_failed_activation_discards_the_box_and_fails_loudly(
         assignment_id: str,
     ) -> Any:
         # The native-state write precedes the link; the failure under test is the link's.
-        return SimpleNamespace(sandbox_id="box-77", files=SimpleNamespace(write_file=_target))
+        return SimpleNamespace(sandbox_id="box-77", files=SimpleNamespace(write_bytes=_target))
 
     async def _connect(sandbox: Any, *, port: int = 44780, launch_url_path: str, observe_only: bool = False) -> Any:
         raise APIError(

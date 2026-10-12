@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from astrabox.core.service.orchestrator.runtime.skill_sources import normalize_skills, parse_skill_source
+
 import hashlib
 import json
 import posixpath
@@ -196,15 +198,6 @@ async def probe_sandbox_runtime_profile(
     profile: EngineRuntimeProfileDeclaration,
 ) -> dict[str, Any]:
     """Probe image primitives required by the runtime profile."""
-    commands = getattr(sandbox, "commands", None)
-    run_fn = getattr(commands, "run", None) if commands is not None else None
-    if not callable(run_fn):
-        raise APIError(
-            code="UNSUPPORTED_RUNTIME_PROFILE",
-            message="sandbox command runner is required for runtime profile probe",
-            status_code=502,
-        )
-
     required = list(profile.required_commands)
     script = "set -e; "
     script += "missing=''; "
@@ -214,9 +207,9 @@ async def probe_sandbox_runtime_profile(
         script += "done; "
     script += "if [ -n \"$missing\" ]; then echo RUNTIME_PROFILE_PROBE_MISSING:$missing; exit 42; fi; "
     script += "echo RUNTIME_PROFILE_PROBE_OK"
-    result = await run_fn(f"bash -lc {_shell_word(script)}")
-    output = _command_output(result)
-    if getattr(result, "error", None) or "RUNTIME_PROFILE_PROBE_OK" not in output:
+    result = await sandbox.commands.run(f"bash -lc {_shell_word(script)}")
+    output = result.output
+    if result.exit_code != 0 or "RUNTIME_PROFILE_PROBE_OK" not in output:
         missing = []
         marker = "RUNTIME_PROFILE_PROBE_MISSING:"
         if marker in output:
@@ -247,7 +240,7 @@ def plan_capabilities(template: Any | None, identity: dict[str, Any]) -> dict[st
             status_code=500,
         )
 
-    skills = [str(item).strip() for item in (_template_value(template, "skills") or []) if str(item).strip()]
+    skills = normalize_skills(_template_value(template, "skills"))
     packages = template_packages(template)
     mcp_servers_map = _template_value(template, "mcp_servers") or {}
     default_repo = _template_value(template, "default_repo")
@@ -348,7 +341,7 @@ def plan_capabilities(template: Any | None, identity: dict[str, Any]) -> dict[st
         "skill_install_plan": [
             {
                 "kind": "skill",
-                "name": skill,
+                "name": parse_skill_source(skill).name,
                 "execute_as": "workload_user",
                 "target_path": skills_target,
                 "ownership_repair": "not_required",
@@ -674,21 +667,3 @@ def _shell_word(value: Any) -> str:
     import shlex
 
     return shlex.quote(str(value))
-
-
-def _command_output(result: Any) -> str:
-    logs = getattr(result, "logs", None)
-    parts: list[str] = []
-    if logs is not None:
-        for stream in ("stdout", "stderr"):
-            for item in getattr(logs, stream, []) or []:
-                text = getattr(item, "text", None)
-                parts.append(str(text if text is not None else item))
-    for attr in ("stdout", "stderr", "output"):
-        value = getattr(result, attr, None)
-        if value:
-            parts.append(str(value))
-    error = getattr(result, "error", None)
-    if error:
-        parts.append(str(error))
-    return "".join(parts)

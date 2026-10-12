@@ -12,6 +12,7 @@ import {
   Network,
   Plug,
   ScrollText,
+  Shapes,
   ShieldCheck,
   SlidersHorizontal,
   TriangleAlert,
@@ -46,6 +47,7 @@ import { useAdminIntegrations } from '@/hooks/useAdminIntegrations';
 import { keepsLastRead } from '@/hooks/useKeepCurrent';
 
 import AgentsListPage from './AgentsListPage';
+import AgentCategoriesPage from './AgentCategoriesPage';
 import AgentCreatePage from './AgentCreatePage';
 import DeploymentCreatePage from './DeploymentCreatePage';
 import AssistantCreatePage from './AssistantCreatePage';
@@ -104,6 +106,11 @@ type NavItem = {
   integrationName?: string;
   /** Which quiet count to show, for the resources that have one to show. */
   count?: keyof NavCounts;
+  /**
+   * Shown to platform administrators only: the page writes under
+   * `/api/v1/admin`, which refuses everyone else.
+   */
+  adminOnly?: boolean;
 };
 
 const NAV_GROUPS: { titleKey: string; items: NavItem[] }[] = [
@@ -111,6 +118,7 @@ const NAV_GROUPS: { titleKey: string; items: NavItem[] }[] = [
     titleKey: 'manage:nav.group_configure',
     items: [
       { to: '/manage/agents', labelKey: 'manage:nav.agents', icon: Bot, match: '/manage/agents', count: 'agents' as const },
+      { to: '/manage/agent-categories', labelKey: 'manage:nav.agent_categories', icon: Shapes, match: '/manage/agent-categories', adminOnly: true },
       { to: '/manage/assistants', labelKey: 'manage:nav.assistants', icon: Users, match: '/manage/assistants' },
       { to: '/manage/assistant-defaults', labelKey: 'manage:nav.assistant_defaults', icon: SlidersHorizontal, match: '/manage/assistant-defaults' },
       { to: '/manage/environments', labelKey: 'manage:nav.environments', icon: Box, match: '/manage/environments', count: 'environments' as const },
@@ -212,7 +220,7 @@ export function ManageSidebar() {
           </SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu className="gap-0.5">
-              {group.items.map((item) => {
+              {group.items.filter((item) => isAdmin || !item.adminOnly).map((item) => {
                 const Icon = item.icon;
                 const count = item.count ? counts[item.count] : undefined;
                 const label = item.integrationName
@@ -326,6 +334,7 @@ export default function ManageApp() {
           <Route path="agents/new" element={<AgentCreatePage />} />
           <Route path="agents/:agentId/sessions" element={<AgentSessionsPage />} />
           <Route path="agents/:agentId" element={<AgentDetailPage />} />
+          <Route path="agent-categories" element={<AgentCategoriesPage />} />
           <Route path="deployments" element={<DeploymentsListPage />} />
           <Route path="mcp-tokens" element={<McpTokensPage />} />
           <Route path="deployments/new" element={<DeploymentCreatePage />} />

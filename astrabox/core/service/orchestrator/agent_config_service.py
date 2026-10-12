@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from astrabox.seams.skills import SkillDescriptor
+from astrabox.core.service.orchestrator.runtime.skill_sources import normalize_skills
+
 import hashlib
 import json
 import uuid
@@ -35,6 +38,7 @@ from astrabox.core.service.orchestrator.schema_validation import (
     invalid_request,
     validate_declared_config_bag,
 )
+from astrabox.core.service.orchestrator.agent.agent_catalog import normalize_catalog_fields
 from astrabox.core.service.orchestrator.agent_schema import (
     AGENT_PRIVATE_STORED_FIELDS,
     agent_artifacts_enabled,
@@ -160,39 +164,6 @@ class AgentConfigService:
         self._spawn_background_task = spawn_background_task
 
     # ── Resolution: agent/assistant doc → runtime AgentView ────────────────
-
-    async def list_agents(
-        self,
-        *,
-        use_case: str | None = None,
-        viewer_user_id: str | None = None,
-        viewer_roles: Sequence[str] | None = None,
-    ) -> list[AgentView]:
-        """List enabled Agents as runtime-resolved views.
-
-        When ``viewer_user_id`` is provided, only agents that user may *see/use*
-        are returned (per-agent visibility: public / private / allowlist). When
-        it is ``None`` the caller is an internal/already-authorized path (e.g.
-        runtime startup loading an existing Session's Agent) and no
-        visibility filter is applied.
-        """
-        rows = await self._agent_repo.list_all_agents()
-        # Environment presets are the single source of runtime config; cache each
-        # env once per call so N agents don't trigger N identical reads.
-        env_cache: dict[str, dict[str, Any]] = {}
-        views: list[AgentView] = []
-        for item in rows:
-            if str(item.get("enabled")) == "False" or item.get("enabled") is False:
-                continue
-            if viewer_user_id is not None and not can_view_agent(
-                item, viewer_user_id, viewer_roles or ()
-            ):
-                continue
-            use_cases = self._normalize_use_cases(item.get("use_cases"))
-            if use_case and use_cases and use_case not in use_cases:
-                continue
-            views.append(await self._build_agent_view(item, env_cache))
-        return views
 
     async def resolve_agent_harness(
         self,
@@ -332,7 +303,7 @@ class AgentConfigService:
             ref=assistant_ref,
         ) or None
         records = [layer for _label, layer in layers] + [assistant]
-        catalog_skills = self._dedupe_strings([
+        catalog_skills = normalize_skills([
             skill
             for record in selecting
             for skill in self._normalize_skills(
@@ -348,7 +319,7 @@ class AgentConfigService:
             system=joined_instructions(layers, assistant.get("system")),
             timezone=str(assistant.get("timezone") or "").strip() or None,
             mcp_servers=mcp_servers,
-            skills=self._dedupe_strings(
+            skills=normalize_skills(
                 [
                     *(skill for record in records for skill in self._normalize_skills(record.get("skills"))),
                     *catalog_skills,
@@ -414,22 +385,33 @@ class AgentConfigService:
         session page, an admin detail, the idle sweep). Such a view also leaves
         out a catalog selection the deployment cannot resolve, which a view that
         admits work refuses (``catalog_selection_in_use``).
+
+        Raises ``AGENT_MODEL_REQUIRED`` for an Agent that names no model, blank
+        included. The resolver fills a configuration without a model from the
+        deployment's default (``RuntimeConfigResolver.default_model_name``):
+        right for an Assistant, while for an Agent it would run a model nobody
+        chose for it.
         """
+        agent_ref = f"agent '{item.get('agent_id') or item.get('name')}'"
         env_name = str(item.get("environment_name") or "").strip()
         if env_name not in env_cache:
             env_cache[env_name] = await self._require_environment(
-                env_name, ref=f"agent '{item.get('agent_id') or item.get('name')}'",
-                require_enabled=require_enabled_environment,
+                env_name, ref=agent_ref, require_enabled=require_enabled_environment,
             )
         env = env_cache[env_name]
         display_meta = item.get("display_meta") or {}
-        model = str(item.get("model") or "").strip() or None
+        model = str(item.get("model") or "").strip()
+        if not model:
+            raise APIError(
+                code="AGENT_MODEL_REQUIRED",
+                message=f"{agent_ref} names no model; set the Agent's model",
+                status_code=409,
+            )
         extension_catalog = (
             item.get("extension_catalog")
             if isinstance(item.get("extension_catalog"), dict)
             else {}
         )
-        agent_ref = f"agent '{item.get('agent_id') or item.get('name')}'"
         own_mcp_servers = self._normalize_mcp_servers(item.get("mcp_servers")) or {}
         # Only a catalog assignment below may carry `provider` or
         # `credential_target_url`. Saving refuses them on the Agent's own
@@ -449,7 +431,7 @@ class AgentConfigService:
         catalog_skills = (
             self._normalize_skills(extension_catalog.get("skills")) if selecting else []
         )
-        resolved_skills = self._dedupe_strings(
+        resolved_skills = normalize_skills(
             [
                 *self._normalize_skills(item.get("skills")),
                 *catalog_skills,
@@ -484,7 +466,6 @@ class AgentConfigService:
             scope=item.get("scope"),
             display_name=display_meta.get("display_name") or str(item.get("name") or ""),
             icon=display_meta.get("icon"),
-            tags=self._normalize_tags(display_meta.get("tags") or item.get("tags")),
             use_cases=self._normalize_use_cases(item.get("use_cases")),
             runtime_generation=(
                 str(item.get("_runtime_generation") or "").strip() or None
@@ -813,7 +794,7 @@ class AgentConfigService:
         name = str(payload.get("name") or "").strip()
         if not name:
             raise APIError(code="INVALID_REQUEST", message="name is required", status_code=400)
-        editable = validate_agent_payload({**payload, "name": name})
+        editable = await normalize_catalog_fields(validate_agent_payload({**payload, "name": name}))
         packages = editable.get("packages")
         if packages is not None:
             editable["packages"] = normalize_packages(packages)
@@ -847,6 +828,7 @@ class AgentConfigService:
         await self._check_prepared_capacity_limit(
             int(editable["prepared_capacity"]), agent_id=""
         )
+        self._check_terminal_panel_backend(bool(editable.get("terminal_panel")), environment=env)
 
         agent_id = str(uuid.uuid4())
         doc = {
@@ -937,9 +919,8 @@ class AgentConfigService:
             )
 
         name = str(payload.get("name") or existing.get("name") or "").strip()
-        updates = validate_agent_payload(
-            {**payload, "name": name},
-            allow_version=True,
+        updates = await normalize_catalog_fields(
+            validate_agent_payload({**payload, "name": name}, allow_version=True)
         )
         if "name" not in payload:
             updates.pop("name", None)
@@ -985,6 +966,15 @@ class AgentConfigService:
             await self._check_prepared_capacity_limit(
                 int(updates["prepared_capacity"]), agent_id=target
             )
+        if "terminal_panel" in updates or "environment_name" in updates:
+            self._check_terminal_panel_backend(
+                bool(
+                    updates["terminal_panel"]
+                    if "terminal_panel" in updates
+                    else existing.get("terminal_panel")
+                ),
+                environment=env,
+            )
         # The whole effective definition, not only the changed fields: moving
         # an Agent to a stricter Environment must meet that Environment too.
         await validate_author_declarations(
@@ -1026,8 +1016,10 @@ class AgentConfigService:
             expected={"version": stored_version},
             updates=updates,
         )
-        if not applied and changed:
-            # A concurrent writer bumped the version between the read and the CAS.
+        if not applied:
+            # A concurrent writer bumped the version between the read and the
+            # CAS, so nothing here was written, a name or a category no less
+            # than a runtime field.
             raise APIError(
                 code="AGENT_VERSION_CONFLICT",
                 message="agent was modified concurrently; retry with the latest version",
@@ -1065,6 +1057,45 @@ class AgentConfigService:
             code="AGENT_PREWARM_UNSUPPORTED",
             message=f"{refusal}; set prepared_capacity to 0",
             status_code=409,
+        )
+
+    @staticmethod
+    def _check_terminal_panel_backend(
+        terminal_panel: bool, *, environment: dict[str, Any]
+    ) -> None:
+        """Refuse a terminal panel where a conversation's own box cannot keep its shell.
+
+        The terminal of a conversation with its own box is one of the box's
+        long-lived processes, which the next command attaches to again; under
+        shared tenancy it is an isolated session instead, which the
+        Environment's own check already requires. Checked when the panel is
+        turned on or the Agent moves to another Environment.
+        """
+
+        if not terminal_panel:
+            return
+        from astrabox.seams.sandbox import (
+            SANDBOX_TENANCY_CONVERSATION,
+            sandbox_for_name,
+            unsupported_sandbox_feature,
+        )
+
+        tenancy = str(
+            environment.get("sandbox_tenancy") or SANDBOX_TENANCY_CONVERSATION
+        ).strip().lower()
+        if tenancy != SANDBOX_TENANCY_CONVERSATION:
+            return
+        refusal = unsupported_sandbox_feature(
+            sandbox_for_name(str(environment.get("sandbox_backend") or "")),
+            feature="the terminal panel of a conversation with its own box",
+            flags=("supports_process_sessions",),
+        )
+        if refusal is None:
+            return
+        raise APIError(
+            code="INVALID_REQUEST",
+            message=f"{refusal}; set terminal_panel to false",
+            status_code=400,
         )
 
     async def _check_prepared_capacity_limit(self, capacity: int, *, agent_id: str) -> None:
@@ -1550,12 +1581,8 @@ class AgentConfigService:
         return []
 
     @staticmethod
-    def _normalize_skills(raw: Any) -> list[str]:
-        if isinstance(raw, list):
-            return [str(s).strip() for s in raw if str(s).strip()]
-        if isinstance(raw, str) and raw.strip():
-            return [raw.strip()]
-        return []
+    def _normalize_skills(raw: Any) -> list[SkillDescriptor]:
+        return normalize_skills(raw)
 
     @staticmethod
     def _dedupe_strings(raw: list[str]) -> list[str]:
@@ -1604,11 +1631,3 @@ class AgentConfigService:
         if isinstance(depth, int) and depth > 0:
             normalized["depth"] = depth
         return normalized
-
-    @staticmethod
-    def _normalize_tags(raw: Any) -> list[str]:
-        if isinstance(raw, list):
-            return [str(tag) for tag in raw if str(tag).strip()]
-        if isinstance(raw, str) and raw.strip():
-            return [raw.strip()]
-        return []

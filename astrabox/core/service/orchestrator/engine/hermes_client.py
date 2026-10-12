@@ -66,15 +66,10 @@ from astrabox.core.service.orchestrator.engine.resident_relay import ResidentRel
 from astrabox.persistence.repository.hermes_cron_repository import (
     HermesCronJobRepository,
 )
-from astrabox.core.service.orchestrator.runtime.execd_json_lines import (
-    ExecdChannelDetached,
-)
 from astrabox.core.service.orchestrator.runtime.hermes_backend_channel import (
+    BackendDetached,
     BackendNotListening,
     HermesBackendChannel,
-)
-from astrabox.core.service.orchestrator.runtime.pty_terminal import (
-    ResolvedExecdEndpoint,
 )
 
 _CONNECT_TIMEOUT_SECONDS = 20.0
@@ -852,7 +847,7 @@ class HermesTuiProcess:
             return
         self._fatal = (
             EngineStreamDetached(str(exc))
-            if isinstance(exc, ExecdChannelDetached)
+            if isinstance(exc, BackendDetached)
             else exc
         )
         self._gateway_ready.set()
@@ -1826,7 +1821,7 @@ class HermesTuiEngineClient:
             supports_child_run_control=True,
             supports_server_info=True,
             extra={
-                "transport": "hermes_tui_json_rpc_over_opensandbox_execd_pty",
+                "transport": "hermes_tui_json_rpc_over_hermes_serve_websocket",
             },
         )
 

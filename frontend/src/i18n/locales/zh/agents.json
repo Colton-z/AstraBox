@@ -10,5 +10,18 @@
   "home_starting": "正在启动…",
   "home_empty": "暂无可用的 Agent。",
   "home_empty_hint": "管理员创建并启用 Agent 后，用户才能开始会话。",
-  "home_empty_cta": "前往管理台"
+  "home_empty_cta": "前往管理台",
+  "tabs_label": "浏览 Agent",
+  "tab_favorites": "收藏",
+  "search_placeholder": "搜索 Agent",
+  "favorite_label": "收藏 {{name}}",
+  "favorite_add_failed": "未能收藏 {{name}}",
+  "favorite_remove_failed": "未能取消收藏 {{name}}",
+  "favorites_empty": "还没有收藏",
+  "favorites_empty_hint": "点按 Agent 卡片上的星标，即可收藏到这里。",
+  "no_match": "这里没有匹配的 Agent",
+  "no_match_hint": "换个搜索词，或移除标签筛选。",
+  "tags_label": "标签",
+  "filter_by_tag": "只看带有 #{{tag}} 标签的 Agent",
+  "tag_filter_clear": "移除 #{{tag}} 筛选"
 }

@@ -26,6 +26,7 @@ from astrabox.core.service.orchestrator.engine.runtime_profiles import (
     SANDBOX_IMAGE_WORKLOAD_USER,
     SANDBOX_IMAGE_WORKSPACE_DIR,
 )
+from astrabox.seams.sandbox_data import SandboxDirectorySpec
 
 if TYPE_CHECKING:
     from astrabox.core.service.orchestrator.engine.platform import EnginePlatform
@@ -187,10 +188,10 @@ async def mark_mirror_unclaimed(
     could not hold a started engine at all.
     """
 
-    await sandbox.files.write_file(
+    await sandbox.files.write_bytes(
         target_file,
         unclaimed_marker_payload(unclaimed_for),
-        mode=600,
+        mode=0o600,
         # The reader is the mirror, which runs as the account owning the
         # marker's home: the box account for a whole-box unit, the slot's
         # conversation account for a shared slot.
@@ -215,14 +216,14 @@ async def bind_mirror_target(
     """
 
     account = str(owner or "").strip() or SANDBOX_IMAGE_WORKLOAD_USER
-    await sandbox.files.write_file(
+    await sandbox.files.write_bytes(
         target_file,
         mirror_target_payload(manager, session_id),
         # The mirror runs as the account that owns the conversation — the
         # image's workload account on the box tenancy, the conversation's own
         # account under the Agent-shared tenancy — and at mode 600 the owner
         # is what makes the file readable to it at all.
-        mode=600,
+        mode=0o600,
         owner=account,
         group=account,
     )
@@ -283,21 +284,27 @@ async def restore_mirrored_logs(
         ).encode("utf-8")
         account = owner or SANDBOX_IMAGE_WORKLOAD_USER
         record_path = restore_record_path(root, subpath)
-        await sandbox.files.create_directories(
+        # Native engines create locks and sibling metadata beside the restored
+        # log, so its directory is the engine account's own.
+        await sandbox.files.make_directories(
             [
-                _write_entry(posixpath.dirname(record_path), owner=account),
-                _write_entry(posixpath.dirname(path), owner=account),
+                SandboxDirectorySpec(
+                    path=posixpath.dirname(record_path), mode=0o755, owner=account, group=account
+                ),
+                SandboxDirectorySpec(
+                    path=posixpath.dirname(path), mode=0o755, owner=account, group=account
+                ),
             ]
         )
         # Before the log: a mirror that finds the log must already find what
         # of it the store holds.
-        await sandbox.files.write_file(
+        await sandbox.files.write_bytes(
             record_path,
             json.dumps(
                 {"subpath": subpath, "bytes": len(body), "epoch": uuid.uuid4().hex},
                 separators=(",", ":"),
             ).encode("utf-8"),
-            mode=600,
+            mode=0o600,
             owner=account,
             group=account,
         )
@@ -309,19 +316,12 @@ async def restore_mirrored_logs(
         # restores per lane. The path was templated over the conversation
         # home in 9adcf17a; the owner is the other half of that rename's
         # readership.
-        await sandbox.files.write_file(
+        await sandbox.files.write_bytes(
             path,
             body,
-            mode=600,
+            mode=0o600,
             owner=account,
             group=account,
         )
         written += 1
     return written
-
-
-def _write_entry(path: str, *, owner: str) -> Any:
-    from opensandbox.models.filesystem import WriteEntry
-
-    # Native engines create locks and sibling metadata beside the restored log.
-    return WriteEntry(path=path, mode=755, owner=owner, group=owner)

@@ -106,7 +106,7 @@ def _assistant_profile_ready_marker(
         # the Agent program reads its profile once, at start, so a reused one
         # keeps answering from the definition the owner replaced.
         "configuration_revision": normalized_revision,
-        "control_transport": "opensandbox_execd_pty",
+        "control_transport": "hermes_serve_websocket",
         "ready_at": utcnow_iso(),
     }
 

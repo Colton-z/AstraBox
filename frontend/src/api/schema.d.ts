@@ -89,6 +89,59 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/admin/agent-categories": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Admin Agent Categories */
+        get: operations["list_admin_agent_categories_api_v1_admin_agent_categories_get"];
+        put?: never;
+        /** Create Agent Category */
+        post: operations["create_agent_category_api_v1_admin_agent_categories_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/agent-categories/order": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Reorder Agent Categories */
+        put: operations["reorder_agent_categories_api_v1_admin_agent_categories_order_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/agent-categories/{category_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Rename Agent Category */
+        put: operations["rename_agent_category_api_v1_admin_agent_categories__category_id__put"];
+        post?: never;
+        /** Delete Agent Category */
+        delete: operations["delete_agent_category_api_v1_admin_agent_categories__category_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/admin/agent-schema": {
         parameters: {
             query?: never;
@@ -1117,6 +1170,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/agent-categories": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Agent Categories */
+        get: operations["list_agent_categories_api_v1_agent_categories_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/agent-configuration/environments": {
         parameters: {
             query?: never;
@@ -1169,6 +1239,23 @@ export interface paths {
          * @description Agent form structure for any signed-in Agent author.
          */
         get: operations["get_agent_configuration_schema_api_v1_agent_configuration_schema_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/agent-tags": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Agent Tags */
+        get: operations["list_agent_tags_api_v1_agent_tags_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1317,6 +1404,24 @@ export interface paths {
         put: operations["set_agent_extensions_api_v1_agents__agent_id__extensions_put"];
         post?: never;
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/agents/{agent_id}/favorite": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Favorite Agent */
+        put: operations["favorite_agent_api_v1_agents__agent_id__favorite_put"];
+        post?: never;
+        /** Unfavorite Agent */
+        delete: operations["unfavorite_agent_api_v1_agents__agent_id__favorite_delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -3421,6 +3526,20 @@ export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         /**
+         * AdminAgentCategory
+         * @description A category with the number of Agents it holds.
+         */
+        AdminAgentCategory: {
+            /** Agents */
+            agents: number;
+            /** Category Id */
+            category_id: string;
+            /** Name */
+            name: string;
+            /** Position */
+            position: number;
+        };
+        /**
          * AdminApiWorkspaceResult
          * @description What a wake or hibernate did to one assistant's workspace.
          *
@@ -4129,6 +4248,28 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        /**
+         * AgentCategory
+         * @description One Agent category, in the administrator's order (``position``, from 0).
+         */
+        AgentCategory: {
+            /** Category Id */
+            category_id: string;
+            /** Name */
+            name: string;
+            /** Position */
+            position: number;
+        };
+        /** AgentCategoryName */
+        AgentCategoryName: {
+            /** Name */
+            name: string;
+        };
+        /** AgentCategoryOrder */
+        AgentCategoryOrder: {
+            /** Category Ids */
+            category_ids: string[];
+        };
         /** AgentConnectorState */
         AgentConnectorState: {
             /** Agent Id */
@@ -4214,6 +4355,13 @@ export interface components {
             transport?: string | null;
         } & {
             [key: string]: unknown;
+        };
+        /** AgentFavorite */
+        AgentFavorite: {
+            /** Agent Id */
+            agent_id: string;
+            /** Favorited */
+            favorited: boolean;
         };
         /**
          * AgentFormField
@@ -4358,7 +4506,8 @@ export interface components {
          *     as it takes effect, including for an Agent stored without it.
          *
          *     ``can_manage`` is computed per viewer and therefore present only on the
-         *     reads that compute it (list and get), not on a write's echo of the record.
+         *     reads that compute it (list and get), not on a write's echo of the record;
+         *     ``favorited`` likewise, on the full list.
          */
         AgentRecord: {
             /** Admins */
@@ -4371,6 +4520,8 @@ export interface components {
             artifacts_enabled?: boolean | null;
             /** Can Manage */
             can_manage?: boolean | null;
+            /** Categories */
+            categories?: string[] | null;
             /** Claude Options */
             claude_options?: {
                 [key: string]: unknown;
@@ -4399,6 +4550,8 @@ export interface components {
             extension_catalog?: {
                 [key: string]: unknown;
             } | null;
+            /** Favorited */
+            favorited?: boolean | null;
             /** Idle Hibernate Seconds */
             idle_hibernate_seconds?: number | null;
             /** Mcp Assignments */
@@ -4420,7 +4573,9 @@ export interface components {
             /** Prepared Capacity */
             prepared_capacity?: number | null;
             /** Skills */
-            skills?: string[] | null;
+            skills?: (string | {
+                [key: string]: unknown;
+            })[] | null;
             /** State */
             state?: string | null;
             /** System */
@@ -4459,6 +4614,13 @@ export interface components {
             startup_progress?: string | null;
             /** State */
             state?: string | null;
+        };
+        /** AgentTag */
+        AgentTag: {
+            /** Agents */
+            agents: number;
+            /** Tag */
+            tag: string;
         };
         /** ApiEnvelope[AdminApiWorkspaceResult] */
         ApiEnvelope_AdminApiWorkspaceResult_: {
@@ -4636,6 +4798,14 @@ export interface components {
             /** Message */
             message: string;
         };
+        /** ApiEnvelope[AgentCategory] */
+        ApiEnvelope_AgentCategory_: {
+            /** Code */
+            code: string;
+            data: components["schemas"]["AgentCategory"];
+            /** Message */
+            message: string;
+        };
         /** ApiEnvelope[AgentConnectorState] */
         ApiEnvelope_AgentConnectorState_: {
             /** Code */
@@ -4657,6 +4827,14 @@ export interface components {
             /** Code */
             code: string;
             data: components["schemas"]["AgentExtensionCatalog"];
+            /** Message */
+            message: string;
+        };
+        /** ApiEnvelope[AgentFavorite] */
+        ApiEnvelope_AgentFavorite_: {
+            /** Code */
+            code: string;
+            data: components["schemas"]["AgentFavorite"];
             /** Message */
             message: string;
         };
@@ -4897,6 +5075,14 @@ export interface components {
             /** Code */
             code: string;
             data: components["schemas"]["CurrentUser"];
+            /** Message */
+            message: string;
+        };
+        /** ApiEnvelope[DeletedAgentCategory] */
+        ApiEnvelope_DeletedAgentCategory_: {
+            /** Code */
+            code: string;
+            data: components["schemas"]["DeletedAgentCategory"];
             /** Message */
             message: string;
         };
@@ -5346,6 +5532,24 @@ export interface components {
             /** Message */
             message: string;
         };
+        /** ApiEnvelope[list[AdminAgentCategory]] */
+        ApiEnvelope_list_AdminAgentCategory__: {
+            /** Code */
+            code: string;
+            /** Data */
+            data: components["schemas"]["AdminAgentCategory"][];
+            /** Message */
+            message: string;
+        };
+        /** ApiEnvelope[list[AgentCategory]] */
+        ApiEnvelope_list_AgentCategory__: {
+            /** Code */
+            code: string;
+            /** Data */
+            data: components["schemas"]["AgentCategory"][];
+            /** Message */
+            message: string;
+        };
         /** ApiEnvelope[list[AgentEnvironmentOption]] */
         ApiEnvelope_list_AgentEnvironmentOption__: {
             /** Code */
@@ -5361,6 +5565,15 @@ export interface components {
             code: string;
             /** Data */
             data: components["schemas"]["AgentRecord"][];
+            /** Message */
+            message: string;
+        };
+        /** ApiEnvelope[list[AgentTag]] */
+        ApiEnvelope_list_AgentTag__: {
+            /** Code */
+            code: string;
+            /** Data */
+            data: components["schemas"]["AgentTag"][];
             /** Message */
             message: string;
         };
@@ -5791,7 +6004,9 @@ export interface components {
             /** Primary */
             primary?: boolean | null;
             /** Skills */
-            skills?: string[] | null;
+            skills?: (string | {
+                [key: string]: unknown;
+            })[] | null;
             /** System */
             system?: string | null;
             /** Timezone */
@@ -5848,7 +6063,9 @@ export interface components {
                 [key: string]: unknown;
             }[] | null;
             /** Skills */
-            skills?: string[] | null;
+            skills?: (string | {
+                [key: string]: unknown;
+            })[] | null;
             /** Updated At */
             updated_at?: string | null;
         };
@@ -5894,7 +6111,9 @@ export interface components {
                 [key: string]: unknown;
             }[] | null;
             /** Skills */
-            skills?: string[] | null;
+            skills?: (string | {
+                [key: string]: unknown;
+            })[] | null;
         };
         /**
          * AssistantDeletion
@@ -6421,6 +6640,13 @@ export interface components {
             /** Paths */
             paths: string[];
         };
+        /** DeletedAgentCategory */
+        DeletedAgentCategory: {
+            /** Category Id */
+            category_id: string;
+            /** Unbound Agents */
+            unbound_agents: number;
+        };
         /**
          * DeletedChannelAccountLink
          * @description The participant whose link is gone; ``deleted`` is false if it had none.
@@ -6615,7 +6841,9 @@ export interface components {
             /** Catalog Mcp Servers */
             catalog_mcp_servers: number;
             /** Catalog Skills */
-            catalog_skills: string[];
+            catalog_skills: (string | {
+                [key: string]: unknown;
+            })[];
             /** Credential Vaults */
             credential_vaults: number;
             /** Instructions */
@@ -6627,7 +6855,9 @@ export interface components {
                 [key: string]: unknown;
             }[];
             /** Skills */
-            skills: string[];
+            skills: (string | {
+                [key: string]: unknown;
+            })[];
         };
         /**
          * InteractionAnswerReceipt
@@ -7897,6 +8127,158 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_list_dict_str__Any___"];
+                };
+            };
+        };
+    };
+    list_admin_agent_categories_api_v1_admin_agent_categories_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_list_AdminAgentCategory__"];
+                };
+            };
+        };
+    };
+    create_agent_category_api_v1_admin_agent_categories_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AgentCategoryName"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_AgentCategory_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reorder_agent_categories_api_v1_admin_agent_categories_order_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AgentCategoryOrder"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_list_AgentCategory__"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    rename_agent_category_api_v1_admin_agent_categories__category_id__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                category_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AgentCategoryName"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_AgentCategory_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_agent_category_api_v1_admin_agent_categories__category_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                category_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_DeletedAgentCategory_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -9851,6 +10233,26 @@ export interface operations {
             };
         };
     };
+    list_agent_categories_api_v1_agent_categories_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_list_AgentCategory__"];
+                };
+            };
+        };
+    };
     list_agent_configuration_environments_api_v1_agent_configuration_environments_get: {
         parameters: {
             query?: never;
@@ -9918,6 +10320,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_AgentFormSchema_"];
+                };
+            };
+        };
+    };
+    list_agent_tags_api_v1_agent_tags_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_list_AgentTag__"];
                 };
             };
         };
@@ -10363,6 +10785,68 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_AgentExtensionCatalog_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    favorite_agent_api_v1_agents__agent_id__favorite_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_AgentFavorite_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    unfavorite_agent_api_v1_agents__agent_id__favorite_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_AgentFavorite_"];
                 };
             };
             /** @description Validation Error */

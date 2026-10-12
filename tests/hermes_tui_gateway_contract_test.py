@@ -31,7 +31,6 @@ from astrabox.core.service.orchestrator.engine.hermes_client import (
     _open_hermes_output_blocks,
     translate_tui_event,
 )
-from astrabox.core.service.orchestrator.runtime.pty_terminal import ResolvedExecdEndpoint
 from astrabox.core.service.orchestrator.session_kernel.service_mixins.durable_recovery_assistant import (
     build_engine_output_checkpoint,
 )
