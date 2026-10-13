@@ -394,6 +394,47 @@ expiry time and whether viewers may download workspace files. The link itself
 grants read access, so send it only to intended viewers and revoke it when it
 is no longer needed. Viewers cannot send messages or change the Session.
 
+## Import earlier history
+
+When conversations move to AstraBox from another system, a platform
+administrator can import each one's earlier messages so its Session shows
+them. An import is for reading only: it starts no sandbox, runs nothing, and
+changes no Session state. The Agent program does not read these messages; to
+continue the conversation where it left off, restore the program's own session
+history separately.
+
+```bash
+curl -X POST "$ASTRABOX/api/v1/admin/sessions/$SESSION_ID/history-import" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
+  -d '{"messages": [
+    {"source_id": "m-1", "role": "user", "created_at": "2026-01-05T09:00:00Z",
+     "blocks": [{"type": "text", "text": "Summarize the incident."}]},
+    {"source_id": "m-2", "role": "assistant", "created_at": "2026-01-05T09:00:20Z",
+     "completion": "unknown", "parent_source_id": "m-1",
+     "blocks": [{"type": "text", "text": "The outage began when"}]}
+  ]}'
+```
+
+- List messages in conversation order, up to 500 per call. `source_id` is the
+  message's identity in the old system; `created_at` needs a timezone.
+- A user message carries `text` and `image` blocks. A reply also carries
+  `thinking`, `tool_use`, and the `tool_result` answering a call made earlier
+  in the same reply.
+- `completion` is required on a reply. Use `unknown` when the old system never
+  recorded how the reply ended; the console shows it as imported without a
+  recorded ending rather than as succeeded or failed.
+- `parent_source_id` keeps which message a message replied to.
+- Import before the Session's first message of its own. Once the conversation
+  has started, an import is refused with `HISTORY_IMPORT_AFTER_CONVERSATION`,
+  because history cannot be placed before messages already in it.
+- Running the same import again changes nothing. To continue an import, send
+  the messages already imported first, then the new ones. Other content under
+  a used `source_id`, or a new message placed before imported ones, is refused
+  with `HISTORY_IMPORT_CONFLICT`.
+
+Imported messages read, page and share like any other message, and carry
+`history_import` with their `source_id`, `completion`, and `parent_source_id`.
+
 ## Best practices
 
 1. **Treat Agent configuration as live** — A Session does not pin an Agent

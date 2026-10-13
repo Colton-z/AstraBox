@@ -59,7 +59,16 @@ if [ -n "${ASTRABOX_HERMES_MANAGED_CONFIG:-}" ]; then
   managed_tmp="$(mktemp "$managed_dir/.config.yaml.XXXXXX")"
   "$HERMES_VENV/bin/python" -c '
 import json, os, sys, yaml
-sys.stdout.write(yaml.safe_dump(json.loads(os.environ["ASTRABOX_HERMES_MANAGED_CONFIG"]), sort_keys=False, allow_unicode=True))
+config = json.loads(os.environ["ASTRABOX_HERMES_MANAGED_CONFIG"])
+overwrite = json.loads(os.environ.get("ASTRABOX_HERMES_CONFIG_OVERWRITE") or "{}")
+agent = config.get("agent")
+if "a2a_agents" in overwrite and isinstance(agent, dict) and "disabled_toolsets" in agent:
+    from agent.skill_utils import parse_config_string_list
+    agent["disabled_toolsets"] = [
+        name for name in parse_config_string_list(agent["disabled_toolsets"])
+        if name.strip() != "a2a"
+    ]
+sys.stdout.write(yaml.safe_dump(config, sort_keys=False, allow_unicode=True))
 ' > "$managed_tmp"
   chmod 0644 "$managed_tmp"
   mv -f -- "$managed_tmp" "$managed_dir/config.yaml"

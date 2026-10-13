@@ -87,6 +87,7 @@
   },
   "message": {
     "generating": "Generating…",
+    "imported_without_ending": "Imported history: the original record does not show how this reply ended.",
     "thinking": "Thinking…",
     "thought_process": "Reasoning",
     "pasted_image": "Pasted image"
@@ -159,7 +160,8 @@
   "panel": {
     "tab": {
       "files": "Files",
-      "terminal": "Terminal"
+      "terminal": "Terminal",
+      "browser": "Browser"
     }
   },
   "subagent": {
@@ -202,7 +204,6 @@
     "unconfirmed_timeout": "Sending the message timed out — no confirmation from the backend."
   },
   "retry": {
-    "auto_recover_summary": "A backend-side recovery is needed. The system is recovering automatically and will finish the current session — you don't need to resend your last message.",
     "recover_label": "Recover session",
     "recover_summary": "This session needs to be recovered before you can continue.",
     "recover_summary_sandbox_lost": "The original sandbox cannot be reattached automatically — you'll need to recover the session manually. The system won't rerun your last message.",
@@ -240,7 +241,15 @@
     "empty_directory_hint": "Upload files, drag them here, or create a new folder",
     "delete_confirm": "Delete {{name}}? This takes effect on the remote workspace immediately.",
     "this_item": "this item",
-    "unavailable_sandbox_gone": "This conversation's sandbox is gone. Files are listed again after the next message moves the conversation to a new sandbox."
+    "unavailable_sandbox_gone": "This conversation's sandbox is gone. Files are listed again after the next message moves the conversation to a new sandbox.",
+    "preview": "Preview",
+    "source": "Source",
+    "file_content": "File contents",
+    "back_to_files": "Back to files",
+    "preview_loading": "Loading file…",
+    "preview_failed": "Could not load the file preview.",
+    "preview_too_large": "This file is too large to preview. Download it to read the complete file.",
+    "preview_binary": "This file is not UTF-8 text. Download it to open with a compatible application."
   },
   "interaction": {
     "response_timeout": "Submitting the answer timed out after 15 seconds. The outcome is not yet confirmed. Check the current session; submit again manually only if the question still needs an answer. Nothing will be sent again automatically.",
@@ -286,5 +295,18 @@
     "activity_empty": "Nothing scheduled. Ask it in the conversation to do something on a schedule.",
     "activity_next": "next {{time}}",
     "activity_last": "last {{time}} {{status}}"
+  },
+  "user_action": {
+    "open": "Open required action",
+    "checking": "Checking session requirements…",
+    "failed": "Could not check session requirements.",
+    "refresh": "Refresh status"
+  },
+  "browser": {
+    "reconnect": "Reconnect",
+    "open_tab": "Open in new tab",
+    "unsupported": "Browser is available only in exclusive sandboxes. Shared sandboxes do not have an isolated browser.",
+    "failed": "The sandbox browser is unavailable.",
+    "loading": "Connecting to the sandbox browser…"
   }
 }

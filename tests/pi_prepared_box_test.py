@@ -454,6 +454,7 @@ def test_a_stale_spawn_fingerprint_discards_the_claimed_box(
         "slot_id": "slot-abc",
         "state": "claimed",
         "placement": pb.PLACEMENT_CONVERSATION_BOX,
+        "engine_initialized": True,
         "sandbox_id": "box-77",
         "spawn_fingerprint": "the-digest-of-a-retired-gateway",
         "gateway_substitution": True,
@@ -514,6 +515,7 @@ def _activation_harness(
         "slot_id": "slot-abc",
         "state": "claimed",
         "placement": pb.PLACEMENT_CONVERSATION_BOX,
+        "engine_initialized": True,
         "sandbox_id": "box-77",
         "cwd": "/workspace",
         "spawn_fingerprint": pi._slot_spawn_fingerprint(

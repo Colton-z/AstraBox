@@ -6,6 +6,7 @@ import type { MessageRecord, OutboxItem, SessionRecord } from '../types';
 import {
   getDurableUserTurnIdForClientMessage,
   markOutboxItemFailed,
+  rehydrateDeliveryFailure,
   reconcileNativeInputOutbox,
   reconcileOutboxWithSession,
   retainQueuedOutbox,
@@ -298,4 +299,15 @@ describe('outbox reconcilers are identity-stable on a no-op', () => {
     const outbox = [queued];
     expect(retainQueuedOutbox(outbox, [])).toBe(outbox);
   });
+});
+
+
+it('restores a durable user-action refusal over an accepted row with its images and retry identity', () => {
+  const images = [{ type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png', data: 'aW1hZ2U=' } }];
+  const action = { message: 'Authorize access', status: 'pending', url: null };
+  const failure = { turn_id: 'turn', client_message_id: 'cm-1', text: 'original', summary: action.message,
+    user_action: action, resend_as_new: true, content_blocks: images };
+  const restored = rehydrateDeliveryFailure([outboxItem({ status: 'accepted' })], failure);
+  expect(restored[0]).toMatchObject({ status: 'failed', text: 'original', images, user_action: action, resend_as_new: true });
+  expect(rehydrateDeliveryFailure(restored, failure)).toBe(restored);
 });

@@ -1,6 +1,6 @@
-# Attach and download files
+# View, attach and download files
 
-> Upload files to give your Agent context, and download files it produces.
+> Read workspace files in the console, upload context, and download results.
 
 The Files API lets you attach files — code repositories, configuration, reference docs — to a Session for the Agent to read during task execution. The console exposes the same workspace in the **Files** tab. Files are available at their workspace paths as soon as they are uploaded; there is no separate File resource or mount step.
 
@@ -33,6 +33,7 @@ Content-Type: multipart/form-data
 | Rename     | Rename or move a file or directory           |
 | Delete     | Delete a file or directory                   |
 | Download   | Download a regular file                      |
+| View       | Open a file's contents without downloading it |
 
 > A regular file of any size can be downloaded; the download streams from the
 > sandbox. Directories are managed in place rather than downloaded as archives.
@@ -99,6 +100,47 @@ same workspace.
 
 ## Managing files
 
+### View a file
+
+Select a file name in **Files** to open its contents. UTF-8 text and code use
+a read-only viewer; Markdown also has a rendered view. Images and PDFs open
+inside the panel. **Back to files** returns to the same directory tree.
+Text previews are limited to 2 MiB, and image/PDF previews to 20 MiB. Files
+that exceed these limits or cannot be displayed can still be downloaded in full.
+
+HTML has **Preview** and **Source** tabs. Preview serves the live workspace
+through OpenSandbox's browser endpoint, so relative CSS, JavaScript, images,
+module imports, and links resolve against their file locations. Scripts run
+inside a sandboxed frame. Refresh reloads the page and its resources; the
+viewer also refreshes when the conversation finishes a turn.
+
+HTML preview requires an updated bundled sandbox image and browser-reachable
+OpenSandbox endpoints. The image starts a separate nginx service on port 8002;
+the AIO gateway and its API key are not exposed. Preview links are bearer
+credentials for the current Files root and expire after at most 20 minutes.
+Select **Refresh** to obtain a new link. Each resource request checks the
+signature and expiry and refuses symbolic links. Keep these links private.
+
+For Kubernetes, deploy the official OpenSandbox ingress Gateway with URI or
+wildcard routing; a direct Pod address is not a user-facing preview address.
+An HTTPS console requires an HTTPS Gateway. Follow the
+[browser-facing Gateway setup](providers/opensandbox.md#configure-a-browser-facing-kubernetes-gateway)
+to configure TLS and matching Secure Access signing keys. The platform's
+Lifecycle API relay setting does not publish browser URLs.
+
+The static viewer supports workspace-relative URLs. Root-absolute paths such
+as `/assets/main.js` require an application's own web server with its base path
+configured for the OpenSandbox endpoint. Server-rendered applications should
+use `expose_port` for that application server. Static preview does not run a
+remote browser or start application runtimes.
+
+The authenticated preview operation returns a URL and expiry:
+
+```text
+POST /api/v1/sessions/{session_id}/files/preview
+{"path": "/workspace/report/index.html"}
+```
+
 ### Download a file
 
 Open the file's action menu in **Files** and select **Download**, or call:
@@ -146,7 +188,8 @@ curl -X POST \
 1. Open an Agent and start a Session.
 2. Open **Files**, select the workspace root, and upload `app.py`.
 3. Ask the Agent to review `app.py`, fix the bugs, and save a report as `review.md`.
-4. When the task completes, open `review.md` in **Files** and select **Download**.
+4. When the task completes, select `review.md` in **Files** to read it, or use
+   **Download** to keep a local copy.
 
 ## FAQ
 
@@ -179,3 +222,22 @@ A: Any binary file is accepted. Text-based files (code, configuration, documents
 - [Access GitHub](working-with-repos.md) — Prepare a repository checkout for a
   Session.
 - [Assistants](assistants.md) — Use files in a long-lived personal workspace.
+
+## Browser panel
+
+Browser opens the AIO desktop in a conversation-owned (exclusive) sandbox.
+Use Chrome's address bar to visit a URL or a `file:///workspace/...` path inside
+that sandbox. Mouse and keyboard input control the sandbox's Chrome. Reconnect
+renews the viewer connection without restarting Chrome; Open in new tab gives
+the desktop more room. Shared sandboxes display an unsupported message.
+
+Browser access requires a session owner login. Viewer links are bearer links
+valid for at most 20 minutes; do not share them with someone who should not
+control the sandbox. The expiry bounds new connections, not an already-open
+WebSocket. Chrome state lasts with the sandbox; the panel does not persist or
+restore browser profiles after sandbox replacement. Existing boxes created
+before this feature have their browser disabled and must be replaced.
+
+HTML Preview in Files still renders static HTML in the user's browser and
+supports both shared and exclusive sandboxes. Browser is useful for inspecting
+the remote Chrome itself or visiting applications running inside the box.

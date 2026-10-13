@@ -281,7 +281,8 @@ export interface AgentDeployment {
   scene: 'hmac' | 'scheduler' | 'schedule' | `channel:${string}`;
   prompt_prefix?: string;
   secret?: string;
-  attention_policy?: 'all' | 'mentions';
+  attention_policy?: 'all' | 'mentions' | 'participated' | 'proactive';
+  response_instruction?: string | null;
   channel_config?: {
     [key: string]: unknown;
   };
@@ -315,6 +316,18 @@ export interface DeploymentRun {
   turn_id?: string | null;
   error?: string | null;
   created_at?: string | null;
+}
+
+export interface PersonalSchedule extends AgentDeployment {
+  scope: 'personal';
+  scene: 'schedule';
+  agent_id: string;
+  source_assistant_id: string;
+  owner_user_id: string;
+  owner_org_id: string;
+  name: string;
+  prompt_prefix: string;
+  schedule: { cron: string; timezone: string };
 }
 
 // Admin-authored runtime environment preset. Open shape (validated server-side
@@ -431,6 +444,25 @@ export interface MessageRecord {
   // Present on the history-block read: the record's identity as that page
   // folded it. The reader's identity for a record stays `role:message_id`.
   history_block_id?: string;
+  // Present on imported history: the source's message identity, its reply
+  // parent, and for a reply whether the source recorded its ending.
+  history_import?: {
+    source_id: string;
+    completion?: 'complete' | 'unknown';
+    parent_source_id?: string;
+  };
+}
+
+export interface UserAction {
+  status: string;
+  message: string;
+  url: string | null;
+}
+
+export interface SessionUserActionState {
+  ready: boolean;
+  user_action: UserAction | null;
+  actions: { id: string; label: string }[];
 }
 
 export interface DeliveryFailure {
@@ -438,6 +470,9 @@ export interface DeliveryFailure {
   client_message_id: string;
   text: string;
   summary: string;
+  user_action?: UserAction | null;
+  resend_as_new?: boolean;
+  content_blocks?: ContentBlock[];
 }
 
 export interface OutboxItem {
@@ -448,6 +483,7 @@ export interface OutboxItem {
   command_id?: string;
   input_id?: string;
   failure_reason?: string;
+  user_action?: UserAction;
   /**
    * The refusal ended this message: the platform answered that the same
    * message sent again cannot succeed (`error.retryable === false`). Sending
@@ -926,6 +962,7 @@ export interface TurnFailureBlockData {
   type: 'turn_failure';
   error: string;
   failure_phase: 'post_dispatch';
+  user_action?: UserAction | null;
 }
 
 export interface ApiRetryBlockData {

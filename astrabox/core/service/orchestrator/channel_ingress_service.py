@@ -95,6 +95,12 @@ from astrabox.seams.channel import (
     get_channel,
 )
 from astrabox.seams.channel_accounts import channel_account_resolver
+from astrabox.seams.channel_response import (
+    RESPONSE_POLICIES,
+    RESPONSE_POLICY_PARTICIPATED,
+    ChannelContextMessage,
+    ChannelResponseContext,
+)
 
 logger = get_logger(__name__)
 
@@ -134,10 +140,16 @@ _REFERENCE_RESOLVE_ATTEMPTS = 3
 _REFERENCE_RESOLVE_WAIT_SECONDS = 0.5
 
 #: Binding attention policies (docs/channel-spine.md). ``all`` responds to
-#: every inbound; ``mentions`` requires a typed attention signal.
+#: every inbound; ``mentions`` requires a typed attention signal. The two
+#: response policies also require one, and send ordinary messages to the
+#: response judge: ``participated`` only in topics the agent took part in,
+#: ``proactive`` in any topic.
 ATTENTION_POLICY_ALL = "all"
 ATTENTION_POLICY_MENTIONS = "mentions"
-VALID_ATTENTION_POLICIES = (ATTENTION_POLICY_ALL, ATTENTION_POLICY_MENTIONS)
+VALID_ATTENTION_POLICIES = (ATTENTION_POLICY_ALL, ATTENTION_POLICY_MENTIONS, *RESPONSE_POLICIES)
+_ADDRESSED_ONLY_POLICIES = (ATTENTION_POLICY_MENTIONS, *RESPONSE_POLICIES)
+#: Host-clock bound on one response judgement; a slower judge is a failed drive.
+_RESPONSE_JUDGE_TIMEOUT_SECONDS = 30.0
 
 
 #: Fields of an inbound record that describe the message itself. The first
@@ -231,6 +243,8 @@ class _Classification:
     state: str
     reason: str | None = None
     excluded: bool = False
+    #: An ordinary message the binding's response policy may send to the judge.
+    judge_candidate: bool = False
 
 
 def _dispatch_token(item: dict[str, Any]) -> str:
@@ -430,6 +444,12 @@ class ChannelIngressService:
                 inbound, deployment_id=deployment_id,
                 wait=decision.state == INBOUND_RECEIVED,
             )
+        if decision.judge_candidate:
+            selection = await self._response_selection(binding, payload, deployment_id)
+            if selection is None:
+                decision = _Classification(INBOUND_OBSERVED)
+            else:
+                payload.update(selection)
         item, outcome = await self._channel_repo.claim_inbound(
             deployment_id=deployment_id,
             dedup_key=inbound.dedup_key,
@@ -441,9 +461,24 @@ class ChannelIngressService:
             **target.fields,
         )
         ack_extra = dict(inbound.ack_extra)
+        if (
+            outcome in (CLAIM_OUTCOME_IN_PROGRESS, CLAIM_OUTCOME_CLAIMED)
+            and decision.state == INBOUND_RECEIVED
+            and not decision.judge_candidate
+            and (item.get("payload") or {}).get("selection") == "judge"
+        ):
+            # This copy addressed the agent while another copy of the same
+            # message is under judgment, or is reclaiming it: the explicit
+            # signal must win over any decision the judge makes.
+            await self._channel_repo.note_explicit_attention(item_id=str(item["_id"]))
         if outcome == CLAIM_OUTCOME_CLAIMED:
             return await self._admit(item, target=target, ack_extra=ack_extra)
-        admits = decision.state in (INBOUND_RECEIVED, INBOUND_AUTHORIZED)
+        # An ordinary copy of a recorded message is not a new reason to answer
+        # it: only an explicit signal admits a record kept as context.
+        admits = (
+            decision.state in (INBOUND_RECEIVED, INBOUND_AUTHORIZED)
+            and not decision.judge_candidate
+        )
         if outcome == CLAIM_OUTCOME_OBSERVED and admits:
             # The message was recorded as context only; this signal admits it.
             return await self._admit_recorded(
@@ -484,6 +519,16 @@ class ChannelIngressService:
     ) -> ChannelIngressReceipt:
         """Resolve an owned RECEIVED item's session and spawn its drive."""
         deployment_id = str(item.get("deployment_id") or "")
+        if (item.get("payload") or {}).get("selection") == "judge":
+            # A message the judge may decline must not create a session or a
+            # conversation; its drive resolves one only after a yes.
+            self._spawn_background_task(
+                self._drive_work_item(item),
+                name=f"channel-drive-{item['_id']}",
+            )
+            return ChannelIngressReceipt(
+                status="accepted", item_id=str(item["_id"]), ack_extra=ack_extra,
+            )
         # Resolve the target session inline so the ack carries it (and so
         # redeliveries get a session in their in_progress/duplicate acks).
         # Idempotent under crash: the session binds onto the item via CAS and
@@ -622,6 +667,89 @@ class ChannelIngressService:
             INBOUND_AUTHORIZED: CLAIM_OUTCOME_AUTHORIZED,
         }.get(state, CLAIM_OUTCOME_IN_PROGRESS)
 
+    async def _judged_to_respond(
+        self, item: dict[str, Any], *, owner: str, generation: int,
+    ) -> bool:
+        """Decide a judge-selected message once; True continues to its turn.
+
+        Runs before a session or conversation exists, so a declined message
+        leaves nothing behind but its retained context. A judge error raises
+        and the drive fails with backoff; it is never read as a decision.
+        """
+        item_id = str(item["_id"])
+        judgment = item.get("judgment")
+        if not isinstance(judgment, dict):
+            current = await self._channel_repo.get_inbound(item_id) or item
+            if current.get("explicit_attention"):
+                judgment = {"respond": True, "reason": "explicit_attention", "judge": None}
+            else:
+                from astrabox.core.service.orchestrator.channel_response_judge import (
+                    active_channel_response_judge,
+                )
+
+                judge = active_channel_response_judge()
+                if judge is None:
+                    raise RuntimeError("no channel response judge is available")
+                decision = await asyncio.wait_for(
+                    judge.judge(context=self._response_context(item, await (
+                        self._channel_repo.collect_unsubmitted_context(item)
+                    ))),
+                    timeout=_RESPONSE_JUDGE_TIMEOUT_SECONDS,
+                )
+                judgment = {
+                    "respond": decision.respond, "reason": decision.reason[:500],
+                    "judge": judge.name,
+                }
+            judgment["judged_at"] = utcnow_iso()
+            if not await self._channel_repo.record_inbound_judgment(
+                item_id=item_id, owner_token=owner, generation=generation, judgment=judgment,
+            ):
+                return False  # lost ownership; the successor reads or makes the decision
+            item["judgment"] = judgment
+        if judgment.get("respond") is True:
+            return True
+        if await self._channel_repo.suppress_judged_inbound(
+            item_id=item_id, owner_token=owner, generation=generation,
+        ) is not None:
+            logger.info(
+                "channel message kept as context by response judgment: item=%s reason=%s",
+                item_id, judgment.get("reason"),
+            )
+            return False
+        # The suppression lost to a copy that addressed the agent meanwhile.
+        current = await self._channel_repo.get_inbound(item_id) or {}
+        return bool(current.get("explicit_attention")) and current.get("owner_token") == owner
+
+    @staticmethod
+    def _response_context(
+        item: dict[str, Any], context: list[dict[str, Any]],
+    ) -> ChannelResponseContext:
+        payload = item["payload"]
+        policy = dict(payload.get("response_policy") or {})
+        return ChannelResponseContext(
+            deployment_id=str(item["deployment_id"]),
+            channel_name=str(item.get("channel_name") or ""),
+            conversation=str(payload["conversation"]),
+            message=ChannelContextMessage(
+                participant=str(payload.get("participant") or ""),
+                content=str(payload.get("reply_text") or ""),
+                timestamp=str(payload.get("message_timestamp") or ""),
+            ),
+            policy=policy["mode"],
+            instruction=str(policy.get("instruction") or ""),
+            binding_revision=str(payload.get("binding_revision") or ""),
+            selection_reason=str(payload.get("selection_reason") or ""),
+            participated=bool(payload.get("participated")),
+            context=tuple(
+                ChannelContextMessage(
+                    participant=str(row.get("participant") or ""),
+                    content=str(row.get("content") or ""),
+                    timestamp=str(row.get("timestamp") or ""),
+                )
+                for row in context
+            ),
+        )
+
     async def _classify(
         self, binding: dict[str, Any], inbound: ChannelInbound, deployment_id: str,
     ) -> _Classification:
@@ -651,6 +779,8 @@ class ChannelIngressService:
                 return _Classification(INBOUND_IGNORED, "unknown_interaction_action")
             return _Classification(INBOUND_RECEIVED)
         if self._attention_ignore_reason(binding, inbound) is not None:
+            if self._binding_policy(binding) in RESPONSE_POLICIES and inbound.retain_context:
+                return _Classification(INBOUND_RECEIVED, judge_candidate=True)
             return _Classification(INBOUND_OBSERVED)
         return _Classification(INBOUND_RECEIVED)
 
@@ -732,12 +862,47 @@ class ChannelIngressService:
         decides. A message the policy does not address is kept as retained
         context, so a later signal that addresses it can still run it.
         """
-        policy = str(binding.get("attention_policy") or ATTENTION_POLICY_ALL).strip().lower()
-        if policy != ATTENTION_POLICY_MENTIONS:
+        policy = ChannelIngressService._binding_policy(binding)
+        if policy not in _ADDRESSED_ONLY_POLICIES:
             return None
         if inbound.attention is not None and inbound.attention.any_signal:
             return None
-        return "attention_policy=mentions with no attention signal"
+        return f"attention_policy={policy} with no attention signal"
+
+    @staticmethod
+    def _binding_policy(binding: dict[str, Any]) -> str:
+        return str(binding.get("attention_policy") or ATTENTION_POLICY_ALL).strip().lower()
+
+    async def _response_selection(
+        self, binding: dict[str, Any], payload: dict[str, Any], deployment_id: str,
+    ) -> dict[str, Any] | None:
+        """Freeze a judge candidate's selection, or None to keep it as context.
+
+        Under ``participated`` a topic the agent has not answered in yet is
+        only context; the judge is not asked. The policy and its instruction
+        are frozen with the message, so a later edit does not change how it
+        is judged on recovery.
+        """
+        conversation = payload.get("conversation")
+        revision = payload.get("binding_revision")
+        if not conversation or not revision:
+            return None
+        policy = self._binding_policy(binding)
+        participated = await self._channel_repo.topic_has_participation(
+            deployment_id=deployment_id, conversation=str(conversation),
+            binding_revision=str(revision),
+        )
+        if policy == RESPONSE_POLICY_PARTICIPATED and not participated:
+            return None
+        return {
+            "selection": "judge",
+            "selection_reason": "participated_topic" if participated else "proactive_policy",
+            "participated": participated,
+            "response_policy": {
+                "mode": policy,
+                "instruction": str(binding.get("response_instruction") or ""),
+            },
+        }
 
     # ── dispatch (invariant B + attach-not-append) ───────────────────────
 
@@ -951,6 +1116,10 @@ class ChannelIngressService:
                 item_id=item_id, owner_token=owner, generation=generation
             ):
                 return  # lost ownership before starting — successor owns it
+            if payload.get("selection") == "judge" and not await self._judged_to_respond(
+                item, owner=owner, generation=generation,
+            ):
+                return
             try:
                 session_id = await self._resolve_item_session(item)
             except APIError as exc:

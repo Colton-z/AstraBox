@@ -153,6 +153,7 @@ class LifecycleCommandsMixin:
             session_id=resolved_session_id,
             command_type="CreateSession",
             payload={
+                "org_id": user.org_id,
                 "template_name": template_name,
                 "permission_mode": normalized_permission_mode,
                 "session_kind": session_kind,
@@ -297,7 +298,10 @@ class LifecycleCommandsMixin:
             reconcile_agent_binding=False,
         )
 
-    async def recover_session(self, user: UserContext, session_id: str) -> dict[str, Any]:
+    async def recover_session(
+        self, user: UserContext, session_id: str, *,
+        admitted_input: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
         # Explicit lifecycle recovery must not consume projection read-repair
         # first; otherwise `_reconcile_stuck_turn()` may settle the
         # conversation snapshot before the lifecycle worker sees the original
@@ -334,7 +338,7 @@ class LifecycleCommandsMixin:
             user=user,
             session_id=session_id,
             command_type="RecoverSession",
-            payload={},
+            payload={"admitted_input": admitted_input} if admitted_input else {},
         )
         outcome = await self._build_lifecycle_worker().run(
             WorkerWakeup(

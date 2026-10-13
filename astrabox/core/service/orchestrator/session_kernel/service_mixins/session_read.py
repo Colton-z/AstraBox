@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from astrabox.seams.runtime_preparation import validated_user_action
+
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.user_context import UserContext
@@ -1310,11 +1312,21 @@ class SessionReadRenderingMixin:
                 continue
             content_text = str(payload.get("content") or "").strip()
             client_message_id = str(payload.get("client_message_id") or "").strip() or None
+            failures = await self._session_events_repo.list_events(
+                session_id, after_seq=0, event_type="turn.failed",
+                turn_id=last_turn_id, limit=1,
+            )
+            failure = (failures[0].get("payload") or {}) if failures else {}
+            refusal = failure.get("refusal") or {}
+            action = validated_user_action(refusal.get("user_action"))
             return {
                 "turn_id": last_turn_id,
                 "client_message_id": client_message_id,
                 "text": content_text,
-                "summary": "the sandbox did not receive this message",
+                "content_blocks": payload.get("content_blocks") or [],
+                "summary": action["message"] if action else "the sandbox did not receive this message",
+                "user_action": action,
+                "resend_as_new": bool(refusal),
             }
         return None
 

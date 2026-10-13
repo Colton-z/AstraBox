@@ -10,6 +10,12 @@ new conversation in the Assistant's shared workspace, run as its owner.
 Use the web console to create, list, update, disable, run, replay, and delete
 Schedules.
 
+For a personal Agent plan, ask your Assistant to create it, then open the account
+settings menu → **Personal schedules** to manage it in a dialog. You need
+permission to use the target Agent. See [Personal Agent schedules](a2a.md#personal-agent-schedules).
+The console instructions below cover managed Agent schedules and owner-only
+Assistant triggers.
+
 ## Prerequisites
 
 - Create the Agent or Assistant that should handle each invocation.

@@ -6,10 +6,10 @@ HTTP on a private network while users open an HTTPS ingress gateway. This
 module keeps those two settings separate and builds the SDK configuration used
 for each operation.
 
-Scheme discipline: the SDK's ``ConnectionConfig`` defaults to ``http``, but a
-deployment may require ``https``. The lifecycle base URL therefore carries an
-explicit scheme. Browser endpoints use ``ASTRABOX_SANDBOX_ENDPOINT_SCHEME``
-when it is set and otherwise inherit the lifecycle scheme.
+The lifecycle base URL carries its own scheme. The SDK's data-plane
+``ConnectionConfig.protocol`` and browser endpoints use
+``ASTRABOX_SANDBOX_ENDPOINT_SCHEME`` when set, otherwise the lifecycle scheme.
+An internal lifecycle relay uses the lifecycle scheme.
 """
 
 from __future__ import annotations
@@ -155,6 +155,14 @@ def sdk_connection_config(
     common: dict[str, Any] = {
         "api_key": api_key,
         "domain": base_url,
+        # The explicit domain fixes lifecycle HTTP/HTTPS independently of
+        # protocol, which the SDK's execd adapters use for sandbox traffic.
+        "protocol": (
+            base_url.split("://", 1)[0]
+            if proxied
+            else str(getattr(settings, "sandbox_endpoint_scheme", "") or "").strip()
+            or base_url.split("://", 1)[0]
+        ),
         "request_timeout": request_timeout,
         "use_server_proxy": proxied,
     }

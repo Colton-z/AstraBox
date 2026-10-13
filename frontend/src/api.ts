@@ -1,4 +1,5 @@
 import i18n from '@/i18n';
+import { readUserAction } from './session/userAction';
 
 import type { paths } from './api/schema';
 import createClient from 'openapi-fetch';
@@ -11,6 +12,8 @@ import {
 } from './networkRecovery';
 
 import type {
+  UserAction,
+  SessionUserActionState,
   AdminErrorsPage,
   AdminLogsPage,
   AdminProcessHealth,
@@ -48,6 +51,7 @@ import type {
   ChannelAccountLink,
   ChannelExecutionMode,
   DeploymentRun,
+  PersonalSchedule,
   AgentDraft,
   ApiResponse,
   EnvironmentConfig,
@@ -104,13 +108,15 @@ export class ApiError extends Error {
    * can succeed. `null` when the response carried no envelope to say.
    */
   readonly retryable: boolean | null;
+  readonly userAction: UserAction | null;
 
-  constructor(code: string, message: string, status: number, retryable: boolean | null = null) {
+  constructor(code: string, message: string, status: number, retryable: boolean | null = null, userAction: UserAction | null = null) {
     super(`${code}: ${message}`);
     this.name = 'ApiError';
     this.code = code;
     this.status = status;
     this.retryable = retryable;
+    this.userAction = readUserAction(userAction);
   }
 }
 
@@ -593,6 +599,8 @@ async function send<R extends { response: Response }>(
       appendStructuredApiErrorEvidence(message, payload as ApiResponse<unknown> | null),
       response.status,
       typeof retryable === 'boolean' ? retryable : null,
+      code === 'TURN_PREPARATION_USER_ACTION_REQUIRED'
+        ? readUserAction(payload?.error?.evidence?.user_action) : null,
     );
   }
 
@@ -1558,6 +1566,55 @@ export async function listDeployments(): Promise<AgentDeployment[]> {
   );
 }
 
+export async function listPersonalSchedules(): Promise<PersonalSchedule[]> {
+  return expectList<PersonalSchedule>(
+    await send((wire) => client.GET('/api/v1/me/schedules', wire)),
+    '/me/schedules',
+  );
+}
+
+export async function updatePersonalSchedule(
+  deploymentId: string,
+  patch: Partial<Pick<PersonalSchedule, 'name' | 'prompt_prefix' | 'schedule' | 'enabled'>>,
+): Promise<PersonalSchedule> {
+  return await send((wire) => client.PUT('/api/v1/me/schedules/{deployment_id}', {
+    ...wire,
+    params: { path: { deployment_id: deploymentId } },
+    body: patch,
+  })) as unknown as PersonalSchedule;
+}
+
+export async function deletePersonalSchedule(deploymentId: string): Promise<void> {
+  await send((wire) => client.DELETE('/api/v1/me/schedules/{deployment_id}', {
+    ...wire,
+    params: { path: { deployment_id: deploymentId } },
+  }));
+}
+
+export async function listPersonalScheduleRuns(deploymentId: string): Promise<DeploymentRun[]> {
+  return expectList<DeploymentRun>(
+    await send((wire) => client.GET('/api/v1/me/schedules/{deployment_id}/runs', {
+      ...wire,
+      params: { path: { deployment_id: deploymentId }, query: { limit: 50 } },
+    })),
+    '/me/schedules/{deployment_id}/runs',
+  );
+}
+
+export async function triggerPersonalSchedule(deploymentId: string): Promise<DeploymentRun> {
+  return send((wire) => client.POST('/api/v1/me/schedules/{deployment_id}/runs', {
+    ...wire,
+    params: { path: { deployment_id: deploymentId } },
+  })) as Promise<DeploymentRun>;
+}
+
+export async function replayPersonalScheduleRun(deploymentId: string, runId: string): Promise<DeploymentRun> {
+  return send((wire) => client.POST('/api/v1/me/schedules/{deployment_id}/runs/{run_id}/replay', {
+    ...wire,
+    params: { path: { deployment_id: deploymentId, run_id: runId } },
+  })) as Promise<DeploymentRun>;
+}
+
 export async function listChannelProviders(): Promise<ChannelProviderDescriptor[]> {
   return expectList<ChannelProviderDescriptor>(
     await send((wire) => client.GET('/api/v1/admin/channel-providers', { ...wire })),
@@ -1573,7 +1630,8 @@ type DeploymentPayload = {
   execution_mode?: ChannelExecutionMode;
   execution_user_id?: string;
   allowed_participants?: string[];
-  attention_policy?: 'all' | 'mentions';
+  attention_policy?: 'all' | 'mentions' | 'participated' | 'proactive';
+  response_instruction?: string | null;
   channel_config?: Record<string, unknown>;
   credentials?: Record<string, unknown>;
   schedule?: { cron: string; timezone: string };
@@ -2515,6 +2573,53 @@ export function buildSessionFileDownloadUrl(sessionId: string, path: string): st
   return buildApiUrl(`/api/v1/sessions/${sessionId}/files/download?${params.toString()}`);
 }
 
+export async function openSessionBrowser(sessionId: string, signal?: AbortSignal) {
+  return send((wire) => client.POST('/api/v1/sessions/{session_id}/browser', {
+    ...wire,
+    signal,
+    params: { path: { session_id: sessionId } },
+  })) as Promise<{ url: string; expires_at: string }>;
+}
+
+export async function previewSessionFile(sessionId: string, path: string, signal?: AbortSignal) {
+  return send((wire) => client.POST('/api/v1/sessions/{session_id}/files/preview', {
+    ...wire,
+    signal,
+    params: { path: { session_id: sessionId } },
+    body: { path },
+  })) as Promise<{ url: string; expires_at: string }>;
+}
+
+/** Bound the reader's memory even if the file grows after its directory listing. */
+export async function readSessionFile(
+  sessionId: string, path: string, limit: number, signal: AbortSignal,
+): Promise<Blob> {
+  const response = await fetchWithNetworkRecovery(buildSessionFileDownloadUrl(sessionId, path), {
+    credentials: 'include', signal, cache: 'no-store',
+  });
+  if (!response.ok) {
+    const payload = await response.json();
+    throw new Error(payload.message || `HTTP ${response.status}`);
+  }
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error(i18n.t('chat:files.preview_failed'));
+  const chunks: Uint8Array<ArrayBuffer>[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > limit) throw new Error(i18n.t('chat:files.preview_too_large'));
+      chunks.push(new Uint8Array(value));
+    }
+  } finally {
+    await reader.cancel();
+    reader.releaseLock();
+  }
+  return new Blob(chunks);
+}
+
 export interface TerminalEvent {
   type: 'ack' | 'stdout' | 'stderr' | 'cwd' | 'exit';
   text?: string;
@@ -2560,3 +2665,15 @@ export async function runTerminalCommandStream(
 // response body as evidence and the other does not, and the same failure then
 // reads differently depending on which page the reader is standing on.
 export { client as apiClient, send as sendApi };
+
+export async function getSessionUserAction(sessionId: string): Promise<SessionUserActionState> {
+  return send((wire) => client.GET('/api/v1/sessions/{session_id}/user-action', {
+    ...wire, params: { path: { session_id: sessionId } },
+  })) as Promise<SessionUserActionState>;
+}
+
+export async function performSessionUserAction(sessionId: string, actionId: string): Promise<SessionUserActionState> {
+  return send((wire) => client.POST('/api/v1/sessions/{session_id}/user-action', {
+    ...wire, params: { path: { session_id: sessionId } }, body: { action_id: actionId },
+  })) as Promise<SessionUserActionState>;
+}

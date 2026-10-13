@@ -78,6 +78,12 @@ interface PodRecord {
   metadata?: {
     name?: unknown;
     deletionTimestamp?: unknown;
+    ownerReferences?: Array<{
+      apiVersion?: unknown;
+      kind?: unknown;
+      name?: unknown;
+      controller?: unknown;
+    }>;
   };
   status?: {
     phase?: unknown;
@@ -193,17 +199,10 @@ function dockerProbe(
 }
 
 function kubernetesProbe(
-  endpoint: string,
+  sandboxId: string,
   namespace: string,
   runKubectl: SandboxCommandRunner,
 ): RuntimeProbe<string> {
-  const host = endpointHost(endpoint);
-  if (!host) {
-    return {
-      matches: [],
-      diagnostic: `endpoint ${JSON.stringify(endpoint || '<none>')} has no valid host`,
-    };
-  }
   // Level 6 records request timing without HTTP headers or response bodies.
   const args = ['get', 'pods', '-n', namespace, '-o', 'json'];
   const result = runKubectl(args);
@@ -217,14 +216,19 @@ function kubernetesProbe(
     return { matches: [], diagnostic: (error as Error).message };
   }
   const matches = pods
-    .filter((pod) => String(pod.status?.podIP || '') === host)
+    .filter((pod) => pod.metadata?.ownerReferences?.some((owner) => (
+      owner.apiVersion === 'sandbox.opensandbox.io/v1alpha1'
+      && owner.kind === 'BatchSandbox'
+      && owner.controller === true
+      && owner.name === sandboxId
+    )))
     .map((pod) => String(pod.metadata?.name || '').trim())
     .filter(Boolean);
   return {
     matches,
     diagnostic: matches.length > 0
-      ? `endpoint host ${host} matches Pod ${matches.join(', ')}`
-      : `no Pod has status.podIP=${host}`,
+      ? `BatchSandbox ${sandboxId} owns Pod ${matches.join(', ')}`
+      : `no Pod is controlled by BatchSandbox ${sandboxId}`,
   };
 }
 
@@ -239,7 +243,7 @@ export function sandboxContainerName(sandboxId: string): string {
  *
  * The OpenSandbox backend name cannot distinguish its Docker and Kubernetes
  * server runtimes. The positive runtime signals are instead the deterministic
- * Docker container name and the Pod IP published as the sandbox endpoint. A
+ * Docker container name and the Pod's native BatchSandbox owner reference. A
  * zero- or multi-match handle is a harness error, never an implicit skip.
  */
 export function resolveSandboxHandle(
@@ -254,7 +258,7 @@ export function resolveSandboxHandle(
   if (!namespace) throw new Error('sandboxOps: Kubernetes namespace must not be empty');
   const docker = dockerProbe(sandboxId, options.runDocker ?? runLocalDocker);
   const kubernetes = kubernetesProbe(
-    endpoint,
+    sandboxId,
     namespace,
     options.runKubectl ?? runLocalKubectl,
   );

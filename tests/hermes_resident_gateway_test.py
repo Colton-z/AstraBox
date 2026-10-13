@@ -161,6 +161,7 @@ class _FakeTuiProcess:
         params: dict[str, Any] | None = None,
         *,
         timeout: float = 120.0,
+        input_command_id: str | None = None,
     ) -> dict[str, Any]:
         if not self.is_connected:
             raise EngineStreamDetached("fake backend is not connected")

@@ -965,6 +965,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/admin/sessions/{session_id}/history-import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Admin Import Session History
+         * @description Import a migrated conversation's earlier messages, for reading only.
+         *
+         *     Nothing runs: no sandbox, command or turn. Import before the conversation's
+         *     first message of its own; a session that already has one refuses with
+         *     ``HISTORY_IMPORT_AFTER_CONVERSATION``. A re-run of the same messages
+         *     changes nothing; other content under a used ``source_id``, or a new message
+         *     placed before imported ones, is ``HISTORY_IMPORT_CONFLICT``.
+         */
+        post: operations["admin_import_session_history_api_v1_admin_sessions__session_id__history_import_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/admin/sessions/{session_id}/kill": {
         parameters: {
             query?: never;
@@ -2516,6 +2542,77 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/me/schedules": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Personal Schedules */
+        get: operations["list_personal_schedules_api_v1_me_schedules_get"];
+        put?: never;
+        /** Create Personal Schedule */
+        post: operations["create_personal_schedule_api_v1_me_schedules_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/schedules/{deployment_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Update Personal Schedule */
+        put: operations["update_personal_schedule_api_v1_me_schedules__deployment_id__put"];
+        post?: never;
+        /** Delete Personal Schedule */
+        delete: operations["delete_personal_schedule_api_v1_me_schedules__deployment_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/schedules/{deployment_id}/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Personal Schedule Runs */
+        get: operations["list_personal_schedule_runs_api_v1_me_schedules__deployment_id__runs_get"];
+        put?: never;
+        /** Trigger Personal Schedule */
+        post: operations["trigger_personal_schedule_api_v1_me_schedules__deployment_id__runs_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/schedules/{deployment_id}/runs/{run_id}/replay": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Replay Personal Schedule Run */
+        post: operations["replay_personal_schedule_run_api_v1_me_schedules__deployment_id__runs__run_id__replay_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/platform-mcp/{deployment_id}/{server_name}/{capability}/mcp": {
         parameters: {
             query?: never;
@@ -2803,6 +2900,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{session_id}/browser": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Open Session Browser */
+        post: operations["open_session_browser_api_v1_sessions__session_id__browser_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{session_id}/child-runs": {
         parameters: {
             query?: never;
@@ -2967,6 +3081,23 @@ export interface paths {
         put?: never;
         /** Move Session Files */
         post: operations["move_session_files_api_v1_sessions__session_id__files_move_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{session_id}/files/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Preview Session File */
+        post: operations["preview_session_file_api_v1_sessions__session_id__files_preview_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3258,6 +3389,24 @@ export interface paths {
          *     is not tied to how long the engine takes or where it pauses.
          */
         post: operations["append_turn_input_api_v1_sessions__session_id__turn_inputs_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{session_id}/user-action": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read Session User Action */
+        get: operations["read_session_user_action_api_v1_sessions__session_id__user_action_get"];
+        put?: never;
+        /** Perform Session User Action */
+        post: operations["perform_session_user_action_api_v1_sessions__session_id__user_action_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3670,6 +3819,52 @@ export interface components {
             version: number;
         } & {
             [key: string]: unknown;
+        };
+        /**
+         * AdminHistoryImportMessage
+         * @description One earlier message of a migrated conversation.
+         *
+         *     ``blocks`` use the transcript's content blocks: ``text`` and ``image`` for
+         *     a user message; for a reply also ``thinking``, ``tool_use`` and the
+         *     ``tool_result`` answering a call earlier in the same reply. ``completion``
+         *     is required on a reply: ``unknown`` when the source recorded no ending.
+         */
+        AdminHistoryImportMessage: {
+            /** Blocks */
+            blocks: {
+                [key: string]: unknown;
+            }[];
+            /** Completion */
+            completion?: ("complete" | "unknown") | null;
+            /** Created At */
+            created_at: string;
+            /** Parent Source Id */
+            parent_source_id?: string | null;
+            /**
+             * Role
+             * @enum {string}
+             */
+            role: "user" | "assistant";
+            /** Source Id */
+            source_id: string;
+        };
+        /**
+         * AdminHistoryImportRequest
+         * @description Messages in conversation order; a re-run carries the same ones first.
+         */
+        AdminHistoryImportRequest: {
+            /** Messages */
+            messages: components["schemas"]["AdminHistoryImportMessage"][];
+        };
+        /**
+         * AdminHistoryImportResult
+         * @description How many messages this call added, and how many were already imported.
+         */
+        AdminHistoryImportResult: {
+            /** Imported */
+            imported: number;
+            /** Unchanged */
+            unchanged: number;
         };
         /**
          * AdminKillResult
@@ -4670,6 +4865,14 @@ export interface components {
             /** Message */
             message: string;
         };
+        /** ApiEnvelope[AdminHistoryImportResult] */
+        ApiEnvelope_AdminHistoryImportResult_: {
+            /** Code */
+            code: string;
+            data: components["schemas"]["AdminHistoryImportResult"];
+            /** Message */
+            message: string;
+        };
         /** ApiEnvelope[AdminKillResult] */
         ApiEnvelope_AdminKillResult_: {
             /** Code */
@@ -5246,6 +5449,14 @@ export interface components {
             /** Message */
             message: string;
         };
+        /** ApiEnvelope[SessionBrowserAccess] */
+        ApiEnvelope_SessionBrowserAccess_: {
+            /** Code */
+            code: string;
+            data: components["schemas"]["SessionBrowserAccess"];
+            /** Message */
+            message: string;
+        };
         /** ApiEnvelope[SessionChildRunPage] */
         ApiEnvelope_SessionChildRunPage_: {
             /** Code */
@@ -5291,6 +5502,14 @@ export interface components {
             /** Code */
             code: string;
             data: components["schemas"]["SessionFileMoved"];
+            /** Message */
+            message: string;
+        };
+        /** ApiEnvelope[SessionFilePreview] */
+        ApiEnvelope_SessionFilePreview_: {
+            /** Code */
+            code: string;
+            data: components["schemas"]["SessionFilePreview"];
             /** Message */
             message: string;
         };
@@ -5355,6 +5574,14 @@ export interface components {
             /** Code */
             code: string;
             data: components["schemas"]["SessionRecord"];
+            /** Message */
+            message: string;
+        };
+        /** ApiEnvelope[SessionUserActionView] */
+        ApiEnvelope_SessionUserActionView_: {
+            /** Code */
+            code: string;
+            data: components["schemas"]["SessionUserActionView"];
             /** Message */
             message: string;
         };
@@ -6679,12 +6906,22 @@ export interface components {
         DeliveryFailure: {
             /** Client Message Id */
             client_message_id?: string | null;
+            /** Content Blocks */
+            content_blocks?: {
+                [key: string]: unknown;
+            }[];
+            /**
+             * Resend As New
+             * @default false
+             */
+            resend_as_new: boolean;
             /** Summary */
             summary?: string | null;
             /** Text */
             text?: string | null;
             /** Turn Id */
             turn_id?: string | null;
+            user_action?: components["schemas"]["UserActionView"] | null;
         };
         /**
          * DeploymentExtensionProvider
@@ -6726,12 +6963,22 @@ export interface components {
             execution_mode?: string | null;
             /** Execution User Id */
             execution_user_id?: string | null;
+            /** Owner Org Id */
+            owner_org_id?: string | null;
+            /** Owner User Id */
+            owner_user_id?: string | null;
             /** Prompt Prefix */
             prompt_prefix?: string | null;
+            /** Response Instruction */
+            response_instruction?: string | null;
             /** Scene */
             scene?: string | null;
+            /** Scope */
+            scope?: string | null;
             /** Secret */
             secret?: string | null;
+            /** Source Assistant Id */
+            source_assistant_id?: string | null;
             /** Updated At */
             updated_at?: string | null;
         } & {
@@ -7000,6 +7247,11 @@ export interface components {
             /** Src Path */
             src_path: string;
         };
+        /** PerformUserAction */
+        PerformUserAction: {
+            /** Action Id */
+            action_id: string;
+        };
         /**
          * PermissionModeUpdate
          * @description The outcome of setting a session's permission mode.
@@ -7025,6 +7277,29 @@ export interface components {
             session_id: string;
         } & {
             [key: string]: unknown;
+        };
+        /**
+         * PersonalScheduleCreate
+         * @description The owner and execution identity come only from the authenticated request.
+         */
+        PersonalScheduleCreate: {
+            /** Agent Id */
+            agent_id: string;
+            /** Name */
+            name: string;
+            /** Prompt Prefix */
+            prompt_prefix: string;
+            /** Schedule */
+            schedule: {
+                [key: string]: unknown;
+            };
+            /** Source Assistant Id */
+            source_assistant_id: string;
+        };
+        /** PreviewSessionFileRequest */
+        PreviewSessionFileRequest: {
+            /** Path */
+            path: string;
         };
         /**
          * ProcessSummaryState
@@ -7198,6 +7473,15 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        /** SessionBrowserAccess */
+        SessionBrowserAccess: {
+            /** Expires At */
+            expires_at: string;
+            /** Url */
+            url: string;
+        } & {
+            [key: string]: unknown;
+        };
         /**
          * SessionChildRunPage
          * @description All child runs visible in one Session, in tree order.
@@ -7323,6 +7607,18 @@ export interface components {
             root_path: string;
             /** Src Path */
             src_path: string;
+        } & {
+            [key: string]: unknown;
+        };
+        /**
+         * SessionFilePreview
+         * @description An expiring bearer URL for a file and its workspace-relative resources.
+         */
+        SessionFilePreview: {
+            /** Expires At */
+            expires_at: string;
+            /** Url */
+            url: string;
         } & {
             [key: string]: unknown;
         };
@@ -7580,6 +7876,14 @@ export interface components {
             workspace_panels?: {
                 [key: string]: boolean;
             } | null;
+        };
+        /** SessionUserActionView */
+        SessionUserActionView: {
+            /** Actions */
+            actions?: components["schemas"]["UserActionCommandView"][];
+            /** Ready */
+            ready: boolean;
+            user_action?: components["schemas"]["UserActionView"] | null;
         };
         /**
          * SetAgentAccessRequest
@@ -7875,6 +8179,22 @@ export interface components {
             name?: string | null;
             /** Transport */
             transport?: string | null;
+            /** Url */
+            url?: string | null;
+        };
+        /** UserActionCommandView */
+        UserActionCommandView: {
+            /** Id */
+            id: string;
+            /** Label */
+            label: string;
+        };
+        /** UserActionView */
+        UserActionView: {
+            /** Message */
+            message: string;
+            /** Status */
+            status: string;
             /** Url */
             url?: string | null;
         };
@@ -9768,6 +10088,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_AdminEvictResult_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    admin_import_session_history_api_v1_admin_sessions__session_id__history_import_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminHistoryImportRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_AdminHistoryImportResult_"];
                 };
             };
             /** @description Validation Error */
@@ -13520,6 +13875,234 @@ export interface operations {
             };
         };
     };
+    list_personal_schedules_api_v1_me_schedules_get: {
+        parameters: {
+            query?: {
+                source_assistant_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_list_DeploymentRecord__"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_personal_schedule_api_v1_me_schedules_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PersonalScheduleCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_DeploymentRecord_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_personal_schedule_api_v1_me_schedules__deployment_id__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                deployment_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    [key: string]: unknown;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_DeploymentRecord_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_personal_schedule_api_v1_me_schedules__deployment_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                deployment_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_DeletedDeployment_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_personal_schedule_runs_api_v1_me_schedules__deployment_id__runs_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                deployment_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    trigger_personal_schedule_api_v1_me_schedules__deployment_id__runs_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                deployment_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    replay_personal_schedule_run_api_v1_me_schedules__deployment_id__runs__run_id__replay_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                deployment_id: string;
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     platform_mcp_streamable_http_api_v1_platform_mcp__deployment_id___server_name___capability__mcp_post: {
         parameters: {
             query?: never;
@@ -14104,6 +14687,37 @@ export interface operations {
             };
         };
     };
+    open_session_browser_api_v1_sessions__session_id__browser_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_SessionBrowserAccess_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_session_child_runs_api_v1_sessions__session_id__child_runs_get: {
         parameters: {
             query?: never;
@@ -14423,6 +15037,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_SessionFileMoved_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    preview_session_file_api_v1_sessions__session_id__files_preview_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PreviewSessionFileRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_SessionFilePreview_"];
                 };
             };
             /** @description Validation Error */
@@ -15015,6 +15664,72 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_TurnReceipt_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_session_user_action_api_v1_sessions__session_id__user_action_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_SessionUserActionView_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    perform_session_user_action_api_v1_sessions__session_id__user_action_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PerformUserAction"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_SessionUserActionView_"];
                 };
             };
             /** @description Validation Error */

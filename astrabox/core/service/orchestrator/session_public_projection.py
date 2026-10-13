@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from typing import Any
+from astrabox.seams.runtime_preparation import validated_user_action
 
 from astrabox.core.service.orchestrator.engine.interaction_contract import (
     InteractionContractError,
@@ -102,7 +103,7 @@ _BACKGROUND_TASK_FIELDS = frozenset(
 )
 
 _DELIVERY_FAILURE_FIELDS = frozenset(
-    {"turn_id", "client_message_id", "text", "summary"}
+    {"turn_id", "client_message_id", "text", "summary", "content_blocks", "user_action", "resend_as_new"}
 )
 
 _PENDING_INPUT_FIELDS = frozenset(
@@ -127,6 +128,8 @@ _MESSAGE_FIELDS = frozenset(
         # Present only on a history-blocks read; a plain message page never
         # carries it, so that response is unchanged by this field existing.
         "history_block_id",
+        # Present only on imported history: its source identity and completion.
+        "history_import",
     }
 )
 
@@ -155,7 +158,7 @@ _BLOCK_FIELDS: dict[str, frozenset[str]] = {
             "is_error",
         }
     ),
-    "turn_failure": frozenset({"type", "error", "failure_phase"}),
+    "turn_failure": frozenset({"type", "error", "failure_phase", "user_action"}),
     "api_retry": frozenset(
         {"type", "id", "attempt", "max_retries", "error_status", "error"}
     ),
@@ -190,7 +193,7 @@ def project_public_pending_interaction(
         raise PublicProjectionError(str(exc)) from exc
 
 
-def project_public_message_block(value: Any) -> dict[str, Any] | None:
+def project_public_message_block(value: Any, *, shared: bool = False) -> dict[str, Any] | None:
     """Project one transcript block; raw vendor envelopes are diagnostic-only."""
 
     if not isinstance(value, dict):
@@ -218,6 +221,10 @@ def project_public_message_block(value: Any) -> dict[str, Any] | None:
             raise PublicProjectionError(str(exc)) from exc
         if public_part is None:
             raise PublicProjectionError(f"ui_data part {part_type!r} is not public")
+        if shared and part_type == "data-turn-failure" and isinstance(public_part.get("data"), dict):
+            public_part = {**public_part, "data": {
+                key: item for key, item in public_part["data"].items() if key != "user_action"
+            }}
         return {"type": "ui_data", "part": public_part}
     fields = _BLOCK_FIELDS.get(block_type)
     if fields is None:
@@ -225,6 +232,10 @@ def project_public_message_block(value: Any) -> dict[str, Any] | None:
             f"message block has no public projection: {block_type!r}"
         )
     public = _copy_fields(value, fields)
+    if block_type == "turn_failure":
+        action = validated_user_action(public.pop("user_action", None))
+        if action and not shared:
+            public["user_action"] = action
     if block_type == "image":
         source = public.get("source")
         if not isinstance(source, dict):
@@ -242,20 +253,20 @@ def project_public_message_block(value: Any) -> dict[str, Any] | None:
     return public
 
 
-def project_public_message(value: Any) -> dict[str, Any]:
+def project_public_message(value: Any, *, shared: bool = False) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise PublicProjectionError("message must be an object")
     public = _copy_fields(value, _MESSAGE_FIELDS)
     blocks: list[dict[str, Any]] = []
     for block in value.get("blocks") or []:
-        projected = project_public_message_block(block)
+        projected = project_public_message_block(block, shared=shared)
         if projected is not None:
             blocks.append(projected)
     public["blocks"] = blocks
     return public
 
 
-def _project_active_turn_overlay(value: Any) -> dict[str, Any] | None:
+def _project_active_turn_overlay(value: Any, *, shared: bool = False) -> dict[str, Any] | None:
     if value is None:
         return None
     if not isinstance(value, dict):
@@ -263,10 +274,10 @@ def _project_active_turn_overlay(value: Any) -> dict[str, Any] | None:
     public = _copy_fields(value, frozenset({"turn_id", "resume_cursor"}))
     message = value.get("message")
     if isinstance(message, dict):
-        public["message"] = project_public_message(message)
+        public["message"] = project_public_message(message, shared=shared)
     messages = value.get("messages")
     if isinstance(messages, list):
-        public["messages"] = [project_public_message(item) for item in messages]
+        public["messages"] = [project_public_message(item, shared=shared) for item in messages]
     return public
 
 
@@ -293,6 +304,8 @@ def project_owner_session(value: Any) -> dict[str, Any]:
     failure = value.get("delivery_failure")
     if isinstance(failure, dict):
         public["delivery_failure"] = _copy_fields(failure, _DELIVERY_FAILURE_FIELDS)
+        if "user_action" in failure:
+            public["delivery_failure"]["user_action"] = validated_user_action(failure["user_action"])
     elif "delivery_failure" in value:
         public["delivery_failure"] = None
     if "pending_interaction" in value:
@@ -328,6 +341,9 @@ def project_shared_session(
         include_tool_input=False,
     )
     shared["share_allow_download"] = bool(allow_download)
+    if isinstance(shared.get("delivery_failure"), dict):
+        shared["delivery_failure"].pop("user_action", None)
+        shared["delivery_failure"].pop("resend_as_new", None)
     return shared
 
 
@@ -336,11 +352,11 @@ def project_public_message_page(value: Any, *, shared: bool = False) -> dict[str
         raise PublicProjectionError("message page must be an object")
     public: dict[str, Any] = {
         "messages": [
-            project_public_message(message) for message in value.get("messages") or []
+            project_public_message(message, shared=shared) for message in value.get("messages") or []
         ],
         "has_more": bool(value.get("has_more")),
         "active_turn_overlay": _project_active_turn_overlay(
-            value.get("active_turn_overlay")
+            value.get("active_turn_overlay"), shared=shared,
         ),
         "pending_interaction": project_public_pending_interaction(
             value.get("pending_interaction"),

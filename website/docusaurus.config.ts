@@ -128,6 +128,7 @@ const config: Config = {
             'configuration.md',
             'development.md',
             'domain-model.md',
+            'file-preview-design.md',
             'frontend-design.md',
             'migrations.md',
           ],

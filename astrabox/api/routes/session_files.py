@@ -172,6 +172,19 @@ class SessionFilesDeleted(BaseModel):
     deleted_count: int
 
 
+class SessionFilePreview(BaseModel):
+    """An expiring bearer URL for a file and its workspace-relative resources."""
+
+    model_config = ConfigDict(extra="allow")
+
+    url: str
+    expires_at: str
+
+
+class PreviewSessionFileRequest(BaseModel):
+    path: str
+
+
 def register_session_file_routes(app: Any) -> None:
     global _registered_on
     if _registered_on == id(app):
@@ -179,6 +192,18 @@ def register_session_file_routes(app: Any) -> None:
     _registered_on = id(app)
 
     _service = get_platform_service()
+
+    @app.post(
+        "/api/v1/sessions/{session_id}/files/preview",
+        response_model=ApiEnvelope[SessionFilePreview],
+        response_model_exclude_unset=True,
+    )
+    async def preview_session_file(
+        session_id: str, request: Request, body: PreviewSessionFileRequest,
+    ):
+        user = await get_current_user_context(request)
+        result = await _service.preview_session_file(user, session_id, path=body.path)
+        return success_response(result)
 
     @app.post(
         "/api/v1/sessions/{session_id}/files/list",

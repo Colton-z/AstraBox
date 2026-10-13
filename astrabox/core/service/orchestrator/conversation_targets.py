@@ -6,8 +6,8 @@ resolve that target here and start conversations through
 :meth:`ConversationTargets.start_conversation`, so channel, schedule and
 webhook code never branch on the target kind.
 
-An Agent conversation runs as the Agent's owner or as an administrator-chosen
-execution account. An Assistant is owner-only (docs/domain-model.md §2), so its
+An Agent conversation runs as the initiating user, a platform binding's Agent
+owner, or an administrator-chosen execution account. An Assistant is owner-only (docs/domain-model.md §2), so its
 conversations always run as its owner.
 """
 

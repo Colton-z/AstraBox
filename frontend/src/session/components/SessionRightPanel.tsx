@@ -14,9 +14,10 @@ import {
   type SessionRightPanelTab,
 } from '../sessionCapabilities';
 import SessionFilesPanel from './SessionFilesPanel';
+import SessionBrowserPanel from './SessionBrowserPanel';
 import { AgentsListPanel } from './AgentsListPanel';
 
-// Right-side tabbed panel for files, terminal, agents, diffs, and artifacts. It owns its
+// Right-side tabbed panel for files, browser, terminal, agents, diffs, and artifacts. It owns its
 // ResizablePanel so the parent only assembles it beside the left pane and the
 // handle between them.
 export function SessionRightPanel({
@@ -137,6 +138,15 @@ export function SessionRightPanel({
               enabled={filesPanelEnabled}
               disabledMessage={runtimeUnavailableMessage}
               refreshSignal={filesRefreshNonce}
+            />
+          </TabsContent>
+        )}
+        {enabledTabs.has('browser') && (
+          <TabsContent value="browser" className="flex-1 min-h-0 overflow-hidden">
+            <SessionBrowserPanel
+              sessionId={sessionId}
+              enabled={filesPanelEnabled}
+              disabledMessage={runtimeUnavailableMessage}
             />
           </TabsContent>
         )}

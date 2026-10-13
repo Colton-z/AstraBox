@@ -634,6 +634,14 @@ class ConversationTitleModel:
             )
         return summary
 
+    async def complete_json(self, *, system_prompt: str, user_prompt: str) -> str:
+        """One JSON-mode completion on the title model, for other short decisions."""
+        return await self._complete_json(
+            config=self.resolve_request_config(),
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+        )
+
     async def _complete_json(
         self,
         *,

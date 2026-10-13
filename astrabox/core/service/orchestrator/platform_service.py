@@ -7,6 +7,8 @@ never needs to know which sub-service answers.
 
 from __future__ import annotations
 
+from astrabox.core.service.orchestrator.session_browser_service import SessionBrowserService
+
 import asyncio
 import contextlib
 import contextvars
@@ -264,6 +266,14 @@ class AgentPlatformService:
                 assistant_workspace_service=self._assistant_workspace_service,
             ),
         )
+        self._session_browser_service = self._construct(
+            "session_browser_service",
+            lambda: SessionBrowserService(
+                session_service=self._session_service,
+                runtime_manager=self._runtime_manager,
+                expose_port_service=self._expose_port_service,
+            ),
+        )
         self.artifacts = self._construct(
             "artifact_service",
             lambda: ArtifactService(
@@ -299,6 +309,7 @@ class AgentPlatformService:
                 expose_port_service=self._expose_port_service,
                 artifact_service=self.artifacts,
                 connector_service=ConnectorService(),
+                deployment_service_getter=lambda: self.deployment_service,
             ),
         )
         self._session_title_service = self._construct(
@@ -1027,8 +1038,9 @@ class AgentPlatformService:
         content_blocks: list[dict[str, Any]] | None = None,
         permission_mode: str | None = None,
         client_message_id: str | None = None,
+        admission_only: bool = False,
     ) -> dict[str, Any]:
-        """Accept a turn and answer with its receipt; deliver nothing."""
+        """Admit input and optionally leave delivery to its journal-backed worker."""
         await self.ensure_bootstrap()
         session = await self._session_service.must_get_owned_session(user, session_id)
         return await self._session_kernel.dispatch_turn_input(
@@ -1038,6 +1050,7 @@ class AgentPlatformService:
             content_blocks=content_blocks,
             permission_mode=permission_mode,
             client_message_id=client_message_id,
+            admission_only=admission_only,
         )
 
     async def follow_session_stream(
@@ -1231,6 +1244,17 @@ class AgentPlatformService:
             path=path,
         )
 
+    async def open_session_browser(self, user: UserContext, session_id: str) -> dict[str, str]:
+        return await self._session_browser_service.open_browser(user, session_id)
+
+    async def preview_session_file(
+        self, user: UserContext, session_id: str, *, path: str,
+    ) -> dict[str, Any]:
+        await self.ensure_bootstrap()
+        return await self._session_file_service.preview_file(
+            user, session_id, path=path, expose_port=self._expose_port_service,
+        )
+
     # ── Admin (delegated to admin_service) ───────────────────────────────
 
     async def admin_navigation_summary(self, user: UserContext) -> dict[str, int]:
@@ -1257,6 +1281,44 @@ class AgentPlatformService:
         self, user: UserContext, agent_id: str, *, limit: int = 500
     ) -> list[dict[str, Any]]:
         return await self._admin_service.admin_list_agent_sessions(user, agent_id, limit=limit)
+
+    async def list_personal_schedules(
+        self, user: UserContext, *, source_assistant_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        return await self._deployment_service.list_personal_schedules(
+            user, source_assistant_id=source_assistant_id,
+        )
+
+    async def create_personal_schedule(
+        self, user: UserContext, *, agent_id: str, source_assistant_id: str,
+        name: str, prompt_prefix: str, schedule: dict[str, Any],
+    ) -> dict[str, Any]:
+        return await self._deployment_service.create_personal_schedule(
+            user, agent_id=agent_id, source_assistant_id=source_assistant_id,
+            name=name, prompt_prefix=prompt_prefix, schedule=schedule,
+        )
+
+    async def update_personal_schedule(
+        self, user: UserContext, deployment_id: str, *, patch: dict[str, Any],
+    ) -> dict[str, Any]:
+        return await self._deployment_service.update_personal_schedule(user, deployment_id, patch=patch)
+
+    async def delete_personal_schedule(self, user: UserContext, deployment_id: str) -> dict[str, Any]:
+        await self._deployment_service.delete_personal_schedule(user, deployment_id)
+        return {"deployment_id": deployment_id, "deleted": True}
+
+    async def list_personal_schedule_runs(
+        self, user: UserContext, deployment_id: str, *, limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        return await self._deployment_service.list_personal_schedule_runs(user, deployment_id, limit=limit)
+
+    async def trigger_personal_schedule(self, user: UserContext, deployment_id: str) -> dict[str, Any]:
+        return await self._deployment_service.trigger_personal_schedule(user, deployment_id)
+
+    async def replay_personal_schedule_run(
+        self, user: UserContext, deployment_id: str, run_id: str,
+    ) -> dict[str, Any]:
+        return await self._deployment_service.replay_personal_schedule_run(user, deployment_id, run_id)
 
     # ── Webhook management ───────────────────────────────────────────────────
     async def list_agent_deployments(
@@ -1301,6 +1363,7 @@ class AgentPlatformService:
             prompt_prefix=str(payload.get("prompt_prefix") or ""),
             secret=payload.get("secret"),
             attention_policy=payload.get("attention_policy"),
+            response_instruction=payload.get("response_instruction"),
             channel_config=payload.get("channel_config"),
             credentials=payload.get("credentials"),
             callback_base_url=callback_base_url,
@@ -1570,6 +1633,11 @@ class AgentPlatformService:
         return self._admin_service.admin_iter_batch_transcript_files(
             user, agent_id=agent_id, since=since, until=until
         )
+
+    async def admin_import_session_history(
+        self, session_id: str, messages: Any,
+    ) -> dict[str, int]:
+        return await self._admin_service.admin_import_session_history(session_id, messages)
 
     async def admin_kill_session(self, user: UserContext, session_id: str) -> dict[str, Any]:
         return await self._admin_service.admin_kill_session(user, session_id)

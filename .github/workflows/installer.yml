@@ -52,6 +52,7 @@ on:
       - containers/litellm/**
       - containers/server/**
       - containers/sandbox-claude-code/**
+      - containers/workspace-viewer/**
       - containers/sandbox-codex/**
       - containers/sandbox-pi/**
       - containers/sandbox-deepseek-harness/**

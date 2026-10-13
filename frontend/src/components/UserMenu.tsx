@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { LogOut, Monitor, Moon, Settings2, Sun } from 'lucide-react';
+import { CalendarClock, LogOut, Monitor, Moon, Settings2, Sun } from 'lucide-react';
 
 import {
   DropdownMenu,
@@ -14,9 +14,10 @@ import { SidebarMenuButton } from '@/components/ui/sidebar';
 import { LanguageSwitcher, Segmented } from '@/components/LanguageSwitcher';
 import { MODULE_BASE, endAuthSession, probeAuthSession } from '@/api';
 import type { UserInfo } from '@/types';
+import { PersonalSchedulesDialog } from '@/schedules/PersonalSchedulesDialog';
 
 /**
- * Houses the rarely-changed settings (theme + language) behind a single
+ * Houses theme, language and personal schedules behind a single
  * trigger, so they do not dominate the sidebar footer. Two triggers:
  *  - default: the account row (user surface)
  *  - compact: a settings-cog icon button (admin console, no user identity there)
@@ -40,6 +41,7 @@ export function UserMenu({
   // probe the route gate asks, so the menu and the gate can never disagree
   // about whether this deployment authenticates.
   const [hasAuthSession, setHasAuthSession] = useState(false);
+  const [schedulesOpen, setSchedulesOpen] = useState(false);
   useEffect(() => {
     const controller = new AbortController();
     void probeAuthSession(controller.signal)
@@ -59,6 +61,7 @@ export function UserMenu({
   };
 
   return (
+    <>
     <DropdownMenu>
       {/* `render` hands the trigger the `<button>` this surface needs; both are
           real buttons, so `nativeButton` stays at its default. The open state
@@ -66,6 +69,7 @@ export function UserMenu({
           classes below key off that, and a selector aimed at anything else
           would style nothing while still compiling. */}
       <DropdownMenuTrigger
+        data-testid="user-menu-trigger"
         render={
           compact ? (
             <button
@@ -132,10 +136,15 @@ export function UserMenu({
           <div className="t-eyebrow mb-1.5 px-0.5">{t('shell:language')}</div>
           <LanguageSwitcher />
         </div>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem onClick={() => setSchedulesOpen(true)}>
+          <CalendarClock className="size-3.5" strokeWidth={1.7} />
+          {t('misc:personal_schedules.title')}
+        </DropdownMenuItem>
         {hasAuthSession && (
           <>
             <DropdownMenuSeparator />
-            {/* The menu's one item, declared as one: Base UI's roving focus
+            {/* Base UI's roving focus
                 walks its own item collection, so a plain button here would
                 leave a `role="menu"` that announces no items and whose arrow
                 keys reach nothing. Base UI items activate through `onClick`;
@@ -149,6 +158,8 @@ export function UserMenu({
         )}
       </DropdownMenuContent>
     </DropdownMenu>
+    <PersonalSchedulesDialog open={schedulesOpen} onOpenChange={setSchedulesOpen} />
+    </>
   );
 }
 

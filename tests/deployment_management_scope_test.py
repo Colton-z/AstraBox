@@ -33,18 +33,39 @@ class _AtomicWebhookRepo:
             side_effect=self._soft_delete_for_deployment
         )
 
-    def _matches(self, deployment_id: str, agent_id: str) -> bool:
+    def _matches(
+        self, deployment_id: str, agent_id: str, owner_user_id: str, owner_org_id: str
+    ) -> bool:
+        row = self.webhook or {}
+        # The repository fences a personal row by its owner and every other
+        # row by not being personal.
+        scope_matches = (
+            row.get("scope") == "personal"
+            and (row.get("owner_user_id"), row.get("owner_org_id"))
+            == (owner_user_id, owner_org_id)
+            if owner_user_id
+            else row.get("scope") != "personal"
+        )
         return bool(
-            self.webhook
-            and not self.webhook.get("deleted")
-            and self.webhook.get("deployment_id") == deployment_id
-            and self.webhook.get("agent_id") == agent_id
+            row
+            and not row.get("deleted")
+            and row.get("deployment_id") == deployment_id
+            and row.get("agent_id") == agent_id
+            and scope_matches
         )
 
     async def _get_for_deployment(
-        self, deployment_id: str, agent_id: str, *, assistant_id: str = ""
+        self,
+        deployment_id: str,
+        agent_id: str,
+        *,
+        assistant_id: str = "",
+        owner_user_id: str = "",
+        owner_org_id: str = "",
     ) -> dict[str, Any] | None:
-        return dict(self.webhook) if self._matches(deployment_id, agent_id) else None
+        if not self._matches(deployment_id, agent_id, owner_user_id, owner_org_id):
+            return None
+        return dict(self.webhook)  # type: ignore[arg-type]
 
     async def _update_for_deployment(
         self,
@@ -53,18 +74,26 @@ class _AtomicWebhookRepo:
         updates: dict[str, Any],
         *,
         assistant_id: str = "",
+        owner_user_id: str = "",
+        owner_org_id: str = "",
     ) -> dict[str, Any] | None:
         if self.delete_before_update and self.webhook is not None:
             self.webhook["deleted"] = True
-        if not self._matches(deployment_id, agent_id):
+        if not self._matches(deployment_id, agent_id, owner_user_id, owner_org_id):
             return None
         self.webhook.update(updates)  # type: ignore[union-attr]
         return dict(self.webhook)  # type: ignore[arg-type]
 
     async def _soft_delete_for_deployment(
-        self, deployment_id: str, agent_id: str, *, assistant_id: str = ""
+        self,
+        deployment_id: str,
+        agent_id: str,
+        *,
+        assistant_id: str = "",
+        owner_user_id: str = "",
+        owner_org_id: str = "",
     ) -> bool:
-        if not self._matches(deployment_id, agent_id):
+        if not self._matches(deployment_id, agent_id, owner_user_id, owner_org_id):
             return False
         self.webhook["deleted"] = True  # type: ignore[index]
         return True
@@ -213,7 +242,7 @@ async def test_deployment_mutation_accepts_its_own_agent() -> None:
     assert deployment_repo.webhook is not None and deployment_repo.webhook["deleted"] is True
     deployment_repo.update_for_deployment.assert_awaited_once()
     deployment_repo.soft_delete_for_deployment.assert_awaited_once_with(
-        "wh-1", "agent-1", assistant_id=""
+        "wh-1", "agent-1", assistant_id="", owner_user_id="", owner_org_id=""
     )
 
 

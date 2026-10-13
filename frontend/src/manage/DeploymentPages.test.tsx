@@ -4,6 +4,8 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import i18n from '@/i18n';
+import { ApiError } from '@/api';
+import type { AssistantRecord } from '@/assistant/types';
 import type {
   AgentDeployment,
   ChannelAccountLink,
@@ -79,9 +81,12 @@ const channelProviders: ChannelProviderDescriptor[] = [
 
 let deployment: AgentDeployment;
 let runs: DeploymentRun[];
-let createCalls: Array<{ agentId: string; payload: Record<string, unknown> }> = [];
+let assistants: AssistantRecord[] = [];
+let saveError: Error | null = null;
+let createCalls: Array<{ agentId?: string; assistantId?: string; payload: Record<string, unknown> }> = [];
 let updateCalls: Array<{
   agentId: string;
+  assistantId?: string;
   deploymentId: string;
   patch: Record<string, unknown>;
 }> = [];
@@ -102,14 +107,26 @@ vi.mock('@/api', async (importOriginal) => {
     listDeploymentRuns: async () => runs,
     createAgentDeployment: async (agentId: string, payload: Record<string, unknown>) => {
       createCalls.push({ agentId, payload });
+      if (saveError) throw saveError;
       return { ...deployment, ...payload };
     },
+    createAssistantDeployment: async (assistantId: string, payload: Record<string, unknown>) => {
+      createCalls.push({ assistantId, payload });
+      if (saveError) throw saveError;
+      return { ...deployment, ...payload, agent_id: undefined, assistant_id: assistantId };
+    },
     updateDeployment: async (
-      owner: { agent_id?: string },
+      owner: { agent_id?: string; assistant_id?: string },
       deploymentId: string,
       patch: Record<string, unknown>,
     ) => {
-      updateCalls.push({ agentId: owner.agent_id ?? '', deploymentId, patch });
+      updateCalls.push({
+        agentId: owner.agent_id ?? '',
+        ...(owner.assistant_id ? { assistantId: owner.assistant_id } : {}),
+        deploymentId,
+        patch,
+      });
+      if (saveError) throw saveError;
       deployment = {
         ...deployment,
         ...patch,
@@ -166,7 +183,7 @@ vi.mock('@/api', async (importOriginal) => {
 
 vi.mock('@/assistant/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/assistant/api')>();
-  return { ...actual, listAssistants: async () => [] };
+  return { ...actual, listAssistants: async () => assistants };
 });
 
 const { default: DeploymentCreatePage } = await import('./DeploymentCreatePage');
@@ -206,6 +223,8 @@ beforeEach(() => {
   triggerCalls = [];
   replayCalls = [];
   links = [];
+  assistants = [];
+  saveError = null;
 });
 
 function renderCreate() {
@@ -290,6 +309,8 @@ describe('Deployment management', () => {
         scene: 'channel:telegram',
         name: undefined,
         prompt_prefix: undefined,
+        attention_policy: 'all',
+        response_instruction: null,
         channel_config: {},
         credentials: { token: 'telegram-secret' },
         schedule: undefined,
@@ -376,6 +397,8 @@ describe('Deployment management', () => {
       agentId: 'agent-1',
       deploymentId: 'deployment-1',
       patch: {
+        attention_policy: 'all',
+        response_instruction: null,
         channel_config: {},
         credentials: { token: 'next-token', secret: 'next-secret' },
       },
@@ -523,6 +546,241 @@ describe('Deployment management', () => {
   });
 });
 
+
+describe('channel response policy', () => {
+  function channelDeployment(owner: 'agent' | 'assistant' = 'agent') {
+    deployment = {
+      ...deployment,
+      agent_id: owner === 'agent' ? 'agent-1' : undefined,
+      assistant_id: owner === 'assistant' ? 'assistant-1' : undefined,
+      scene: 'channel:generic_json',
+      name: undefined,
+      schedule: undefined,
+      channel_config: {},
+      allowed_participants: ['sender-1'],
+    };
+  }
+
+  async function createChannel(owner: 'agent' | 'assistant' = 'agent') {
+    if (owner === 'assistant') {
+      assistants = [{
+        assistant_id: 'assistant-1',
+        owner_id: 'user-1',
+        display_name: 'Personal assistant',
+        icon: null,
+        description: null,
+        engine_kind: 'claude-code',
+        environment_name: 'default',
+        permission_mode_default: 'default',
+      }];
+    }
+    renderCreate();
+    fireEvent.change(await screen.findByLabelText(/Trigger/), {
+      target: { value: 'channel:generic_json' },
+    });
+    if (owner === 'assistant') {
+      fireEvent.change(screen.getByLabelText(/Agent or Assistant/), {
+        target: { value: 'assistant:assistant-1' },
+      });
+      fireEvent.change(screen.getByLabelText(/Allowed senders/), {
+        target: { value: 'sender-1' },
+      });
+    }
+  }
+
+  function selectPolicy(policy: NonNullable<AgentDeployment['attention_policy']>) {
+    fireEvent.change(screen.getByRole('combobox', { name: 'Response policy' }), {
+      target: { value: policy },
+    });
+  }
+
+  it('hides response controls for schedules on both pages', async () => {
+    renderCreate();
+    await screen.findByLabelText(/Cron expression/);
+    expect(screen.queryByRole('combobox', { name: 'Response policy' })).toBeNull();
+    expect(screen.queryByRole('textbox', { name: 'Decision instruction' })).toBeNull();
+    fireEvent.change(screen.getByLabelText(/Trigger/), {
+      target: { value: 'channel:generic_json' },
+    });
+    selectPolicy('proactive');
+    fireEvent.change(screen.getByLabelText(/Trigger/), { target: { value: 'schedule' } });
+    expect(screen.queryByRole('combobox', { name: 'Response policy' })).toBeNull();
+    expect(screen.queryByRole('textbox', { name: 'Decision instruction' })).toBeNull();
+    cleanup();
+
+    renderDetail();
+    await screen.findByDisplayValue('Daily report');
+    expect(screen.queryByRole('combobox', { name: 'Response policy' })).toBeNull();
+    expect(screen.queryByText('Response policy')).toBeNull();
+    expect(screen.queryByRole('textbox', { name: 'Decision instruction' })).toBeNull();
+  });
+
+  it.each(['create', 'detail'] as const)(
+    'shows all four policies and conditional instructions on the %s page',
+    async (page) => {
+      if (page === 'create') await createChannel();
+      else {
+        channelDeployment();
+        renderDetail();
+        await screen.findByRole('combobox', { name: 'Response policy' });
+      }
+      const select = screen.getByRole('combobox', { name: 'Response policy' });
+      expect((select as HTMLSelectElement).value).toBe('all');
+      for (const [policy, label] of [
+        ['all', 'Answer every message'],
+        ['mentions', 'Only when addressed'],
+        ['participated', 'Model decides after participation'],
+        ['proactive', 'Model decides proactively'],
+      ] as const) {
+        expect(within(select).getByRole('option', { name: new RegExp(`^${label} — .+`) })).toBeTruthy();
+        selectPolicy(policy);
+        if (policy === 'participated' || policy === 'proactive') {
+          expect(screen.getByRole('textbox', { name: 'Decision instruction' })).toBeTruthy();
+          expect(screen.getByText(
+            'Tells the model when the agent should speak; the agent stays silent otherwise.',
+          )).toBeTruthy();
+        } else expect(screen.queryByRole('textbox', { name: 'Decision instruction' })).toBeNull();
+      }
+      selectPolicy('mentions');
+      expect(screen.queryByRole('textbox', { name: 'Decision instruction' })).toBeNull();
+    },
+  );
+
+  const saves = (['agent', 'assistant'] as const).flatMap((owner) =>
+    (['all', 'mentions', 'participated', 'proactive'] as const).map((policy) => ({ owner, policy })),
+  );
+
+  it.each(saves)('creates a $owner channel with $policy and the applicable trimmed instruction', async ({ owner, policy }) => {
+    await createChannel(owner);
+    selectPolicy('proactive');
+    fireEvent.change(screen.getByRole('textbox', { name: 'Decision instruction' }), {
+      target: { value: '  Answer only when you can help. \n ' },
+    });
+    selectPolicy(policy);
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }));
+
+    await screen.findByText('created');
+    expect(createCalls).toHaveLength(1);
+    expect(createCalls[0][owner === 'agent' ? 'agentId' : 'assistantId']).toBe(`${owner}-1`);
+    expect(createCalls[0].payload).toMatchObject({
+      attention_policy: policy,
+      response_instruction: policy === 'participated' || policy === 'proactive'
+        ? 'Answer only when you can help.' : null,
+    });
+  });
+
+  it.each(saves)('updates a $owner channel with $policy and the applicable trimmed instruction', async ({ owner, policy }) => {
+    channelDeployment(owner);
+    deployment.attention_policy = 'proactive';
+    deployment.response_instruction = 'Stored instruction';
+    renderDetail();
+    const instruction = await screen.findByRole('textbox', { name: 'Decision instruction' });
+    fireEvent.change(instruction, { target: { value: '  Answer only when you can help. \n ' } });
+    selectPolicy(policy);
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => expect(updateCalls).toHaveLength(1));
+    expect(updateCalls[0][owner === 'agent' ? 'agentId' : 'assistantId']).toBe(`${owner}-1`);
+    expect(updateCalls[0].patch).toMatchObject({
+      attention_policy: policy,
+      response_instruction: policy === 'participated' || policy === 'proactive'
+        ? 'Answer only when you can help.' : null,
+    });
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Save' })).toBeNull());
+    expect(screen.getByText({
+      all: 'Answer every message',
+      mentions: 'Only when addressed',
+      participated: 'Model decides after participation',
+      proactive: 'Model decides proactively',
+    }[policy], { exact: true })).toBeTruthy();
+    if (policy === 'participated' || policy === 'proactive') {
+      expect(screen.getByText('Answer only when you can help.', { exact: true, selector: 'p' })).toBeTruthy();
+    } else expect(screen.queryByText('Stored instruction', { exact: true })).toBeNull();
+  });
+
+  it('reverts the policy and instruction to the stored values', async () => {
+    channelDeployment();
+    deployment.attention_policy = 'participated';
+    deployment.response_instruction = 'Stored instruction';
+    renderDetail();
+    await screen.findByRole('combobox', { name: 'Response policy' });
+    selectPolicy('mentions');
+    fireEvent.click(screen.getByRole('button', { name: 'Revert' }));
+
+    expect((screen.getByRole('combobox', { name: 'Response policy' }) as HTMLSelectElement).value)
+      .toBe('participated');
+    expect((screen.getByRole('textbox', { name: 'Decision instruction' }) as HTMLTextAreaElement).value)
+      .toBe('Stored instruction');
+    expect(screen.queryByRole('button', { name: 'Save' })).toBeNull();
+    expect(updateCalls).toEqual([]);
+  });
+
+  it.each(['create', 'detail'] as const)(
+    'shows a refused %s save beside the form and keeps the draft',
+    async (page) => {
+      if (page === 'create') await createChannel();
+      else {
+        channelDeployment();
+        renderDetail();
+        await screen.findByRole('combobox', { name: 'Response policy' });
+      }
+      saveError = new ApiError('CHANNEL_RESPONSE_JUDGE_UNAVAILABLE', 'No response judge is configured.', 409);
+      selectPolicy('proactive');
+      fireEvent.change(screen.getByRole('textbox', { name: 'Decision instruction' }), {
+        target: { value: 'Keep this instruction' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: page === 'create' ? 'Create' : 'Save' }));
+
+      const alert = await screen.findByRole('alert');
+      expect(alert.textContent).toBe(saveError.message);
+      expect(alert.getAttribute('data-slot')).toBe('verbatim');
+      if (page === 'detail') {
+        expect(alert.closest('[data-slot="card"]')).toBe(
+          screen.getByRole('textbox', { name: 'Decision instruction' }).closest('[data-slot="card"]'),
+        );
+      }
+      expect((screen.getByRole('textbox', { name: 'Decision instruction' }) as HTMLTextAreaElement).value)
+        .toBe('Keep this instruction');
+      expect(screen.queryByText('created')).toBeNull();
+    },
+  );
+
+  it.each(['create', 'detail'] as const)(
+    'blocks instructions over 4000 characters only when applicable on the %s page',
+    async (page) => {
+      if (page === 'create') await createChannel();
+      else {
+        channelDeployment();
+        renderDetail();
+        await screen.findByRole('combobox', { name: 'Response policy' });
+      }
+      selectPolicy('proactive');
+      const instruction = screen.getByRole('textbox', { name: 'Decision instruction' });
+      const buttonName = page === 'create' ? 'Create' : 'Save';
+      fireEvent.change(instruction, { target: { value: 'x'.repeat(4001) } });
+      expect(screen.getByRole('button', { name: buttonName }).hasAttribute('disabled')).toBe(true);
+      expect(screen.getByText('Decision instruction must be 4000 characters or fewer.')).toBeTruthy();
+      fireEvent.change(instruction, { target: { value: 'x'.repeat(4000) } });
+      expect(screen.getByRole('button', { name: buttonName }).hasAttribute('disabled')).toBe(false);
+      fireEvent.change(instruction, { target: { value: 'x'.repeat(4001) } });
+      selectPolicy('mentions');
+      expect(screen.getByRole('button', { name: buttonName }).hasAttribute('disabled')).toBe(false);
+    },
+  );
+
+  it('renders Chinese response policy labels and guidance', async () => {
+    await i18n.changeLanguage('zh');
+    channelDeployment();
+    deployment.attention_policy = 'participated';
+    renderDetail();
+    const select = await screen.findByRole('combobox', { name: '回应策略' });
+    for (const label of ['全部回应', '仅被提及时回应', '参与后由模型判断', '由模型主动判断']) {
+      expect(within(select).getByRole('option', { name: new RegExp(`^${label} — .+`) })).toBeTruthy();
+    }
+    expect(screen.getByRole('textbox', { name: '判断指令' })).toBeTruthy();
+    expect(screen.getByText('告诉模型 Agent 何时应该发言；其他时候 Agent 保持沉默。')).toBeTruthy();
+  });
+});
 
 describe('channel execution accounts', () => {
   it('lets an administrator change the execution account through the channel editor', async () => {

@@ -14,6 +14,7 @@ import { StatusPill } from '@/components/AstraConsole';
 import { ErrorNote } from '@/components/shell';
 import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
+import { useKeepCurrent } from '@/hooks/useKeepCurrent';
 import type { Connector } from '@/types';
 
 import { ConsoleCard } from './console';
@@ -50,6 +51,7 @@ export function ConnectorsCard({ kind, targetId }: { kind: 'agent' | 'assistant'
   useEffect(() => {
     void load();
   }, [load]);
+  useKeepCurrent(load);
 
   const run = async (key: string, action: () => Promise<unknown>) => {
     setBusy(key);
@@ -70,6 +72,9 @@ export function ConnectorsCard({ kind, targetId }: { kind: 'agent' | 'assistant'
       window.location.assign(authorize_url);
     });
 
+  const available = (connectors ?? []).filter((connector) => connector.available);
+  if (available.length === 0) return error ? <ErrorNote>{error}</ErrorNote> : null;
+
   return (
     <ConsoleCard
       title={t('manage:connectors.card_title')}
@@ -78,7 +83,7 @@ export function ConnectorsCard({ kind, targetId }: { kind: 'agent' | 'assistant'
     >
       {error && <ErrorNote>{error}</ErrorNote>}
       <ul className="flex flex-col divide-y" data-testid={`${kind}-connectors`}>
-        {(connectors ?? []).map((connector) => {
+        {available.map((connector) => {
           const connected = connector.status === 'connected';
           const expired = connector.status === 'needs_reauth';
           const using = enabled.has(connector.connector_id);
@@ -90,11 +95,6 @@ export function ConnectorsCard({ kind, targetId }: { kind: 'agent' | 'assistant'
             >
               <div className="min-w-0 flex-1">
                 <div className="t-label font-medium">{connector.name}</div>
-                {!connector.available && (
-                  <div className="t-label-sm text-muted-foreground">
-                    {t('manage:connectors.not_set_up')}
-                  </div>
-                )}
               </div>
               {connected && (
                 <StatusPill tone="done">{t('manage:connectors.status_connected')}</StatusPill>

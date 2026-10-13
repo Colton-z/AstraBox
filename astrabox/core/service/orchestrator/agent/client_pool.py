@@ -17,6 +17,8 @@ and idle expiry are the pool's for both.
 
 from __future__ import annotations
 
+from astrabox.seams.runtime_preparation import runtime_preparation_plan
+
 from astrabox.core.service.orchestrator.runtime.skill_sources import normalize_skills
 
 import asyncio
@@ -29,6 +31,9 @@ from typing import Any
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.settings import load_astrabox_settings
+from astrabox.core.service.orchestrator.runtime.preparation import (
+    assert_prepared_resources_current, synchronize_prepared_resources,
+)
 from astrabox.core.service.orchestrator.engine.registry import get_engine_adapter
 from astrabox.core.service.orchestrator.runtime.conversation_identity import (
     prepare_agent_runtime_skill_cache,
@@ -52,7 +57,7 @@ from astrabox.core.service.orchestrator.runtime.sandbox_client import (
 from astrabox.core.service.orchestrator.runtime.storage import (
     prepare_agent_runtime_plugin_cache,
 )
-from astrabox.providers.sandbox_image import SANDBOX_SELF_DESCRIPTION
+from astrabox.providers.sandbox_image import sandbox_boot_env
 from astrabox.seams.sandbox import (
     SANDBOX_TENANCY_AGENT,
     SANDBOX_TENANCY_CONVERSATION,
@@ -173,6 +178,7 @@ async def build_agent_client_pool_plan(
     template: Any,
     *,
     runtime_manager: Any,
+    agent_repo: Any | None = None,
 ) -> AgentClientPoolPlan | None:
     """Build the one base-box pool for an enabled Agent generation."""
 
@@ -259,7 +265,7 @@ async def build_agent_client_pool_plan(
             model_access=model_access,
         )
         vault_enabled = bool(settings.sandbox_credential_vault_enabled)
-        mcp_plan = await resolve_agent_mcp_credential_plan(
+        mcp_plan = None if not vault_enabled and runtime_preparation_plan(template).session_bound else await resolve_agent_mcp_credential_plan(
             template=template,
             vault_enabled=vault_enabled,
         )
@@ -348,7 +354,7 @@ async def build_agent_client_pool_plan(
                 else {}
             ),
             env={
-                **SANDBOX_SELF_DESCRIPTION,
+                **sandbox_boot_env(shared=not conversation_owned),
                 **dict(request.env),
                 **mirror_env,
                 **dict(runtime_env),
@@ -450,6 +456,10 @@ async def build_agent_client_pool_plan(
                 normalize_skills(_value(template, "skills", [])),
             ),
         )
+        await synchronize_prepared_resources(
+            template, get_underlying_sandbox(handle),
+            timeout_seconds=_PREPARE_TIMEOUT_SECONDS, agent_repo=agent_repo,
+        )
         if conversation_owned:
             from astrabox.core.service.orchestrator.agent.runtime_preparation import prepare_pool_runtime
 
@@ -458,6 +468,7 @@ async def build_agent_client_pool_plan(
             from astrabox.core.service.orchestrator.agent.prepared_slots import prepare_pool_seats
 
             await prepare_pool_seats(handle, template=template, runtime_manager=runtime_manager)
+        await assert_prepared_resources_current(template, agent_repo=agent_repo)
 
     return AgentClientPoolPlan(
         backend_name=str(provider.name),
@@ -551,6 +562,7 @@ async def ensure_agent_client_pool(
     plan = await build_agent_client_pool_plan(
         template,
         runtime_manager=runtime_manager,
+        agent_repo=agent_repo,
     )
     if plan is None:
         return None

@@ -14,19 +14,31 @@ from astrabox.core.service.orchestrator.turn_service import TurnService
 from astrabox.core.service.orchestrator.session_kernel.conversation_recovery import (
     build_turn_active_snapshot_updates,
 )
+from astrabox.seams import runtime_preparation as preparation_seam
 from astrabox.seams import sandbox as sandbox_seam
-from astrabox.seams.sandbox import (
-    SandboxTurnContext,
-    TurnPreparationUserActionRequired,
-    register_sandbox,
+from astrabox.seams.runtime_preparation import (
+    PreparationUserActionRequired,
+    RuntimeMaterials,
+    RuntimePreparationProvider,
+    TurnPreparationContext,
+    register_runtime_preparation_provider,
 )
+from astrabox.seams.sandbox import register_sandbox
 
 
-class _PreparingProvider:
-    supports_turn_preparation = True
+class _Backend:
+    """The profile-exclusive backend the assistant session is bound to."""
+
     sandbox_is_profile_exclusive = True
-    turn_preparation_contract_version = 1
 
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def owns_sandbox(self, sandbox: Any) -> bool:
+        return getattr(sandbox, "sandbox_id", None) == "assistant-sandbox"
+
+
+class _PreparingProvider(RuntimePreparationProvider):
     def __init__(
         self,
         name: str,
@@ -37,20 +49,18 @@ class _PreparingProvider:
         self.name = name
         self.trace = trace
         self.error = error
-        self.contexts: list[SandboxTurnContext] = []
+        self.contexts: list[TurnPreparationContext] = []
         self.runtime_lock: asyncio.Lock | None = None
         self.lock_states: list[bool] = []
 
-    async def prepare_turn(self, *, context: SandboxTurnContext) -> None:
+    async def prepare_turn(self, *, context: TurnPreparationContext) -> RuntimeMaterials:
         self.contexts.append(context)
         if self.runtime_lock is not None:
             self.lock_states.append(self.runtime_lock.locked())
         self.trace.append("prepare")
         if self.error is not None:
             raise self.error
-
-    def owns_sandbox(self, sandbox: Any) -> bool:
-        return getattr(sandbox, "sandbox_id", None) == "assistant-sandbox"
+        return RuntimeMaterials()
 
 
 class _RecordingEngineClient:
@@ -144,12 +154,14 @@ class _SnapshotsRepo:
 @pytest.fixture(autouse=True)
 def _isolated_sandbox_registry(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sandbox_seam, "_BACKENDS", dict(sandbox_seam._BACKENDS))
+    monkeypatch.setattr(preparation_seam, "_PROVIDER", None)
 
 
 async def _drive(
     provider: _PreparingProvider,
 ) -> tuple[list[dict[str, Any]], Any]:
-    register_sandbox(provider)  # type: ignore[arg-type]
+    register_sandbox(_Backend(provider.name))  # type: ignore[arg-type]
+    register_runtime_preparation_provider(provider)
     engine_client = _RecordingEngineClient(provider.trace)
     runtime_lock = asyncio.Lock()
     provider.runtime_lock = runtime_lock
@@ -257,7 +269,7 @@ async def test_a_user_action_the_provider_asks_for_reaches_the_turn_stream() -> 
     provider = _PreparingProvider(
         "assistant-preparation-user-action",
         trace,
-        error=TurnPreparationUserActionRequired(
+        error=PreparationUserActionRequired(
             message="Authorize the agent to act for you",
             url="https://idp.example/confirm",
         ),
@@ -272,5 +284,17 @@ async def test_a_user_action_the_provider_asks_for_reaches_the_turn_stream() -> 
         "turn_id": "assistant-turn",
         "code": "TURN_PREPARATION_USER_ACTION_REQUIRED",
         "message": "Authorize the agent to act for you",
+        "refusal": {
+            "code": "TURN_PREPARATION_USER_ACTION_REQUIRED",
+            "message": "Authorize the agent to act for you",
+            "user_message": "Authorize the agent to act for you",
+            "status_code": 409,
+            "data": None,
+            "user_action": {
+                "status": "user_action_required",
+                "message": "Authorize the agent to act for you",
+                "url": "https://idp.example/confirm",
+            },
+        },
     }
     assert events[1]["state"] == "READY"

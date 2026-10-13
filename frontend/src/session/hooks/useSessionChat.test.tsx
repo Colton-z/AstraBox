@@ -5,6 +5,7 @@ import { UIMessageStreamError, type ChatOnFinishCallback, type UIMessage } from 
 
 import type { SessionRecord } from '../../types';
 import { appendTurnInput } from '../../api';
+import { computeSessionRunStatus } from '../sessionRunStatus';
 
 const chat = vi.hoisted(() => ({
   options: null as Record<string, unknown> | null,
@@ -535,5 +536,63 @@ describe('useSessionChat interrupt settling', () => {
 
     rerender(baseProps('turn-stopped'));
     expect(result.current.isInterruptSettling).toBe(true);
+  });
+});
+
+// Reading a conversation's history must not start its runtime. An `auto`
+// recovery is restored by the next message, which the server recovers before
+// dispatch; opening, re-rendering or a changed error starts nothing.
+describe('useSessionChat recovery trigger', () => {
+  it('leaves an auto recovery to the next message and lets that message be sent', async () => {
+    const recover = vi.fn();
+    const session = {
+      session_id: 'session-1',
+      user_id: 'user-1',
+      template_name: 'claude-code',
+      state: 'RECOVERY_REQUIRED',
+      runtime_unavailable: true,
+      recovery_policy: 'auto',
+      recovery_reason: 'sandbox_missing',
+      last_error: 'sandbox gone',
+      current_turn_id: null,
+      engine_kind: 'claude_code',
+      pending_interaction: null,
+    } as SessionRecord;
+    const props = (detail: SessionRecord) => ({
+      sessionId: 'session-1',
+      session: detail,
+      durableRecords: [],
+      initialMessages: [],
+      overlay: null,
+      sessionFrameSeq: 0,
+      needsResume: false,
+      lifecycleState: 'recovery',
+      liveSubscriptionEnabled: false,
+      pendingInteraction: null,
+      permissionModeRef: { current: 'default' },
+      refresh: vi.fn().mockResolvedValue({ detail }),
+      refreshAuthoritativeHistory: vi.fn(),
+      clearPendingInteraction: vi.fn(() => true),
+      interrupt: vi.fn(),
+      recover,
+    });
+    const { result, rerender } = renderHook((detail: SessionRecord) => useSessionChat(props(detail)), {
+      initialProps: session,
+    });
+    rerender({ ...session, last_error: 'sandbox still gone' } as SessionRecord);
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+
+    expect(recover).not.toHaveBeenCalled();
+    expect(result.current.retryIntent).toEqual({ kind: 'none' });
+    expect(computeSessionRunStatus({
+      session,
+      lifecycleState: 'recovery',
+      isTerminated: false,
+      hasPendingInteraction: false,
+      isSubmitted: false,
+      isStreaming: false,
+      isInterruptSettling: false,
+      t: (key: string) => key,
+    }).canSendNow).toBe(true);
   });
 });

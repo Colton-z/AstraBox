@@ -56,6 +56,9 @@ _DEFAULT_EXEMPT_PREFIXES: tuple[str, ...] = (
     # Sandbox MCP URLs carry an HMAC over deployment id and server name. The
     # platform-mcp route verifies that path capability before resolving a binding.
     "/api/v1/platform-mcp/",
+    # Assistant A2A verifies a workspace-and-target-bound bearer and resolves
+    # the current owner from persisted records before entering the Agent service.
+    "/api/v1/assistant-a2a/",
     # The built-in OIDC login flow IS the door: login/callback carry their own
     # protection (signed state+PKCE flow cookie, ID-token verification) and a
     # strict resolver 401 here would lock the user out of signing in.

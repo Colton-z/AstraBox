@@ -266,7 +266,7 @@ def _service(
 
 
 def _user(user_id: str = "owner-1") -> Any:
-    return SimpleNamespace(user_id=user_id, roles=[])
+    return SimpleNamespace(user_id=user_id, org_id="org-1", roles=[])
 
 
 async def test_create_defaults_to_the_assistant_engine() -> None:

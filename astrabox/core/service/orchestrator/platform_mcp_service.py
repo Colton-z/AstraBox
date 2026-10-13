@@ -8,7 +8,10 @@ from mcp_types.version import LATEST_PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIO
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
 from astrabox.core.service.orchestrator.agent_schema import agent_artifacts_enabled
+from astrabox.core.service.orchestrator.agent.assistant_agent_tools import agent_tools, call_agent_tool
+from astrabox.persistence.repository.assistant_catalog_repository import AssistantCatalogRepository
 from astrabox.core.service.orchestrator.runtime.mcp_servers import (
+    AGENTS_PLATFORM_SERVER,
     ARTIFACTS_PLATFORM_SERVER,
     artifact_tools_enabled,
     binding_mcp_server_definitions,
@@ -23,7 +26,7 @@ from astrabox.core.service.orchestrator.runtime.mcp_servers import (
     template_mcp_servers,
 )
 
-from astrabox.common.utils.user_context import UserContext
+from astrabox.common.utils.user_context import API_READ_SCOPE, API_WRITE_SCOPE, UserContext
 from astrabox.core.service.artifacts.service import invalid
 from astrabox.core.service.artifacts.tools import GUIDE, artifact_tools
 from astrabox.core.service.connectors.contextforge import RelayAnswer, hub_from_env
@@ -47,6 +50,7 @@ class PlatformMCPService:
         artifact_service: Any = None,
         connector_service: Any = None,
         tool_cards: Any = None,
+        deployment_service_getter: Any = None,
     ) -> None:
         self._sessions_repo = sessions_repo
         self._agent_config = agent_config
@@ -55,13 +59,22 @@ class PlatformMCPService:
         self._artifacts = artifact_service
         self._connectors = connector_service
         self._tool_cards = tool_cards
+        self._deployment_service_getter = deployment_service_getter
         self._servers = {
+            AGENTS_PLATFORM_SERVER: (agent_tools, self._handle_agent_tool),
             EXPOSE_PORT_PLATFORM_SERVER: (self._expose_tools, self._handle_expose_tool),
             ARTIFACTS_PLATFORM_SERVER: (artifact_tools, self._handle_artifact_tool),
             CONNECTIONS_PLATFORM_SERVER: (_connection_tools, self._handle_connection_tool),
         }
 
     async def resolve_server(self, deployment_id: str, server_name: str) -> dict[str, Any] | None:
+        if server_name == AGENTS_PLATFORM_SERVER:
+            binding = await self._assistant_agent_binding(deployment_id)
+            if binding is None:
+                return None
+            return {"deployment_id": deployment_id, "server_name": server_name,
+                    "platform_server": AGENTS_PLATFORM_SERVER,
+                    "allowed_tools": {tool["name"] for tool in agent_tools()}}
         if server_name == ARTIFACTS_PLATFORM_SERVER:
             binding = await self._binding_repo.get_binding(deployment_id)
             sid = (binding or {}).get("session_id") or (deployment_id if not binding else None)
@@ -97,6 +110,8 @@ class PlatformMCPService:
         if not is_platform_mcp_server(config):
             return None
         platform_server = platform_mcp_server_id(server_name, config)
+        if platform_server == AGENTS_PLATFORM_SERVER:
+            return None
         if platform_server not in self._servers:
             return None
         if platform_server == ARTIFACTS_PLATFORM_SERVER and not binds_artifact_tools(
@@ -115,6 +130,37 @@ class PlatformMCPService:
             "platform_server": platform_server,
             "allowed_tools": allowed_tools,
         }
+
+    async def _assistant_agent_binding(self, deployment_id: str) -> dict[str, Any] | None:
+        """Only an existing Assistant workspace capability acts for its current owner."""
+        binding = await self._binding_repo.get_binding(deployment_id)
+        if not binding or binding.get("scope_kind") != "assistant_workspace":
+            return None
+        assistant_id = str(binding.get("assistant_id") or "").strip()
+        owner_id = str(binding.get("user_id") or "").strip()
+        if not assistant_id or not owner_id:
+            return None
+        assistant = await AssistantCatalogRepository().get_assistant(assistant_id)
+        if assistant is None or assistant.get("owner_id") != owner_id:
+            return None
+        return {**binding, "org_id": assistant.get("org_id")}
+
+    async def _handle_agent_tool(
+        self, server: dict[str, Any], name: str, args: dict[str, Any],
+    ) -> dict[str, Any]:
+        binding = await self._assistant_agent_binding(server["deployment_id"])
+        if binding is None:
+            raise APIError(code="MCP_BINDING_NOT_FOUND", message="Assistant binding not found", status_code=404)
+        if self._deployment_service_getter is None:
+            raise APIError(code="AGENT_COORDINATION_UNAVAILABLE", message="Agent coordination unavailable", status_code=503)
+        return await call_agent_tool(
+            name=name, args=args, user=UserContext(
+                str(binding["user_id"]), org_id=binding.get("org_id"),
+                api_scopes=[API_READ_SCOPE, API_WRITE_SCOPE],
+            ),
+            assistant_id=str(binding["assistant_id"]),
+            deployments=self._deployment_service_getter(),
+        )
 
     async def _origin_agent_artifacts_enabled(
         self, binding: dict[str, Any] | None, session: dict[str, Any] | None,
@@ -517,6 +563,7 @@ class PlatformMCPService:
     @staticmethod
     def _tools(server: dict[str, Any]) -> list[dict[str, Any]]:
         tools = {
+            AGENTS_PLATFORM_SERVER: agent_tools,
             ARTIFACTS_PLATFORM_SERVER: artifact_tools,
             CONNECTIONS_PLATFORM_SERVER: _connection_tools,
         }.get(str(server.get("platform_server") or ""), PlatformMCPService._expose_tools)()
@@ -588,6 +635,7 @@ def _offered_connectors(template: Any) -> list[str]:
         getattr(template, "mcp_servers", None),
         session_source_type=getattr(template, "session_source_type", None),
         agent_id=getattr(template, "agent_id", None),
+        assistant_id=getattr(template, "assistant_id", None),
         artifacts_enabled=getattr(template, "artifacts_enabled", True),
     )
     return [

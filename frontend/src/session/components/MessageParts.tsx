@@ -22,6 +22,7 @@ import type { ProcessDetails, ProcessSummaryState } from '../../types';
 import { localizeDisplayText, toolPreview } from '../../utils/format';
 import { filterSupersededSingletonInteractionParts } from '../toolState';
 import { getSdkMessageTurnId } from '../utils/chatHelpers';
+import { isImportedWithoutEnding } from '../messageIdentity';
 import { LazyProcessBlock, ProcessSummaryCache } from './LazyProcessBlock';
 import { cardArtifacts } from '@/artifacts/marker';
 import { ConnectionRequestCard } from '@/connections/ConnectionRequestCard';
@@ -29,6 +30,8 @@ import { ArtifactToolCard } from '@/artifacts/ArtifactToolCard';
 import { ToolPartCard } from './ToolParts';
 import { ApiRetryNote, ResultPartCard, TurnFailureCard } from './ResultCards';
 import type { ApiRetryData } from './ResultCards';
+import { readUserAction } from '../userAction';
+import { UserActionNotice } from './SessionUserAction';
 
 type MessagePart = SDKUIMessage['parts'][number];
 
@@ -477,6 +480,16 @@ export function MessageBubble({
           </div>
         )}
         {/*
+          Imported history the source never recorded an ending for. It is
+          neither a success nor a failure, so it gets neither a result nor a
+          failure card: only this line, so a short reply is not read as whole.
+        */}
+        {!isUser && isImportedWithoutEnding(message) && (
+          <div data-testid="history-no-recorded-ending" className="text-sm text-muted-foreground">
+            {t('chat:message.imported_without_ending')}
+          </div>
+        )}
+        {/*
           The fallback pulse, for a surface that says nothing itself: no parts
           yet, or a group of plain text. A process group runs its own spinner
           and a pending tool card its own waiting state, and either beside this
@@ -733,8 +746,9 @@ export function PartRenderer({
         return <ResultPartCard data={anyPart.data as Record<string, unknown>} />;
       }
       if (typeof anyPart.type === 'string' && anyPart.type === 'data-turn-failure' && anyPart.data) {
-        const failureData = anyPart.data as { error?: string; failure_phase?: string };
-        return <TurnFailureCard error={failureData.error} />;
+        const failureData = anyPart.data as { error?: string; failure_phase?: string; user_action?: unknown };
+        const action = readUserAction(failureData.user_action);
+        return action ? <UserActionNotice action={action} /> : <TurnFailureCard error={failureData.error} />;
       }
       if (typeof anyPart.type === 'string' && anyPart.type === 'data-api-retry' && anyPart.data) {
         return <ApiRetryNote payload={anyPart.data as ApiRetryData} />;

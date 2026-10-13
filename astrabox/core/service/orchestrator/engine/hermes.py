@@ -65,6 +65,10 @@ from astrabox.core.service.orchestrator.engine.hermes_client import (
     HermesTuiEngineClient,
     decode_turn_anchor,
 )
+from astrabox.core.service.orchestrator.engine.hermes_a2a import (
+    assistant_a2a_peers,
+    assistant_managed_config,
+)
 from astrabox.core.service.orchestrator.engine.hermes_cron import CronRunOutput
 from astrabox.core.service.orchestrator.engine.hermes_gateway import (
     HermesGatewayHandle,
@@ -183,7 +187,7 @@ _HERMES_PER_SESSION_ENVS = frozenset(
 # their in-flight MCP calls, so it is no gentler than a restart. The timezone
 # is resolved once per process too (``hermes_time._timezone_entry``), and the
 # scheduler reads schedules in it.
-_HERMES_PROCESS_CONFIG_KEYS = ("mcp_servers", "timezone")
+_HERMES_PROCESS_CONFIG_KEYS = ("mcp_servers", "timezone", "a2a_agents")
 
 #: The config.yaml keys the platform writes or reconciles. The owner's
 #: managed configuration wins over the profile, so it may not name them.
@@ -723,15 +727,22 @@ def _resolve_hermes_profile_ref(
     user_id: str | None,
     assistant_id: str | None,
 ) -> dict[str, str]:
-    safe_user_id = _safe_hermes_profile_segment(user_id, label="user_id")
+    # This is a registry identity, not a directory or a vendor profile name.
+    resolved_user_id = str(user_id or "").strip()
+    if not resolved_user_id:
+        raise APIError(
+            code="HERMES_PROFILE_INVALID",
+            message="Hermes profile requires user_id",
+            status_code=500,
+        )
     safe_assistant_id = _safe_hermes_profile_segment(
         assistant_id,
         label="assistant_id",
     )
     return {
-        "user_id": safe_user_id,
+        "user_id": resolved_user_id,
         "assistant_id": safe_assistant_id,
-        "profile_key": f"{safe_user_id}:{safe_assistant_id}",
+        "profile_key": f"{resolved_user_id}:{safe_assistant_id}",
     }
 
 
@@ -811,6 +822,12 @@ async def _prepare_hermes_profile(
         model_access=model_access,
         mcp_deployment_id=mcp_deployment_id,
     )
+    if assistant_id := getattr(template, "assistant_id", None):
+        overwrite_blob["a2a_agents"] = await assistant_a2a_peers(
+            assistant_id=assistant_id,
+            binding_id=mcp_deployment_id,
+            proxy_base_url=str(getattr(deployment_settings, "mcp_proxy_base_url", "") or ""),
+        )
     defaults_blob = _build_hermes_config_defaults()
     soul_content = _build_hermes_soul_content(template)
     normalized_model_api_key = str(model_api_key or "").strip()
@@ -997,6 +1014,8 @@ async def _prepare_hermes_extensions(
     if plugins:
         env[_HERMES_PLUGINS_ENV] = json.dumps(plugins, ensure_ascii=False, sort_keys=True)
     managed = dict(getattr(template, "engine_options", None) or {}).get("config")
+    if managed and getattr(template, "assistant_id", None):
+        managed = assistant_managed_config(managed)
     if managed:
         env[_HERMES_MANAGED_CONFIG_ENV] = json.dumps(managed, ensure_ascii=False, sort_keys=True)
     return env
@@ -1502,6 +1521,7 @@ def _build_hermes_config_overwrite(
         getattr(template, "mcp_servers", None),
         session_source_type=getattr(template, "session_source_type", None),
         agent_id=getattr(template, "agent_id", None),
+        assistant_id=getattr(template, "assistant_id", None),
         artifacts_enabled=artifacts_enabled,
     ):
         mcp_servers = runtime_mcp_servers_for_binding(
@@ -1512,6 +1532,7 @@ def _build_hermes_config_overwrite(
             deployment_id=str(mcp_deployment_id or "").strip(),
             session_source_type=getattr(template, "session_source_type", None),
             agent_id=getattr(template, "agent_id", None),
+            assistant_id=getattr(template, "assistant_id", None),
             artifacts_enabled=artifacts_enabled,
         )
         if mcp_servers:

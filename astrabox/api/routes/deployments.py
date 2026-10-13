@@ -33,15 +33,31 @@ class DeploymentRecord(BaseModel):
     assistant_name: str | None = None
     allowed_participants: list[str] | None = None
     created_by: str | None = None
+    scope: str | None = None
+    owner_user_id: str | None = None
+    owner_org_id: str | None = None
+    source_assistant_id: str | None = None
     enabled: bool | None = None
     scene: str | None = None
     prompt_prefix: str | None = None
     attention_policy: str | None = None
+    response_instruction: str | None = None
     execution_mode: str | None = None
     execution_user_id: str | None = None
     secret: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
+
+
+class PersonalScheduleCreate(BaseModel):
+    """The owner and execution identity come only from the authenticated request."""
+
+    model_config = ConfigDict(extra="forbid")
+    agent_id: str
+    source_assistant_id: str
+    name: str
+    prompt_prefix: str
+    schedule: dict[str, Any]
 
 
 class DeploymentTriggerAck(BaseModel):
@@ -157,6 +173,46 @@ def register_deployment_routes(app: Any) -> None:
             return success_response(result)
         except APIError as exc:
             return JSONResponse(status_code=exc.status_code, content=error_response(exc))
+
+    @app.get("/api/v1/me/schedules", response_model=ApiEnvelope[list[DeploymentRecord]])
+    async def list_personal_schedules(request: Request, source_assistant_id: str | None = None):
+        user = await get_current_user_context(request)
+        return success_response(await _service.list_personal_schedules(
+            user, source_assistant_id=source_assistant_id,
+        ))
+
+    @app.post("/api/v1/me/schedules", response_model=ApiEnvelope[DeploymentRecord])
+    async def create_personal_schedule(payload: PersonalScheduleCreate, request: Request):
+        user = await get_current_user_context(request)
+        return success_response(await _service.create_personal_schedule(
+            user, agent_id=payload.agent_id, source_assistant_id=payload.source_assistant_id,
+            name=payload.name, prompt_prefix=payload.prompt_prefix, schedule=payload.schedule,
+        ))
+
+    @app.put("/api/v1/me/schedules/{deployment_id}", response_model=ApiEnvelope[DeploymentRecord])
+    async def update_personal_schedule(deployment_id: str, patch: dict[str, Any], request: Request):
+        user = await get_current_user_context(request)
+        return success_response(await _service.update_personal_schedule(user, deployment_id, patch=patch))
+
+    @app.delete("/api/v1/me/schedules/{deployment_id}", response_model=ApiEnvelope[DeletedDeployment])
+    async def delete_personal_schedule(deployment_id: str, request: Request):
+        user = await get_current_user_context(request)
+        return success_response(await _service.delete_personal_schedule(user, deployment_id))
+
+    @app.get("/api/v1/me/schedules/{deployment_id}/runs")
+    async def list_personal_schedule_runs(deployment_id: str, request: Request, limit: int = 50):
+        user = await get_current_user_context(request)
+        return success_response(await _service.list_personal_schedule_runs(user, deployment_id, limit=limit))
+
+    @app.post("/api/v1/me/schedules/{deployment_id}/runs")
+    async def trigger_personal_schedule(deployment_id: str, request: Request):
+        user = await get_current_user_context(request)
+        return success_response(await _service.trigger_personal_schedule(user, deployment_id))
+
+    @app.post("/api/v1/me/schedules/{deployment_id}/runs/{run_id}/replay")
+    async def replay_personal_schedule_run(deployment_id: str, run_id: str, request: Request):
+        user = await get_current_user_context(request)
+        return success_response(await _service.replay_personal_schedule_run(user, deployment_id, run_id))
 
     # ── Authenticated agent management ──────────────────────────────────────
     @app.get(

@@ -31,6 +31,7 @@ from astrabox.persistence.repository import SessionRepository
 from astrabox.persistence.repository.backend import is_mongo_transient_error
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
+from astrabox.core.service.orchestrator.engine.input_delivery import refusal_record
 from astrabox.common.utils.retry_utils import (
     build_retry_warning_before_sleep,
     retry_async_call,
@@ -70,7 +71,7 @@ from astrabox.core.service.orchestrator.engine.interaction_contract import (
 from astrabox.core.service.orchestrator.stream_errors import (
     IncompleteStreamError as _IncompleteStreamError,
 )
-from astrabox.seams.sandbox import (
+from astrabox.seams.runtime_preparation import (
     TURN_PREPARATION_FAILED,
     TURN_PREPARATION_USER_ACTION_REQUIRED,
 )
@@ -347,6 +348,8 @@ async def iter_engine_client_events(
                     "turn_id": turn_id,
                     "code": error_code,
                     "message": error_message,
+                    **({"refusal": refusal_record(exc)} if isinstance(exc, APIError)
+                       and exc.code == TURN_PREPARATION_USER_ACTION_REQUIRED else {}),
                 }
                 yield {
                     "type": "status",

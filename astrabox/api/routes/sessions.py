@@ -27,6 +27,7 @@ from astrabox.api.routes._shared import (
     _svc,
 )
 from astrabox.api.routes.response_envelope import ApiEnvelope
+from astrabox.api.routes.session_user_actions import UserActionView
 
 router = APIRouter()
 
@@ -104,6 +105,9 @@ class DeliveryFailure(BaseModel):
     client_message_id: str | None = None
     text: str | None = None
     summary: str | None = None
+    content_blocks: list[dict[str, Any]] = Field(default_factory=list)
+    user_action: UserActionView | None = None
+    resend_as_new: bool = False
 
 
 class RuntimeBindingView(BaseModel):

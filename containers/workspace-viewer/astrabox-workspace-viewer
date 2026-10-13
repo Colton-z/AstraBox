@@ -1,0 +1,81 @@
+#!/usr/bin/python3
+"""Launch the image's file and browser viewers and mint nginx expiring links."""
+
+import argparse
+import base64
+import hashlib
+import json
+import os
+from pathlib import Path
+import secrets
+import socket
+import time
+from urllib.parse import quote
+from urllib.request import urlopen
+
+STATE = Path("/run/astrabox-workspace-viewer")
+KEY = STATE / "key"
+
+
+def serve():
+    os.umask(0o077)
+    STATE.mkdir(mode=0o700, exist_ok=True)
+    if not KEY.exists():
+        KEY.write_text(secrets.token_hex(32))
+    config = Path("/opt/astrabox/workspace-viewer/nginx.conf").read_text()
+    configured = STATE / "nginx.conf"
+    configured.write_text(config.replace("@PREVIEW_SECRET@", KEY.read_text()))
+    os.execvp("nginx", ["nginx", "-c", str(configured), "-g", "daemon off;"])
+
+
+def signature(scope, expires):
+    if not time.time() < expires <= time.time() + 1200:
+        raise ValueError("viewer lifetime must be at most 20 minutes")
+    # ngx_http_secure_link_module defines both this digest and its wire format.
+    digest = hashlib.md5(f"{expires}/{scope} {KEY.read_text()}".encode()).digest()
+    return base64.urlsafe_b64encode(digest).decode().rstrip("=")
+
+
+def grant(root, relative, expires):
+    # Readiness is a property of the image-owned service, not permission to
+    # install or launch it from an owner's first preview request.
+    with urlopen("http://127.0.0.1:8002/health", timeout=5) as response:
+        if response.status != 204:
+            raise RuntimeError("file preview service is not ready")
+    if not root.startswith("/") or root == "/" or not Path(root).is_dir():
+        raise ValueError("preview requires an existing workspace directory")
+    if any(part in (".", "..", "-") for part in root.split("/")):
+        raise ValueError("invalid workspace root")
+    if relative.startswith("/") or any(part in (".", "..") for part in relative.split("/")):
+        raise ValueError("preview file must be relative to its workspace")
+    root = root.strip("/")
+    token = signature(f"files/{root}", expires)
+    print(json.dumps({"path": f"p/{expires}/{token}/{quote(root, safe='/')}/-/{quote(relative, safe='/')}"}))
+
+
+def grant_browser(expires):
+    with urlopen("http://127.0.0.1:9222/json/version", timeout=5) as response:
+        if not json.load(response).get("webSocketDebuggerUrl"):
+            raise RuntimeError("sandbox browser is not ready")
+    with socket.create_connection(("127.0.0.1", 6080), timeout=5):
+        pass
+    print(json.dumps({"path": f"b/{expires}/{signature('browser', expires)}/vnc.html"}))
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest="action", required=True)
+    sub.add_parser("serve")
+    mint = sub.add_parser("grant")
+    mint.add_argument("root")
+    mint.add_argument("relative")
+    mint.add_argument("expires", type=int)
+    browser = sub.add_parser("grant-browser")
+    browser.add_argument("expires", type=int)
+    args = parser.parse_args()
+    if args.action == "serve":
+        serve()
+    elif args.action == "grant":
+        grant(args.root, args.relative, args.expires)
+    else:
+        grant_browser(args.expires)

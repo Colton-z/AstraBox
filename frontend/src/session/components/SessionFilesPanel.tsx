@@ -55,6 +55,7 @@ import {
 } from 'lucide-react';
 import type { SessionFileEntry } from '../../types';
 import { useSessionFiles } from '../hooks/useSessionFiles';
+import { SessionFileViewer } from './SessionFileViewer';
 
 type SessionFilesPanelProps = {
   sessionId: string;
@@ -332,6 +333,7 @@ export default function SessionFilesPanel({
   const { t } = useTranslation();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [selectedPath, setSelectedPath] = useState<string>();
+  const [previewPath, setPreviewPath] = useState<string | null>(null);
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
   const [dragActive, setDragActive] = useState(false);
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
@@ -399,6 +401,7 @@ export default function SessionFilesPanel({
 
   useEffect(() => {
     setSelectedPath(undefined);
+    setPreviewPath(null);
     setExpandedPaths(new Set());
     setDragActive(false);
     setCreateDialogOpen(false);
@@ -445,6 +448,8 @@ export default function SessionFilesPanel({
     setSelectedPath(path);
     if (path === rootPath || entryByPath.get(path)?.kind === 'directory') {
       await ensureDirectoryLoaded(path, { force: false });
+    } else if (entryByPath.get(path)?.kind === 'file') {
+      setPreviewPath(path);
     }
   };
 
@@ -705,6 +710,10 @@ export default function SessionFilesPanel({
       </div>
     );
   };
+
+  if (previewPath) {
+    return <SessionFileViewer key={`${sessionId}:${previewPath}`} sessionId={sessionId} path={previewPath} refreshSignal={refreshSignal} enabled={enabled} disabledMessage={disabledPanelMessage} onBack={() => setPreviewPath(null)} />;
+  }
 
   return (
     <div

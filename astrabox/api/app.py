@@ -544,6 +544,7 @@ def _register_feature_routes(app: FastAPI) -> None:
     from astrabox.api.routes.platform_mcp import (
         register_platform_mcp_routes,
     )
+    from astrabox.api.routes.session_browser import register_session_browser_routes
     from astrabox.api.routes.session_files import (
         register_session_file_routes,
     )
@@ -574,6 +575,7 @@ def _register_feature_routes(app: FastAPI) -> None:
     register_admin_api_routes(app)
     register_platform_mcp_routes(app)
     register_session_file_routes(app)
+    register_session_browser_routes(app)
     register_sandbox_callback_routes(app)
     register_sandbox_routes(app)
     _register_e2e_fault_routes_if_armed(app)
@@ -596,10 +598,13 @@ def _register_feature_routes(app: FastAPI) -> None:
             register_agent_mcp_routes,
         )
         from astrabox.api.routes.mcp_tokens import register_mcp_token_routes
+        from astrabox.api.routes.agent_a2a import create_agent_a2a_routes
+        from astrabox.core.service.orchestrator.service_registry import get_agent_a2a_service
 
         register_agent_routes(app)
         register_agent_catalog_routes(app)
         register_agent_mcp_routes(app)
+        app.router.routes.extend(create_agent_a2a_routes(get_agent_a2a_service()))
         # Behind the same gate as the facade the keys authenticate against:
         # issuing a credential for an endpoint this deployment does not serve
         # would be a key that opens nothing.
@@ -834,7 +839,10 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(user_router)
+    from astrabox.api.routes.session_user_actions import router as session_user_actions_router
+
     app.include_router(sessions_router)
+    app.include_router(session_user_actions_router)
     app.include_router(turns_router)
     app.include_router(speech_input_router)
     app.include_router(admin_router)

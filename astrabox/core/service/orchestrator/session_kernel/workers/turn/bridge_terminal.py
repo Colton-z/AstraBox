@@ -246,6 +246,8 @@ async def _append_terminal_signal(
                         "version": 1,
                         "error": error_text or "unknown error",
                         "failure_phase": failure_phase,
+                        **({"user_action": state.user_action_refusal["user_action"]}
+                           if state.user_action_refusal else {}),
                     },
                 }),
                 turn_id=state.effective_turn_id or None,
@@ -548,6 +550,8 @@ async def _project_turn_terminal(
                 "type": "turn_failure",
                 "error": state.last_error_text or "unknown error",
                 "failure_phase": "post_dispatch",
+                **({"user_action": state.user_action_refusal["user_action"]}
+                   if state.user_action_refusal else {}),
             },
         ]
     projected_blocks = canonicalize_terminal_message_blocks(projected_blocks)
@@ -569,6 +573,7 @@ async def _project_turn_terminal(
                     "blocks": projected_blocks,
                     "error_text": state.last_error_text or None,
                     "failure_phase": _failure_phase,
+                    **({"refusal": state.user_action_refusal} if state.user_action_refusal else {}),
                 },
             }
         )

@@ -258,7 +258,7 @@ class SessionLifecycleWorker(
             or (session or {}).get("user_id")
             or ""
         ).strip()
-        return UserContext(user_id=user_id)
+        return UserContext(user_id=user_id, org_id=(session if session is not None else payload).get("org_id"))
 
     async def _execute_command(
         self,

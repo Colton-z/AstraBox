@@ -259,6 +259,8 @@ class BootstrapWiringMixin:
             terminal_settle_retry_window_s=self._turn_terminal_settle_retry_window_s,
             terminal_settle_retry_delay_s=self._turn_terminal_settle_retry_delay_s,
             redrive_stranded_inputs=self._redrive_stranded_inputs_after_settle,
+            settle_refused_start_turn=self._settle_refused_start_turn,
+            prepare_admitted_turn_runtime=self._prepare_admitted_turn_runtime,
             spawn_background_task=self._spawn_tracked_background_task,
         )
 

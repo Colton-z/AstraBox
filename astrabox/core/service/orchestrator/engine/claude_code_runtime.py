@@ -616,6 +616,7 @@ def _template_platform_mcp_servers(template: Any) -> list[str]:
             getattr(template, "mcp_servers", None),
             session_source_type=getattr(template, "session_source_type", None),
             agent_id=getattr(template, "agent_id", None),
+            assistant_id=getattr(template, "assistant_id", None),
             artifacts_enabled=getattr(template, "artifacts_enabled", True),
         ).items()
         if isinstance(config, dict) and is_platform_mcp_server(config)

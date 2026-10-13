@@ -1055,59 +1055,6 @@ class SandboxDiagnostics:
     truncated: bool = False
 
 
-TURN_PREPARATION_FAILED = "TURN_PREPARATION_FAILED"
-TURN_PREPARATION_USER_ACTION_REQUIRED = "TURN_PREPARATION_USER_ACTION_REQUIRED"
-TURN_PREPARATION_CONTRACT_VERSION = 1
-
-
-class TurnPreparationUserActionRequired(Exception):
-    """The deliberately-narrow escape hatch from the swallow-everything rule.
-
-    Preparation cannot proceed until the USER acts (e.g. the principal has
-    not yet authorized the agent against the credential system) and the
-    provider knows the small, safe payload the user needs — a message and
-    optionally a URL to visit. The host validates every field before any of
-    it becomes user-visible (bounded lengths, no control characters, http(s)
-    URLs only) and maps the failure onto a distinct, non-retryable,
-    user-visible outcome instead of the generic infrastructure fault. Any
-    OTHER exception a provider raises stays swallowed — arbitrary provider
-    error text can carry secrets.
-    """
-
-    def __init__(
-        self,
-        *,
-        message: str,
-        url: str | None = None,
-        status: str = "user_action_required",
-    ) -> None:
-        super().__init__(message)
-        self.message = message
-        self.url = url
-        self.status = status
-
-
-@dataclass(frozen=True, slots=True)
-class SandboxTurnContext:
-    """Provider-neutral input for one imminent engine write.
-
-    The context is intentionally small and immutable.  ``principal_id`` is the
-    opaque canonical owner copied from the persisted session row; it is not a
-    request actor, display name, email address, or full session mapping.
-    ``dispatch_attempt_id`` identifies this exact write attempt, including
-    reconnect retries.
-    """
-
-    sandbox_backend: str
-    sandbox_id: str
-    session_id: str
-    principal_id: str = field(repr=False)
-    turn_id: str
-    engine_kind: str
-    dispatch_attempt_id: str
-    sandbox_handle: SandboxHandle | None = field(default=None, repr=False, compare=False)
-
-
 class SandboxProvider(ABC):
     """One sandbox platform's atomic resource and transport capabilities.
 
@@ -1171,15 +1118,6 @@ class SandboxProvider(ABC):
     #: can only fail at sandbox start is not offered as working configuration.
     #: Registration validates the values against ``SANDBOX_PERMISSION_LEVELS``.
     supported_permission_levels: tuple[str, ...] = (SANDBOX_PERMISSION_LEVEL_DEFAULT,)
-    #: Opt in to the security-sensitive hook invoked immediately before every
-    #: real engine write.  Until a distributed sandbox-scoped lease/token seam
-    #: exists, registration permits this only for profile-exclusive sandboxes;
-    #: shared-sandbox identity mutation cannot be made safe by a process lock.
-    supports_turn_preparation: bool = False
-    #: Version of the opt-in turn-preparation contract. Providers enabling the
-    #: capability must declare the exact host version so new hosts fail loud on
-    #: incompatible semantics while SEAMS_API_VERSION remains additive-stable.
-    turn_preparation_contract_version: int | None = None
     #: Whether creates honour an Environment's provider-neutral
     #: ``network_policy`` by creating the box under it.
     #:
@@ -1207,14 +1145,6 @@ class SandboxProvider(ABC):
     #: supplies complete create and preparation callbacks; the provider owns
     #: scheduling, leases, replenishment and atomic acquisition.
     supports_client_pool: bool = False
-    #: How long one successful preparation stays valid (seconds), for
-    #: providers whose prepared state expires (a minted credential's TTL).
-    #: When set, the host re-invokes the (idempotent, guard-fenced)
-    #: ``prepare_turn`` before expiry while the same dispatch attempt's
-    #: engine write is still live; a failed re-preparation quarantines the
-    #: guard exactly as a failed initial preparation does. ``None`` (the
-    #: default) means the prepared state never expires — no refresh runs.
-    turn_preparation_validity_seconds: float | None = None
     #: Whether the control plane can enumerate and describe this backend's
     #: sandboxes (:meth:`list_sandboxes` / :meth:`describe_sandbox`). The
     #: background sweeps that reclaim ownerless boxes and retire boxes with
@@ -1493,15 +1423,6 @@ class SandboxProvider(ABC):
         hosts this deployment cannot see, so nothing is derived.
         """
         return None
-
-    async def prepare_turn(self, *, context: SandboxTurnContext) -> None:
-        """Prepare provider-owned state for one imminent engine write.
-
-        Providers opt in with ``supports_turn_preparation = True`` and must
-        implement an idempotent hook for ``context.dispatch_attempt_id``.  The
-        default remains a no-op so existing providers are additive-compatible.
-        """
-        _ = context
 
     async def shutdown_current_loop_resources(self) -> None:
         """Release provider resources owned by the current event loop.
@@ -2393,11 +2314,6 @@ SANDBOX_CAPABILITY_RULES: tuple[SandboxCapabilityRule, ...] = (
     # The process face lives on the handle, so the provider has no method to
     # implement for it; the row makes registration check the flag's type.
     SandboxCapabilityRule("supports_process_sessions", ()),
-    SandboxCapabilityRule(
-        "supports_turn_preparation",
-        ("prepare_turn", "owns_sandbox"),
-        requires=("sandbox_is_profile_exclusive",),
-    ),
 )
 
 
@@ -2523,59 +2439,6 @@ def register_sandbox(provider: SandboxProvider) -> None:
         raise RuntimeError(
             f"sandbox provider {name!r} capability sandbox_is_profile_exclusive must be bool"
         )
-    prepares_turns = getattr(provider, "supports_turn_preparation", False)
-    if prepares_turns:
-        contract_version = getattr(provider, "turn_preparation_contract_version", None)
-        if (
-            type(contract_version) is not int
-            or contract_version != TURN_PREPARATION_CONTRACT_VERSION
-        ):
-            raise RuntimeError(
-                f"sandbox provider {name!r} turn preparation contract version "
-                f"must equal {TURN_PREPARATION_CONTRACT_VERSION}"
-            )
-        if not profile_exclusive:
-            raise RuntimeError(
-                f"sandbox provider {name!r} cannot enable turn preparation for "
-                "a shared sandbox; set sandbox_is_profile_exclusive=True or "
-                "provide a future distributed fencing capability"
-            )
-        owns_sandbox = getattr(provider, "owns_sandbox", None)
-        inherited_owns_sandbox = getattr(type(provider), "owns_sandbox", None)
-        if inherited_owns_sandbox is SandboxProvider.owns_sandbox or not callable(owns_sandbox):
-            raise RuntimeError(
-                f"sandbox provider {name!r} enables turn preparation but does "
-                "not implement live-handle ownership validation"
-            )
-        prepare_turn = getattr(provider, "prepare_turn", None)
-        inherited = getattr(type(provider), "prepare_turn", None)
-        if inherited is SandboxProvider.prepare_turn or not callable(prepare_turn):
-            raise RuntimeError(
-                f"sandbox provider {name!r} enables turn preparation but does "
-                "not override prepare_turn"
-            )
-        if not inspect.iscoroutinefunction(prepare_turn):
-            raise RuntimeError(f"sandbox provider {name!r} prepare_turn must be async")
-        parameters = list(inspect.signature(prepare_turn).parameters.values())
-        if [parameter.name for parameter in parameters] != ["context"] or parameters[
-            0
-        ].kind is not inspect.Parameter.KEYWORD_ONLY:
-            raise RuntimeError(
-                f"sandbox provider {name!r} prepare_turn must have signature (*, context)"
-            )
-    validity = getattr(provider, "turn_preparation_validity_seconds", None)
-    if validity is not None:
-        if not prepares_turns:
-            raise RuntimeError(
-                f"sandbox provider {name!r} declares "
-                "turn_preparation_validity_seconds without enabling "
-                "supports_turn_preparation"
-            )
-        if not isinstance(validity, (int, float)) or isinstance(validity, bool) or validity <= 0:
-            raise RuntimeError(
-                f"sandbox provider {name!r} turn_preparation_validity_seconds "
-                "must be a positive number of seconds"
-            )
     for rule in SANDBOX_CAPABILITY_RULES:
         if not getattr(provider, rule.flag, False):
             continue
@@ -2845,12 +2708,7 @@ __all__ = [
     "SandboxSecurityPosture",
     "SandboxPage",
     "SandboxRuntimeDefaults",
-    "SandboxTurnContext",
     "SandboxProvider",
-    "TURN_PREPARATION_CONTRACT_VERSION",
-    "TURN_PREPARATION_FAILED",
-    "TURN_PREPARATION_USER_ACTION_REQUIRED",
-    "TurnPreparationUserActionRequired",
     "SANDBOX_CAPABILITY_RULES",
     "SandboxBackendDisabled",
     "SANDBOX_DATA_PLANE_ALIVE",

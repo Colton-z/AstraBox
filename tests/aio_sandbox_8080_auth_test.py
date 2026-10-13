@@ -48,7 +48,7 @@ def test_the_key_is_keyed_to_the_deployment_secret(
 
 
 @pytest.mark.parametrize(
-    "service", ["JUPYTER", "CODE_SERVER", "VNC", "BROWSER", "MCP_BROWSER", "NODEJS_REPL"]
+    "service", ["JUPYTER", "CODE_SERVER", "MCP_BROWSER", "NODEJS_REPL"]
 )
 def test_unused_aio_services_are_disabled_in_every_box_boot_env(service: str) -> None:
     # The AIO base image serves these interactive services on :8080 and starts

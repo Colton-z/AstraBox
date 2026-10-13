@@ -21,6 +21,7 @@ from astrabox.core.service.orchestrator.session_kernel.active_turn_projection im
     build_active_turn_message,
 )
 from astrabox.persistence.repository.session_event_repository import RESIDENT_OUTPUT_SOURCE_KIND
+from astrabox.seams.runtime_preparation import validated_user_action
 
 
 _TERMINAL_EVENT_TYPES = frozenset(
@@ -30,15 +31,24 @@ _TERMINAL_EVENT_TYPES = frozenset(
         "turn.recovered",
     }
 )
+#: One message of a conversation's earlier history, imported for reading
+#: (session_history_import.py). It runs nothing and belongs to no turn.
+HISTORY_IMPORTED_EVENT_TYPE = "history.imported"
+#: What only a conversation's own turns write: an input the engine took,
+#: engine output, or a turn's ending.
+CONVERSATION_OUTPUT_EVENT_TYPES = frozenset(
+    {"input.consumed", ENGINE_MESSAGE_EVENT_TYPE, *_TERMINAL_EVENT_TYPES}
+)
 _MESSAGE_EVENT_TYPES = frozenset(
     {
         "command.accepted",
-        "input.consumed",
-        ENGINE_MESSAGE_EVENT_TYPE,
-        *_TERMINAL_EVENT_TYPES,
+        HISTORY_IMPORTED_EVENT_TYPE,
+        *CONVERSATION_OUTPUT_EVENT_TYPES,
     }
 )
-_USER_MESSAGE_EVENT_TYPES = frozenset({"command.accepted", "input.consumed"})
+_USER_MESSAGE_EVENT_TYPES = frozenset(
+    {"command.accepted", "input.consumed", HISTORY_IMPORTED_EVENT_TYPE}
+)
 _MESSAGE_SCAN_BATCH_SIZE = 100
 
 
@@ -236,6 +246,10 @@ def _terminal_message(
             }
             if failure_phase:
                 failure_block["failure_phase"] = failure_phase
+            refusal = payload.get("refusal")
+            action = validated_user_action(refusal.get("user_action")) if isinstance(refusal, dict) else None
+            if action:
+                failure_block["user_action"] = action
             blocks.append(failure_block)
 
     blocks = canonicalize_terminal_message_blocks(blocks)
@@ -263,6 +277,41 @@ def _terminal_message(
             if event_type == "turn.failed" and not frames and not assistant_text
             else {}
         ),
+    }
+
+
+def _imported_message(event: dict[str, Any]) -> dict[str, Any]:
+    """An imported message as the reader sees any other.
+
+    A user message keeps its text in ``content`` and only non-text blocks, as a
+    sent message does. ``history_import`` carries the source's identity, its
+    reply parent and, for a reply, whether the source recorded its ending.
+    """
+    payload = event.get("payload")
+    if not isinstance(payload, dict):
+        raise ValueError("history.imported event requires a payload")
+    role = str(payload["role"])
+    blocks = normalize_message_blocks(payload["blocks"])
+    seq = _event_seq(event)
+    origin = {
+        key: payload[key]
+        for key in ("source_id", "completion", "parent_source_id")
+        if payload.get(key) is not None
+    }
+    return {
+        "session_id": str(event.get("session_id") or ""),
+        "message_id": f"history:{payload['source_id']}",
+        "message_seq": seq,
+        "turn_id": "",
+        "role": role,
+        "user_id": "",
+        "content": _text_from_blocks(blocks),
+        "blocks": blocks if role == "assistant" else [
+            block for block in blocks if str(block.get("type") or "") != "text"
+        ],
+        "history_import": origin,
+        "source_event_seq_applied": seq,
+        "created_at": str(payload["created_at"]),
     }
 
 
@@ -318,7 +367,13 @@ def project_session_messages(
             if resident is not None:
                 messages[str(resident["message_id"])] = resident
         user_message = None
-        if event_type == "command.accepted":
+        if event_type == HISTORY_IMPORTED_EVENT_TYPE:
+            imported = _imported_message(event)
+            if imported["role"] == "assistant":
+                messages[str(imported["message_id"])] = imported
+            else:
+                user_message = imported
+        elif event_type == "command.accepted":
             user_message = _user_message_from_command(event)
         elif event_type == "input.consumed":
             user_message = _user_message_from_consumed(event)

@@ -222,6 +222,7 @@ export function blocksToSDKParts(
           data: {
             error: block.error,
             failure_phase: block.failure_phase,
+            user_action: block.user_action,
           },
         } as unknown as AnyPart);
         break;
@@ -285,9 +286,14 @@ export function convertRecordToSDKMessage(
 
   return {
     id: msg.message_id,
-    // Session-owned messages, such as a startup greeting, have no platform
-    // turn. Their message_id remains their identity in both live and history.
-    metadata: msg.turn_id === '' ? undefined : platformTurnMetadata(msg.turn_id),
+    // Session-owned messages, such as a startup greeting, and imported history
+    // have no platform turn. Their message_id remains their identity in both
+    // live and history.
+    metadata: msg.turn_id !== ''
+      ? platformTurnMetadata(msg.turn_id)
+      : msg.history_import?.completion === 'unknown'
+        ? { history_completion: 'unknown' }
+        : undefined,
     client_message_id: msg.client_message_id ?? null,
     role: msg.role,
     parts: matchingPi && hasPendingDynamicToolPart(parts, matchingPi)

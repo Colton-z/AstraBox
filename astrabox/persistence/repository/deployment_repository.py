@@ -25,7 +25,8 @@ class DeploymentRepository:
 
     @staticmethod
     def _active_deployment_filter(
-        deployment_id: str, agent_id: str, assistant_id: str = ""
+        deployment_id: str, agent_id: str, assistant_id: str = "", owner_user_id: str = "",
+        owner_org_id: str = "",
     ) -> dict[str, Any] | None:
         """The nested-resource fence shared by every management mutation.
 
@@ -38,10 +39,12 @@ class DeploymentRepository:
         wid = str(deployment_id or "").strip()
         aid = str(agent_id or "").strip()
         sid = str(assistant_id or "").strip()
-        if not wid or bool(aid) == bool(sid):
+        if not wid or bool(aid) == bool(sid) or bool(owner_user_id) != bool(owner_org_id):
             return None
         return {
             "deployment_id": wid,
+            **({"scope": "personal", "owner_user_id": owner_user_id, "owner_org_id": owner_org_id}
+               if owner_user_id else {"scope": {"$ne": "personal"}}),
             **({"agent_id": aid} if aid else {"assistant_id": sid}),
             "$or": [{"deleted": {"$exists": False}}, {"deleted": False}],
         }
@@ -57,11 +60,14 @@ class DeploymentRepository:
         )
 
     async def get_for_deployment(
-        self, deployment_id: str, agent_id: str, *, assistant_id: str = ""
+        self, deployment_id: str, agent_id: str, *, assistant_id: str = "", owner_user_id: str = "",
+        owner_org_id: str = "",
     ) -> dict[str, Any] | None:
         """Return one active Deployment only inside its Agent or Assistant scope."""
 
-        query = self._active_deployment_filter(deployment_id, agent_id, assistant_id)
+        query = self._active_deployment_filter(
+            deployment_id, agent_id, assistant_id, owner_user_id, owner_org_id
+        )
         if query is None:
             return None
         collection = await get_async_collection(self._collection_name)
@@ -83,6 +89,7 @@ class DeploymentRepository:
             cursor = collection.find(
                 {
                     "agent_id": aid,
+                    "scope": {"$ne": "personal"},
                     "$or": [{"deleted": {"$exists": False}}, {"deleted": False}],
                 }
             )
@@ -102,6 +109,7 @@ class DeploymentRepository:
             cursor = collection.find(
                 {
                     "assistant_id": sid,
+                    "scope": {"$ne": "personal"},
                     "$or": [{"deleted": {"$exists": False}}, {"deleted": False}],
                 }
             )
@@ -110,6 +118,26 @@ class DeploymentRepository:
             return docs
 
         return await run_mongo_with_retry("deployments.list_by_assistant", _list)
+
+    async def list_personal_schedules(
+        self, owner_user_id: str, owner_org_id: str,
+    ) -> list[dict[str, Any]]:
+        """Return only the authenticated owner's active personal schedules."""
+        if not owner_user_id or not owner_org_id:
+            return []
+
+        async def _list() -> list[dict[str, Any]]:
+            collection = await get_async_collection(self._collection_name)
+            cursor = collection.find({
+                "scope": "personal", "scene": "schedule", "owner_user_id": owner_user_id,
+                "owner_org_id": owner_org_id,
+                "$or": [{"deleted": {"$exists": False}}, {"deleted": False}],
+            })
+            docs = [doc async for doc in cursor]
+            docs.sort(key=lambda item: str(item.get("created_at") or ""))
+            return docs
+
+        return await run_mongo_with_retry("deployments.list_personal_schedules", _list)
 
     async def list_active(self) -> list[dict[str, Any]]:
         """Return every live Deployment in one collection read."""
@@ -248,6 +276,8 @@ class DeploymentRepository:
         updates: dict[str, Any],
         *,
         assistant_id: str = "",
+        owner_user_id: str = "",
+        owner_org_id: str = "",
     ) -> dict[str, Any] | None:
         """Atomically update and return one active deployment-scoped webhook.
 
@@ -256,10 +286,15 @@ class DeploymentRepository:
         a future caller accidentally includes them in ``updates``.
         """
 
-        query = self._active_deployment_filter(deployment_id, agent_id, assistant_id)
+        query = self._active_deployment_filter(
+            deployment_id, agent_id, assistant_id, owner_user_id, owner_org_id
+        )
         if query is None:
             return None
-        protected = {"_id", "deployment_id", "agent_id", "assistant_id", "deleted"}
+        protected = {
+            "_id", "deployment_id", "agent_id", "assistant_id", "deleted",
+            "scope", "owner_user_id", "owner_org_id", "source_assistant_id", "created_by",
+        }
         safe_updates = {
             key: value for key, value in dict(updates or {}).items() if key not in protected
         }
@@ -274,7 +309,8 @@ class DeploymentRepository:
         )
 
     async def soft_delete_for_deployment(
-        self, deployment_id: str, agent_id: str, *, assistant_id: str = ""
+        self, deployment_id: str, agent_id: str, *, assistant_id: str = "", owner_user_id: str = "",
+        owner_org_id: str = "",
     ) -> bool:
         """Atomically soft-delete one active deployment-scoped webhook.
 
@@ -283,7 +319,9 @@ class DeploymentRepository:
         foreign delete returns ``False`` and the service maps all four to 404.
         """
 
-        query = self._active_deployment_filter(deployment_id, agent_id, assistant_id)
+        query = self._active_deployment_filter(
+            deployment_id, agent_id, assistant_id, owner_user_id, owner_org_id
+        )
         if query is None:
             return False
         collection = await get_async_collection(self._collection_name)

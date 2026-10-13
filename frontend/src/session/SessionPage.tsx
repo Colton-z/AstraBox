@@ -1,4 +1,6 @@
 import React, { useCallback, useRef } from 'react';
+import { useSessionUserAction } from './hooks/useSessionUserAction';
+import { SessionUserAction } from './components/SessionUserAction';
 import { useTranslation } from 'react-i18next';
 import { useParams, useNavigate } from 'react-router-dom';
 import type { UIMessage as SDKUIMessage } from 'ai';
@@ -345,12 +347,16 @@ function SessionPageReady({
   });
   // A creating runtime has no engine FIFO to receive an input yet. Once
   // created, both idle and busy Agents accept into the same durable queue.
-  const composerCanSend = canSend && lifecycleState !== 'creating';
+  const prerequisite = useSessionUserAction(
+    sessionId, session.user_id ?? '',
+    outbox.filter((item) => item.user_action).map((item) => item.client_message_id).join(','),
+  );
+  const composerCanSend = prerequisite.ready && canSend && lifecycleState !== 'creating';
   const { displayedQueue, canRetryQueued, removeQueueItem, retryQueueItem } = useMessageQueue({
     outbox,
     setOutbox,
-    canSendNow,
-    canQueueMessage,
+    canSendNow: prerequisite.ready && canSendNow,
+    canQueueMessage: prerequisite.ready && canQueueMessage,
     sendClientMessageNow,
   });
 
@@ -546,6 +552,7 @@ function SessionPageReady({
           />
         ) : (
           <SessionComposerBox
+            userAction={<SessionUserAction gate={prerequisite} />}
             sessionId={sessionId}
             displayedQueue={displayedQueue}
             removeQueueItem={removeQueueItem}

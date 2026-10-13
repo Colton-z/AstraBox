@@ -249,6 +249,108 @@
         "title": "AdminFormSchema",
         "type": "object"
       },
+      "AdminHistoryImportMessage": {
+        "additionalProperties": false,
+        "description": "One earlier message of a migrated conversation.\n\n``blocks`` use the transcript's content blocks: ``text`` and ``image`` for\na user message; for a reply also ``thinking``, ``tool_use`` and the\n``tool_result`` answering a call earlier in the same reply. ``completion``\nis required on a reply: ``unknown`` when the source recorded no ending.",
+        "properties": {
+          "blocks": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Blocks",
+            "type": "array"
+          },
+          "completion": {
+            "anyOf": [
+              {
+                "enum": [
+                  "complete",
+                  "unknown"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completion"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "parent_source_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Source Id"
+          },
+          "role": {
+            "enum": [
+              "user",
+              "assistant"
+            ],
+            "title": "Role",
+            "type": "string"
+          },
+          "source_id": {
+            "title": "Source Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_id",
+          "role",
+          "created_at",
+          "blocks"
+        ],
+        "title": "AdminHistoryImportMessage",
+        "type": "object"
+      },
+      "AdminHistoryImportRequest": {
+        "additionalProperties": false,
+        "description": "Messages in conversation order; a re-run carries the same ones first.",
+        "properties": {
+          "messages": {
+            "items": {
+              "$ref": "#/components/schemas/AdminHistoryImportMessage"
+            },
+            "title": "Messages",
+            "type": "array"
+          }
+        },
+        "required": [
+          "messages"
+        ],
+        "title": "AdminHistoryImportRequest",
+        "type": "object"
+      },
+      "AdminHistoryImportResult": {
+        "additionalProperties": false,
+        "description": "How many messages this call added, and how many were already imported.",
+        "properties": {
+          "imported": {
+            "title": "Imported",
+            "type": "integer"
+          },
+          "unchanged": {
+            "title": "Unchanged",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "imported",
+          "unchanged"
+        ],
+        "title": "AdminHistoryImportResult",
+        "type": "object"
+      },
       "AdminKillResult": {
         "additionalProperties": true,
         "description": "What an admin kill did to one session's sandbox.\n\n``killed`` is True only for a confirmed destruction — something other than\nthe delete call itself reported the box gone. ``destruction`` carries the\nverdict's own name and ``destruction_detail`` the reason, so an unconfirmed\nkill is legible as unconfirmed rather than as a failure or a success.",
@@ -2874,6 +2976,28 @@
         "title": "ApiEnvelope[AdminFormSchema]",
         "type": "object"
       },
+      "ApiEnvelope_AdminHistoryImportResult_": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/AdminHistoryImportResult"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[AdminHistoryImportResult]",
+        "type": "object"
+      },
       "ApiEnvelope_AdminKillResult_": {
         "properties": {
           "code": {
@@ -4458,6 +4582,28 @@
         "title": "ApiEnvelope[SessionArchival]",
         "type": "object"
       },
+      "ApiEnvelope_SessionBrowserAccess_": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/SessionBrowserAccess"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[SessionBrowserAccess]",
+        "type": "object"
+      },
       "ApiEnvelope_SessionChildRunPage_": {
         "properties": {
           "code": {
@@ -4588,6 +4734,28 @@
           "data"
         ],
         "title": "ApiEnvelope[SessionFileMoved]",
+        "type": "object"
+      },
+      "ApiEnvelope_SessionFilePreview_": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/SessionFilePreview"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[SessionFilePreview]",
         "type": "object"
       },
       "ApiEnvelope_SessionFileUploadResult_": {
@@ -4764,6 +4932,28 @@
           "data"
         ],
         "title": "ApiEnvelope[SessionRecord]",
+        "type": "object"
+      },
+      "ApiEnvelope_SessionUserActionView_": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/SessionUserActionView"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[SessionUserActionView]",
         "type": "object"
       },
       "ApiEnvelope_ShareLink_": {
@@ -8531,6 +8721,19 @@
             ],
             "title": "Client Message Id"
           },
+          "content_blocks": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Content Blocks",
+            "type": "array"
+          },
+          "resend_as_new": {
+            "default": false,
+            "title": "Resend As New",
+            "type": "boolean"
+          },
           "summary": {
             "anyOf": [
               {
@@ -8563,6 +8766,16 @@
               }
             ],
             "title": "Turn Id"
+          },
+          "user_action": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UserActionView"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "title": "DeliveryFailure",
@@ -8721,6 +8934,28 @@
             ],
             "title": "Execution User Id"
           },
+          "owner_org_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner Org Id"
+          },
+          "owner_user_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner User Id"
+          },
           "prompt_prefix": {
             "anyOf": [
               {
@@ -8731,6 +8966,17 @@
               }
             ],
             "title": "Prompt Prefix"
+          },
+          "response_instruction": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Response Instruction"
           },
           "scene": {
             "anyOf": [
@@ -8743,6 +8989,17 @@
             ],
             "title": "Scene"
           },
+          "scope": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope"
+          },
           "secret": {
             "anyOf": [
               {
@@ -8753,6 +9010,17 @@
               }
             ],
             "title": "Secret"
+          },
+          "source_assistant_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Assistant Id"
           },
           "updated_at": {
             "anyOf": [
@@ -9339,6 +9607,22 @@
         "title": "MoveSessionFilesRequest",
         "type": "object"
       },
+      "PerformUserAction": {
+        "additionalProperties": false,
+        "properties": {
+          "action_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Action Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action_id"
+        ],
+        "title": "PerformUserAction",
+        "type": "object"
+      },
       "PermissionModeUpdate": {
         "additionalProperties": true,
         "description": "The outcome of setting a session's permission mode.\n\n``applied`` reports whether the running engine took the new mode, not\nwhether the request was accepted: a session with no live runtime records\nthe mode and answers ``false``.",
@@ -9418,6 +9702,55 @@
           "session_id"
         ],
         "title": "PermissionModeUpdate",
+        "type": "object"
+      },
+      "PersonalScheduleCreate": {
+        "additionalProperties": false,
+        "description": "The owner and execution identity come only from the authenticated request.",
+        "properties": {
+          "agent_id": {
+            "title": "Agent Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "prompt_prefix": {
+            "title": "Prompt Prefix",
+            "type": "string"
+          },
+          "schedule": {
+            "additionalProperties": true,
+            "title": "Schedule",
+            "type": "object"
+          },
+          "source_assistant_id": {
+            "title": "Source Assistant Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent_id",
+          "source_assistant_id",
+          "name",
+          "prompt_prefix",
+          "schedule"
+        ],
+        "title": "PersonalScheduleCreate",
+        "type": "object"
+      },
+      "PreviewSessionFileRequest": {
+        "properties": {
+          "path": {
+            "title": "Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "title": "PreviewSessionFileRequest",
         "type": "object"
       },
       "ProcessSummaryState": {
@@ -9860,6 +10193,25 @@
         "title": "SessionArchival",
         "type": "object"
       },
+      "SessionBrowserAccess": {
+        "additionalProperties": true,
+        "properties": {
+          "expires_at": {
+            "title": "Expires At",
+            "type": "string"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url",
+          "expires_at"
+        ],
+        "title": "SessionBrowserAccess",
+        "type": "object"
+      },
       "SessionChildRunPage": {
         "additionalProperties": false,
         "description": "All child runs visible in one Session, in tree order.",
@@ -10165,6 +10517,26 @@
           "dest_path"
         ],
         "title": "SessionFileMoved",
+        "type": "object"
+      },
+      "SessionFilePreview": {
+        "additionalProperties": true,
+        "description": "An expiring bearer URL for a file and its workspace-relative resources.",
+        "properties": {
+          "expires_at": {
+            "title": "Expires At",
+            "type": "string"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url",
+          "expires_at"
+        ],
+        "title": "SessionFilePreview",
         "type": "object"
       },
       "SessionFileUploadResult": {
@@ -10977,6 +11349,37 @@
         "title": "SessionRecord",
         "type": "object"
       },
+      "SessionUserActionView": {
+        "additionalProperties": false,
+        "properties": {
+          "actions": {
+            "items": {
+              "$ref": "#/components/schemas/UserActionCommandView"
+            },
+            "title": "Actions",
+            "type": "array"
+          },
+          "ready": {
+            "title": "Ready",
+            "type": "boolean"
+          },
+          "user_action": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UserActionView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "ready"
+        ],
+        "title": "SessionUserActionView",
+        "type": "object"
+      },
       "SetAgentAccessRequest": {
         "additionalProperties": false,
         "description": "The complete policy accepted by the dedicated Agent access endpoint.",
@@ -11645,6 +12048,55 @@
         "title": "UpdateMCPServerRequest",
         "type": "object"
       },
+      "UserActionCommandView": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "label"
+        ],
+        "title": "UserActionCommandView",
+        "type": "object"
+      },
+      "UserActionView": {
+        "additionalProperties": false,
+        "properties": {
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
+          }
+        },
+        "required": [
+          "status",
+          "message"
+        ],
+        "title": "UserActionView",
+        "type": "object"
+      },
       "ValidationError": {
         "properties": {
           "ctx": {
@@ -11963,7 +12415,7 @@
   "info": {
     "summary": "Self-hosted agent runtime that runs installed Agent programs in isolated sandboxes and streams responses over the AI SDK Data Stream Protocol (SSE).",
     "title": "AstraBox",
-    "version": "0.1.7"
+    "version": "0.1.8"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -14118,6 +14570,56 @@
           }
         },
         "summary": "Admin Evict Runtime"
+      }
+    },
+    "/api/v1/admin/sessions/{session_id}/history-import": {
+      "post": {
+        "description": "Import a migrated conversation's earlier messages, for reading only.\n\nNothing runs: no sandbox, command or turn. Import before the conversation's\nfirst message of its own; a session that already has one refuses with\n``HISTORY_IMPORT_AFTER_CONVERSATION``. A re-run of the same messages\nchanges nothing; other content under a used ``source_id``, or a new message\nplaced before imported ones, is ``HISTORY_IMPORT_CONFLICT``.",
+        "operationId": "admin_import_session_history_api_v1_admin_sessions__session_id__history_import_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminHistoryImportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_AdminHistoryImportResult_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Import Session History"
       }
     },
     "/api/v1/admin/sessions/{session_id}/kill": {
@@ -19566,6 +20068,304 @@
         "summary": "Revoke Mcp Token"
       }
     },
+    "/api/v1/me/schedules": {
+      "get": {
+        "operationId": "list_personal_schedules_api_v1_me_schedules_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "source_assistant_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Source Assistant Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_list_DeploymentRecord__"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Personal Schedules"
+      },
+      "post": {
+        "operationId": "create_personal_schedule_api_v1_me_schedules_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PersonalScheduleCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_DeploymentRecord_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Personal Schedule"
+      }
+    },
+    "/api/v1/me/schedules/{deployment_id}": {
+      "delete": {
+        "operationId": "delete_personal_schedule_api_v1_me_schedules__deployment_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "deployment_id",
+            "required": true,
+            "schema": {
+              "title": "Deployment Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_DeletedDeployment_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Personal Schedule"
+      },
+      "put": {
+        "operationId": "update_personal_schedule_api_v1_me_schedules__deployment_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "deployment_id",
+            "required": true,
+            "schema": {
+              "title": "Deployment Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "title": "Patch",
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_DeploymentRecord_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Personal Schedule"
+      }
+    },
+    "/api/v1/me/schedules/{deployment_id}/runs": {
+      "get": {
+        "operationId": "list_personal_schedule_runs_api_v1_me_schedules__deployment_id__runs_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "deployment_id",
+            "required": true,
+            "schema": {
+              "title": "Deployment Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Personal Schedule Runs"
+      },
+      "post": {
+        "operationId": "trigger_personal_schedule_api_v1_me_schedules__deployment_id__runs_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "deployment_id",
+            "required": true,
+            "schema": {
+              "title": "Deployment Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Trigger Personal Schedule"
+      }
+    },
+    "/api/v1/me/schedules/{deployment_id}/runs/{run_id}/replay": {
+      "post": {
+        "operationId": "replay_personal_schedule_run_api_v1_me_schedules__deployment_id__runs__run_id__replay_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "deployment_id",
+            "required": true,
+            "schema": {
+              "title": "Deployment Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Replay Personal Schedule Run"
+      }
+    },
     "/api/v1/platform-mcp/{deployment_id}/{server_name}/{capability}/mcp": {
       "post": {
         "operationId": "platform_mcp_streamable_http_api_v1_platform_mcp__deployment_id___server_name___capability__mcp_post",
@@ -20423,6 +21223,45 @@
         "summary": "Archive Session"
       }
     },
+    "/api/v1/sessions/{session_id}/browser": {
+      "post": {
+        "operationId": "open_session_browser_api_v1_sessions__session_id__browser_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_SessionBrowserAccess_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Open Session Browser"
+      }
+    },
     "/api/v1/sessions/{session_id}/child-runs": {
       "get": {
         "operationId": "list_session_child_runs_api_v1_sessions__session_id__child_runs_get",
@@ -20894,6 +21733,55 @@
           }
         },
         "summary": "Move Session Files"
+      }
+    },
+    "/api/v1/sessions/{session_id}/files/preview": {
+      "post": {
+        "operationId": "preview_session_file_api_v1_sessions__session_id__files_preview_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PreviewSessionFileRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_SessionFilePreview_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Preview Session File"
       }
     },
     "/api/v1/sessions/{session_id}/files/upload": {
@@ -21679,6 +22567,92 @@
           }
         },
         "summary": "Append Turn Input"
+      }
+    },
+    "/api/v1/sessions/{session_id}/user-action": {
+      "get": {
+        "operationId": "read_session_user_action_api_v1_sessions__session_id__user_action_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_SessionUserActionView_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Session User Action"
+      },
+      "post": {
+        "operationId": "perform_session_user_action_api_v1_sessions__session_id__user_action_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PerformUserAction"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_SessionUserActionView_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Perform Session User Action"
       }
     },
     "/api/v1/sessions/{session_id}/webshell": {

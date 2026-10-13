@@ -163,8 +163,15 @@ def test_sse_stream_propagates_inbound_trace_id(client: TestClient) -> None:
 # ── (b) an error-enveloped route: storage 503 via the app-level handler ───────
 
 
-def test_storage_503_via_app_handler_carries_traceparent(client: TestClient) -> None:
+def test_storage_503_via_app_handler_carries_traceparent(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     pytest.importorskip("pymongo")
+    # Transience is the active backend's own classification; a MongoDB outage
+    # is retryable only on a MongoDB deployment.
+    from astrabox.persistence.repository import backend
+
+    monkeypatch.setattr(backend, "active_backend_name", lambda: "mongo")
     r = client.get("/boom-storage")
     assert r.status_code == 503
     body = r.json()

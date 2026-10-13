@@ -5,6 +5,7 @@ import { useChat } from '@ai-sdk/react';
 import { toast } from 'sonner';
 import type { UIMessage as SDKUIMessage } from 'ai';
 import type {
+  UserAction,
   ContentBlock,
   InteractionResponse,
   MessageRecord,
@@ -45,6 +46,7 @@ import { getInteractionPermissionMode } from '../../utils/format';
 import {
   getDurableUserTurnIdForClientMessage,
   markOutboxItemFailed,
+  rehydrateDeliveryFailure,
   reconcileNativeInputOutbox,
   reconcileOutboxWithSession,
   retainQueuedOutbox,
@@ -182,20 +184,6 @@ function consumedContentBlocks(value: unknown): ContentBlock[] | undefined {
     throw new Error('engine input boundary content block is malformed');
   }
   return value as ContentBlock[];
-}
-
-function rehydrateDeliveryFailure(
-  outbox: OutboxItem[],
-  failure: SessionRecord['delivery_failure'],
-): OutboxItem[] {
-  if (!failure) return outbox;
-  if (outbox.some((item) => item.client_message_id === failure.client_message_id)) return outbox;
-  return [{
-    client_message_id: failure.client_message_id,
-    text: failure.text,
-    status: 'failed' as const,
-    failure_reason: failure.summary,
-  }, ...outbox];
 }
 
 function rehydratePendingEngineInputs(session: SessionRecord): OutboxItem[] {
@@ -357,7 +345,7 @@ export function useSessionChat(props: UseSessionChatProps): UseSessionChatReturn
     promise: Promise<{ ok: true } | { ok: false; error: unknown }>;
     closeAfterCursor: boolean;
   } | null>(null);
-  const materializePendingSendFailureRef = useRef<(id: string, reason: string, resendAsNew?: boolean) => void>(() => {});
+  const materializePendingSendFailureRef = useRef<(id: string, reason: string, resendAsNew?: boolean, userAction?: UserAction | null) => void>(() => {});
   const adoptAuthoritativeMessagesRef = useRef<(
     messages: SDKUIMessage[],
     completedPlatformTurnId?: string | null,
@@ -691,6 +679,13 @@ export function useSessionChat(props: UseSessionChatProps): UseSessionChatReturn
         }
         return;
       }
+      if (type === 'data-turn-failure') {
+        // Read the durable refusal and original input after settlement. The
+        // stream's operation is advisory; session detail owns retry identity.
+        subscriptionNeedsHistoryRef.current = true;
+        void refresh({ force: true }).catch((error) => console.warn('Failed to refresh turn refusal', error));
+        return;
+      }
       if (type === 'data-result') {
         // Confirm durable history after the response ends, before reopening.
         // The stream, not a newer history window, owns the reader's live tree.
@@ -931,6 +926,7 @@ export function useSessionChat(props: UseSessionChatProps): UseSessionChatReturn
     clientMessageId: string,
     failureReason: string,
     resendAsNew = false,
+    userAction: UserAction | null = null,
   ) => {
     const normalizedClientMessageId = String(clientMessageId ?? '').trim();
     if (!normalizedClientMessageId) {
@@ -939,7 +935,7 @@ export function useSessionChat(props: UseSessionChatProps): UseSessionChatReturn
     clearPendingClientMessage(normalizedClientMessageId);
     resetTransientState();
     clearError();
-    setOutbox((prev) => markOutboxItemFailed(prev, normalizedClientMessageId, failureReason, resendAsNew));
+    setOutbox((prev) => markOutboxItemFailed(prev, normalizedClientMessageId, failureReason, resendAsNew, userAction));
     setNativeInputProjectionState((current) => {
       if (current.ownerSessionId !== sessionId) return current;
       const boundaries = current.boundaries.filter((boundary) => (
@@ -1482,7 +1478,9 @@ export function useSessionChat(props: UseSessionChatProps): UseSessionChatReturn
     const rp = String(session.recovery_policy ?? '').trim().toLowerCase();
     const rr = String(session.recovery_reason ?? '').trim();
     if (lifecycleState === 'recovery') {
-      if (rp === 'auto') return { kind: 'auto-recover', summary: t('chat:retry.auto_recover_summary') };
+      // An `auto` conversation restores its runtime when the next message is
+      // sent; reading its history must not start one.
+      if (rp === 'auto') return { kind: 'none' };
       return { kind: 'recover', label: t('chat:retry.recover_label'), summary: rr === 'sandbox_reattach_failed' || rr === 'sandbox_missing' || rr === 'sandbox_expired' ? t('chat:retry.recover_summary_sandbox_lost') : t('chat:retry.recover_summary') };
     }
     if (autoResumeBudgetExhausted) return { kind: 'budget-exhausted', summary: t('chat:retry.budget_exhausted_summary') };
@@ -1500,19 +1498,7 @@ export function useSessionChat(props: UseSessionChatProps): UseSessionChatReturn
     return { kind: 'none' };
   }, [activeTurnId, autoResumeBudgetExhausted, latestDurableUnansweredUser, lifecycleState, session, t]);
 
-  // Auto-recover
   const handleRecover = useCallback(() => { clearError(); void recover(); }, [clearError, recover]);
-  const autoRecoverMarker = useMemo(() => {
-    if (lifecycleState !== 'recovery' || retryIntent.kind !== 'auto-recover') return null;
-    return [session.last_turn_command_id, session.last_turn_id, session.recovery_reason, session.last_error].map((v) => String(v ?? '').trim()).join('|');
-  }, [lifecycleState, retryIntent.kind, session.last_error, session.last_turn_command_id, session.last_turn_id, session.recovery_reason]);
-  const autoRecoverAttemptRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (!autoRecoverMarker) { autoRecoverAttemptRef.current = null; return; }
-    if (autoRecoverAttemptRef.current === autoRecoverMarker) return;
-    autoRecoverAttemptRef.current = autoRecoverMarker;
-    handleRecover();
-  }, [autoRecoverMarker, handleRecover]);
 
   // ── Derived banners ──────────────────────────────────────────
   // The session is working, or a send is waiting to be accepted. Neither is
@@ -1527,7 +1513,7 @@ export function useSessionChat(props: UseSessionChatProps): UseSessionChatReturn
   const showTransientBanner = transientBannerVisible && !isTransientSilent;
   const suppressBanner = session.state === 'TERMINATED' || lifecycleState === 'deleted';
   const showRetryBanner = Boolean(!suppressBanner && (
-    (((chatError && !isTransientSilent) || retryIntent.kind === 'turn-failed' || retryIntent.kind === 'auto-recover' || retryIntent.kind === 'delivery-failed' || retryIntent.kind === 'budget-exhausted') && !pendingInteraction)
+    (((chatError && !isTransientSilent) || retryIntent.kind === 'turn-failed' || retryIntent.kind === 'delivery-failed' || retryIntent.kind === 'budget-exhausted') && !pendingInteraction)
       || showTransientBanner
   ));
   const showRetryButton = !showTransientBanner && (retryIntent.kind === 'recover' || retryIntent.kind === 'delivery-failed');
@@ -1667,6 +1653,7 @@ export function useSessionChat(props: UseSessionChatProps): UseSessionChatReturn
             cid,
             String((err as Error)?.message ?? err),
             err instanceof ApiError && err.retryable === false,
+            err instanceof ApiError ? err.userAction : null,
           );
         }
       } finally {

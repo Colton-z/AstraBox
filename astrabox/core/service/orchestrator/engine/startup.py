@@ -50,6 +50,7 @@ from astrabox.core.service.orchestrator.runtime.mcp_servers import (
     make_mcp_deployment_id,
     sandbox_mcp_egress_hosts,
 )
+from astrabox.core.service.orchestrator.runtime.preparation import prepare_session_runtime_context
 from astrabox.seams.egress_credentials import workload_placeholder_context
 from astrabox.secrets import SecretProvider
 
@@ -401,50 +402,50 @@ async def start_platform_runtime(
             sandbox_id=provisioned.sandbox_id,
             deployment_settings=platform.deployment_settings,
         )
-        runtime = await adapter.activate_runtime(
-            EngineStartupContext(
+        runtime_context = EngineStartupContext(
+            session_id=session_id,
+            template=template,
+            workspace_plan=workspace_plan,
+            sandbox=provisioned.sandbox,
+            sandbox_id=provisioned.sandbox_id,
+            cwd=provisioned.cwd,
+            runtime_identity=provisioned.runtime_identity,
+            model_access=model_access,
+            model_credential=provisioned.model_credential,
+            resume_session_key=provisioned.resume_session_key,
+            runtime_env=dict(provisioned.runtime_env),
+            prepare_engine_input=provisioned.prepare_engine_input,
+            prepared_manifest=prepared,
+            service_credential=engine_service_credential(
+                request, provisioned.runtime_identity
+            ),
+            runner_uri=provisioned.runner_uri,
+            user_id=user_id,
+            permission_mode=permission_mode,
+            deployment_settings=platform.deployment_settings,
+            capability_scope=_workspace_capability_scope(
+                workspace_plan,
+                user_id,
+            ),
+            event_sink=PlatformEngineEventSink(session_id),
+            resident_output_sink=PlatformResidentOutputSink(
+                session_id,
+                broker=getattr(platform, "event_broker", None),
+            ),
+            transcript_store=transcript_store,
+            runtime_state_store=_runtime_state_target(
+                material_request,
                 session_id=session_id,
-                template=template,
                 workspace_plan=workspace_plan,
-                sandbox=provisioned.sandbox,
-                sandbox_id=provisioned.sandbox_id,
-                cwd=provisioned.cwd,
-                runtime_identity=provisioned.runtime_identity,
-                model_access=model_access,
-                model_credential=provisioned.model_credential,
-                resume_session_key=provisioned.resume_session_key,
-                runtime_env=dict(provisioned.runtime_env),
-                prepare_engine_input=provisioned.prepare_engine_input,
-                prepared_manifest=prepared,
-                service_credential=engine_service_credential(
-                    request, provisioned.runtime_identity
-                ),
-                runner_uri=provisioned.runner_uri,
                 user_id=user_id,
-                permission_mode=permission_mode,
                 deployment_settings=platform.deployment_settings,
-                capability_scope=_workspace_capability_scope(
-                    workspace_plan,
-                    user_id,
-                ),
-                event_sink=PlatformEngineEventSink(session_id),
-                resident_output_sink=PlatformResidentOutputSink(
-                    session_id,
-                    broker=getattr(platform, "event_broker", None),
-                ),
-                transcript_store=transcript_store,
-                runtime_state_store=_runtime_state_target(
-                    material_request,
-                    session_id=session_id,
-                    workspace_plan=workspace_plan,
-                    user_id=user_id,
-                    deployment_settings=platform.deployment_settings,
-                ),
-                sandbox_death_notice=sandbox_death_notice,
-                platform_secrets=platform_secrets,
-                platform_mcp_deployment_id=platform_mcp_deployment_id,
-            )
+            ),
+            sandbox_death_notice=sandbox_death_notice,
+            platform_secrets=platform_secrets,
+            platform_mcp_deployment_id=platform_mcp_deployment_id,
         )
+        runtime_context = await prepare_session_runtime_context(runtime_context)
+        runtime = await adapter.activate_runtime(runtime_context)
         if prepared is not None:
             await clear_claimed_slot(
                 agent_id=str(getattr(template, "agent_id", "") or ""),
@@ -776,48 +777,48 @@ async def attach_platform_runtime(
             sandbox_id=target_sandbox,
             deployment_settings=platform.deployment_settings,
         )
-        runtime = await adapter.activate_runtime(
-            EngineStartupContext(
+        runtime_context = EngineStartupContext(
+            session_id=session_id,
+            template=template,
+            workspace_plan=workspace_plan,
+            sandbox=sandbox,
+            sandbox_id=target_sandbox,
+            cwd=cwd,
+            runtime_identity=identity or None,
+            model_access=model_access,
+            model_credential=credential,
+            resume_session_key=engine_session_key,
+            runtime_env=dict(runtime_env),
+            service_credential=engine_service_credential(request, identity),
+            prepare_engine_input=prepare_engine_input,
+            runner_uri=runner_uri,
+            user_id=user_id,
+            permission_mode=permission_mode,
+            deployment_settings=platform.deployment_settings,
+            capability_scope=_workspace_capability_scope(
+                workspace_plan,
+                user_id,
+            ),
+            event_sink=PlatformEngineEventSink(session_id),
+            resident_output_sink=PlatformResidentOutputSink(
+                session_id,
+                broker=getattr(platform, "event_broker", None),
+            ),
+            transcript_store=transcript_store,
+            runtime_state_store=_runtime_state_target(
+                material_request,
                 session_id=session_id,
-                template=template,
                 workspace_plan=workspace_plan,
-                sandbox=sandbox,
-                sandbox_id=target_sandbox,
-                cwd=cwd,
-                runtime_identity=identity or None,
-                model_access=model_access,
-                model_credential=credential,
-                resume_session_key=engine_session_key,
-                runtime_env=dict(runtime_env),
-                service_credential=engine_service_credential(request, identity),
-                prepare_engine_input=prepare_engine_input,
-                runner_uri=runner_uri,
                 user_id=user_id,
-                permission_mode=permission_mode,
                 deployment_settings=platform.deployment_settings,
-                capability_scope=_workspace_capability_scope(
-                    workspace_plan,
-                    user_id,
-                ),
-                event_sink=PlatformEngineEventSink(session_id),
-                resident_output_sink=PlatformResidentOutputSink(
-                    session_id,
-                    broker=getattr(platform, "event_broker", None),
-                ),
-                transcript_store=transcript_store,
-                runtime_state_store=_runtime_state_target(
-                    material_request,
-                    session_id=session_id,
-                    workspace_plan=workspace_plan,
-                    user_id=user_id,
-                    deployment_settings=platform.deployment_settings,
-                ),
-                sandbox_death_notice=sandbox_death_notice,
-                platform_secrets=platform_secrets,
-                platform_mcp_deployment_id=platform_mcp_deployment_id,
-                attach_mode=attach_mode,
-            )
+            ),
+            sandbox_death_notice=sandbox_death_notice,
+            platform_secrets=platform_secrets,
+            platform_mcp_deployment_id=platform_mcp_deployment_id,
+            attach_mode=attach_mode,
         )
+        runtime_context = await prepare_session_runtime_context(runtime_context)
+        runtime = await adapter.activate_runtime(runtime_context)
     except BaseException:
         with contextlib.suppress(BaseException):
             await sandbox.close()

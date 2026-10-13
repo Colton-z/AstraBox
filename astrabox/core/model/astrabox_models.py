@@ -87,6 +87,8 @@ class AgentView:
     #: assistant-derived view (an assistant is not an agent — it resolves via
     #: its environment_name).
     agent_id: str | None = None
+    #: Set only by Assistant resolution, for Assistant-only platform tools.
+    assistant_id: str | None = None
     name: str = ""
     description: str | None = None
     # ── model ────────────────────────────────────────────────────────────

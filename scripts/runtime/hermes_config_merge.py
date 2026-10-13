@@ -54,6 +54,7 @@ _MANAGED_SOUL_DIGEST_FILE = "astrabox-managed-soul.sha256"
 #: recursive merge only adds and overwrites, so without this record a server
 #: removed from the Assistant would stay in Hermes' config forever.
 _MANAGED_MCP_SERVERS_FILE = "astrabox-managed-mcp-servers.json"
+_A2A_PEER_PREFIX = "astrabox/"
 _SKILLS_CACHE_ENV = "ASTRABOX_HERMES_SKILLS_CACHE"
 _PLUGINS_ENV = "ASTRABOX_HERMES_PLUGINS"
 #: The category directory the platform owns under ``skills/`` and ``plugins/``.
@@ -335,6 +336,40 @@ def release_unconfigured_mcp_servers(
         _write_private(managed_path, json.dumps(current).encode("utf-8"))
 
 
+def replace_platform_a2a_peers(
+    cfg: dict[str, Any], overwrite: dict[str, Any],
+) -> None:
+    """Rebuild owned peers while keeping owner-authored external peers intact."""
+    configured = overwrite.get("a2a_agents", {})
+    if not isinstance(configured, dict):
+        raise TypeError("platform a2a_agents must be a mapping")
+    peers = cfg.setdefault("a2a_agents", {})
+    if not isinstance(peers, dict):
+        raise TypeError("a2a_agents must be a mapping")
+    if any(not str(name).startswith(_A2A_PEER_PREFIX) for name in configured):
+        raise ValueError("platform A2A peers require the astrabox/ namespace")
+    for name in list(peers):
+        if str(name).startswith(_A2A_PEER_PREFIX):
+            peers.pop(name)
+    peers.update(configured)
+
+
+def enable_assistant_a2a_tools() -> None:
+    """Use the pinned vendor's tools-enable implementation, preserving its defaults."""
+    from hermes_cli.config import load_config
+    from hermes_cli.plugins import discover_plugins
+    from hermes_cli.tools_config import _get_platform_tools
+    from hermes_cli.tools_config_mcp import _apply_toolset_change
+
+    discover_plugins()
+    for platform in ("cli", "cron"):
+        config = load_config()
+        if "a2a" not in _get_platform_tools(config, platform):
+            _apply_toolset_change(config, platform, ["a2a"], "enable")
+        if "a2a" not in _get_platform_tools(load_config(), platform):
+            raise RuntimeError(f"Hermes a2a toolset remains disabled for {platform}")
+
+
 def main() -> int:
     try:
         import yaml
@@ -362,6 +397,7 @@ def main() -> int:
         return 65
 
     applied_config = False
+    assistant_a2a = False
     for env_name, mode in _ENV_SOURCES:
         raw = (os.environ.get(env_name) or "").strip()
         if not raw:
@@ -377,8 +413,11 @@ def main() -> int:
         if mode == "overwrite":
             try:
                 release_unconfigured_mcp_servers(cfg, patch, home)
-            except (TypeError, json.JSONDecodeError) as exc:
-                sys.stderr.write(f"{_MANAGED_MCP_SERVERS_FILE} invalid: {exc}\n")
+                if "a2a_agents" in patch or "a2a_agents" in cfg:
+                    replace_platform_a2a_peers(cfg, patch)
+                assistant_a2a = "a2a_agents" in patch
+            except (TypeError, ValueError) as exc:
+                sys.stderr.write(f"Hermes managed configuration invalid: {exc}\n")
                 return 65
         deep_merge(cfg, patch, mode)
         applied_config = True
@@ -411,6 +450,8 @@ def main() -> int:
     # those of every plugin config.yaml enables.
     try:
         install_plugin_dependencies(plugins, home)
+        if assistant_a2a:
+            enable_assistant_a2a_tools()
     except (OSError, RuntimeError) as exc:
         sys.stderr.write(f"ASTRABOX_HERMES_EXTENSIONS_FAILED {exc}\n")
         return 65

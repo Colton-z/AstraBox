@@ -188,6 +188,7 @@ class SessionService:
         payload: dict[str, Any] = {
             "session_id": resolved_session_id,
             "user_id": user.user_id,
+            "org_id": user.org_id,
             # Display/grouping label for the session's harness (the agent's name).
             # Resolution keys off agent_id / workspace_ref, not this string.
             "template_name": template.name,

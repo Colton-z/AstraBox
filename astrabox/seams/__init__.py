@@ -24,6 +24,9 @@ Concrete implementations in this repository:
   minimal store primitive every concrete repository class is written over)
 * ``WebIdentityResolver`` — one identity seam for browser, API, and public MCP
   requests.
+* ``RuntimePreparationProvider`` — one deployment integration for Agent
+  resources, Session startup materials, per-turn preparation and user
+  prerequisites.
 
 Everything here imports only the standard library, ``typing`` and
 ``astrabox.common.utils.errors`` (the transport-neutral error type) — never the
@@ -58,9 +61,13 @@ from astrabox.seams.sandbox import (
     SandboxLifecycleProbeResult,
     SandboxProvider,
     SandboxRuntimeDefaults,
-    SandboxTurnContext,
-    TURN_PREPARATION_CONTRACT_VERSION,
-    TURN_PREPARATION_FAILED,
+)
+from astrabox.seams.runtime_preparation import (
+    PreparedPackage, AgentPreparationOperation, AgentPreparationContext,
+    RuntimePreparationProvider, RuntimePreparationPlan, RuntimeMaterials, RuntimeFile,
+    SessionPreparationContext, TurnPreparationContext, PreparationUserActionRequired,
+    SessionUserActionContext, SessionUserActionCommand, SessionUserActionState,
+    TURN_PREPARATION_FAILED, register_runtime_preparation_provider,
 )
 from astrabox.seams.storage import (
     StorageProvider,
@@ -69,14 +76,26 @@ from astrabox.seams.storage import (
 __all__ = [
     # contract version (providers may pin it; loaders enforce on mismatch)
     "SEAMS_API_VERSION",
+    "PreparedPackage",
+    "AgentPreparationOperation",
+    "AgentPreparationContext",
+    "RuntimePreparationProvider",
+    "RuntimePreparationPlan",
+    "RuntimeMaterials",
+    "RuntimeFile",
+    "SessionPreparationContext",
+    "TurnPreparationContext",
+    "PreparationUserActionRequired",
+    "TURN_PREPARATION_FAILED",
+    "register_runtime_preparation_provider",
+    "SessionUserActionContext",
+    "SessionUserActionCommand",
+    "SessionUserActionState",
     # sandbox (creation + agent execution + backend decisions + by-id
     # lifecycle + in-box transport)
     "SandboxProvider",
     "SandboxCreateSpec",
     "SandboxRuntimeDefaults",
-    "SandboxTurnContext",
-    "TURN_PREPARATION_CONTRACT_VERSION",
-    "TURN_PREPARATION_FAILED",
     "SandboxLifecycleProbeResult",
     "SANDBOX_LIFECYCLE_PROBE_OK",
     "SANDBOX_LIFECYCLE_PROBE_NOT_FOUND",

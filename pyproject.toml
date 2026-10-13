@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "astrabox"
-version = "0.1.7"
+version = "0.1.8"
 description = "AstraBox Community — an open, self-hosted agent runtime that streams a sandboxed coding agent to your frontend over the AI-SDK Data-Stream-Protocol."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -49,6 +49,8 @@ dependencies = [
   "opensandbox[pool-redis]==0.1.17.dev0",
   # MCP (the Claude Agent SDK and AstraBox share this protocol implementation)
   "mcp==2.1.1",
+  # Official A2A HTTP transport; tasks project the existing Session/turn ledger.
+  "a2a-sdk[http-server]==1.2.2",
   # persistence (DEFAULT = PostgreSQL; SQLite remains for compatibility tests)
   "sqlalchemy==2.0.52",
   "asyncpg==0.31.0",
@@ -421,6 +423,7 @@ addopts = "-m 'not e2e and not mongo and not mongo_transaction and not postgresq
 markers = [
   "e2e: live end-to-end turn (needs Docker + your Anthropic-compatible endpoint/model key); deselected by default in unit CI.",
   "assistant_live: live contract that requires an Assistant/Hermes environment rather than the canonical Agent environment.",
+  "deployment_shape: live contract that needs a deployment built for it (a fixture provider or image); the live lanes exclude it and it runs against that deployment explicitly.",
   "backend_restart: stops or restarts a shared backend, bundled sandbox server, or database; the live runner executes these tests in its exclusive serial phase.",
   "xdist_group(name): pytest-xdist scheduling group; live e2e invocations with workers reject any scheduler other than loadgroup.",
   "mongo: needs a reachable mongod + the [mongo] extra (pip install -e '.[mongo]'); deselected by default in unit CI.",

@@ -3,7 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -654,6 +654,8 @@ async def test_midrun_input_is_submit_input_without_another_platform_worker(
     )
     service._sessions_repo = SimpleNamespace(mark_interaction=AsyncMock())
     service._accepted_turn_producers = {}
+    # SessionReadRenderingMixin supplies this on the composed kernel service.
+    service._require_turn_eligible = Mock()
     service._ensure_start_turn_allowed = AsyncMock()
     service._spawn_background_task = lambda *_args, **_kwargs: pytest.fail(
         "mid-run SDK input must not spawn a second platform worker"

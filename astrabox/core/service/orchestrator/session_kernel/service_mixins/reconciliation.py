@@ -12,6 +12,7 @@ import asyncio
 from typing import Any
 
 from astrabox.common.logger.logger_factory import get_logger
+from astrabox.core.service.orchestrator.session_kernel.admitted_input import admitted_input_pending
 from astrabox.common.utils.time_utils import utcnow_iso
 from astrabox.core.service.orchestrator.session_kernel.active_turn_projection import (
     build_active_turn_message,
@@ -686,6 +687,8 @@ class ReconciliationOrchestrationMixin:
         conversation_state: str,
         turn_id: str,
     ) -> dict[str, Any] | None:
+        if await admitted_input_pending(self._session_events_repo, session_id, snapshot):
+            return None
         # No anchor means the worker never talked to the engine (pre-write
         # only). The snapshot age is the sole death observation here. Workers
         # fence writes by turn id; consulting a separate lease would introduce

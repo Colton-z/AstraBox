@@ -603,17 +603,37 @@ def build_active_engine_fifo_messages(
             raise ValueError("engine input consumption frame is incomplete")
         boundaries.append((index, data))
 
+    response_frames_by_boundary: list[list[dict[str, Any]]] = [
+        [] for _ in boundaries
+    ]
+    boundary_at = {frame_index: index for index, (frame_index, _) in enumerate(boundaries)}
+    current_boundary: int | None = None
+    tool_owners: dict[str, int] = {}
+    for frame_index, row in enumerate(frames):
+        if frame_index in boundary_at:
+            current_boundary = boundary_at[frame_index]
+            continue
+        if current_boundary is None:
+            continue
+        payload = row.get("payload")
+        tool_id = ""
+        if isinstance(payload, dict):
+            tool_id = str(payload.get("toolCallId") or "").strip()
+            if payload.get("type") == "data-tool-card":
+                card = payload.get("data")
+                if isinstance(card, dict):
+                    tool_id = str(card.get("toolCallId") or "").strip()
+        # A consumed input can arrive while an earlier native tool is running.
+        # Its subsequent output and card still belong to the original call.
+        owner = tool_owners.setdefault(tool_id, current_boundary) if tool_id else current_boundary
+        response_frames_by_boundary[owner].append(row)
+
     messages: list[dict[str, Any]] = []
     for boundary_index, (frame_index, data) in enumerate(boundaries):
         input_id = str(data["inputId"])
         response_id = str(data["responseMessageId"])
         client_message_id = str(data.get("clientMessageId") or input_id).strip()
         content = str(data["content"])
-        next_index = (
-            boundaries[boundary_index + 1][0]
-            if boundary_index + 1 < len(boundaries)
-            else len(frames)
-        )
         marker = frames[frame_index]
         marker_frame_seq = marker.get("frame_seq")
         message_seq = (
@@ -644,7 +664,7 @@ def build_active_engine_fifo_messages(
                 "created_at": created_at,
             }
         )
-        response_frames = frames[frame_index + 1 : next_index]
+        response_frames = response_frames_by_boundary[boundary_index]
         response_frame_seqs = [
             int(frame["frame_seq"])
             for frame in response_frames

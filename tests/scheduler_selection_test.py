@@ -143,7 +143,7 @@ async def test_without_a_scheduler_a_disabled_schedule_can_be_edited_and_deleted
     repository = AsyncMock()
     repository.get_for_deployment.return_value = existing
     repository.update_for_deployment.side_effect = (
-        lambda _deployment_id, _agent_id, updates, *, assistant_id="": {**existing, **updates}
+        lambda _deployment_id, _agent_id, updates, **_scope: {**existing, **updates}
     )
     service = _service(repository)
 

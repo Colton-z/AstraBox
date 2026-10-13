@@ -154,7 +154,14 @@ async def runtime_generations(
             vault_ids,
             placeholder_context=f"runtime-generation:{agent_id}",
         )
+    from astrabox.seams.runtime_preparation import runtime_preparation_plan, runtime_preparation_provider
+
+    integration = runtime_preparation_provider()
     payload: dict[str, Any] = {
+        "runtime_preparation": {
+            "provider": integration.name if integration is not None else None,
+            "session_bound": runtime_preparation_plan(template).session_bound,
+        },
         "agent_id": agent_id,
         "prewarm_revision": _value(template, "prewarm_revision"),
         "environment_updated_at": str(

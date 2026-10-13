@@ -36,7 +36,6 @@ export interface TurnAcceptedChunk {
 }
 
 export type RetryIntent =
-  | { kind: 'auto-recover'; summary: string }
   | { kind: 'recover'; label: string; summary: string }
   | { kind: 'delivery-failed'; label: string; summary: string; text: string; clientMessageId?: string }
   | { kind: 'turn-failed'; summary: string; failureDetail?: string }

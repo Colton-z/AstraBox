@@ -223,6 +223,23 @@ def test_unknown_message_blocks_fail_loudly() -> None:
         )
 
 
+def test_principal_user_actions_are_preserved_for_owner_but_not_shared() -> None:
+    action = {"status": "pending", "message": "Renew access", "url": "https://identity.example/consent"}
+    block = {"type": "turn_failure", "error": "refused", "user_action": {**action, "private": "secret"}}
+    message = {"message_id": "message", "role": "assistant", "blocks": [block, {
+        "type": "ui_data", "part": {"type": "data-turn-failure", "data": {"user_action": action}},
+    }]}
+    page = {"messages": [message], "active_turn_overlay": {"message": message, "messages": [message]}}
+    owner = project_public_message_page(page)
+    assert owner["messages"][0]["blocks"][0]["user_action"] == action
+    shared = project_public_message_page(page, shared=True)
+    assert "user_action" not in repr(shared)
+    session = {"session_id": "session", "delivery_failure": {"user_action": action, "resend_as_new": True}}
+    assert project_owner_session(session)["delivery_failure"]["user_action"] == action
+    assert "user_action" not in project_shared_session(session, allow_download=False)["delivery_failure"]
+    assert block["user_action"]["url"] == action["url"]
+
+
 def test_adapter_public_data_part_keeps_additive_fields() -> None:
     page = project_public_message_page(
         {

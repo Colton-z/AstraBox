@@ -55,7 +55,10 @@ export function computeSessionRunStatus({
   // Per-session: a reclaimed/expired sandbox re-borrows transparently on the next
   // message, so it reads ready — never runtime disconnected / sandbox expired / recovery required.
   const transparentlyRecoverable = isTransparentlyRecoverableAgentSession(session);
-  const canSendNow = (effectiveLifecycleState === 'ready' || effectiveLifecycleState === 'background') && !isAgentRuntimeDeleted && !isStreaming && !isSubmitted && !hasPendingInteraction && !isInterruptSettling;
+  // An `auto` recovery is restored by the send itself (the server recovers
+  // the runtime before dispatch), so the message is the trigger.
+  const restoresOnSend = effectiveLifecycleState === 'recovery' && session.recovery_policy === 'auto';
+  const canSendNow = (effectiveLifecycleState === 'ready' || effectiveLifecycleState === 'background' || restoresOnSend) && !isAgentRuntimeDeleted && !isStreaming && !isSubmitted && !hasPendingInteraction && !isInterruptSettling;
   const canQueueMessage = !isAgentRuntimeDeleted && !hasPendingInteraction && !isInterruptSettling && (effectiveLifecycleState === 'busy' || effectiveLifecycleState === 'creating' || lifecycleState === 'creating');
   const canSend = canSendNow || canQueueMessage;
   // `isSubmitted` covers the delivery window while the durable lifecycle

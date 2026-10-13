@@ -1,6 +1,6 @@
 """Durably fenced orchestration for sandbox turn preparation.
 
-The public provider surface lives in :mod:`astrabox.seams.sandbox`.  Core owns
+The public provider surface lives in :mod:`astrabox.seams.runtime_preparation`.  Core owns
 the effect boundary: reload the durable session and its turn slot, claim a
 no-TTL attempt guard and confirm the turn still holds the slot, run the
 untrusted hook under a host-clock deadline, keep the guard across the engine
@@ -36,13 +36,17 @@ from astrabox.common.utils.errors import APIError
 from astrabox.core.service.orchestrator.session_kernel.conversation_recovery import (
     snapshot_active_turn_id,
 )
-from astrabox.seams.sandbox import (
+from astrabox.seams.runtime_preparation import (
     TURN_PREPARATION_FAILED,
     TURN_PREPARATION_USER_ACTION_REQUIRED,
-    SandboxTurnContext,
-    TurnPreparationUserActionRequired,
-    sandbox_for_name,
+    PreparationUserActionRequired,
+    RuntimeMaterials,
+    TurnPreparationContext,
+    prepares_turns,
+    runtime_preparation_provider,
+    validated_user_action,
 )
+from astrabox.seams.sandbox import sandbox_for_name
 
 logger = get_logger(__name__)
 
@@ -52,11 +56,6 @@ TURN_PREPARATION_TIMEOUT_SECONDS = 30.0
 #: early enough that a slow refresh (bounded by the same host-clock deadline)
 #: still lands before the credential lapses.
 TURN_PREPARATION_REFRESH_FRACTION = 0.8
-
-_USER_ACTION_MESSAGE_MAX_CHARS = 500
-_USER_ACTION_URL_MAX_CHARS = 2000
-_USER_ACTION_STATUS_MAX_CHARS = 64
-
 # Cleanup tasks retain the provider task and repository operation after the
 # caller has returned.  A process crash leaves the durable guard in place, so
 # another replica fails closed instead of time-stealing it.
@@ -64,7 +63,7 @@ _BACKGROUND_CLEANUPS: set[asyncio.Task[Any]] = set()
 
 
 def _failure(
-    context: SandboxTurnContext,
+    context: TurnPreparationContext,
     *,
     reason: str,
     detail: str,
@@ -86,7 +85,7 @@ def _failure(
     )
 
 
-def _turn_owner_mismatch(context: SandboxTurnContext) -> APIError:
+def _turn_owner_mismatch(context: TurnPreparationContext) -> APIError:
     return _failure(
         context,
         reason="turn_owner_mismatch",
@@ -100,7 +99,7 @@ def sandbox_turn_context(
     session_id: str,
     runtime: Any,
     turn_id: str,
-) -> SandboxTurnContext:
+) -> TurnPreparationContext:
     """Describe one engine write to ``runtime`` on behalf of ``turn_id``.
 
     The backend and the principal come from the persisted session, the sandbox
@@ -108,7 +107,7 @@ def sandbox_turn_context(
     names none), and every write gets a fresh dispatch attempt id.
     """
     principal_id = session.get("user_id")
-    return SandboxTurnContext(
+    return TurnPreparationContext(
         sandbox_backend=str(session.get("sandbox_backend") or "").strip().lower(),
         sandbox_id=(
             str(getattr(runtime, "sandbox_id", "") or "").strip()
@@ -119,43 +118,23 @@ def sandbox_turn_context(
         turn_id=turn_id,
         engine_kind=str(getattr(runtime, "engine_kind", "") or "").strip().lower(),
         dispatch_attempt_id=str(uuid.uuid4()),
+        runtime_identity=dict(getattr(runtime, "runtime_identity", None) or {}),
         sandbox_handle=getattr(runtime, "sandbox", None),
     )
 
 
 def _validated_user_action(
-    exc: TurnPreparationUserActionRequired,
+    exc: PreparationUserActionRequired,
 ) -> dict[str, Any] | None:
-    """Validate the provider's user-action payload before any of it becomes
-    user-visible. Invalid shapes fall back to the generic swallowed failure —
-    the escape hatch never widens into arbitrary provider text."""
-    message = str(getattr(exc, "message", "") or "").strip()
-    if (
-        not message
-        or len(message) > _USER_ACTION_MESSAGE_MAX_CHARS
-        or any(ord(character) < 32 for character in message)
-    ):
-        return None
-    status = str(getattr(exc, "status", "") or "user_action_required").strip()
-    if len(status) > _USER_ACTION_STATUS_MAX_CHARS or any(
-        ord(character) < 33 for character in status
-    ):
-        return None
-    url = getattr(exc, "url", None)
-    resolved_url: str | None = None
-    if url is not None:
-        resolved_url = str(url).strip()
-        if (
-            len(resolved_url) > _USER_ACTION_URL_MAX_CHARS
-            or any(ord(character) < 33 for character in resolved_url)
-            or not resolved_url.lower().startswith(("http://", "https://"))
-        ):
-            return None
-    return {"status": status, "message": message, "url": resolved_url}
+    return validated_user_action({
+        "message": getattr(exc, "message", None),
+        "status": getattr(exc, "status", "user_action_required"),
+        "url": getattr(exc, "url", None),
+    })
 
 
 def _user_action_failure(
-    context: SandboxTurnContext,
+    context: TurnPreparationContext,
     user_action: dict[str, Any],
 ) -> APIError:
     """A distinct, user-visible, machine-non-retryable preparation outcome.
@@ -183,7 +162,7 @@ def _user_action_failure(
 
 
 def _validate_context(
-    context: SandboxTurnContext,
+    context: TurnPreparationContext,
     *,
     persisted_session: object,
     active_turn_id: str | None,
@@ -270,8 +249,8 @@ def _validate_context(
 
 def _validated_live_context(
     provider: Any,
-    context: SandboxTurnContext,
-) -> SandboxTurnContext:
+    context: TurnPreparationContext,
+) -> TurnPreparationContext:
     """Bind optional live objects to the already-validated durable identity."""
     handle = context.sandbox_handle
     if handle is None:
@@ -331,7 +310,7 @@ def _track_background(task: asyncio.Task[Any], *, label: str) -> None:
 
 async def _release_active_guard(
     sessions_repo: Any,
-    context: SandboxTurnContext,
+    context: TurnPreparationContext,
     *,
     owner_token: str,
 ) -> bool:
@@ -382,7 +361,7 @@ async def _release_active_guard(
 
 async def _read_active_turn_id(
     session_snapshots_repo: Any,
-    context: SandboxTurnContext,
+    context: TurnPreparationContext,
 ) -> str | None:
     return snapshot_active_turn_id(
         await session_snapshots_repo.get_snapshot(context.session_id)
@@ -392,7 +371,7 @@ async def _read_active_turn_id(
 async def _confirm_turn_holds_slot(
     sessions_repo: Any,
     session_snapshots_repo: Any,
-    context: SandboxTurnContext,
+    context: TurnPreparationContext,
     *,
     owner_token: str,
 ) -> None:
@@ -424,7 +403,7 @@ def _schedule_abandoned_cleanup(
     provider_task: asyncio.Task[Any],
     *,
     sessions_repo: Any,
-    context: SandboxTurnContext,
+    context: TurnPreparationContext,
     owner_token: str,
     reason: str,
 ) -> None:
@@ -488,9 +467,34 @@ def _schedule_abandoned_cleanup(
     )
 
 
+async def _prepare_and_deliver(provider: Any, context: TurnPreparationContext) -> None:
+    """Run the hook and write the files it returns, as one untrusted step.
+
+    The startup environment is fixed for the runtime's life, so a turn may
+    refresh files only. Delivery shares the hook's deadline and failure path.
+    """
+    from astrabox.core.service.orchestrator.runtime.preparation import (
+        deliver_runtime_files,
+    )
+
+    materials = await provider.prepare_turn(context=context)
+    if not isinstance(materials, RuntimeMaterials) or materials.environment:
+        raise ValueError("turn preparation returns files only")
+    if materials.files:
+        if context.sandbox_handle is None:
+            raise ValueError("turn materials require the live sandbox")
+        await deliver_runtime_files(
+            context.sandbox_handle,
+            runtime_identity=context.runtime_identity,
+            session_id=context.session_id,
+            sandbox_id=context.sandbox_id,
+            files=materials.files,
+        )
+
+
 async def _refresh_loop(
     provider: Any,
-    context: SandboxTurnContext,
+    context: TurnPreparationContext,
     *,
     validity_seconds: float,
     timeout_seconds: float,
@@ -508,7 +512,7 @@ async def _refresh_loop(
     while True:
         await asyncio.sleep(interval)
         refresh_task = asyncio.create_task(
-            provider.prepare_turn(context=context),
+            _prepare_and_deliver(provider, context),
             name=(
                 f"turn-prepare-refresh:{context.sandbox_backend}:"
                 f"{context.sandbox_id}:{context.dispatch_attempt_id}"
@@ -545,7 +549,7 @@ async def _refresh_loop(
 
 @contextlib.asynccontextmanager
 async def prepared_sandbox_turn(
-    context: SandboxTurnContext,
+    context: TurnPreparationContext,
     *,
     sessions_repo: Any,
     session_snapshots_repo: Any,
@@ -557,8 +561,12 @@ async def prepared_sandbox_turn(
     the guard; ``session_snapshots_repo`` holds the conversation's turn slot.
     Only the turn in that slot is prepared.
     """
+    provider = runtime_preparation_provider()
+    if provider is None or not prepares_turns(provider):
+        yield
+        return
     try:
-        provider = sandbox_for_name(context.sandbox_backend)
+        backend = sandbox_for_name(context.sandbox_backend)
     except asyncio.CancelledError:
         raise
     except Exception:
@@ -567,10 +575,7 @@ async def prepared_sandbox_turn(
             reason="provider_resolution_failed",
             detail="sandbox provider resolution failed",
         ) from None
-    if not bool(getattr(provider, "supports_turn_preparation", False)):
-        yield
-        return
-    if not bool(getattr(provider, "sandbox_is_profile_exclusive", False)):
+    if not bool(getattr(backend, "sandbox_is_profile_exclusive", False)):
         raise _failure(
             context,
             reason="unsafe_shared_sandbox",
@@ -593,7 +598,7 @@ async def prepared_sandbox_turn(
         persisted_session=persisted_session,
         active_turn_id=active_turn_id,
     )
-    context = _validated_live_context(provider, context)
+    context = _validated_live_context(backend, context)
     # The public dispatch attempt id is provider-facing and may be replayed by
     # an idempotent transport.  A fresh private owner token distinguishes this
     # coordinator invocation at every durable CAS/read-after-write boundary.
@@ -630,7 +635,7 @@ async def prepared_sandbox_turn(
     )
 
     try:
-        provider_awaitable = provider.prepare_turn(context=context)
+        provider_awaitable = _prepare_and_deliver(provider, context)
         provider_task = asyncio.create_task(
             provider_awaitable,
             name=(
@@ -699,7 +704,7 @@ async def prepared_sandbox_turn(
         await _release_active_guard(
             sessions_repo, context, owner_token=guard_owner_token
         )
-        if isinstance(provider_error, TurnPreparationUserActionRequired):
+        if isinstance(provider_error, PreparationUserActionRequired):
             user_action = _validated_user_action(provider_error)
             if user_action is not None:
                 raise _user_action_failure(context, user_action) from None
@@ -711,7 +716,7 @@ async def prepared_sandbox_turn(
 
     refresh_failed = asyncio.Event()
     refresher: asyncio.Task[Any] | None = None
-    validity = getattr(provider, "turn_preparation_validity_seconds", None)
+    validity = getattr(provider, "turn_validity_seconds", None)
     if isinstance(validity, (int, float)) and not isinstance(validity, bool) and validity > 0:
         refresher = asyncio.create_task(
             _refresh_loop(

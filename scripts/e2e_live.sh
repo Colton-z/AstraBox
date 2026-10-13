@@ -187,7 +187,7 @@ case "$LANE" in
         done
         run_phase parallel "selected main parallel nodes" \
           "${parallel_targets[@]}" \
-          -m "e2e and not backend_restart and not assistant_live" \
+          -m "e2e and not backend_restart and not assistant_live and not deployment_shape" \
           -n "$WORKERS" --dist loadgroup
         rc=$?
       fi
@@ -198,19 +198,19 @@ case "$LANE" in
         done
         run_phase restart "selected main backend restart nodes" \
           "${restart_targets[@]}" \
-          -m "e2e and backend_restart and not assistant_live"
+          -m "e2e and backend_restart and not assistant_live and not deployment_shape"
         rc=$?
       fi
     else
       run_phase parallel "main parallel (excluding backend restarts)" \
         "${REPO_ROOT}/tests/e2e" \
-        -m "e2e and not backend_restart and not assistant_live" \
+        -m "e2e and not backend_restart and not assistant_live and not deployment_shape" \
         -n "$WORKERS" --dist loadgroup
       rc=$?
       if [ "$rc" -eq 0 ]; then
         run_phase restart "main backend restarts (exclusive)" \
           "${REPO_ROOT}/tests/e2e" \
-          -m "e2e and backend_restart and not assistant_live"
+          -m "e2e and backend_restart and not assistant_live and not deployment_shape"
         rc=$?
       fi
     fi

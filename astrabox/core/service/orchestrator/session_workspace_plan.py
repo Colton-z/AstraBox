@@ -329,7 +329,8 @@ class SessionWorkspacePlanner:
                 status_code=400,
             )
         safe_assistant_id = _safe_path_segment(assistant_id, label="assistant_id")
-        effective_user_id = _safe_path_segment(user_id, label="user_id")
+        # Identity remains opaque; the profile renderer hashes it for POSIX paths.
+        effective_user_id = _clean(user_id)
         identity = plan_assistant_profile_identity(
             engine_kind=engine_kind,
             user_id=effective_user_id,
@@ -399,7 +400,8 @@ class SessionWorkspacePlanner:
     ) -> RuntimeWorkspacePlan:
         _ = template
         safe_assistant_id = _safe_path_segment(assistant_id, label="assistant_id")
-        effective_user_id = _safe_path_segment(user_id, label="user_id")
+        # Identity remains opaque; the profile renderer hashes it for POSIX paths.
+        effective_user_id = _clean(user_id)
         identity = plan_assistant_profile_identity(
             engine_kind=engine_kind,
             user_id=effective_user_id,

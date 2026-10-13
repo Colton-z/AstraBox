@@ -161,3 +161,12 @@ WORKDIR /home/conversations
 # documented override, and 200ms is the default execd's source took after
 # v1.1.0, which no released execd image carries yet.
 ENV EXECD_API_GRACE_SHUTDOWN=200ms
+
+# Image-owned static previews use nginx's expiring links and no-symlink file opens.
+COPY --chmod=u=rwX,go=rX containers/workspace-viewer/nginx.conf /opt/astrabox/workspace-viewer/nginx.conf
+COPY --chmod=0555 containers/workspace-viewer/astrabox-workspace-viewer /usr/local/bin/astrabox-workspace-viewer
+COPY --chmod=u=rwX,go=rX containers/workspace-viewer/supervisord.workspace-viewer.conf /opt/gem/supervisord/supervisord.workspace-viewer.conf
+RUN apt-get update && apt-get install -y --no-install-recommends nginx-extras && \
+    rm -rf /var/lib/apt/lists/* && \
+    nginx -V 2>&1 | grep -q -- --with-http_secure_link_module && \
+    python3 -c "import ast; ast.parse(open('/usr/local/bin/astrabox-workspace-viewer').read())"

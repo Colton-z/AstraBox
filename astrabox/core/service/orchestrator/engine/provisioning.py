@@ -80,7 +80,7 @@ from astrabox.core.service.orchestrator.runtime.mcp_servers import (
 from astrabox.core.service.orchestrator.runtime.packages import (
     package_egress_hosts,
 )
-from astrabox.providers.sandbox_image import SANDBOX_SELF_DESCRIPTION
+from astrabox.providers.sandbox_image import sandbox_boot_env
 from astrabox.seams.egress_credentials import (
     EGRESS_HELD_PLACEHOLDER,
     ModelEgressCredential,
@@ -381,6 +381,10 @@ def resolve_model_credential_delivery(
             f"sandbox backend {backend_adapter.name!r} cannot enforce the "
             f"{engine_kind} Environment's networking contract"
         )
+    from astrabox.seams.runtime_preparation import runtime_preparation_plan
+
+    if target_slot and not vault_enabled and runtime_preparation_plan(template).session_bound:
+        return "", network_policy, None
     if target_slot and not vault_enabled:
         raise APIError(
             code="AGENT_PREWARM_UNSUPPORTED",
@@ -519,6 +523,11 @@ async def resolve_prepared_environment_credentials(
     vault_write: SandboxEgressCredentialPlan | None,
 ) -> tuple[SandboxEgressCredentialPlan | None, dict[str, str]]:
     """Compose Agent-bound outbound credentials before a Session exists."""
+
+    from astrabox.seams.runtime_preparation import runtime_preparation_plan
+
+    if not vault_enabled and runtime_preparation_plan(template).session_bound:
+        return vault_write, {}
 
     vault_ids = [
         str(item).strip()
@@ -1060,7 +1069,7 @@ def engine_create_spec(
         entrypoint=tuple(request.entrypoint),
         cwd=cwd,
         env={
-            **SANDBOX_SELF_DESCRIPTION,
+            **sandbox_boot_env(shared=shared),
             **dict(request.env),
             **dict(mirror_env),
             **dict(runtime_env),
@@ -1765,10 +1774,14 @@ async def claim_prepared_engine_sandbox(
         )
     current_environment_contract = environment_credential_contract(environment_plan)
     prepared_runtime_env = claimed.get("runtime_env")
-    if (
-        not isinstance(prepared_runtime_env, dict)
-        or prepared_runtime_env != claimed_runtime_env
-        or expected_environment_contract != current_environment_contract
+    # The box's egress policy was frozen with its inventory either way; only a
+    # process born in inventory also froze its environment.
+    if expected_environment_contract != current_environment_contract or (
+        claimed["engine_initialized"]
+        and (
+            not isinstance(prepared_runtime_env, dict)
+            or prepared_runtime_env != claimed_runtime_env
+        )
     ):
         raise APIError(
             code="AGENT_PREWARM_CONFIG_INVALID",
@@ -1949,6 +1962,14 @@ async def claim_prepared_engine_sandbox(
                 else {}
             ),
         )
+    if bool(claimed.get("gateway_substitution")):
+        credential = workload_model_placeholder(str(claimed.get("slot_id") or ""))
+    if not claimed["engine_initialized"]:
+        await write_engine_env_file(
+            sandbox, request=request, credential=credential, cwd=cwd,
+            runtime_identity=identity, owner_label=f"Session {session_id!r}",
+            additional_env=claimed_runtime_env,
+        )
     runner_uri = None
     runner_port = int(claimed.get("runner_port") or 0)
     if runner_port:
@@ -1963,11 +1984,7 @@ async def claim_prepared_engine_sandbox(
         workspace_plan=workspace_plan,
         runtime_identity=identity,
         cwd=cwd,
-        credential=(
-            workload_model_placeholder(str(claimed.get("slot_id") or ""))
-            if bool(claimed.get("gateway_substitution"))
-            else credential
-        ),
+        credential=credential,
         session_log=session_log,
         mcp_vault_write=mcp_vault_write,
         vault_enabled=vault_enabled,
@@ -2124,6 +2141,7 @@ async def provision_engine_sandbox(
     """
 
     from astrabox.seams.sandbox import sandbox_for_name
+    from astrabox.seams.runtime_preparation import runtime_preparation_plan
 
     composed = {request.credential_env_var, request.cwd_env_var} - {None}
     conflicting = sorted(composed & set(request.env))
@@ -2265,6 +2283,7 @@ async def provision_engine_sandbox(
         slot_id=(
             conversation_pool_claim.workload_id
             if conversation_pool_claim is not None
+            and not runtime_preparation_plan(template).session_bound
             else None
         ),
     )

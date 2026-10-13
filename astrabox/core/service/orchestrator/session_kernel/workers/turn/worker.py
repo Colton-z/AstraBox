@@ -77,6 +77,8 @@ class TurnWorker(_TurnProjectionMixin, _AnswerStreamMixin, KernelWorkerBase):
         title_service: Any | None = None,
         redrive_stranded_inputs: Any | None = None,
         spawn_background_task: Any | None = None,
+        settle_refused_start_turn: Any | None = None,
+        prepare_admitted_turn_runtime: Any | None = None,
     ) -> None:
         super().__init__(worker_id=worker_id)
         self._sessions_repo = sessions_repo
@@ -100,6 +102,8 @@ class TurnWorker(_TurnProjectionMixin, _AnswerStreamMixin, KernelWorkerBase):
         #: A worker built without one schedules nothing, and the browser asks
         #: for the same work when it needs it.
         self._spawn_background_task = spawn_background_task
+        self._settle_refused_start_turn = settle_refused_start_turn
+        self._prepare_admitted_turn_runtime = prepare_admitted_turn_runtime
         self._bridge_event_stall_timeout_s = max(0.01, float(bridge_event_stall_timeout_s or 90.0))
         self._worker_heartbeat_interval_s = max(0.01, float(worker_heartbeat_interval_s or 5.0))
         self._live_frame_retry_window_s = max(0.0, float(live_frame_retry_window_s or 0.0))
@@ -233,11 +237,11 @@ class TurnWorker(_TurnProjectionMixin, _AnswerStreamMixin, KernelWorkerBase):
     @staticmethod
     def _build_user_context(session: dict[str, Any], payload: dict[str, Any]) -> UserContext:
         user_id = str(
-            payload.get("author_user_id")
+            (session.get("user_id") if payload.get("admission_only") else payload.get("author_user_id"))
             or session.get("user_id")
             or ""
         ).strip()
-        return UserContext(user_id=user_id)
+        return UserContext(user_id=user_id, org_id=session.get("org_id"))
 
     async def _get_max_frame_seq(self, session_id: str, turn_id: str) -> int | None:
         """Return the current max frame_seq for the given session+turn, or None if no frames.

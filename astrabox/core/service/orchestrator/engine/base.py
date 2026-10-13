@@ -490,8 +490,11 @@ class EngineClient(Protocol):
         """Idempotently accept one durable input into the conversation FIFO.
 
         Returning acknowledges adapter/control-layer ownership, not model
-        consumption. The stream must later emit ``data-input-consumed`` for
-        the exact input before any response frames for it.
+        consumption. The stream must later emit ``data-input-consumed`` at
+        the vendor-native input handling boundary for the exact input, before
+        response frames for it. A native waiting-queue receipt alone is not
+        that boundary; native steering acceptance can be, without claiming
+        that the next model request has already read the correction.
         """
         ...
 
@@ -1057,6 +1060,10 @@ class EngineAdapter(ABC):
 
     def supports_unowned_output_attach(self) -> bool:
         """Whether reconnect can atomically leave an existing observer alone."""
+        return False
+
+    def supports_startup_environment(self) -> bool:
+        """Whether activation delivers runtime_env before native initialization."""
         return False
 
     def startup_material_request(

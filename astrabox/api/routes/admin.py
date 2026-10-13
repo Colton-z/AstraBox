@@ -16,7 +16,7 @@ import json
 import os
 import tarfile
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Body, Request
 from fastapi.responses import Response, StreamingResponse
@@ -315,6 +315,42 @@ class AdminKillResult(BaseModel):
     killed: bool
     destruction: str
     destruction_detail: str
+
+
+class AdminHistoryImportMessage(BaseModel):
+    """One earlier message of a migrated conversation.
+
+    ``blocks`` use the transcript's content blocks: ``text`` and ``image`` for
+    a user message; for a reply also ``thinking``, ``tool_use`` and the
+    ``tool_result`` answering a call earlier in the same reply. ``completion``
+    is required on a reply: ``unknown`` when the source recorded no ending.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    source_id: str
+    role: Literal["user", "assistant"]
+    created_at: str
+    blocks: list[dict[str, Any]]
+    completion: Literal["complete", "unknown"] | None = None
+    parent_source_id: str | None = None
+
+
+class AdminHistoryImportRequest(BaseModel):
+    """Messages in conversation order; a re-run carries the same ones first."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    messages: list[AdminHistoryImportMessage]
+
+
+class AdminHistoryImportResult(BaseModel):
+    """How many messages this call added, and how many were already imported."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    imported: int
+    unchanged: int
 
 
 class AdminEvictResult(BaseModel):
@@ -719,6 +755,32 @@ async def admin_kill_session(session_id: str, request: Request):
         user.user_id,
     )
     result = await _svc().admin_kill_session(user, session_id)
+    return success_response(result)
+
+
+@router.post(
+    "/api/v1/admin/sessions/{session_id}/history-import",
+    response_model=ApiEnvelope[AdminHistoryImportResult],
+)
+async def admin_import_session_history(
+    session_id: str, request: Request, body: AdminHistoryImportRequest,
+):
+    """Import a migrated conversation's earlier messages, for reading only.
+
+    Nothing runs: no sandbox, command or turn. Import before the conversation's
+    first message of its own; a session that already has one refuses with
+    ``HISTORY_IMPORT_AFTER_CONVERSATION``. A re-run of the same messages
+    changes nothing; other content under a used ``source_id``, or a new message
+    placed before imported ones, is ``HISTORY_IMPORT_CONFLICT``.
+    """
+    user = await _resolve_user(request)
+    logger.warning(
+        "admin history import: session=%s operator=%s messages=%s",
+        session_id, user.user_id, len(body.messages),
+    )
+    result = await _svc().admin_import_session_history(
+        session_id, [message.model_dump(exclude_none=True) for message in body.messages],
+    )
     return success_response(result)
 
 

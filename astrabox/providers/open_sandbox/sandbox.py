@@ -2124,6 +2124,34 @@ class OpenSandboxSandboxProvider(SandboxProvider):
                 ),
                 status_code=400,
             )
+        from astrabox.deploy.sandbox_server import (
+            RUNTIME_KUBERNETES,
+            kubernetes_ingress,
+            sandbox_runtime,
+        )
+        from astrabox.providers.open_sandbox.workspace_route.mergerfs import (
+            existing_lifecycle_service_url,
+        )
+
+        if (
+            not existing_lifecycle_service_url()
+            and sandbox_runtime() == RUNTIME_KUBERNETES
+            and kubernetes_ingress()["mode"] != "gateway"
+        ):
+            raise APIError(
+                code="EXPOSE_PORT_ENDPOINT_UNAVAILABLE",
+                message=(
+                    "Kubernetes direct routing returns a cluster-only Pod address. "
+                    "HTML preview, Browser and exposed applications require the "
+                    "official OpenSandbox ingress Gateway: set "
+                    "ASTRABOX_SANDBOX_SERVER_INGRESS_MODE=gateway and configure "
+                    "ASTRABOX_SANDBOX_SERVER_INGRESS_GATEWAY_ADDRESS. An HTTPS "
+                    "console requires an HTTPS Gateway and "
+                    "ASTRABOX_SANDBOX_ENDPOINT_SCHEME=https. "
+                    "See docs/providers/opensandbox.md."
+                ),
+                status_code=502,
+            )
         # The service process may use the lifecycle relay for commands and
         # files, but that address can be private to the AstraBox container. Ask
         # OpenSandbox for its public execd/ingress route for browser navigation.

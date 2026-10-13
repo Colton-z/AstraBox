@@ -36,6 +36,7 @@ class _BridgeRunState:
 
     # --- terminal / result signals ---
     last_assistant_text: str = ""
+    user_action_refusal: dict[str, Any] | None = None
     last_error_text: str = ""
     saw_error_event: bool = False
     saw_result_frame: bool = False

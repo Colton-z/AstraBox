@@ -159,6 +159,7 @@ def test_a_stale_spawn_fingerprint_discards_the_claimed_box(
         "slot_id": "slot-abc",
         "state": "claimed",
         "placement": pb.PLACEMENT_CONVERSATION_BOX,
+        "engine_initialized": True,
         "sandbox_id": "box-77",
         "spawn_fingerprint": "spawn-of-an-older-catalog",
         "gateway_substitution": True,

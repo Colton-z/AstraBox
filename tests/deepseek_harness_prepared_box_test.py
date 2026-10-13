@@ -323,6 +323,7 @@ def _claimed_manifest(template: Any) -> dict[str, Any]:
         "slot_id": "slot-abc",
         "state": "claimed",
         "placement": pb.PLACEMENT_CONVERSATION_BOX,
+        "engine_initialized": True,
         "sandbox_id": "box-77",
         "cwd": "/workspace",
         "spawn_fingerprint": dsh._slot_spawn_fingerprint(
@@ -396,6 +397,7 @@ def test_a_stale_spawn_fingerprint_discards_the_claimed_box(
         "slot_id": "slot-abc",
         "state": "claimed",
         "placement": pb.PLACEMENT_CONVERSATION_BOX,
+        "engine_initialized": True,
         "sandbox_id": "box-77",
         "spawn_fingerprint": "spawn-of-an-older-image",
         "gateway_substitution": True,

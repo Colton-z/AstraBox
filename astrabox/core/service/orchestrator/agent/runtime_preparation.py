@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from astrabox.seams.runtime_preparation import runtime_preparation_plan
+
 import json
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -52,7 +54,7 @@ async def prepare_pool_runtime(sandbox: Any, *, template: Any, manager: Any) -> 
     request = adapter.sandbox_request(template=template, model_access=model_access)
     settings = load_astrabox_settings()
     vault_enabled = bool(settings.sandbox_credential_vault_enabled)
-    mcp_plan = await resolve_agent_mcp_credential_plan(template=template, vault_enabled=vault_enabled)
+    mcp_plan = None if not vault_enabled and runtime_preparation_plan(template).session_bound else await resolve_agent_mcp_credential_plan(template=template, vault_enabled=vault_enabled)
     credential, _, vault_plan = resolve_model_credential_delivery(
         template=template,
         backend_adapter=provider,
@@ -115,11 +117,13 @@ async def prepare_engine_runtime(
     """Carry the vendor's preparation evidence unchanged into activation."""
 
     engine_kind = str(context.template.engine_kind)
-    receipt = await get_engine_adapter(engine_kind).prepare_runtime(context)
+    initialize = not runtime_preparation_plan(context.template).session_bound
+    receipt = await get_engine_adapter(engine_kind).prepare_runtime(context) if initialize else {}
     return {
         **dict(receipt),
         "slot_id": context.slot_id,
         "state": "prepared",
+        "engine_initialized": initialize,
         "placement": context.placement,
         "engine_kind": engine_kind,
         "sandbox_id": context.sandbox_id,
@@ -143,7 +147,7 @@ async def read_pool_runtime_receipt(
     """Read an acquired box's transient receipt, never a second pool inventory."""
 
     manifest = json.loads(await sandbox.files.read_bytes(POOL_RUNTIME_RECEIPT))
-    if not isinstance(manifest, dict) or any(
+    if not isinstance(manifest, dict) or type(manifest.get("engine_initialized")) is not bool or any(
         manifest.get(key) != value
         for key, value in {
             "sandbox_id": sandbox_id,

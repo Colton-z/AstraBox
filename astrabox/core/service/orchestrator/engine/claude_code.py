@@ -66,6 +66,9 @@ class ClaudeCodeEngineAdapter(EngineAdapter):
     therefore moves only unpinned Environments.
     """
 
+    def supports_startup_environment(self) -> bool:
+        return True
+
     def canonical_child_message_content(
         self, content: list[dict[str, Any]]
     ) -> list[dict[str, Any]]:

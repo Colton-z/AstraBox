@@ -10,7 +10,7 @@ import {
 } from '@/api';
 import { listAssistants } from '@/assistant/api';
 import type { AssistantRecord } from '@/assistant/types';
-import type { AgentConfig, ChannelExecutionMode, ChannelProviderDescriptor } from '@/types';
+import type { AgentConfig, AgentDeployment, ChannelExecutionMode, ChannelProviderDescriptor } from '@/types';
 
 import {
   ConsoleCreatePage,
@@ -87,6 +87,8 @@ export default function DeploymentCreatePage() {
         scene: BUILTIN_SCENES[0],
         name: '',
         prompt_prefix: '',
+        attention_policy: 'all',
+        response_instruction: '',
         cron: '0 9 * * *',
         timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
         execution_mode: '',
@@ -107,6 +109,9 @@ export default function DeploymentCreatePage() {
 
   const draftScene = String(draft?.scene ?? '');
   const draftExecutionMode = String(draft?.execution_mode ?? '');
+  const draftAttentionPolicy = String(draft?.attention_policy ?? 'all');
+  const usesResponseInstruction =
+    draftAttentionPolicy === 'participated' || draftAttentionPolicy === 'proactive';
   const draftTarget = parseTarget(draft?.target);
   const onAssistant = draftTarget?.kind === 'assistant';
   const selectedProvider = channelProviders.find((provider) => provider.scene === draftScene);
@@ -224,6 +229,34 @@ export default function DeploymentCreatePage() {
     if (selectedProvider) {
       const canConfigure = selectedProvider.can_configure_execution_user === true;
       const providerFields = [
+        {
+          key: 'attention_policy',
+          label: t('manage:deployments.field_attention_policy'),
+          type: 'select' as const,
+          options: ['all', 'mentions', 'participated', 'proactive'].map((policy) => ({
+            value: policy,
+            label: `${t(`manage:deployments.attention_policy_${policy}`)} — ${t(`manage:deployments.attention_policy_${policy}_help`)}`,
+          })),
+          get: (value: Record<string, unknown>) => value.attention_policy,
+          set: (value: Record<string, unknown>, next: unknown) => ({
+            ...value,
+            attention_policy: next,
+          }),
+        },
+        ...(usesResponseInstruction
+          ? [{
+              key: 'response_instruction',
+              label: t('manage:deployments.field_response_instruction'),
+              type: 'textarea' as const,
+              rows: 3,
+              get: (value: Record<string, unknown>) => value.response_instruction,
+              set: (value: Record<string, unknown>, next: unknown) => ({
+                ...value,
+                response_instruction: next,
+              }),
+              help: t('manage:deployments.response_instruction_help'),
+            }]
+          : []),
         ...(onAssistant
           ? []
           : [
@@ -278,7 +311,7 @@ export default function DeploymentCreatePage() {
     return output;
   }, [
     agents, assistants, channelProviders, draftExecutionMode, draftScene, onAssistant,
-    selectedProvider, t,
+    selectedProvider, t, usesResponseInstruction,
   ]);
 
   if (loading) {
@@ -304,6 +337,7 @@ export default function DeploymentCreatePage() {
   const prompt = String(draft.prompt_prefix ?? '').trim();
   const cron = String(draft.cron ?? '').trim();
   const timezone = String(draft.timezone ?? '').trim();
+  const responseInstruction = String(draft.response_instruction ?? '').trim();
   const missingChannelField = selectedProvider
     ? firstMissingChannelField(draft, 'channel_config', selectedProvider.config_fields) ??
       firstMissingChannelField(draft, 'credentials', selectedProvider.credential_fields)
@@ -335,6 +369,8 @@ export default function DeploymentCreatePage() {
     });
   else if (selectedProvider && target?.kind === 'assistant' && !participants.length)
     blockedReason = t('manage:deployments.err_allowed_participants_required');
+  else if (selectedProvider && usesResponseInstruction && [...responseInstruction].length > 4000)
+    blockedReason = t('manage:deployments.err_response_instruction_too_long');
 
   return (
     <ConsoleCreatePage
@@ -374,6 +410,12 @@ export default function DeploymentCreatePage() {
           allowed_participants: selectedProvider && participants.length ? participants : undefined,
           name: scene === 'schedule' ? name : undefined,
           prompt_prefix: prompt || undefined,
+          ...(selectedProvider
+            ? {
+                attention_policy: draftAttentionPolicy as AgentDeployment['attention_policy'],
+                response_instruction: usesResponseInstruction ? responseInstruction || null : null,
+              }
+            : {}),
           channel_config: selectedProvider
             ? channelFieldValues(draft, 'channel_config', selectedProvider.config_fields)
             : undefined,

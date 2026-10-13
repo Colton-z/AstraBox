@@ -37,6 +37,7 @@ const sidebars: SidebarsConfig = {
         'working-with-repos',
         'credentials',
         'multi-agents',
+        'a2a',
       ],
     },
     {
@@ -100,6 +101,8 @@ const sidebars: SidebarsConfig = {
         'writing-a-scheduler-provider',
         'writing-a-sandbox-provider',
         'providers/skill-content',
+        'providers/runtime-preparation',
+        'providers/channel-response',
       ],
     },
   ],

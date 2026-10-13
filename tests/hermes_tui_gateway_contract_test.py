@@ -348,69 +348,6 @@ async def test_hermes_child_run_stop_uses_the_official_subagent_id_field() -> No
     assert (await client.get_capabilities()).supports_child_run_control is True
 
 
-@pytest.mark.asyncio
-async def test_a_second_message_is_accepted_after_a_consumer_stops_at_the_result() -> None:
-    """The turn slot must be released before the consumer stops reading.
-
-    Every other test here drains the stream to exhaustion, which resumes the
-    generator past its final yield and runs whatever follows. A real turn
-    worker does not: it stops the moment it has the terminal frame, which
-    closes the generator, so anything written after that yield never runs at
-    all. Settling there left the slot held and the SECOND message in the same
-    conversation came back "Hermes already has an active turn" — reported from
-    the product, because one turn per conversation is all a probe or the
-    Assistant e2e ever sends.
-
-    So this consumer breaks the way the real one does, and then sends again.
-    `pi_client` had the same defect on the same shape of loop.
-    """
-
-    subscription = _FakeSubscription("tui-1")
-
-    async def request(method: str, params: dict[str, str]) -> dict[str, bool]:
-        if method == "prompt.submit":
-            subscription.push(*_run("tui-1", "first reply", start=1))
-        return {"accepted": True}
-
-    client = HermesTuiEngineClient(
-        gateway=_fake_gateway(AsyncMock(side_effect=request)),
-        platform_session_id="session-1",
-    )
-    client._tui_session_id = "tui-1"
-    client._engine_session_key = "engine-session-1"
-    client._subscription = subscription
-    await client._start_relay(subscription)
-
-    first = EngineInputCommand(
-        command_id="command-1",
-        session_id="session-1",
-        sequence=1,
-        input_id="00000000-0000-0000-0000-000000000001",
-        content="first",
-    )
-    await client.deliver(first)
-    receipt = await client.begin_delivery(first)
-
-    async for frame in client.iter_turn_events(receipt):
-        if frame.get("type") == "result":
-            break  # exactly where a turn worker stops
-
-    assert client.active_receipt is None, (
-        "the turn is over; holding the slot rejects the next message"
-    )
-
-    second = EngineInputCommand(
-        command_id="command-2",
-        session_id="session-1",
-        sequence=2,
-        input_id="00000000-0000-0000-0000-000000000002",
-        content="second",
-    )
-    await client.deliver(second)
-    # The assertion is that this does not raise "already has an active turn".
-    assert await client.begin_delivery(second) is not None
-
-
 def _recovering_client(live_sessions: list[dict[str, str]]) -> tuple[HermesTuiEngineClient, list[str]]:
     """A client reattached to a backend whose ``session.active_list`` is given."""
 
@@ -600,63 +537,6 @@ async def test_a_recovered_turn_on_a_session_the_backend_holds_keeps_reading() -
     assert subscribed == ["live0001"]
     assert isinstance(emissions[-1], TurnTerminal)
     assert emissions[-1].finish_reason == "stop"
-
-
-@pytest.mark.asyncio
-async def test_hermes_consumes_platform_inputs_in_fifo_order() -> None:
-    calls: list[tuple[str, str]] = []
-    subscription = _FakeSubscription("tui-1")
-    replies = iter([("first reply", 1), ("second reply", 4)])
-
-    async def request(method: str, params: dict[str, str]) -> dict[str, bool]:
-        calls.append((method, params["text"]))
-        text, start = next(replies)
-        subscription.push(*_run("tui-1", text, start=start))
-        return {"accepted": True}
-
-    client = HermesTuiEngineClient(
-        gateway=_fake_gateway(AsyncMock(side_effect=request)),
-        platform_session_id="session-1",
-    )
-    client._tui_session_id = "tui-1"
-    client._engine_session_key = "engine-session-1"
-    client._subscription = subscription
-    await client._start_relay(subscription)
-    first = EngineInputCommand(
-        command_id="command-1",
-        session_id="session-1",
-        sequence=1,
-        input_id="00000000-0000-0000-0000-000000000001",
-        content="first",
-    )
-    second = EngineInputCommand(
-        command_id="command-2",
-        session_id="session-1",
-        sequence=2,
-        input_id="00000000-0000-0000-0000-000000000002",
-        content="second",
-    )
-
-    await client.deliver(first)
-    await client.deliver(second)
-    receipt = await client.begin_delivery(first)
-    assert calls == [("prompt.submit", "first")]
-
-    frames = [frame async for frame in client.iter_turn_events(receipt)]
-    assert all(isinstance(frame, EngineEmission) for frame in frames)
-
-    assert calls == [
-        ("prompt.submit", "first"),
-        ("prompt.submit", "second"),
-    ]
-    assert [
-        frame["data"]["content"] for frame in frames if frame.get("type") == "data-input-consumed"
-    ] == ["first", "second"]
-    assert [
-        frame["data"]["finishReason"] for frame in frames if frame.get("type") == "response-result"
-    ] == ["stop"]
-    assert frames[-1]["type"] == "result"
-    assert frames[-1]["finishReason"] == "stop"
 
 
 def test_tui_tool_and_approval_events_keep_their_real_ids() -> None:

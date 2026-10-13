@@ -1,3 +1,4 @@
+import type { UserAction } from "../types";
 import type {
   ContentBlock,
   MessageRecord,
@@ -25,6 +26,7 @@ export type QueuedMessageItem = {
   error?: string;
   /** A failed send whose refusal ended the message: resending is a new message. */
   resendAsNew?: boolean;
+  userAction?: UserAction;
   source?: QueuedMessageSource;
 };
 

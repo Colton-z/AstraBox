@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from 'react';
+import { useCallback, useMemo, useRef } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
 import type { OutboxItem } from '../../types';
 import { createClientMessageId } from '../utils/chatHelpers';
@@ -25,6 +25,7 @@ export function useMessageQueue({
       content: item.text,
       status: item.status === 'accepted' ? 'queued' : item.status,
       ...(item.failure_reason ? { error: item.failure_reason } : {}),
+      ...(item.user_action ? { userAction: item.user_action } : {}),
       ...(item.resend_as_new ? { resendAsNew: true } : {}),
       source: item.status === 'failed'
         ? 'authoritative-delivery-failed'
@@ -41,14 +42,17 @@ export function useMessageQueue({
     )));
   }, [setOutbox]);
 
+  const claimed = useRef(new WeakSet<OutboxItem>());
   const retryQueueItem = useCallback((id: string) => {
+    if (!canRetryQueued) return;
     const item = outbox.find((candidate) => candidate.client_message_id === id);
-    if (!item || (!item.text && !item.images?.length)) return;
+    if (!item || item.status !== 'failed' || claimed.current.has(item) || (!item.text && !item.images?.length)) return;
+    claimed.current.add(item);
     setOutbox((current) => current.filter((candidate) => candidate !== item));
     // A refusal that ended the message answers its client_message_id the same
     // way every time, so sending it again is a new message.
     sendClientMessageNow(item.resend_as_new ? createClientMessageId() : id, item.text, item.images);
-  }, [outbox, sendClientMessageNow, setOutbox]);
+  }, [outbox, sendClientMessageNow, setOutbox, canRetryQueued]);
 
   return {
     displayedQueue,

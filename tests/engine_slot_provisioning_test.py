@@ -174,6 +174,7 @@ async def test_claim_refuses_a_manifest_with_an_unknown_placement(
         "slot_id": "slot-1",
         "engine_kind": "codex",
         "placement": "",
+        "engine_initialized": True,
         "sandbox_id": "box-1",
         "runtime_identity": {},
         "runtime_env": {},
@@ -441,6 +442,7 @@ async def test_claim_rotates_a_secret_behind_the_prepared_placeholder(
         "slot_id": "slot-env",
         "engine_kind": "codex",
         "placement": "shared_slot",
+        "engine_initialized": True,
         "sandbox_id": "box-1",
         "sandbox_backend": "fake",
         "runtime_env": {"SERVICE_TOKEN": current.placeholder},
@@ -578,7 +580,7 @@ async def test_prepared_handoff_only_falls_back_after_confirmed_absence_and_clea
     from astrabox.seams.sandbox import SandboxLifecycleProbeResult
 
     manifest = {
-        "slot_id": "slot", "engine_kind": "codex", "placement": "shared_slot",
+        "slot_id": "slot", "engine_kind": "codex", "placement": "shared_slot", "engine_initialized": True,
         "sandbox_id": "box", "sandbox_backend": "fake",
         "environment_credential_contract": [], "runtime_env": {},
         "runtime_identity": {"home_dir": "/home/slot", "linux_user": "slot"},

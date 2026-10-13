@@ -20,7 +20,7 @@ import type {
   DeploymentRun,
 } from '@/types';
 
-import { ErrorNote } from '@/components/shell';
+import { ErrorNote } from '@/components/shell/ErrorNote';
 import {
   ConsoleCard,
   ConsoleDangerButton,
@@ -98,6 +98,7 @@ export default function DeploymentDetailPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [actionError, setActionError] = useState('');
+  const [channelSaveError, setChannelSaveError] = useState('');
   const [busy, setBusy] = useState(false);
 
   const crumbProvider = channelProviders.find(
@@ -144,6 +145,8 @@ export default function DeploymentDetailPage() {
           timezone: found.schedule?.timezone ?? '',
         });
         setChannelDraft({
+          attention_policy: found.attention_policy ?? 'all',
+          response_instruction: found.response_instruction ?? '',
           execution_mode: found.execution_mode ?? 'owner',
           execution_user_id: found.execution_user_id ?? '',
           allowed_participants: (found.allowed_participants ?? []).join('\n'),
@@ -191,6 +194,8 @@ export default function DeploymentDetailPage() {
     || scheduleDraft.cron !== (deployment?.schedule?.cron ?? '')
     || scheduleDraft.timezone !== (deployment?.schedule?.timezone ?? '')
     || JSON.stringify(channelDraft) !== JSON.stringify({
+      attention_policy: deployment?.attention_policy ?? 'all',
+      response_instruction: deployment?.response_instruction ?? '',
       execution_mode: deployment?.execution_mode ?? 'owner',
       execution_user_id: deployment?.execution_user_id ?? '',
       allowed_participants: (deployment?.allowed_participants ?? []).join('\n'),
@@ -199,13 +204,16 @@ export default function DeploymentDetailPage() {
     })
   ));
 
-  const run = async (action: () => Promise<unknown>) => {
+  const run = async (
+    action: () => Promise<unknown>,
+    setFailure: (message: string) => void = setActionError,
+  ) => {
     setBusy(true);
-    setActionError('');
+    setFailure('');
     try {
       await action();
     } catch (e) {
-      setActionError((e as Error).message);
+      setFailure((e as Error).message);
     } finally {
       setBusy(false);
     }
@@ -234,6 +242,10 @@ export default function DeploymentDetailPage() {
   const enabled = deployment.enabled !== false;
   const isSchedule = deployment.scene === 'schedule';
   const isChannel = deployment.scene.startsWith('channel:');
+  const attentionPolicy = channelDraft.attention_policy as AgentDeployment['attention_policy'];
+  const usesResponseInstruction = attentionPolicy === 'participated' || attentionPolicy === 'proactive';
+  const responseInstruction = String(channelDraft.response_instruction ?? '').trim();
+  const responseInstructionTooLong = usesResponseInstruction && [...responseInstruction].length > 4000;
   const channelProvider = channelProviders.find(
     (provider) => provider.scene === deployment.scene,
   );
@@ -300,6 +312,34 @@ export default function DeploymentDetailPage() {
             provider: channelProvider.label,
           }),
           fields: [
+            {
+              key: 'attention_policy',
+              label: t('manage:deployments.field_attention_policy'),
+              type: 'select' as const,
+              options: ['all', 'mentions', 'participated', 'proactive'].map((policy) => ({
+                value: policy,
+                label: `${t(`manage:deployments.attention_policy_${policy}`)} — ${t(`manage:deployments.attention_policy_${policy}_help`)}`,
+              })),
+              get: (value: Record<string, unknown>) => value.attention_policy,
+              set: (value: Record<string, unknown>, next: unknown) => ({
+                ...value,
+                attention_policy: next,
+              }),
+            },
+            ...(usesResponseInstruction
+              ? [{
+                  key: 'response_instruction',
+                  label: t('manage:deployments.field_response_instruction'),
+                  type: 'textarea' as const,
+                  rows: 3,
+                  get: (value: Record<string, unknown>) => value.response_instruction,
+                  set: (value: Record<string, unknown>, next: unknown) => ({
+                    ...value,
+                    response_instruction: next,
+                  }),
+                  help: t('manage:deployments.response_instruction_help'),
+                }]
+              : []),
             ...(deployment.assistant_id
               ? []
               : [
@@ -359,6 +399,8 @@ export default function DeploymentDetailPage() {
         : undefined)
     : undefined;
   const channelBaseline = {
+    attention_policy: deployment.attention_policy ?? 'all',
+    response_instruction: deployment.response_instruction ?? '',
     execution_mode: deployment.execution_mode ?? 'owner',
     execution_user_id: deployment.execution_user_id ?? '',
     allowed_participants: (deployment.allowed_participants ?? []).join('\n'),
@@ -684,6 +726,18 @@ export default function DeploymentDetailPage() {
               <p className="t-copy whitespace-pre-wrap">{deployment.prompt_prefix}</p>
             </ConsoleFieldRow>
           )}
+          {isChannel && (
+            <ConsoleFieldRow label={t('manage:deployments.field_attention_policy')}>
+              <p className="t-copy">
+                {t(`manage:deployments.attention_policy_${deployment.attention_policy ?? 'all'}`)}
+              </p>
+            </ConsoleFieldRow>
+          )}
+          {isChannel && deployment.response_instruction && (
+            <ConsoleFieldRow label={t('manage:deployments.field_response_instruction')}>
+              <p className="t-copy whitespace-pre-wrap">{deployment.response_instruction}</p>
+            </ConsoleFieldRow>
+          )}
           {(oneTimeSecret || deployment.secret) && (
             <ConsoleFieldRow
               label={t('manage:deployments.field_secret')}
@@ -716,11 +770,15 @@ export default function DeploymentDetailPage() {
             intro: t('manage:deployments.channel_configuration_intro'),
             note: t('manage:deployments.credentials_write_only_help'),
             dirty: sectionIsDirty(section.fields, channelDraft, channelBaseline),
+            error: channelSaveError,
             blocked:
               section.fields.some((field) => invalidKeys.has(field.key)) ||
               missingChannelField !== undefined ||
-              missingExecutionUser,
-            blockedReason: missingExecutionUser
+              missingExecutionUser ||
+              responseInstructionTooLong,
+            blockedReason: responseInstructionTooLong
+              ? t('manage:deployments.err_response_instruction_too_long')
+              : missingExecutionUser
               ? t('manage:deployments.err_execution_user_required')
               : missingChannelField
                 ? t('manage:deployments.err_channel_field_required', {
@@ -737,6 +795,8 @@ export default function DeploymentDetailPage() {
                   deployment,
                   deployment.deployment_id,
                   {
+                    attention_policy: attentionPolicy,
+                    response_instruction: usesResponseInstruction ? responseInstruction || null : null,
                     ...(channelProvider.can_configure_execution_user && !deployment.assistant_id
                       ? {
                           execution_mode: channelDraft.execution_mode as ChannelExecutionMode,
@@ -765,8 +825,11 @@ export default function DeploymentDetailPage() {
                   },
                 );
                 await load();
-              }),
-            onRevert: () => setChannelDraft(channelBaseline),
+              }, setChannelSaveError),
+            onRevert: () => {
+              setChannelDraft(channelBaseline);
+              setChannelSaveError('');
+            },
           })}
         />
       )}

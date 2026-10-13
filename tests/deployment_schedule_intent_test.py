@@ -125,7 +125,7 @@ async def test_schedule_creation_removes_desired_state_when_projection_rejects()
     assert raised.value.code == "INVALID_SCHEDULE"
     deployment_id = repository.upsert.await_args.args[0]
     repository.soft_delete_for_deployment.assert_awaited_once_with(
-        deployment_id, "agent-1", assistant_id=""
+        deployment_id, "agent-1", assistant_id="", owner_user_id="", owner_org_id=""
     )
     runtime.delete.assert_not_awaited()
 
@@ -176,7 +176,7 @@ async def test_schedule_update_is_validated_by_runtime_before_product_write() ->
     repository = AsyncMock()
     repository.get_for_deployment.return_value = existing
     repository.update_for_deployment.side_effect = (
-        lambda _deployment_id, _agent_id, updates, *, assistant_id="": {**existing, **updates}
+        lambda _deployment_id, _agent_id, updates, **_scope: {**existing, **updates}
     )
     runtime = AsyncMock()
     service = _service(deployment_repo=repository, scheduler=runtime)

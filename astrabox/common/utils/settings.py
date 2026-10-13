@@ -188,9 +188,9 @@ class AstraBoxRuntimeSettings(BaseSettings):
             AliasPath("astrabox", "sandbox_platform", "endpoint_url_ttl_seconds"),
         ),
     )
-    #: OpenSandbox endpoint responses contain a host/path but no scheme. Most
-    #: deployments use the lifecycle API's scheme; split-control/data-plane
-    #: deployments can state the ingress gateway's scheme explicitly.
+    #: OpenSandbox endpoint responses contain a host/path but no scheme. SDK
+    #: execd requests and browser links use the lifecycle API's scheme unless
+    #: a split-control/data-plane deployment states the gateway scheme here.
     sandbox_endpoint_scheme: str = Field(
         default="",
         validation_alias=AliasChoices(

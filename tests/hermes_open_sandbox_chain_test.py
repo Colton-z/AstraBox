@@ -44,7 +44,7 @@ from astrabox.providers.open_sandbox.sandbox import (
     OpenSandboxHandle,
     OpenSandboxSandboxProvider,
 )
-from astrabox.providers.sandbox_image import SANDBOX_SELF_DESCRIPTION
+from astrabox.providers.sandbox_image import sandbox_boot_env
 from astrabox.seams.model import ResolvedModelAccess
 from astrabox.seams.storage import StorageMountPlan
 from astrabox.seams.egress_credentials import (
@@ -596,8 +596,9 @@ async def test_assistant_restore_provisions_a_real_box_and_keeps_resume_key(
     # The box carries its per-box AIO :8080 gateway key, derived at create from
     # the deployment secret and the assignment (not a fixed value).
     assert box_env.pop("SANDBOX_API_KEY", "")
+    # An Assistant's box is exclusive, so its desktop switches are enabled.
     assert box_env == {
-        **SANDBOX_SELF_DESCRIPTION,
+        **sandbox_boot_env(shared=False),
         "ASTRABOX_HERMES_AUTOSTART": "false",
     }
     assert body["metadata"]["astrabox.session-id"] == "session-1"

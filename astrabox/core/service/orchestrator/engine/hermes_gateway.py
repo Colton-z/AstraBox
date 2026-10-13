@@ -269,6 +269,7 @@ class HermesGatewayHandle:
         params: dict[str, Any] | None = None,
         *,
         timeout: float = _RPC_TIMEOUT_SECONDS,
+        input_command_id: str | None = None,
     ) -> dict[str, Any]:
         process = self._process
         if process is None or not process.is_connected:
@@ -276,7 +277,9 @@ class HermesGatewayHandle:
                 f"Hermes gateway for profile {self.profile_key} is not attached"
             )
         try:
-            result = await process.request(method, params, timeout=timeout)
+            result = await process.request(
+                method, params, timeout=timeout, input_command_id=input_command_id
+            )
         except HermesTuiRpcError:
             self._ever_answered = True
             raise

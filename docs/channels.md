@@ -103,6 +103,24 @@ answered, and never answers it as anyone else, when:
 Some platforms run only as linked accounts because their work belongs to a
 person; their triggers offer no other setting.
 
+### When the Agent answers
+
+**Response policy** decides which messages in a group the Agent answers. A
+message it does not answer is kept as context and is quoted to the Agent with
+the next message it does answer.
+
+| Policy | Answers |
+|---|---|
+| Answer every message (`all`) | Every message |
+| Only when addressed (`mentions`) | Direct messages, mentions and replies to the Agent |
+| Model decides after participation (`participated`) | As `mentions`; in a topic the Agent has answered, a model also judges each ordinary message |
+| Model decides proactively (`proactive`) | As `mentions`; a model also judges every ordinary message |
+
+The last two use a model to decide, guided by the trigger's **Decision
+instruction**, which says when the Agent should speak. They need the title
+model or a judge your deployment installs; see
+[Channel response judges](providers/channel-response.md).
+
 ### Conversation mapping
 
 After platform authorization is complete, message routing works as follows:

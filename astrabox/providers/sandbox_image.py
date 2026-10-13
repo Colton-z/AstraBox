@@ -26,25 +26,9 @@ from astrabox.config.release_images import release_image
 DEFAULT_AGENT_IMAGE_ENV = "ASTRABOX_AGENT_IMAGE"
 AGENT_IMAGE_COMPONENT = "sandbox-claude-code"
 
-# The boot environment every AstraBox sandbox carries, whatever engine runs in
-# it and whichever rung of the ladder produced the box. ``IS_SANDBOX`` is what
-# makes a box self-describing in a diagnostic report — it is the deployment fact
-# a reader needs before any session fact means anything. The ``DISABLE_*`` flags
-# turn off the AIO base image's interactive services no agent loop uses —
-# JupyterLab, code-server, the VNC desktop, the in-box browser and its MCP hub,
-# and the Node REPLs — so they neither run nor answer on :8080; gem.sh reads
-# these vendor switches at boot to keep each service's process from starting.
-# The :8080 services that remain (nginx and the file/shell API backend that
-# also answers the gateway's auth check and serves previews) are gated by the
-# per-box ``SANDBOX_API_KEY`` (astrabox/providers/open_sandbox/aio_auth.py).
-#
-# Composed by the platform into the create spec rather than added by a provider,
-# because the seam defines ``env`` as the boot environment written verbatim: a
-# provider that injected its own would make the neutral spec a lie, and one that
-# did while another did not is how boxes of different engines came to disagree
-# on what an AstraBox sandbox looks like.
-# AIO initializes browser directories even when its browser is disabled. Its
-# supported download override keeps that unused scaffold out of user projects.
+# AIO reads these vendor switches at boot. Interactive Chrome and VNC belong
+# only to conversation-owned boxes; shared boxes have no isolated desktop.
+# Downloads stay outside the task workspace until a user saves a task output.
 SANDBOX_SELF_DESCRIPTION = {
     "IS_SANDBOX": "1",
     "DISABLE_BROWSER": "true",
@@ -55,6 +39,15 @@ SANDBOX_SELF_DESCRIPTION = {
     "DISABLE_NODEJS_REPL": "true",
     "BROWSER_DOWNLOAD_DIR": "/tmp/astrabox-browser-downloads",
 }
+
+
+def sandbox_boot_env(*, shared: bool) -> dict[str, str]:
+    return {
+        **SANDBOX_SELF_DESCRIPTION,
+        "DISABLE_BROWSER": "true" if shared else "false",
+        "DISABLE_VNC": "true" if shared else "false",
+    }
+
 
 # The in-box CLI binary name: the image pre-bakes it so ``claude`` resolves on
 # PATH; an executor may offer an install fallback only when it is genuinely

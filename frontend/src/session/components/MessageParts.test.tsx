@@ -320,6 +320,18 @@ describe('a settled turn keeps an unfinished call outside its fold', () => {
     expect(screen.queryByText(i18n.t('chat:process.stopped'))).toBeNull();
   });
 
+  it('keeps a streamed refusal actionable beside partial output', () => {
+    renderSettled([
+      { type: 'text', text: 'Partial answer' },
+      { type: 'data-turn-failure', data: { error: 'refused', user_action: {
+        status: 'pending', message: 'Renew your access', url: 'https://identity.example/consent',
+      } } },
+    ]);
+    expect(screen.getByText('Partial answer')).toBeTruthy();
+    expect(screen.getByText('Renew your access')).toBeTruthy();
+    expect(screen.getByRole('link').getAttribute('href')).toBe('https://identity.example/consent');
+  });
+
   it('keeps a call still awaiting its answer outside a normally ended turn', async () => {
     const { container } = renderSettled([
       tool('finished', 'output-available', { output: 'done' }),

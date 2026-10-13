@@ -443,6 +443,7 @@ def build_claude_options_kwargs(
                 deployment_id=mcp_deployment_id,
                 session_source_type=getattr(template, "session_source_type", None),
                 agent_id=getattr(template, "agent_id", None),
+                assistant_id=getattr(template, "assistant_id", None),
                 artifacts_enabled=getattr(template, "artifacts_enabled", True),
             )
             options_kwargs["mcp_servers"] = rewritten

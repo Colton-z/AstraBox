@@ -87,8 +87,13 @@ class TurnDispatchStreamingMixin(SessionOutputSubscriptionMixin):
         interaction_response: dict[str, Any] | None = None,
         permission_mode: str | None = None,
         client_message_id: str | None = None,
+        admission_only: bool = False,
     ) -> dict[str, Any]:
-        """Accept a turn and return a receipt. Delivers nothing.
+        """Accept a turn and return its receipt.
+
+        Admission-only starts return after journaling; their existing turn
+        worker waits for startup and delivers the input. Joining an active
+        turn still delivers into that runtime's FIFO before returning.
 
         Sending and receiving are separate channels. This one admits the input
         — validate, journal the command, pre-project the user message, spawn
@@ -151,7 +156,7 @@ class TurnDispatchStreamingMixin(SessionOutputSubscriptionMixin):
         # None keys on a terminal session state: reclaim/expiry keep the
         # conversation wakeable (state READY). DELETED stays final (handled by the
         # delete guard below).
-        if str(session.get("state") or "") != SessionState.DELETED.value and (
+        if not admission_only and str(session.get("state") or "") != SessionState.DELETED.value and (
             bool(session.get("runtime_unavailable"))
             or self._bound_runtime_lease_expired(session)
             or await self._bound_subject_sandbox_gone(session)
@@ -163,7 +168,9 @@ class TurnDispatchStreamingMixin(SessionOutputSubscriptionMixin):
             # READY before starting the turn, otherwise the reject_creating
             # guard below fails the turn with SESSION_BUSY.
             session = await self._await_runtime_subject_rebuild_ready(user, session_id)
-        self._require_turn_eligible(session, channel="conversation")
+        self._require_turn_eligible(
+            session, channel="conversation", reject_creating=not admission_only
+        )
         if interaction_response:
             # Engine-client interactions are answered through the
             # interaction-answer command (answer_pending_interaction →
@@ -186,7 +193,31 @@ class TurnDispatchStreamingMixin(SessionOutputSubscriptionMixin):
             content_blocks=content_blocks,
             permission_mode=permission_mode,
             client_message_id=client_message_id,
+            admission_only=admission_only,
         )
+
+    async def _prepare_admitted_turn_runtime(
+        self, user: UserContext, session_id: str, *, command_id: str, turn_id: str,
+    ) -> dict[str, Any]:
+        session = await self._must_get_owned_session(user, session_id)
+        self._require_turn_eligible(session, channel="conversation", reject_creating=False)
+        if session.get("state") != SessionState.CREATING.value and (
+            bool(session.get("runtime_unavailable"))
+            or self._bound_runtime_lease_expired(session)
+            or await self._bound_subject_sandbox_gone(session)
+        ):
+            await self.recover_session(
+                user, session_id,
+                admitted_input={"command_id": command_id, "turn_id": turn_id},
+            )
+            session = await self._must_get_owned_session(user, session_id)
+        if session.get("state") == SessionState.CREATING.value or session.get("runtime_unavailable"):
+            await self._await_runtime_subject_rebuild_ready(user, session_id)
+            session = await self._must_get_owned_session(user, session_id)
+        self._require_turn_eligible(session, channel="conversation")
+        if session.get("runtime_unavailable"):
+            raise APIError(code="INPUT_NOT_DELIVERED", message="runtime recovery did not become ready", status_code=409)
+        return session
 
     async def _bound_subject_sandbox_gone(self, session: dict[str, Any]) -> bool:
         """Whether a subject-owned box this conversation names is confirmed gone.
@@ -308,6 +339,7 @@ class TurnDispatchStreamingMixin(SessionOutputSubscriptionMixin):
         content_blocks: list[dict[str, Any]] | None,
         permission_mode: str | None,
         client_message_id: str | None,
+        admission_only: bool = False,
     ) -> dict[str, Any]:
         if content_blocks:
             manifest = session.get("engine_capabilities")
@@ -414,6 +446,13 @@ class TurnDispatchStreamingMixin(SessionOutputSubscriptionMixin):
                 and resident_engine_turn_id(snapshot) is None
             )
             if active:
+                # Only the first cold input has a producer that waits for startup.
+                # Joining its FIFO still needs a dispatchable runtime.
+                self._require_turn_eligible(session, channel="conversation")
+                if admission_only and (
+                    session.get("runtime_unavailable") or self._bound_runtime_lease_expired(session)
+                ):
+                    raise APIError(code="SESSION_BUSY", message="the admitted turn is preparing its runtime", status_code=409)
                 turn_id = str((snapshot or {}).get("current_turn_id") or "").strip()
                 if not turn_id:
                     raise RuntimeError(
@@ -447,6 +486,8 @@ class TurnDispatchStreamingMixin(SessionOutputSubscriptionMixin):
                 "client_message_id": normalized_client_message_id,
                 "input_id": input_id,
             }
+            if admission_only:
+                command_payload["admission_only"] = True
             if content_blocks:
                 # Only text-and-more inputs carry a second representation;
                 # ``content`` stays the projection every other reader uses.
@@ -534,6 +575,15 @@ class TurnDispatchStreamingMixin(SessionOutputSubscriptionMixin):
             self._spawn_accepted_turn_producer(
                 session_id, command_id=command_id, turn_id=turn_id
             )
+        if admission_only and command_type == "StartTurn":
+            await self._sessions_repo.mark_interaction(session_id, utcnow_iso())
+            return {
+                "session_id": session_id,
+                "command_id": command_id,
+                "client_message_id": normalized_client_message_id,
+                "input_id": input_id,
+                "status": "accepted",
+            }
         delivery_status = "delivered"
 
         async def _settle_refused_turn(refused: InputDeliveryRefused) -> None:

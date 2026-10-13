@@ -10,9 +10,10 @@ regress them:
   ``None`` to ``SESSION_NOT_FOUND`` 404 — a wrong owner is indistinguishable from
   a missing session (existence is not revealed).
 
-* **Session and Agent create paths do not stamp org_id.** No organization
-  principal exists in their domain model (domain-model.md §1). The Vault remains
-  a separate subsystem and still stamps it.
+* **Session and Vault create paths stamp the caller's org_id.** The turn and
+  lifecycle workers rebuild the caller's ``UserContext`` from the Session row,
+  so a Session that lost the org would run later commands under the default
+  organization.
 
 Real SQLite (a per-test tmp file via the autouse fixture) backs the ownership +
 vault-storage assertions; the session/agent stamp sites are exercised
@@ -180,8 +181,9 @@ async def test_vault_create_stamps_org_id_from_owner() -> None:
     assert stored_default["org_id"] == default_org_id() == "default"
 
 
-async def test_session_create_payload_does_not_stamp_org_id() -> None:
-    # Sessions are not organization-scoped, so creation ignores the caller's org_id.
+async def test_session_create_payload_stamps_the_callers_org_id() -> None:
+    # The turn and lifecycle workers rebuild the caller from the Session row,
+    # so the row carries the caller's organization.
     template = types.SimpleNamespace(name="tmpl", sandbox_backend="open_sandbox")
     repo = _CapturingSessionsRepo()
     service = _session_service(repo, template=template)
@@ -193,7 +195,7 @@ async def test_session_create_payload_does_not_stamp_org_id() -> None:
     )
     assert repo.payload is not None
     assert repo.payload["user_id"] == "alice"
-    assert "org_id" not in repo.payload
+    assert repo.payload["org_id"] == "acme"
 
 
 # ── (d) UserContext org/roles defaults ──────────────────────────────────────

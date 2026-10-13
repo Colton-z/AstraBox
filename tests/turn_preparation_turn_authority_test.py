@@ -61,15 +61,18 @@ from astrabox.persistence.repository.session_snapshot_repository import (
 )
 from astrabox.persistence.repository.sqlite.collection import AsyncCollection
 from astrabox.persistence.repository.sqlite.engine import create_all, dispose_engines
+from astrabox.seams import runtime_preparation as preparation_seam
 from astrabox.seams import sandbox as sandbox_seam
-from astrabox.seams.sandbox import (
-    TURN_PREPARATION_CONTRACT_VERSION,
+from astrabox.seams.runtime_preparation import (
     TURN_PREPARATION_FAILED,
     TURN_PREPARATION_USER_ACTION_REQUIRED,
-    SandboxTurnContext,
-    TurnPreparationUserActionRequired,
-    register_sandbox,
+    PreparationUserActionRequired,
+    RuntimeMaterials,
+    RuntimePreparationProvider,
+    TurnPreparationContext,
+    register_runtime_preparation_provider,
 )
+from astrabox.seams.sandbox import register_sandbox
 from tests._postgresql_support import resolve_postgresql_test_url
 
 _SESSION = "session-1"
@@ -88,33 +91,40 @@ class _Box:
         self.sandbox_id = sandbox_id
 
 
-class _PreparingProvider:
-    """A profile-exclusive provider that records each preparation it runs."""
+class _Backend:
+    """The profile-exclusive sandbox backend the session is bound to."""
 
     name = _BACKEND
-    supports_turn_preparation = True
     sandbox_is_profile_exclusive = True
-    turn_preparation_contract_version = TURN_PREPARATION_CONTRACT_VERSION
-
-    def __init__(self) -> None:
-        self.prepared: list[SandboxTurnContext] = []
-        self.failure: BaseException | None = None
-
-    async def prepare_turn(self, *, context: SandboxTurnContext) -> None:
-        self.prepared.append(context)
-        if self.failure is not None:
-            raise self.failure
 
     def owns_sandbox(self, sandbox: Any) -> bool:
         return isinstance(sandbox, _Box)
 
 
+class _PreparingProvider(RuntimePreparationProvider):
+    """A deployment integration that records each turn preparation it runs."""
+
+    name = "turn-authority-preparation"
+
+    def __init__(self) -> None:
+        self.prepared: list[TurnPreparationContext] = []
+        self.failure: BaseException | None = None
+
+    async def prepare_turn(self, *, context: TurnPreparationContext) -> RuntimeMaterials:
+        self.prepared.append(context)
+        if self.failure is not None:
+            raise self.failure
+        return RuntimeMaterials()
+
+
 @pytest.fixture
 def provider(monkeypatch: pytest.MonkeyPatch) -> _PreparingProvider:
     monkeypatch.setattr(sandbox_seam, "_BACKENDS", dict(sandbox_seam._BACKENDS))
+    monkeypatch.setattr(preparation_seam, "_PROVIDER", None)
     monkeypatch.setattr(turn_preparation, "_BACKGROUND_CLEANUPS", set())
+    register_sandbox(_Backend())  # type: ignore[arg-type]
     registered = _PreparingProvider()
-    register_sandbox(registered)  # type: ignore[arg-type]
+    register_runtime_preparation_provider(registered)
     return registered
 
 
@@ -182,8 +192,8 @@ def _context(
     attempt_id: str = "attempt-1",
     principal_id: str = _PRINCIPAL,
     sandbox_id: str = "sandbox-1",
-) -> SandboxTurnContext:
-    return SandboxTurnContext(
+) -> TurnPreparationContext:
+    return TurnPreparationContext(
         sandbox_backend=_BACKEND,
         sandbox_id=sandbox_id,
         session_id=_SESSION,
@@ -196,7 +206,7 @@ def _context(
 
 
 def _prepared(
-    context: SandboxTurnContext,
+    context: TurnPreparationContext,
     stores: _Stores,
 ) -> AbstractAsyncContextManager[None]:
     return prepared_sandbox_turn(
@@ -692,7 +702,7 @@ async def _expired_credentials() -> None:
             id="provider-error",
         ),
         pytest.param(
-            TurnPreparationUserActionRequired(
+            PreparationUserActionRequired(
                 message="Authorize the agent to act for you",
                 url="https://idp.example/confirm",
             ),
@@ -752,3 +762,109 @@ async def test_a_failed_preparation_keeps_the_input_from_the_engine(
         assert provider.prepared == [], "the sandbox is not prepared for stale credentials"
     if code == TURN_PREPARATION_USER_ACTION_REQUIRED:
         assert refused.value.evidence["user_action"]["url"] == "https://idp.example/confirm"
+
+
+async def test_user_action_refusal_survives_replay_and_session_reload(stores: _Stores) -> None:
+    from astrabox.core.service.orchestrator.engine.input_delivery import refusal_record, settled_input_outcome
+    from astrabox.core.service.orchestrator.session_kernel.service_mixins.session_read import SessionReadRenderingMixin
+
+    await _create_session(stores)
+    accepted = await _accept_start_turn(stores, "turn-action")
+    action = {"status": "user_action_required", "message": "Consent required", "url": "https://idp.example/confirm"}
+    refused = InputDeliveryRefused(code=TURN_PREPARATION_USER_ACTION_REQUIRED,
+        message="Consent required", status_code=409, evidence={"user_action": action, "private": "not public"})
+    await stores.events.append_event({
+        "session_id": _SESSION, "channel": "conversation", "turn_id": "turn-action",
+        "event_type": "turn.failed", "causation_id": accepted["causation_id"],
+        "payload": {"failure_phase": "pre_dispatch", "refusal": refusal_record(refused)},
+    })
+    replay = await settled_input_outcome(stores.events, _SESSION, accepted["causation_id"])
+    assert replay is not None and replay.evidence == {"user_action": action}
+    reader = SessionReadRenderingMixin()
+    reader._session_events_repo = stores.events
+    restored = await reader._build_delivery_failure(_SESSION,
+        snapshot={"delivery_state": "NOT_RECEIVED", "last_turn_id": "turn-action"})
+    assert restored is not None
+    assert restored["user_action"] == action and restored["resend_as_new"] is True
+    assert restored["client_message_id"] == accepted["payload"]["client_message_id"]
+
+
+async def test_session_user_action_http_scopes_operations_and_unknown_status(stores: _Stores, monkeypatch) -> None:
+    import logging
+    from collections import deque
+    from astrabox.common.logger.logger_factory import MODULE_APP_NAME
+
+    application_logger = logging.getLogger(MODULE_APP_NAME)
+    monkeypatch.setattr(application_logger, "handlers", list(application_logger.handlers))
+    from astrabox.core.service.orchestrator import admin_error_capture
+
+    # This route test owns no observability worker; isolate import-time capture.
+    monkeypatch.setattr(admin_error_capture, "_bootstrap_drain", lambda: None)
+    monkeypatch.setattr(admin_error_capture, "_buffer", deque(maxlen=2000))
+    import httpx
+    from fastapi import FastAPI
+    from astrabox.api.routes import session_user_actions as routes
+    from astrabox.api.routes._shared import handle_api_error, handle_unknown_error
+    from astrabox.seams import runtime_preparation as seam
+
+    class Provider(seam.RuntimePreparationProvider):
+        name = "user-action-deployment"
+        ready = False
+        broken = False
+        malformed = False
+
+        async def read_user_actions(self, *, context):
+            assert context.principal_id == _PRINCIPAL and context.session_id == _SESSION
+            if self.broken:
+                raise RuntimeError("private-provider-diagnostic")
+            if self.malformed:
+                return seam.SessionUserActionState(ready=False, user_action={
+                    "message": "Unsafe link", "url": "javascript:alert(1)",
+                })
+            return seam.SessionUserActionState(ready=True) if self.ready else seam.SessionUserActionState(
+                ready=False, user_action={"message": "Approve access", "status": "pending", "url": None},
+                actions=(seam.SessionUserActionCommand("confirm", "Check approval"),))
+
+        async def perform_user_action(self, *, context, action_id):
+            assert action_id == "confirm"
+            self.ready = True
+            return await self.read_user_actions(context=context)
+
+    await _create_session(stores)
+    monkeypatch.setattr(seam, "_PROVIDER", None)
+    user = UserContext(user_id=_PRINCIPAL)
+
+    async def identity(request):
+        return user
+
+    monkeypatch.setattr(routes, "_resolve_user", identity)
+    app = FastAPI()
+    app.include_router(routes.router)
+    app.add_exception_handler(APIError, handle_api_error)
+    app.add_exception_handler(Exception, handle_unknown_error)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app, raise_app_exceptions=False), base_url="http://testserver") as client:
+        url = f"/api/v1/sessions/{_SESSION}/user-action"
+        assert (await client.get(url)).json()["data"]["ready"] is True
+        provider = Provider()
+        seam.register_runtime_preparation_provider(provider)
+        blocked = (await client.get(url)).json()["data"]
+        assert blocked["ready"] is False and blocked["user_action"]["url"] is None
+        assert (await client.post(url, json={"action_id": "stale"})).status_code == 409
+        assert (await client.post(url, json={"action_id": "confirm", "principal_id": "other"})).status_code == 422
+        user = UserContext(user_id="other")
+        assert (await client.get(url)).status_code == 404
+        user = UserContext(user_id=_PRINCIPAL, api_scopes=["astrabox:read"])
+        assert (await client.post(url, json={"action_id": "confirm"})).status_code == 403
+        user = UserContext(user_id=_PRINCIPAL)
+        assert (await client.post(url, json={"action_id": "confirm"})).json()["data"]["ready"] is True
+        assert (await client.get(url)).json()["data"]["ready"] is True
+        assert (await client.post(url, json={"action_id": "confirm"})).status_code == 409
+        provider.broken = True
+        failure = await client.get(url)
+        assert failure.status_code == 502
+        assert "private-provider-diagnostic" not in failure.text
+        provider.broken = False
+        provider.malformed = True
+        invalid = await client.get(url)
+        assert invalid.status_code == 502
+        assert "javascript:" not in invalid.text

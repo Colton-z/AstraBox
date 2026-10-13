@@ -28,6 +28,15 @@ describe('tool results scoped to a transcript', () => {
 });
 
 describe('blocksToSDKParts API retry projection', () => {
+  it('restores an execution refusal with its user operation', () => {
+    const action = { status: 'pending', message: 'Renew access', url: 'https://identity.example/consent' };
+    expect(blocksToSDKParts([{
+      type: 'turn_failure', error: 'refused', failure_phase: 'post_dispatch', user_action: action,
+    }])).toEqual([{
+      type: 'data-turn-failure', data: { error: 'refused', failure_phase: 'post_dispatch', user_action: action },
+    }]);
+  });
+
   it('restores the typed retry part without forwarding private or vendor fields', () => {
     const block = {
       type: 'api_retry',

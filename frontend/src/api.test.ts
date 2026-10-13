@@ -609,3 +609,17 @@ describe('Agent authoring wire boundary', () => {
     });
   });
 });
+
+
+it('retains only the validated user operation on a preparation refusal', async () => {
+  const action = { status: 'pending', message: 'Please grant access', url: 'https://identity.example/consent' };
+  stubFetchJson({ code: 'TURN_PREPARATION_USER_ACTION_REQUIRED', error: {
+    code: 'TURN_PREPARATION_USER_ACTION_REQUIRED', retryable: false,
+    user_message: action.message, evidence: { user_action: action, private: 'not an operation' },
+  } });
+  await expect(getCurrentUser()).rejects.toMatchObject({ userAction: action, retryable: false });
+  stubFetchJson({ code: 'TURN_PREPARATION_USER_ACTION_REQUIRED', error: {
+    evidence: { user_action: { ...action, url: 'javascript:alert(1)' } },
+  } });
+  await expect(getCurrentUser()).rejects.toMatchObject({ userAction: null });
+});

@@ -658,6 +658,88 @@ class ChannelRepository:
         )
         return bool(getattr(result, "modified_count", 0))
 
+    async def topic_has_participation(
+        self, *, deployment_id: str, conversation: str, binding_revision: str,
+    ) -> bool:
+        """Whether the agent already answered a message of this topic and revision.
+
+        A settled message is one the agent took part in. Participation, like
+        retained context, belongs to one binding revision: editing the binding
+        starts the topic afresh.
+        """
+        collection = await get_async_collection(INBOUND_COLLECTION)
+        found = await collection.find_one({
+            "deployment_id": deployment_id,
+            "payload.conversation": conversation,
+            "payload.binding_revision": binding_revision,
+            "state": INBOUND_SETTLED,
+        })
+        return found is not None
+
+    async def record_inbound_judgment(
+        self, *, item_id: str, owner_token: str, generation: int,
+        judgment: dict[str, Any],
+    ) -> bool:
+        """CAS the owned item's response judgment, before anything acts on it.
+
+        A re-drive after a host failure reads the recorded judgment instead of
+        asking the judge again, so one message gets one decision.
+        """
+        collection = await get_async_collection(INBOUND_COLLECTION)
+        result = await collection.update_one(
+            {
+                "_id": item_id,
+                "state": INBOUND_DISPATCHING,
+                "owner_token": owner_token,
+                "generation": int(generation),
+                "judgment": {"$exists": False},
+            },
+            {"$set": {"judgment": dict(judgment), "updated_at": utcnow_iso()}},
+        )
+        return bool(getattr(result, "modified_count", 0))
+
+    async def suppress_judged_inbound(
+        self, *, item_id: str, owner_token: str, generation: int,
+    ) -> dict[str, Any] | None:
+        """CAS DISPATCHING → OBSERVED for a message the judge declined.
+
+        The message stays retained context. A copy of it that addressed the
+        agent while it was being judged marked it explicitly attended; such a
+        record is never suppressed, so the explicit signal is not lost.
+        """
+        collection = await get_async_collection(INBOUND_COLLECTION)
+        updated = await collection.find_one_and_update(
+            {
+                "_id": item_id,
+                "state": INBOUND_DISPATCHING,
+                "owner_token": owner_token,
+                "generation": int(generation),
+                "explicit_attention": {"$ne": True},
+            },
+            {"$set": {
+                "state": INBOUND_OBSERVED,
+                "owner_token": None,
+                "lease_expires_epoch": None,
+                "generation": int(generation) + 1,
+                "updated_at": utcnow_iso(),
+            }},
+            return_document=ReturnDocument.AFTER,
+        )
+        return updated if isinstance(updated, dict) else None
+
+    async def note_explicit_attention(self, *, item_id: str) -> bool:
+        """Mark a message under judgment as addressed to the agent by another copy."""
+        collection = await get_async_collection(INBOUND_COLLECTION)
+        result = await collection.update_one(
+            {
+                "_id": item_id,
+                "state": {"$in": list(_INBOUND_LIVE_STATES)},
+                "payload.selection": "judge",
+            },
+            {"$set": {"explicit_attention": True, "updated_at": utcnow_iso()}},
+        )
+        return bool(getattr(result, "modified_count", 0))
+
     async def settle_inbound(
         self, *, item_id: str, owner_token: str, generation: int, session_id: str
     ) -> bool:

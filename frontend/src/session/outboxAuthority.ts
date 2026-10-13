@@ -1,6 +1,8 @@
 import type { UIMessage as SDKUIMessage } from 'ai';
 
-import type { MessageRecord, OutboxItem, SessionRecord } from '../types';
+import type { MessageRecord, OutboxItem, SessionRecord, UserAction, TurnInputImage, ComposerImageMediaType } from '../types';
+import { COMPOSER_IMAGE_MEDIA_TYPES } from '../types';
+import { readUserAction } from './userAction';
 import { messageMatchesNativeInput } from './nativeInputProjection';
 
 function getNormalizedCurrentFailureClientId(
@@ -48,6 +50,7 @@ export function markOutboxItemFailed(
   clientMessageId: string,
   failureReason: string,
   resendAsNew = false,
+  userAction: UserAction | null = null,
 ): OutboxItem[] {
   const normalizedClientMessageId = String(clientMessageId ?? '').trim();
   if (!normalizedClientMessageId) {
@@ -66,6 +69,7 @@ export function markOutboxItemFailed(
       ...item,
       status: 'failed' as const,
       failure_reason: failureReason,
+      ...(userAction ? { user_action: userAction } : {}),
       ...(resendAsNew ? { resend_as_new: true } : {}),
     };
   });
@@ -200,4 +204,32 @@ export function reconcileOutboxWithSession(
   // new value on every render and never settle — React unwinds that as
   // "Maximum update depth exceeded" and the session subtree dies mid-turn.
   return remaining.length === outbox.length ? outbox : remaining;
+}
+
+export function rehydrateDeliveryFailure(outbox: OutboxItem[], failure: SessionRecord['delivery_failure']): OutboxItem[] {
+  if (!failure) return outbox;
+  const existing = outbox.find((item) => item.client_message_id === failure.client_message_id);
+  const action = readUserAction(failure.user_action);
+  const images: TurnInputImage[] = (failure.content_blocks ?? []).flatMap((block) => {
+    if (block.type !== 'image') return [];
+    if (!(COMPOSER_IMAGE_MEDIA_TYPES as readonly string[]).includes(block.source.media_type)) {
+      throw new Error('The failed input contains an unsupported image type');
+    }
+    return [{ type: 'image' as const, source: {
+      ...block.source, media_type: block.source.media_type as ComposerImageMediaType,
+    } }];
+  });
+  const restored: OutboxItem = {
+    ...existing,
+    client_message_id: failure.client_message_id,
+    text: failure.text,
+    status: 'failed',
+    failure_reason: failure.summary,
+    resend_as_new: failure.resend_as_new,
+    user_action: action ?? undefined,
+    images,
+  };
+  if (!existing) return [restored, ...outbox];
+  if (JSON.stringify(existing) === JSON.stringify(restored)) return outbox;
+  return outbox.map((item) => item === existing ? restored : item);
 }

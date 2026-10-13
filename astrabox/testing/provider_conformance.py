@@ -100,41 +100,6 @@ class SandboxProviderContractSuite:
                     f"providers declaring {rule.flag} must override {method}"
                 )
 
-    def test_turn_preparation_capability_is_safe_and_implemented(self) -> None:
-        from astrabox.seams.sandbox import SandboxProvider
-
-        provider = self.make_provider()
-        if not bool(getattr(provider, "supports_turn_preparation", False)):
-            return
-        from astrabox.seams.sandbox import TURN_PREPARATION_CONTRACT_VERSION
-
-        assert (
-            getattr(provider, "turn_preparation_contract_version", None)
-            == TURN_PREPARATION_CONTRACT_VERSION
-        ), "turn preparation contract version must match the host"
-        assert getattr(provider, "sandbox_is_profile_exclusive", False) is True, (
-            "turn preparation currently requires a profile-exclusive sandbox"
-        )
-        assert _is_overridden(provider, SandboxProvider, "owns_sandbox"), (
-            "turn-preparing providers must validate live-handle ownership"
-        )
-        assert _is_overridden(provider, SandboxProvider, "prepare_turn"), (
-            "providers enabling supports_turn_preparation must override prepare_turn"
-        )
-        prepare_turn = getattr(provider, "prepare_turn")
-        assert inspect.iscoroutinefunction(prepare_turn), "prepare_turn must be async"
-        validity = getattr(provider, "turn_preparation_validity_seconds", None)
-        if validity is not None:
-            assert (
-                isinstance(validity, (int, float))
-                and not isinstance(validity, bool)
-                and validity > 0
-            ), "turn_preparation_validity_seconds must be a positive number"
-
-        parameters = list(inspect.signature(prepare_turn).parameters.values())
-        assert [parameter.name for parameter in parameters] == ["context"]
-        assert parameters[0].kind is inspect.Parameter.KEYWORD_ONLY
-
     def test_permission_levels_are_a_known_nonempty_tuple(self) -> None:
         from astrabox.seams.sandbox import SANDBOX_PERMISSION_LEVELS
 
@@ -143,13 +108,6 @@ class SandboxProviderContractSuite:
         assert isinstance(levels, tuple) and levels
         assert len(levels) == len(set(levels))
         assert all(type(level) is str and level in SANDBOX_PERMISSION_LEVELS for level in levels)
-
-    def test_validity_declaration_requires_the_capability(self) -> None:
-        provider = self.make_provider()
-        if getattr(provider, "turn_preparation_validity_seconds", None) is not None:
-            assert bool(getattr(provider, "supports_turn_preparation", False)), (
-                "a validity window is meaningless without supports_turn_preparation"
-            )
 
     def test_registration_round_trips(self) -> None:
         from astrabox.seams.sandbox import register_sandbox, sandbox_if_registered

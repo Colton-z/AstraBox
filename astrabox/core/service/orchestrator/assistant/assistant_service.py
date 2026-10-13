@@ -499,6 +499,7 @@ class AssistantService:
         payload = {
             "assistant_id": assistant_id,
             "owner_id": user.user_id,
+            "org_id": user.org_id,
             "primary": primary,
             "display_name": display_name,
             "icon": str(config.get("icon") or "").strip() or None,

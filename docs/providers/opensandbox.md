@@ -289,10 +289,77 @@ Harness and Hermes engines cannot authenticate to their in-box services
 through it.
 
 Kubernetes deployments can use direct Pod routing or the OpenSandbox ingress
-component. Before exposing a sandbox service to an untrusted network, enable
+component for platform-to-sandbox traffic. Browser-facing features — HTML
+preview, the Browser panel and `expose_port` — require the ingress Gateway.
+Direct Pod addresses are cluster-only; returning one to a public console does
+not make it reachable from a user's browser. The bundled Kubernetes backend
+refuses browser endpoint requests in direct mode with configuration guidance.
+Before exposing a sandbox service to an untrusted network, enable
 OpenSandbox Secure Access and configure matching signing keys for AstraBox and
 the ingress component. AstraBox checks Session access before issuing a
 short-lived signed URL.
+
+### Configure a browser-facing Kubernetes Gateway
+
+Install the official OpenSandbox ingress Gateway in `opensandbox-system`, with
+`gateway.dataplaneNamespace=opensandbox`, `gateway.gatewayRouteMode=uri`, and
+`gateway.secureAccess.existingSecret` naming a Secret in that namespace. Its
+`keys` entry contains `a=<base64-encoded-secret>`; key ID `a` must match the
+server configuration. Keep the Secret and the lifecycle server's key private.
+The [official chart](https://github.com/opensandbox-group/OpenSandbox/tree/c806a49c62ee1fc3baa036165e9044e7b0efd97f/manifests/charts/ingress-gateway)
+at commit `c806a49c62ee1fc3baa036165e9044e7b0efd97f` has chart and image version
+1.1.1. With that checkout and a provisioned signing Secret, install it using:
+
+```bash
+helm upgrade --install opensandbox-ingress \
+  ./manifests/charts/ingress-gateway \
+  --namespace opensandbox-system \
+  --set gateway.gatewayRouteMode=uri \
+  --set gateway.secureAccess.existingSecret=opensandbox-ingress-signing
+```
+
+Give the Gateway a browser-reachable hostname, for example
+`sandbox.example.com`, and terminate TLS at the deployment's ingress or reverse
+proxy. Forward the complete path to the Gateway's Service on port 80, and
+support WebSocket upgrades. Do not strip the sandbox ID or signed routing
+prefix: the Gateway validates and removes it. With Caddy in the cluster, the
+site is:
+
+```caddyfile
+sandbox.example.com {
+    reverse_proxy opensandbox-ingress-gateway.opensandbox-system.svc.cluster.local:80
+}
+```
+
+Configure AstraBox's bundled lifecycle server with the same hostname and key:
+
+```dotenv
+ASTRABOX_SANDBOX_SERVER_RUNTIME=kubernetes
+ASTRABOX_SANDBOX_SERVER_INGRESS_MODE=gateway
+ASTRABOX_SANDBOX_SERVER_INGRESS_GATEWAY_ADDRESS=sandbox.example.com
+ASTRABOX_SANDBOX_SERVER_INGRESS_ROUTE_MODE=uri
+ASTRABOX_SANDBOX_ENDPOINT_SCHEME=https
+ASTRABOX_SANDBOX_SECURE_ACCESS=true
+ASTRABOX_SANDBOX_SERVER_INGRESS_SIGNING_KEY_ID=a
+ASTRABOX_SANDBOX_SERVER_INGRESS_SIGNING_KEY=<same-base64-encoded-secret>
+```
+
+The address contains no URL scheme; `ASTRABOX_SANDBOX_ENDPOINT_SCHEME` sets the
+data-plane scheme independently of the lifecycle API. An HTTPS console needs
+HTTPS endpoints: HTTP iframe or WebSocket traffic is blocked as mixed content.
+Header routing cannot be used by an ordinary browser link. When connecting an
+external lifecycle service, configure its native `[ingress]` settings with the
+same topology; AstraBox's `ASTRABOX_SANDBOX_SERVER_*` settings configure only
+the bundled server. See the vendor's
+[Secure Access guide](https://github.com/opensandbox-group/OpenSandbox/blob/c806a49c62ee1fc3baa036165e9044e7b0efd97f/docs/guides/secure-access.md).
+
+Enable Secure Access before creating the sandboxes that will use it; changing
+the server configuration does not enable it on existing boxes. Check the
+Gateway's `/status.ok` endpoint and TLS certificate for deployment health.
+Acceptance still requires opening HTML resources and controlling the Browser
+from the actual console origin. Local Docker requires its published execd
+endpoint to be reachable by the user's browser; Kubernetes Gateway settings
+do not configure the Docker runtime.
 
 ### Isolate sandbox Pods from the rest of the cluster {#sandbox-network-policy}
 

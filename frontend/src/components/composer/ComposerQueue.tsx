@@ -1,3 +1,4 @@
+import { UserActionNotice } from "../../session/components/SessionUserAction";
 import { useTranslation } from 'react-i18next';
 import { RefreshCw, Trash2 } from 'lucide-react';
 import type { QueuedMessageItem } from '../../utils/messages';
@@ -55,9 +56,10 @@ export function ComposerQueue({
                 </span>
               </QueueItemDescription>
               <QueueItemContent className="mt-1 text-foreground">{item.content}</QueueItemContent>
-              {item.status === 'failed' && item.error && (
+              {item.status === 'failed' && item.error && !item.userAction && (
                 <ErrorNote className="mt-1">{item.error}</ErrorNote>
               )}
+              {item.userAction && <UserActionNotice action={item.userAction} />}
             </div>
             <QueueItemActions className="shrink-0 items-center">
               {item.status === 'failed' && (

@@ -38,6 +38,10 @@ def run_payload(deployment: dict[str, Any], *, input_text: str | None = None) ->
     target = target_ref(deployment)
     return {
         **(target_fields(*target) if target is not None else {}),
+        **({"scope": "personal", "owner_user_id": deployment["owner_user_id"],
+            "owner_org_id": deployment["owner_org_id"],
+            "source_assistant_id": deployment.get("source_assistant_id", "")}
+           if deployment.get("scope") == "personal" else {}),
         "input_text": (
             str(deployment.get("prompt_prefix") or "") if input_text is None else input_text
         ),

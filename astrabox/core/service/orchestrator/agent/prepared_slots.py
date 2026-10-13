@@ -21,6 +21,8 @@ the vendor process; this module composes them and owns the seat ledger.
 
 from __future__ import annotations
 
+from astrabox.seams.runtime_preparation import runtime_preparation_plan
+
 from astrabox.seams.skills import SkillDescriptor
 from astrabox.core.service.orchestrator.runtime.skill_sources import normalize_skills
 
@@ -1663,7 +1665,7 @@ async def _compose_gateway_vault(
     vault_enabled = bool(
         getattr(load_astrabox_settings(), "sandbox_credential_vault_enabled", False)
     )
-    gateway_plan = await resolve_agent_mcp_credential_plan(
+    gateway_plan = None if not vault_enabled and runtime_preparation_plan(template).session_bound else await resolve_agent_mcp_credential_plan(
         template=template,
         vault_enabled=vault_enabled,
     )
@@ -1687,6 +1689,8 @@ async def _compose_gateway_vault(
         vault_enabled=vault_enabled,
         vault_write=vault_write,
     )
+    if vault_write is None and runtime_preparation_plan(template).session_bound:
+        return credential, runtime_env, False, []
     if vault_write is None:
         raise APIError(
             code="AGENT_PREWARM_UNSUPPORTED",

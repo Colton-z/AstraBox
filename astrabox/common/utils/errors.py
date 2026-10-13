@@ -363,6 +363,8 @@ for _code, _status, _category, _retryable, _owner in (
     ("ARTIFACT_DATA_NOT_FOUND", 404, "request", False, "client"),
     ("MODEL_ENDPOINT_INVALID", 500, "configuration.model", False, "platform"),
     ("MCP_BINDING_NOT_FOUND", 404, "request", False, "client"),
+    ("MCP_PROXY_NOT_CONFIGURED", 503, "configuration.environment", False, "platform"),
+    ("AGENT_COORDINATION_UNAVAILABLE", 503, "configuration.environment", False, "platform"),
     ("ARTIFACT_NOT_FOUND", 404, "request", False, "client"),
     ("ARTIFACT_VERSION_NOT_FOUND", 404, "request", False, "client"),
     ("ARTIFACT_VERSION_CONFLICT", 409, "request", False, "client"),
@@ -530,6 +532,9 @@ for _code, _status, _category, _retryable, _owner in (
     # box (404) keeps meeting it. A new message is what moves the conversation
     # to a new sandbox: its admission replaces the box.
     ("SANDBOX_GONE", 404, "runtime.sandbox", False, "runtime"),
+    ("BROWSER_TENANCY_UNSUPPORTED", 409, "runtime.sandbox", False, "runtime"),
+    ("BROWSER_UNAVAILABLE", 502, "runtime.sandbox", False, "runtime"),
+    ("FILE_PREVIEW_UNAVAILABLE", 502, "runtime.sandbox", False, "runtime"),
     # A transport failure to the box: it proves nothing about whether the box
     # exists, and the same request may succeed once the box answers again.
     ("SANDBOX_UNREACHABLE", 503, "runtime.sandbox", True, "runtime"),
@@ -557,6 +562,13 @@ for _code, _status, _category, _retryable, _owner in (
     # Port 8080 is the sandbox's control API, not an application preview.
     ("EXPOSE_PORT_RESERVED", 400, "request", False, "client"),
     ("AGENT_RUNTIME_GENERATION_CONFLICT", 409, "state", True, "platform"),
+    ("AGENT_RESOURCE_SYNC_BUSY", 409, "state", True, "platform"),
+    ("AGENT_RESOURCE_SYNC_UNRESOLVED", 409, "state", False, "platform"),
+    ("AGENT_RESOURCE_SYNC_FAILED", 502, "runtime", False, "platform"),
+    ("RUNTIME_PREPARATION_FAILED", 502, "runtime", False, "platform"),
+    ("CHANNEL_RESPONSE_JUDGE_UNAVAILABLE", 409, "configuration", False, "platform"),
+    ("HISTORY_IMPORT_AFTER_CONVERSATION", 409, "state", False, "session"),
+    ("HISTORY_IMPORT_CONFLICT", 409, "request", False, "client"),
     # The platform wrote this durable record and cannot safely guess which
     # sandbox resource it names when the stored shape is invalid.
     ("STARTUP_ALLOCATION_INVALID", 500, "runtime.startup", False, "platform"),
@@ -593,6 +605,7 @@ for _code, _status, _category, _retryable, _owner in (
     ("SIDECAR_ATTACH_IDENTITY_INVALID", 409, "runtime.attach", True, "runtime"),
     ("SIDECAR_ATTACH_IDENTITY_MISMATCH", 409, "runtime.attach", True, "runtime"),
     ("SANDBOX_ISOLATED_SESSION_NOT_FOUND", 409, "runtime.attach", False, "runtime"),
+    ("SESSION_USER_ACTION_FAILED", 502, "runtime.preparation", False, "platform"),
     ("TURN_PREPARATION_FAILED", 502, "runtime.preparation", True, "runtime"),
     # Starting, reattaching, or adopting the Assistant profile's resident
     # Hermes gateway failed. The same start is valid once the sandbox answers.

@@ -168,6 +168,8 @@ name fails with an error instead of falling back to a default.
 | Data store | `astrabox.providers.repository` | PostgreSQL, MongoDB, SQLite |
 | Workspace storage | `astrabox.providers.storage` | Mounted volume, Amazon EFS |
 | Remote MCP server source | `astrabox.providers.extensions` | Administrator records in AstraBox, LiteLLM MCP gateway |
+| [Runtime preparation integrations](docs/providers/runtime-preparation.md) | `astrabox.providers.runtime_preparation` | Optional deployment-owned Agent resources, Session materials, turn preparation and user prerequisites |
+| [Channel response judges](docs/providers/channel-response.md) | `astrabox.providers.channel_response` | Built-in title-model judge; deployment-owned judge |
 
 - **Interface version** — a plugin under `astrabox.providers.*` can set
   `seams_api_version` to the interface version it was built against; AstraBox

@@ -313,6 +313,7 @@ class AgentConfigService:
         ])
         view = AgentView(
             agent_id=None,
+            assistant_id=assistant_id,
             name=str(assistant.get("display_name") or assistant_id),
             model=model,
             model_config=self._synthesize_model_config(model, env),

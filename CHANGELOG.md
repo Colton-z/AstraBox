@@ -7,6 +7,73 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-10-13
+
+**Upgrading:**
+
+- turn preparation moved from the sandbox backend to the runtime-preparation
+  integration. `SandboxProvider.prepare_turn`, `supports_turn_preparation`,
+  `turn_preparation_contract_version` and `turn_preparation_validity_seconds`
+  are removed; implement `RuntimePreparationProvider.prepare_turn` and
+  `turn_validity_seconds` instead. The session's sandbox backend must still
+  declare `sandbox_is_profile_exclusive`. `TurnPreparationUserActionRequired`
+  is now `PreparationUserActionRequired`, raised from either preparation hook.
+- on Kubernetes, browser-facing preview and desktop links require the
+  OpenSandbox ingress Gateway; a Pod address is no longer handed to a browser.
+  An HTTPS console needs an HTTPS Gateway. See
+  [OpenSandbox](docs/providers/opensandbox.md).
+
+### Added
+- Files opens workspace contents in place: text and code in a read-only
+  viewer, rendered Markdown, images, PDFs, and HTML with live relative assets
+  through expiring, root-bound preview links. Larger or unsupported files
+  still download in full. See [Files](docs/files.md).
+- A Browser panel shows the desktop of a conversation's own sandbox through a
+  scoped viewer link; shared sandboxes keep the desktop disabled.
+- Assistants call the owner's accessible Agents over A2A with Hermes' bundled
+  tools, and managed Agents serve an Agent Card and A2A 1.0 JSON-RPC to
+  authenticated clients. Each call runs in an ordinary Session owned by the
+  caller. Personal Agent schedules created through an Assistant are managed in
+  account settings. See [Agent-to-Agent communication](docs/a2a.md).
+- Channel Deployments can let a model decide whether the agent answers an
+  ordinary group message nobody addressed to it. `attention_policy`
+  `participated` judges messages in topics the agent already answered, and
+  `proactive` judges every ordinary message; `response_instruction` tells the
+  judge when to speak. Each message is judged once, the decision is recorded
+  and recovered, a declined message stays context, and a judge error never
+  becomes an answer. The built-in judge uses the title model; a deployment can
+  install its own through `astrabox.providers.channel_response`. Both settings
+  are editable in the console. See
+  [Channel response judges](docs/providers/channel-response.md).
+- Platform administrators can import a migrated conversation's earlier
+  messages into its Session for reading, through
+  `POST /api/v1/admin/sessions/{id}/history-import`. Imports run nothing and
+  change no Session state, keep tool calls, images and reply parents, show a
+  reply the old system never recorded an ending for as such, and are
+  idempotent. See [Sessions](docs/sessions.md#import-earlier-history).
+- One deployment integration, `astrabox.providers.runtime_preparation`,
+  prepares an Agent and its Sessions at every point of their lifecycle:
+  Agent resource synchronization before prewarmed inventory is published,
+  Session files and environment before the engine initializes (cold start,
+  claim, reattachment, sandbox replacement), files and provider state before
+  every engine write, and the Session owner's prerequisites and explicit
+  operations in the console. Session-bound engines initialize only after
+  claim and material delivery, so their boxes can prewarm without personal
+  credentials or Credential Vault. See
+  [Runtime preparation integrations](docs/providers/runtime-preparation.md).
+
+### Fixed
+- Opening a conversation whose runtime is gone only reads its history. The
+  console no longer recovers the runtime on open; the next message restores
+  it, and the explicit Recover action still does.
+- A user's first conversations started at the same time no longer fail with
+  `500` when they record the user's profile concurrently.
+- Agent and Assistant settings list only apps an administrator has
+  configured and published, and hide the apps card when none are available.
+- User-action refusals survive durable replay and appear in the session
+  console. Failed submissions retain their text and images for an explicit
+  retry; the console does not automatically resend previously dispatched work.
+
 ## [0.1.7] - 2026-10-11
 
 **Upgrading:**

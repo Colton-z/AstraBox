@@ -280,3 +280,27 @@ def test_engine_entry_point_registers_adapter_without_import_side_effect(
 
     adapter = engine_registry.get_engine_adapter("external")
     assert adapter.capabilities.supported_session_kinds == frozenset({"agent_chat"})
+
+
+def test_prepared_resources_entry_point_loads_once_and_rejects_conflicts(monkeypatch) -> None:
+    from astrabox.seams import runtime_preparation as seam
+
+    class Provider(seam.RuntimePreparationProvider):
+        name = "deployment"
+
+        async def synchronize(self, *, context):
+            pass
+
+    monkeypatch.setattr(seam, "_PROVIDER", None)
+    monkeypatch.setattr(providers, "_EAGER_GROUPS", (providers.RUNTIME_PREPARATION_GROUP,))
+    monkeypatch.setattr(providers, "_select_entry_points", lambda group: {"external": _EntryPoint(Provider)})
+    providers.load_entry_point_providers()
+    installed = seam.runtime_preparation_provider()
+    providers.load_entry_point_providers()
+    assert isinstance(installed, Provider)
+    assert seam.runtime_preparation_provider() is installed
+    with pytest.raises(RuntimeError, match="already registered"):
+        seam.register_runtime_preparation_provider(Provider())
+    monkeypatch.setattr(providers, "_select_entry_points", lambda group: {"external": _EntryPoint(object)})
+    with pytest.raises(RuntimeError, match="must target RuntimePreparationProvider"):
+        providers.load_entry_point_providers()

@@ -2,7 +2,14 @@ import type { UIMessage as SDKUIMessage } from 'ai';
 
 type SessionMessageMetadata = {
   turn_id?: unknown;
+  history_completion?: unknown;
 };
+
+/** An imported reply whose source never recorded how it ended. */
+export function isImportedWithoutEnding(message: SDKUIMessage | null | undefined): boolean {
+  if (!message || !message.metadata || typeof message.metadata !== 'object') return false;
+  return (message.metadata as SessionMessageMetadata).history_completion === 'unknown';
+}
 
 export function getMessageTurnId(
   message: SDKUIMessage | null | undefined,

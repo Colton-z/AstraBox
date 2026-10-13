@@ -24,6 +24,51 @@ function normalized(value: unknown): string {
   return String(value ?? '').trim();
 }
 
+function splitNativeResponses(messages: SDKUIMessage[]): SDKUIMessage[] {
+  if (!messages.some((message) => message.role === 'assistant'
+    && message.parts.some((part) => part.type === 'data-input-consumed'))) {
+    return messages;
+  }
+  return messages.flatMap((message) => {
+    if (message.role !== 'assistant'
+      || !message.parts.some((part) => part.type === 'data-input-consumed')) {
+      return [message];
+    }
+    const segments: SDKUIMessage[] = [];
+    const toolOwners = new Map<string, SDKUIMessage>();
+    let current: SDKUIMessage = { ...message, parts: [] };
+    let hasBoundary = false;
+    for (const part of message.parts) {
+      if (part.type === 'data-input-consumed') {
+        const data = part.data as Record<string, unknown>;
+        const responseId = normalized(data.responseMessageId);
+        if (responseId) {
+          if (hasBoundary) {
+            segments.push(current);
+            current = { ...message, id: responseId, parts: [] };
+          } else {
+            current.id = responseId;
+            hasBoundary = true;
+          }
+          continue;
+        }
+      }
+      // The SDK updates the original tool part in place by native call ID.
+      // Cards are separate data parts and need the same ownership explicitly.
+      if ('toolCallId' in part && typeof part.toolCallId === 'string') {
+        toolOwners.set(part.toolCallId, current);
+      }
+      const card = part.type === 'data-tool-card'
+        ? part.data as Record<string, unknown>
+        : undefined;
+      const owner = card ? toolOwners.get(normalized(card.toolCallId)) : undefined;
+      (owner ?? current).parts.push(part);
+    }
+    segments.push(current);
+    return segments;
+  });
+}
+
 export function messageMatchesNativeInput(
   message: MessageIdentity,
   boundary: NativeInputProjectionBoundary,
@@ -50,7 +95,7 @@ export function projectNativeInputs(
   messages: SDKUIMessage[],
   boundaries: NativeInputProjectionBoundary[],
 ): SDKUIMessage[] {
-  let projected = messages;
+  let projected = splitNativeResponses(messages);
   for (const boundary of boundaries) {
     if (projected.some((message) => messageMatchesNativeInput(message, boundary))) {
       continue;

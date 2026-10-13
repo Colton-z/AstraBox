@@ -10,6 +10,10 @@ import asyncio
 import contextlib
 from dataclasses import dataclass
 import threading
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from astrabox.core.service.orchestrator.agent.agent_a2a_service import AgentA2AService
 
 from astrabox.persistence.repository.backend import (
     close_direct_mongo_for_current_loop,
@@ -25,6 +29,7 @@ logger = get_logger(__name__)
 
 _platform_service: AgentPlatformService | None = None
 _agent_service: AgentService | None = None
+_agent_a2a_service: AgentA2AService | None = None
 _assistant_service: AssistantService | None = None
 _scheduler_platform_service: AgentPlatformService | None = None
 _scheduler_agent_service: AgentService | None = None
@@ -80,6 +85,16 @@ def get_agent_service() -> AgentService:
     if _agent_service is None:
         _agent_service = _build_agent_service(get_platform_service())
     return _agent_service
+
+
+def get_agent_a2a_service() -> AgentA2AService:
+    """Share Agent coordination across A2A and Assistant tool entry points."""
+    global _agent_a2a_service
+    if _agent_a2a_service is None:
+        from astrabox.core.service.orchestrator.agent.agent_a2a_service import AgentA2AService
+
+        _agent_a2a_service = AgentA2AService(agent_service=get_agent_service())
+    return _agent_a2a_service
 
 
 def _build_assistant_service(
@@ -340,6 +355,7 @@ def _close_scheduler_services_on_owner_loop(
 
 def close_services_for_lifecycle(reason: str = "lifecycle_cleanup") -> None:
     global _agent_service
+    global _agent_a2a_service
     global _assistant_service
     global _platform_service
     global _scheduler_agent_service
@@ -359,6 +375,7 @@ def close_services_for_lifecycle(reason: str = "lifecycle_cleanup") -> None:
     scheduler_platform_service = _scheduler_platform_service
     _scheduler_task = None
     _agent_service = None
+    _agent_a2a_service = None
     _assistant_service = None
     _platform_service = None
     _scheduler_agent_service = None

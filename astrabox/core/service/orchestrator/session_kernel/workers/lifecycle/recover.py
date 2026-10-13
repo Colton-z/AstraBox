@@ -18,6 +18,7 @@ from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.user_context import UserContext
 from astrabox.core.model import SessionState
+from astrabox.core.service.orchestrator.session_kernel.admitted_input import admitted_input_pending
 from astrabox.core.service.orchestrator.engine.capabilities import require_session_kind
 from astrabox.core.service.orchestrator.sandbox_names import keep_name_updates
 from astrabox.core.service.orchestrator.engine_kind_utils import (
@@ -47,6 +48,11 @@ class _RecoverSessionMixin:
         observed_session = dict(session)
         observed_runtime = self._runtime_manager.get_runtime(session_id)
         observed_snapshot = await self._session_snapshots_repo.get_snapshot(session_id)
+        admitted = (command_event.get("payload") or {}).get("admitted_input")
+        if admitted:
+            await self._require_admitted_recovery_input(session_id, admitted, observed_snapshot)
+            if observed_session.get("state") in {SessionState.TERMINATED.value, SessionState.DELETED.value}:
+                raise APIError(code="INPUT_NOT_DELIVERED", message="session ended before recovery", status_code=409)
         sanitized_session = self._session_service._sanitize_session(session)
         state_fix_updates: dict[str, Any] = {}
         for key in ("state", "runtime_unavailable", "last_error", "recovery_policy", "recovery_reason"):
@@ -59,6 +65,7 @@ class _RecoverSessionMixin:
         state = await self._derive_effective_session_state_for_recover(
             session_id=session_id,
             session=sanitized_session,
+            admitted_input=admitted,
         )
 
         if state == SessionState.CREATING.value or observed_session.get("state") == SessionState.CREATING.value:
@@ -352,7 +359,24 @@ class _RecoverSessionMixin:
         """
 
         await ownership.require_current()
-        await self._reset_conversation_projection_for_recreate_recovery(session_id, observed_snapshot)
+        admitted = (command_event.get("payload") or {}).get("admitted_input")
+        if admitted:
+            current = await self._session_snapshots_repo.get_snapshot(session_id)
+            await self._require_admitted_recovery_input(session_id, admitted, current)
+            preserved = await self._session_snapshots_repo.force_update_fields(
+                session_id, {"current_turn_id": admitted["turn_id"]},
+                extra_filter={
+                    "current_turn_id": admitted["turn_id"],
+                    "current_turn_worker_command_id": admitted["command_id"],
+                    "conversation_state": "PROCESSING", "delivery_state": "PENDING",
+                    "current_turn_remote_anchor": None, "current_turn_engine_anchor": None,
+                    "active_interaction_id": None,
+                },
+            )
+            if not preserved:
+                raise APIError(code="RUNTIME_RECOVERY_SUPERSEDED", message="admitted turn changed before recovery", status_code=409)
+        else:
+            await self._reset_conversation_projection_for_recreate_recovery(session_id, observed_snapshot)
         updates: dict[str, Any] = {
             "state": SessionState.CREATING.value,
             "runtime_unavailable": True,
@@ -366,6 +390,10 @@ class _RecoverSessionMixin:
             "recovery_policy": None,
             "recovery_reason": None,
         }
+        if admitted:
+            # The producer owns these fields; recovery changes only its runtime.
+            for key in ("pending_interaction", "current_turn_id", "interrupt_requested"):
+                updates.pop(key)
         if clear_session_binding:
             updates.update(keep_name_updates(destruction, row=session))
             updates.update(
@@ -412,6 +440,15 @@ class _RecoverSessionMixin:
             "startup_command_event_seq": int(startup_command.get("event_seq") or 0),
         }
 
+    async def _require_admitted_recovery_input(
+        self, session_id: str, admitted: dict[str, str], snapshot: dict[str, Any] | None,
+    ) -> None:
+        if not admitted.get("command_id") or not admitted.get("turn_id") or not await admitted_input_pending(
+            self._session_events_repo, session_id, snapshot,
+            command_id=admitted.get("command_id"), turn_id=admitted.get("turn_id"),
+        ):
+            raise APIError(code="RUNTIME_RECOVERY_SUPERSEDED", message="admitted input no longer owns runtime preparation", status_code=409)
+
     async def _reset_conversation_projection_for_recreate_recovery(
         self, session_id: str, observed: dict[str, Any] | None,
     ) -> None:
@@ -456,11 +493,14 @@ class _RecoverSessionMixin:
         *,
         session_id: str,
         session: dict[str, Any],
+        admitted_input: dict[str, str] | None = None,
     ) -> str:
         base_state = str((session or {}).get("state") or "").strip()
         snapshot = await self._session_snapshots_repo.get_snapshot(session_id)
         if not isinstance(snapshot, dict):
             return base_state
+        if admitted_input:
+            await self._require_admitted_recovery_input(session_id, admitted_input, snapshot)
 
         lifecycle_state = str(snapshot.get("session_lifecycle_state") or "").strip()
         conversation_state = str(snapshot.get("conversation_state") or "").strip()
@@ -487,7 +527,7 @@ class _RecoverSessionMixin:
         # the judgement belongs there, and this gate only decides whether the
         # conversation gets that far.
         runtime_gone = bool((session or {}).get("runtime_unavailable"))
-        if not runtime_gone and (
+        if not runtime_gone and not admitted_input and (
             terminal_state == "RUNNING" or conversation_state in {"PROCESSING", "STREAMING"}
         ):
             return "PROCESSING"

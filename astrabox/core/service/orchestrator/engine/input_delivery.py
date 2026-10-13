@@ -6,6 +6,7 @@ import uuid
 from typing import Any, Protocol
 
 from astrabox.common.utils.errors import APIError
+from astrabox.seams.runtime_preparation import validated_user_action
 from astrabox.core.service.orchestrator.engine.base import EngineInputCommand
 from astrabox.core.service.orchestrator.engine.input_content import (
     read_engine_content_blocks,
@@ -54,7 +55,12 @@ async def settled_input_outcome(
         causation_id=normalized_command_id,
         limit=1,
     )
-    failure = failures[0] if failures else None
+    return settled_input_failure(failures[0] if failures else None)
+
+
+def settled_input_failure(failure: dict[str, Any] | None) -> InputAlreadySettled | None:
+    """Decode the recorded pre-dispatch outcome without reading the journal."""
+
     payload = (failure or {}).get("payload")
     if not isinstance(payload, dict):
         return None
@@ -67,6 +73,8 @@ async def settled_input_outcome(
             message=str(refusal.get("message") or ""),
             status_code=int(refusal.get("status_code") or 409),
             data=refusal.get("data"),
+            user_message=refusal.get("user_message"),
+            evidence={"user_action": action} if (action := validated_user_action(refusal.get("user_action"))) else None,
         )
     reason = str(payload.get("error_text") or "").strip() or "its turn ended"
     return InputAlreadySettled(
@@ -87,6 +95,8 @@ def refusal_record(refusal: APIError) -> dict[str, Any]:
         "message": refusal.message,
         "status_code": refusal.status_code,
         "data": refusal.data,
+        "user_message": refusal.user_message,
+        **({"user_action": action} if (action := validated_user_action((refusal.evidence or {}).get("user_action"))) else {}),
     }
 
 

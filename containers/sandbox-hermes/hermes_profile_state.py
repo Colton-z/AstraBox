@@ -29,9 +29,9 @@ from hermes_cli.backup import _safe_restore_db, copy_db_and_verify, verify_sqlit
 
 MANIFEST_NAME = "astrabox-profile.json"
 #: Directories restored as a whole.
-DIRECTORIES = ("memories", "kanban/boards")
+DIRECTORIES = ("memories", "kanban/boards", "a2a_conversations")
 #: Plain files.
-FILES = ("cron/jobs.json",)
+FILES = ("cron/jobs.json", "a2a_audit.jsonl")
 #: SQLite stores, copied and restored through Hermes' own backup API.
 DATABASES = (
     "cron/executions.db",

@@ -19,12 +19,16 @@ from typing import Any
 
 from astrabox.common.fault_injection import consume_fault, pass_fault_barrier
 from astrabox.common.logger.logger_factory import get_logger
+from astrabox.common.utils.errors import APIError
+from astrabox.seams.runtime_preparation import validated_user_action
 from astrabox.common.utils.time_utils import utcnow_iso
 from astrabox.common.utils.user_context import UserContext
 from astrabox.core.model import SessionState
 from astrabox.core.service.orchestrator.engine.base import EngineStreamDetached
 from astrabox.core.service.orchestrator.engine.input_delivery import (
+    refusal_record,
     InputAlreadySettled,
+    InputDeliveryRefused,
     confirm_engine_input_consumed,
     consumption_carrier,
 )
@@ -78,6 +82,14 @@ from astrabox.core.service.orchestrator.session_kernel.workers.turn.state import
 )
 
 logger = get_logger(__name__)
+
+class _AdmittedInputRefused(Exception):
+    """Carry a deferred delivery refusal to the journal-only terminal path."""
+
+    def __init__(self, refused: InputDeliveryRefused) -> None:
+        super().__init__(refused.message)
+        self.refused = refused
+
 
 def _build_ack_control_frames(
     turn_id: str,
@@ -554,6 +566,26 @@ async def _run_bridge_command(
     )
 
     try:
+        if payload.get("admission_only"):
+            from astrabox.core.service.orchestrator.session_kernel.service_mixins._helpers import (
+                _RUNTIME_SUBJECT_REBUILD_READY_BUDGET_SECONDS,
+            )
+
+            try:
+                async with asyncio.timeout(_RUNTIME_SUBJECT_REBUILD_READY_BUDGET_SECONDS):
+                    session.update(await worker._prepare_admitted_turn_runtime(
+                        user, session_id, command_id=command_id, turn_id=state.effective_turn_id,
+                    ))
+            except Exception as exc:
+                detail = (
+                    exc.message if isinstance(exc, APIError)
+                    else "runtime preparation exceeded its deadline" if isinstance(exc, TimeoutError)
+                    else f"runtime preparation failed: {exc}"
+                )
+                raise _AdmittedInputRefused(InputDeliveryRefused(
+                    code="INPUT_NOT_DELIVERED", message=detail, status_code=409,
+                    data={"session_id": session_id},
+                )) from exc
         state.pending_interaction = await worker._resolve_pending_interaction(
             session=session,
             session_id=session_id,
@@ -571,6 +603,10 @@ async def _run_bridge_command(
                     turn_id=state.effective_turn_id,
                     permission_mode=permission_mode,
                 )
+            except InputDeliveryRefused as refused:
+                if payload.get("admission_only"):
+                    raise _AdmittedInputRefused(refused) from refused
+                raise
             except InputAlreadySettled as settled:
                 # The request that accepted this turn could not deliver it and
                 # settled it with the refusal it returned. The turn has its
@@ -1078,6 +1114,9 @@ async def _run_bridge_command(
                 continue
 
             if evt_type == "error":
+                refusal = event.get("refusal")
+                if isinstance(refusal, dict) and validated_user_action(refusal.get("user_action")):
+                    state.user_action_refusal = refusal
                 state.last_error_text = str(event.get("message") or "unknown error")
                 state.last_terminal_reason = (
                     str(event.get("terminal_reason") or "").strip() or None
@@ -1177,6 +1216,15 @@ async def _run_bridge_command(
             await bridge_journal._publish_persisted_frame(worker, state, _bridge_ctx, terminal_doc)
             if terminal_signal_error is not None:
                 raise terminal_signal_error
+    except _AdmittedInputRefused as exc:
+        # Startup owns Session lifecycle; this path settles only the input.
+        # In particular, a failed/deleted startup must never be mirrored READY.
+        await worker._settle_refused_start_turn(
+            session_id=session_id, turn_id=state.effective_turn_id,
+            command_id=command_id, refused=exc.refused,
+        )
+        state.turn_settled = True
+        return state.last_event_seq
     except _TurnFencedOut:
         logger.info(
             "session kernel turn worker fenced out session=%s turn=%s",
@@ -1196,6 +1244,8 @@ async def _run_bridge_command(
             exc,
         )
     except Exception as exc:
+        if isinstance(exc, APIError) and validated_user_action((exc.evidence or {}).get("user_action")):
+            state.user_action_refusal = refusal_record(exc)
         state.last_error_text = str(exc)
         if state.turn_settled:
             logger.warning(

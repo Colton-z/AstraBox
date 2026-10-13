@@ -66,7 +66,7 @@ from astrabox.core.service.orchestrator.turn_preparation import (
     prepared_sandbox_turn,
     sandbox_turn_context,
 )
-from astrabox.seams.sandbox import TURN_PREPARATION_FAILED
+from astrabox.seams.runtime_preparation import TURN_PREPARATION_FAILED
 
 logger = get_logger(__name__)
 

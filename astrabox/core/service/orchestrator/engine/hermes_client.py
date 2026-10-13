@@ -138,6 +138,7 @@ class HermesTuiProtocolError(RuntimeError):
 class HermesTuiWireEvent:
     event: dict[str, Any]
     output_offset: int
+    input_command_id: str | None = None
 
 
 def encode_turn_anchor(
@@ -448,13 +449,15 @@ def translate_tui_event(
     if event_type == "tool.start":
         tool_id = str(payload.get("tool_id") or "").strip()
         tool_name = str(payload.get("name") or "tool").strip() or "tool"
-        context = payload.get("context")
-        tool_input = dict(context) if isinstance(context, dict) else {}
-        if isinstance(context, str) and context.strip():
-            # Hermes 0.14.0 sends ``build_tool_preview(...)`` here, not the
-            # original argument object. Preserve the official information
-            # without pretending the preview is a parsed command payload.
-            tool_input = {"preview": context}
+        arguments = payload.get("args")
+        if isinstance(arguments, dict):
+            tool_input = dict(arguments)
+        else:
+            # Hermes separates native arguments from the display preview.
+            context = payload.get("context")
+            tool_input = dict(context) if isinstance(context, dict) else {}
+            if isinstance(context, str) and context.strip():
+                tool_input = {"preview": context}
         # `dynamic: True` is what makes the AI SDK build a `dynamic-tool` part
         # rather than a typed `tool-<name>` one, and every console reader of a
         # tool part accepts only the former.
@@ -719,6 +722,7 @@ class HermesTuiProcess:
             on_failure=self._on_failure,
         )
         self._events: asyncio.Queue[HermesTuiWireEvent | BaseException] = asyncio.Queue()
+        self._input_requests: dict[str, tuple[str, str]] = {}
         self._gateway_ready = asyncio.Event()
         self._fatal: BaseException | None = None
 
@@ -784,11 +788,18 @@ class HermesTuiProcess:
         params: dict[str, Any] | None = None,
         *,
         timeout: float = _RPC_TIMEOUT_SECONDS,
+        input_command_id: str | None = None,
     ) -> dict[str, Any]:
         if not self.is_connected:
             raise EngineStreamDetached("Hermes TUI Gateway is not connected")
         request_id = uuid.uuid4().hex
         future = self._channel.register_request(request_id)
+        if input_command_id is not None:
+            if method != "prompt.submit":
+                raise ValueError("input identity belongs to prompt.submit only")
+            self._input_requests[request_id] = (
+                str((params or {}).get("session_id") or ""), input_command_id
+            )
         try:
             await self._channel.send(
                 {
@@ -807,6 +818,7 @@ class HermesTuiProcess:
             raise self._fatal
         finally:
             self._channel.release_request(request_id)
+            self._input_requests.pop(request_id, None)
         error = response.get("error")
         if isinstance(error, dict):
             raise HermesTuiRpcError(
@@ -829,6 +841,16 @@ class HermesTuiProcess:
             # A reply nobody is waiting for is dropped: Hermes answers every
             # request it was given, so an unmatched id belongs to a request
             # this process already gave up on.
+            input_request = self._input_requests.get(response_id)
+            if input_request is not None:
+                session_id, command_id = input_request
+                # Preserve the actual RPC receipt in the same wire order as
+                # native events; this is not a vendor message.start event.
+                await self._events.put(HermesTuiWireEvent(
+                    event={"type": "prompt.submit", "session_id": session_id,
+                           "payload": dict(record)},
+                    output_offset=output_offset, input_command_id=command_id,
+                ))
             self._channel.complete_request(response_id, record)
             return
         if record.get("method") != "event":
@@ -920,6 +942,7 @@ class HermesGatewayPort(Protocol):
         params: dict[str, Any] | None = None,
         *,
         timeout: float = _RPC_TIMEOUT_SECONDS,
+        input_command_id: str | None = None,
     ) -> dict[str, Any]: ...
 
     def subscribe(
@@ -935,11 +958,9 @@ class _HermesRelaySeam:
 
     Hermes opens every model run with ``message.start`` and ends it with
     ``message.complete`` (or ``error``), whether ``prompt.submit`` started it
-    or Hermes did on its own: a ``/loop`` or ``/heartbeat`` tick, a finished
-    background process or delegation, a queued follow-up
-    (``tui_gateway/session_notifications.py``, ``tui_gateway/prompt_turn.py``
-    at the pinned commit). A run belongs to the platform when an input is
-    pending or a platform turn is active, the same rule pi uses.
+    or Hermes did on its own. Native prompt receipts and the native inflight
+    user echo identify platform inputs; merely waiting for an input must not
+    claim a background run.
 
     A record's offset counts frames on one WebSocket attachment and starts
     again on the next (``runtime/hermes_backend_channel.py``), so the relay's
@@ -965,25 +986,30 @@ class _HermesRelaySeam:
         # (an ownership refusal, a cancel before the agent was ready). While a
         # submit is in flight that error is the run its input started.
         event_type = str(record.get("type") or "")
-        return event_type == "message.start" or (
+        return bool(record.get("__input_command_ids")) or event_type == "message.start" or (
             event_type == "error" and self._client.submitting
         )
 
-    @staticmethod
-    def platform_run(record: dict[str, Any], *, pending: bool, active: bool) -> bool:
-        return pending or active
+    def platform_run(self, record: dict[str, Any], *, pending: bool, active: bool) -> bool | None:
+        if "__platform_run" in record:
+            return bool(record["__platform_run"])
+        if self._client._unattributed_start is not None:
+            return None
+        return bool(record.get("__input_command_ids")) or active
 
     @staticmethod
     def settles_run(record: dict[str, Any]) -> bool:
         return str(record.get("type") or "") in {"message.complete", "error"}
 
-    @staticmethod
     def handoff_to_platform(
-        translator: HermesTurnTranslator, record: dict[str, Any]
+        self, translator: HermesTurnTranslator, record: dict[str, Any]
     ) -> dict[str, Any] | None:
-        # The platform FIFO submits the next input only after the previous
-        # run's message.complete, so no input arrives inside an engine run.
-        return None
+        if not record.get("__input_command_ids"):
+            return None
+        # Close the resident response, not the native run. Its translator
+        # survives so a tool already running still has its native identity.
+        self._client._handoff_translator = translator
+        return {"type": "result", "finishReason": "stop"}
 
     def response_id(self, record: dict[str, Any], sequence: int) -> str:
         key = str(self._client.engine_session_key or "").strip()
@@ -1080,10 +1106,15 @@ class HermesTuiEngineClient:
         self._subscription: HermesGatewayEventStream | None = None
         self._session_lock = asyncio.Lock()
         self._input_lock = asyncio.Lock()
+        self._handoff_translator: HermesTurnTranslator | None = None
         self._active_receipt: EngineTurnReceipt | None = None
         self._active_command_id: str | None = None
         self._commands: dict[str, EngineInputCommand] = {}
         self._pending_command_ids: deque[str] = deque()
+        self._native_input_status: dict[str, str] = {}
+        self._native_user_row_ids: dict[str, int] = {}
+        self._unattributed_start: HermesTuiWireEvent | None = None
+        self._native_started_ids: set[str] = set()
         self._consumed_command_ids: set[str] = set()
         self._delivery_sequence = 0
         self._server_info: dict[str, Any] | None = None
@@ -1225,7 +1256,7 @@ class HermesTuiEngineClient:
             if cron is not None:
                 await cron.observe(wire.event)
             self._observe_context(wire.event)
-            return wire
+            return await self._attribute_input(wire)
 
         relay = ResidentRelay(
             seam=_HermesRelaySeam(self, base=base),
@@ -1420,7 +1451,7 @@ class HermesTuiEngineClient:
         }
 
     async def deliver(self, command: EngineInputCommand) -> None:
-        """Accept a platform command into the per-conversation FIFO."""
+        """Forward each durable FIFO input to Hermes' native busy-input policy."""
 
         if self._closed:
             raise EngineStreamDetached("Hermes TUI client is closed")
@@ -1446,61 +1477,115 @@ class HermesTuiEngineClient:
                     "Hermes input commands are not a strict FIFO: "
                     f"last={self._delivery_sequence} next={command.sequence}"
                 )
+            await self._ensure_session()
+            assert self._tui_session_id is not None
             self._delivery_sequence = command.sequence
             self._commands[command.command_id] = command
             self._pending_command_ids.append(command.command_id)
-
-    async def _submit_fifo_head(
-        self,
-        *,
-        expected_command_id: str | None = None,
-    ) -> EngineInputCommand | None:
-        async with self._input_lock:
-            if not self._pending_command_ids:
-                return None
-            command_id = self._pending_command_ids[0]
-            if expected_command_id is not None and command_id != expected_command_id:
-                raise RuntimeError(
-                    "Hermes input consumption is not the FIFO head: "
-                    f"head={command_id!r} requested={expected_command_id!r}"
-                )
-            command = self._commands[command_id]
+            relay = self._relay
+            if relay is not None:
+                self._submission_numbers[command.command_id] = relay.platform_input_submitted()
+            self._submitting = True
             try:
-                await self._ensure_session()
-                assert self._tui_session_id is not None
-                relay = self._relay
-                if relay is not None:
-                    self._submission_numbers[command_id] = relay.platform_input_submitted()
-                self._submitting = True
-                try:
-                    await self._gateway.request(
-                        "prompt.submit",
-                        {"session_id": self._tui_session_id, "text": command.content},
-                    )
-                except BaseException:
-                    if relay is not None:
-                        relay.platform_input_rejected()
-                    raise
-                finally:
-                    self._submitting = False
-                if relay is not None:
-                    # Accepted: every record until the run's terminal is this
-                    # turn's, including one Hermes sends without a preceding
-                    # ``message.start``.
-                    relay.platform_turn_reattached()
+                result = await self._gateway.request(
+                    "prompt.submit",
+                    {"session_id": self._tui_session_id, "text": command.content},
+                    input_command_id=command.command_id,
+                )
+                status = str(result.get("status") or "")
+                if status not in {"streaming", "queued", "steered", "redirected"}:
+                    raise HermesTuiProtocolError(f"unknown prompt.submit status: {status!r}")
+                self._native_input_status[command.command_id] = status
+                row_id = result.get("user_row_id")
+                if isinstance(row_id, int) and not isinstance(row_id, bool):
+                    self._native_user_row_ids[command.command_id] = row_id
             except BaseException:
-                # A submit that raised never proved consumption, and consumption
-                # is proven by the engine's own boundary frame rather than by
-                # this call returning. Leaving the command queued makes it the
-                # head forever: the next turn arrives with its own command,
-                # finds someone else at the front, and is refused — so one lost
-                # sandbox silences the conversation for good. The durable FIFO
-                # is the authority on what is owed and redelivers it.
-                self._pending_command_ids.popleft()
+                self._pending_command_ids.remove(command.command_id)
+                self._commands.pop(command.command_id, None)
+                if relay is not None:
+                    relay.platform_input_rejected()
                 raise
-            self._pending_command_ids.popleft()
-            self._active_command_id = command.command_id
-            return command
+            finally:
+                self._submitting = False
+
+    def _unstarted_inputs(self) -> list[str]:
+        return [
+            command_id for command_id in self._pending_command_ids
+            if command_id not in self._native_started_ids
+            and self._native_input_status.get(command_id) in {"streaming", "queued"}
+        ]
+
+    def _commands_for_native_user(self, user: str) -> list[str]:
+        candidates: list[str] = []
+        texts: list[str] = []
+        for command_id in self._unstarted_inputs():
+            candidates.append(command_id)
+            texts.append(self._commands[command_id].content)
+            # Hermes merges consecutive text-only queued prompts with this
+            # separator. Decode the native echo; do not schedule inputs here.
+            if "\n\n".join(texts).strip() == user.strip() and user.strip():
+                return candidates
+        return []
+
+    async def _attribute_input(self, wire: HermesTuiWireEvent) -> HermesTuiWireEvent:
+        """Correlate native receipts and run starts with already-forwarded inputs."""
+
+        event = wire.event
+        command_ids: list[str] = []
+        async with self._input_lock:
+            if wire.input_command_id is not None:
+                result = event.get("payload", {}).get("result", {})
+                if result.get("status") in {"steered", "redirected"}:
+                    command_ids = [wire.input_command_id]
+            elif event.get("type") == "message.start" and self._unstarted_inputs():
+                live = await self._gateway.request(
+                    "session.activate", {"session_id": self._tui_session_id, "omit_messages": True}
+                )
+                inflight = live.get("inflight")
+                user = str(inflight.get("user") or "") if isinstance(inflight, dict) else ""
+                command_ids = self._commands_for_native_user(user)
+                if not command_ids:
+                    # A fast native run can clear inflight before this read.
+                    # Keep its original wire prelude until its own durable row
+                    # receipt identifies it, rather than claim another run.
+                    self._unattributed_start = wire
+            elif event.get("type") == "message.complete" and self._unattributed_start is not None:
+                payload = event.get("payload") or {}
+                persisted = payload.get("persisted_turn") or {}
+                row_id = persisted.get("user_row_id")
+                for command_id in self._unstarted_inputs():
+                    if row_id is not None and self._native_user_row_ids.get(command_id) == row_id:
+                        command_ids = [command_id]
+                        break
+                if not command_ids:
+                    if not isinstance(row_id, int):
+                        raise HermesTuiProtocolError("native run completed without an attributable user row")
+                    live = await self._gateway.request(
+                        "session.activate", {"session_id": self._tui_session_id}
+                    )
+                    for message in live.get("messages") or []:
+                        if message.get("role") == "user" and message.get("row_id") == row_id:
+                            command_ids = self._commands_for_native_user(str(message.get("text") or ""))
+                            break
+                    if (not command_ids and self._unstarted_inputs()
+                            and not live.get("running") and not live.get("queued")):
+                        raise HermesTuiProtocolError("Hermes settled without handling its accepted input")
+                start, self._unattributed_start = self._unattributed_start, None
+                start.event["__input_command_ids"] = command_ids
+                self._native_started_ids.update(command_ids)
+                return HermesTuiWireEvent(
+                    event={**event, "__platform_run": bool(command_ids)},
+                    output_offset=wire.output_offset,
+                )
+            elif event.get("type") == "error" and self._unattributed_start is not None:
+                raise HermesTuiProtocolError("native run failed before its input could be identified")
+            self._native_started_ids.update(command_ids)
+        if not command_ids:
+            return wire
+        return HermesTuiWireEvent(
+            event={**event, "__input_command_ids": command_ids},
+            output_offset=wire.output_offset, input_command_id=wire.input_command_id,
+        )
 
     async def begin_delivery(
         self,
@@ -1508,7 +1593,7 @@ class HermesTuiEngineClient:
         *,
         consumption_confirmed: bool = False,
     ) -> EngineTurnReceipt:
-        """Start or reattach the stream for the FIFO head."""
+        """Attach to the native run of an already-forwarded input."""
 
         if self._closed:
             raise EngineStreamDetached("Hermes TUI client is closed")
@@ -1516,45 +1601,26 @@ class HermesTuiEngineClient:
             if self._active_command_id == command.command_id:
                 return self._active_receipt
             raise RuntimeError("Hermes already has an active turn")
-        if not consumption_confirmed and self._relay is not None:
-            self._relay.platform_turn_begins(
-                self._submission_numbers.get(command.command_id)
-            )
         if command.command_id not in self._commands:
             if consumption_confirmed:
                 self._commands[command.command_id] = command
                 self._delivery_sequence = max(self._delivery_sequence, command.sequence)
             else:
+                # Some seam callers attach their first input directly. They
+                # still use the same immediate native delivery entry point.
                 await self.deliver(command)
-        # Queued above, and everything from here to the submit can fail against
-        # a sandbox that is gone. A command left in the queue becomes its head
-        # forever: the next turn arrives with its own command, is told it is not
-        # the head, and the conversation never speaks again — so one lost box
-        # would be permanent. Nothing here proves consumption, which only the
-        # engine's own boundary frame does, so the durable FIFO still owes this
-        # input and redelivers it.
-        try:
-            await self._ensure_session()
-            assert self._tui_session_id is not None
-            assert self._engine_session_key is not None
-            if consumption_confirmed:
-                with contextlib.suppress(ValueError):
-                    self._pending_command_ids.remove(command.command_id)
-                self._active_command_id = command.command_id
-                self._consumed_command_ids.add(command.command_id)
-                if self._relay is not None:
-                    self._relay.platform_turn_reattached()
-            else:
-                started = await self._submit_fifo_head(
-                    expected_command_id=command.command_id
-                )
-                if started is None:
-                    raise RuntimeError("Hermes FIFO head disappeared before dispatch")
-        except BaseException:
-            async with self._input_lock:
-                with contextlib.suppress(ValueError):
-                    self._pending_command_ids.remove(command.command_id)
-            raise
+        await self._ensure_session()
+        assert self._tui_session_id is not None
+        assert self._engine_session_key is not None
+        self._active_command_id = command.command_id
+        if not consumption_confirmed and self._relay is not None:
+            self._relay.platform_turn_begins(self._submission_numbers.get(command.command_id))
+        if consumption_confirmed:
+            with contextlib.suppress(ValueError):
+                self._pending_command_ids.remove(command.command_id)
+            self._consumed_command_ids.add(command.command_id)
+            if self._relay is not None:
+                self._relay.platform_turn_reattached()
         receipt = EngineTurnReceipt(
             engine_turn_id=encode_turn_anchor(
                 tui_session_id=self._tui_session_id,
@@ -1684,14 +1750,6 @@ class HermesTuiEngineClient:
         active_command = self._commands.get(self._active_command_id or "")
         if not recovered and active_command is None and not receipt.input_consumed:
             raise RuntimeError("Hermes active receipt has no matching FIFO command")
-        if (
-            active_command is not None
-            and not recovered
-            and active_command.command_id not in self._consumed_command_ids
-        ):
-            self._consumed_command_ids.add(active_command.command_id)
-            yield self._input_consumed_frame(active_command)
-
         translator = HermesTurnTranslator(
             block_prefix=anchor["turn_id"],
             turn_id=(
@@ -1705,25 +1763,42 @@ class HermesTuiEngineClient:
             # The relay is the subscription's one reader; it hands this turn
             # the records of the run its input started, in wire order.
             wire = await self._next_turn_wire()
+            if self._handoff_translator is not None:
+                translator, self._handoff_translator = self._handoff_translator, None
+            for command_id in wire.event.get("__input_command_ids", []):
+                command = self._commands.get(command_id)
+                if command is None or command_id in self._consumed_command_ids:
+                    continue
+                for closing in translator._close_text() + translator._close_reasoning():
+                    yield closing
+                self._consumed_command_ids.add(command_id)
+                with contextlib.suppress(ValueError):
+                    self._pending_command_ids.remove(command_id)
+                active_command = command
+                self._active_command_id = command_id
+                # Keep native tool identity and delta history across a steer.
+                # A correction does not finish the running tool or native run.
+                translator.turn_id = command_id
+                yield self._input_consumed_frame(command)
+            if wire.event.get("type") == "prompt.submit":
+                yield {
+                    "type": "data-raw-event",
+                    "data": {"event_type": "prompt.submit", "subtype": "receipt",
+                             "raw": {"command_id": wire.input_command_id,
+                                     "response": wire.event.get("payload")}},
+                    "__engine_sequence_number": self._sequence_base + wire.output_offset,
+                }
+                continue
             for frame in translator.frames(wire.event, offset=wire.output_offset):
                 frame_type = str(frame.get("type") or "")
                 if frame_type == "result":
-                    completed_command = active_command
-                    next_command = await self._submit_fifo_head()
-                    if next_command is not None:
-                        if completed_command is not None:
-                            self._commands.pop(completed_command.command_id, None)
-                            self._consumed_command_ids.discard(completed_command.command_id)
-                            self._submission_numbers.pop(completed_command.command_id, None)
+                    if self._pending_command_ids:
                         yield {
                             "type": "response-result",
                             "data": {key: value for key, value in frame.items() if key != "type"},
                             "__engine_sequence_number": self._sequence_base + wire.output_offset,
                         }
-                        active_command = next_command
-                        translator.restart(next_command.command_id)
-                        self._consumed_command_ids.add(next_command.command_id)
-                        yield self._input_consumed_frame(next_command)
+                        translator.restart(translator.turn_id)
                         continue
                 out = dict(frame)
                 out["__engine_sequence_number"] = self._sequence_base + wire.output_offset
@@ -1737,10 +1812,13 @@ class HermesTuiEngineClient:
                 # so it reached the product. `pi_client` carries the same
                 # comment for the same reason, on the same shape of loop.
                 if frame_type == "result":
-                    if active_command is not None:
-                        self._commands.pop(active_command.command_id, None)
-                        self._consumed_command_ids.discard(active_command.command_id)
-                        self._submission_numbers.pop(active_command.command_id, None)
+                    for command_id in self._consumed_command_ids:
+                        self._commands.pop(command_id, None)
+                        self._submission_numbers.pop(command_id, None)
+                        self._native_input_status.pop(command_id, None)
+                        self._native_user_row_ids.pop(command_id, None)
+                        self._native_started_ids.discard(command_id)
+                    self._consumed_command_ids.clear()
                     self._active_receipt = None
                     self._active_command_id = None
                     if self._relay is not None:
@@ -1871,6 +1949,10 @@ class HermesTuiEngineClient:
             self._active_command_id = None
             self._pending_command_ids.clear()
             self._commands.clear()
+            self._native_input_status.clear()
+            self._native_user_row_ids.clear()
+            self._native_started_ids.clear()
+            self._unattributed_start = None
             return closed
 
 

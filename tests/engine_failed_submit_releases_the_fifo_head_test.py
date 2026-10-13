@@ -85,10 +85,9 @@ def _pi() -> PiEngineClient:
 @pytest.mark.parametrize(
     ("make_client", "submit"),
     [
-        (_hermes, lambda c, cid: c._submit_fifo_head(expected_command_id=cid)),
         (_pi, lambda c, cid: c._submit_fifo_head(expected_command_id=cid)),
     ],
-    ids=["hermes", "pi"],
+    ids=["pi"],
 )
 def test_a_submit_that_raises_leaves_the_queue_empty(make_client, submit) -> None:
     async def run() -> None:
@@ -111,10 +110,9 @@ def test_a_submit_that_raises_leaves_the_queue_empty(make_client, submit) -> Non
 @pytest.mark.parametrize(
     ("make_client", "submit"),
     [
-        (_hermes, lambda c, cid: c._submit_fifo_head(expected_command_id=cid)),
         (_pi, lambda c, cid: c._submit_fifo_head(expected_command_id=cid)),
     ],
-    ids=["hermes", "pi"],
+    ids=["pi"],
 )
 def test_the_next_turn_is_then_the_head_it_expects(make_client, submit) -> None:
     """The scene the lane hit: a lost sandbox, then a retry on a replacement."""

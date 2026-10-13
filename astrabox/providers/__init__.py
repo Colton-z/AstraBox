@@ -37,6 +37,8 @@ SECRETS_GROUP = "astrabox.providers.secrets"
 CHANNEL_GROUP = "astrabox.providers.channel"
 CHANNEL_ACCOUNTS_GROUP = "astrabox.providers.channel_accounts"
 ADMISSION_GROUP = "astrabox.providers.admission"
+RUNTIME_PREPARATION_GROUP = "astrabox.providers.runtime_preparation"
+CHANNEL_RESPONSE_GROUP = "astrabox.providers.channel_response"
 EXTENSIONS_GROUP = "astrabox.providers.extensions"
 SKILLS_GROUP = "astrabox.providers.skills"
 SCHEDULER_GROUP = "astrabox.providers.scheduler"
@@ -55,6 +57,8 @@ _EAGER_GROUPS = (
     CHANNEL_GROUP,
     CHANNEL_ACCOUNTS_GROUP,
     ADMISSION_GROUP,
+    RUNTIME_PREPARATION_GROUP,
+    CHANNEL_RESPONSE_GROUP,
     EXTENSIONS_GROUP,
     SKILLS_GROUP,
     SCHEDULER_GROUP,
@@ -277,6 +281,13 @@ def load_entry_point_providers() -> None:
         get_admission_controller,
         register_admission_controller,
     )
+    from astrabox.seams.runtime_preparation import (
+        RuntimePreparationProvider, register_runtime_preparation_provider,
+        runtime_preparation_provider,
+    )
+    from astrabox.seams.channel_response import (
+        ChannelResponseJudge, channel_response_judge, register_channel_response_judge,
+    )
     from astrabox.seams.sandbox import register_sandbox, sandbox_if_registered
     from astrabox.seams.scheduler import register_scheduler, registered_scheduler_names
     from astrabox.seams.secrets import register_secret_store, registered_secret_store_names
@@ -293,6 +304,10 @@ def load_entry_point_providers() -> None:
                     f"name={ep_name!r} target={ep.value!r}: {exc}"
                 ) from exc
             _check_seams_api_version(target, group=group, name=ep_name)
+            if group == RUNTIME_PREPARATION_GROUP and not isinstance(target, type):
+                raise RuntimeError("runtime-preparation entry point must target a provider class")
+            if group == CHANNEL_RESPONSE_GROUP and not isinstance(target, type):
+                raise RuntimeError("channel-response entry point must target a judge class")
             # Importing usually registered it already (register_* side effect).
             # A class target not yet registered is instantiated + registered here.
             if not isinstance(target, type):
@@ -316,6 +331,24 @@ def load_entry_point_providers() -> None:
                         f"adapter.engine_kind={adapter_kind!r}"
                     )
                 register_engine_adapter(adapter_kind, adapter)
+                continue
+            if group == RUNTIME_PREPARATION_GROUP:
+                if not issubclass(target, RuntimePreparationProvider):
+                    raise RuntimeError("runtime-preparation entry point must target RuntimePreparationProvider")
+                resource_provider = runtime_preparation_provider()
+                if resource_provider is None:
+                    register_runtime_preparation_provider(target())
+                elif type(resource_provider) is not target:
+                    raise RuntimeError("multiple runtime-preparation providers are configured")
+                continue
+            if group == CHANNEL_RESPONSE_GROUP:
+                if not issubclass(target, ChannelResponseJudge):
+                    raise RuntimeError("channel-response entry point must target ChannelResponseJudge")
+                judge = channel_response_judge()
+                if judge is None:
+                    register_channel_response_judge(target())
+                elif type(judge) is not target:
+                    raise RuntimeError("multiple channel response judges are configured")
                 continue
             if group == ADMISSION_GROUP:
                 # A controller has no name: the deployment installs one.
@@ -375,6 +408,8 @@ __all__ = [
     "EXTENSIONS_GROUP",
     "SKILLS_GROUP",
     "SCHEDULER_GROUP",
+    "RUNTIME_PREPARATION_GROUP",
+    "CHANNEL_RESPONSE_GROUP",
     "OPEN_SANDBOX",
     "load_provider",
     "get_sandbox_provider",

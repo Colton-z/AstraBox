@@ -8,8 +8,9 @@ normal Session on the binding's target through
 :class:`~astrabox.core.service.orchestrator.conversation_targets.ConversationTargets`
 and uses the existing turn authority.
 
-Identity: a binding's conversations run as its target's owner (an Agent's
-creator, an Assistant's owner). Channel bindings on an Agent can delegate to an
+Identity: platform bindings run as their target owner. Personal schedules run
+as the authenticated user who owns the schedule, with target access checked
+on every invocation. Channel bindings on an Agent can delegate to an
 administrator-configured execution account; an Assistant is owner-only, so its
 channel bindings admit only the senders listed in ``allowed_participants``. Auth on the inbound endpoint is the
 webhook signature itself (HMAC scene: HMAC-SHA256(secret, timestamp); scheduler:
@@ -49,6 +50,10 @@ from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.time_utils import utcnow_iso
 from astrabox.common.utils.user_context import UserContext
 from astrabox.core.service.orchestrator.agent_access import is_platform_admin
+from astrabox.seams.channel_response import (
+    MAX_RESPONSE_INSTRUCTION_CHARS,
+    RESPONSE_POLICIES,
+)
 from astrabox.core.service.orchestrator.channel_ingress_service import (
     VALID_ATTENTION_POLICIES,
     ChannelIngressService,
@@ -456,6 +461,8 @@ class DeploymentService:
         assistants: dict[str, ConversationTarget | None] = {}
         visible: list[dict[str, Any]] = []
         for row in rows:
+            if row.get("scope") == "personal":
+                continue
             ref = target_ref(row)
             if ref is None:
                 continue
@@ -476,6 +483,85 @@ class DeploymentService:
             visible.append(rendered)
         return visible
 
+    async def _assert_personal_target_access(
+        self, agent_id: str, owner_user_id: str,
+    ) -> ConversationTarget:
+        target = await self._targets.resolve({"agent_id": agent_id})
+        if target is None or not owner_user_id or not await self._targets.may_start_as(target, owner_user_id):
+            raise APIError(code="NOT_FOUND", message="agent not found or unavailable", status_code=404)
+        return target
+
+    async def _personal_schedule(
+        self, user: UserContext, deployment_id: str,
+    ) -> dict[str, Any]:
+        row = await self._deployment_repo.get_by_id(deployment_id)
+        if (not user.user_id or not row or row.get("scope") != "personal"
+                or row.get("owner_user_id") != user.user_id or row.get("owner_org_id") != user.org_id
+                or row.get("scene") != SCENE_SCHEDULE or row.get("deleted") is True):
+            self._raise_deployment_not_found()
+        assert row is not None
+        return row
+
+    async def list_personal_schedules(
+        self, user: UserContext, *, source_assistant_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        rows = await self._deployment_repo.list_personal_schedules(user.user_id, user.org_id)
+        return [self._sanitize(row) for row in rows
+                if source_assistant_id is None or row.get("source_assistant_id") == source_assistant_id]
+
+    async def create_personal_schedule(
+        self, user: UserContext, *, agent_id: str, source_assistant_id: str,
+        name: str, prompt_prefix: str, schedule: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Create an Agent schedule that always executes as its authenticated owner."""
+        return await self.create(
+            agent_id=agent_id, creator_user_id=user.user_id, scene=SCENE_SCHEDULE,
+            name=name, prompt_prefix=prompt_prefix, schedule=schedule,
+            personal_user=user, source_assistant_id=source_assistant_id,
+        )
+
+    async def update_personal_schedule(
+        self, user: UserContext, deployment_id: str, *, patch: dict[str, Any],
+    ) -> dict[str, Any]:
+        row = await self._personal_schedule(user, deployment_id)
+        if set(patch) - {"enabled", "name", "prompt_prefix", "schedule"}:
+            raise APIError(code="INVALID_REQUEST", message="unsupported personal schedule fields", status_code=400)
+        if "enabled" in patch and not isinstance(patch["enabled"], bool):
+            raise APIError(code="INVALID_REQUEST", message="enabled must be a boolean", status_code=400)
+        if patch.get("enabled", row.get("enabled")) is not False:
+            await self._assert_personal_target_access(str(row["agent_id"]), user.user_id)
+        return await self.update(deployment_id, agent_id=str(row["agent_id"]),
+                                 owner_user_id=user.user_id, owner_org_id=user.org_id, patch=patch)
+
+    async def delete_personal_schedule(self, user: UserContext, deployment_id: str) -> None:
+        row = await self._personal_schedule(user, deployment_id)
+        await self.delete(deployment_id, agent_id=str(row["agent_id"]), owner_user_id=user.user_id, owner_org_id=user.org_id)
+
+    async def list_personal_schedule_runs(
+        self, user: UserContext, deployment_id: str, *, limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        row = await self._personal_schedule(user, deployment_id)
+        return await self.list_runs_for_deployment(
+            deployment_id, agent_id=str(row["agent_id"]), owner_user_id=user.user_id, owner_org_id=user.org_id,
+            limit=max(1, min(limit, 100)),
+        )
+
+    async def trigger_personal_schedule(
+        self, user: UserContext, deployment_id: str,
+    ) -> dict[str, Any]:
+        row = await self._personal_schedule(user, deployment_id)
+        await self._assert_personal_target_access(str(row["agent_id"]), user.user_id)
+        return await self.trigger_now(deployment_id, agent_id=str(row["agent_id"]),
+                                      owner_user_id=user.user_id, owner_org_id=user.org_id)
+
+    async def replay_personal_schedule_run(
+        self, user: UserContext, deployment_id: str, run_id: str,
+    ) -> dict[str, Any]:
+        row = await self._personal_schedule(user, deployment_id)
+        await self._assert_personal_target_access(str(row["agent_id"]), user.user_id)
+        return await self.replay_run(run_id, deployment_id=deployment_id,
+                                     agent_id=str(row["agent_id"]), owner_user_id=user.user_id, owner_org_id=user.org_id)
+
     async def create(
         self,
         *,
@@ -487,6 +573,7 @@ class DeploymentService:
         prompt_prefix: str = "",
         secret: str | None = None,
         attention_policy: str | None = None,
+        response_instruction: Any = None,
         channel_config: Any = None,
         credentials: Any = None,
         callback_base_url: str | None = None,
@@ -495,6 +582,8 @@ class DeploymentService:
         execution_mode: Any = None,
         allowed_participants: Any = None,
         actor: UserContext | None = None,
+        personal_user: UserContext | None = None,
+        source_assistant_id: str = "",
     ) -> dict[str, Any]:
         target = target_ref({"agent_id": agent_id, "assistant_id": assistant_id})
         if target is None:
@@ -503,6 +592,11 @@ class DeploymentService:
                 message="a Deployment names exactly one Agent or Assistant",
                 status_code=400,
             )
+        if personal_user is not None:
+            if not personal_user.user_id or target[0] != TARGET_AGENT or scene != SCENE_SCHEDULE:
+                raise APIError(code="INVALID_REQUEST", message="personal plans require an Agent schedule", status_code=400)
+            await self.assert_can_manage_assistant(personal_user, source_assistant_id)
+            await self._assert_personal_target_access(agent_id, personal_user.user_id)
         on_assistant = target[0] != TARGET_AGENT
         scene = str(scene or "").strip()
         channel_name = channel_scene_name(scene)
@@ -546,6 +640,9 @@ class DeploymentService:
         resolved_policy = self._validate_attention_policy(
             attention_policy, is_channel=channel_name is not None
         )
+        instruction = self._validate_response_instruction(
+            response_instruction, policy=resolved_policy,
+        )
         if channel_provider is not None:
             mode, execution_user = self._validate_execution_identity(
                 execution_mode, execution_user_id, provider=channel_provider, scene=scene,
@@ -574,6 +671,10 @@ class DeploymentService:
             "created_at": utcnow_iso(),
             "updated_at": utcnow_iso(),
         }
+        if personal_user is not None:
+            doc.update(scope="personal", owner_user_id=personal_user.user_id,
+                       owner_org_id=personal_user.org_id,
+                       created_by=personal_user.user_id, source_assistant_id=source_assistant_id)
         normalized_credentials: dict[str, Any] | None = None
         if channel_provider is not None:
             doc["execution_mode"] = mode
@@ -654,6 +755,8 @@ class DeploymentService:
                     await self._deployment_repo.soft_delete_for_deployment(
                         deployment_id, str(agent_id).strip(),
                         assistant_id=str(assistant_id).strip(),
+                        owner_user_id=personal_user.user_id if personal_user else "",
+                        owner_org_id=personal_user.org_id if personal_user else "",
                     )
                 except Exception as exc:
                     cleanup_error = cleanup_error or exc
@@ -687,6 +790,8 @@ class DeploymentService:
             doc["secret"] = str(secret or "").strip() or uuid.uuid4().hex[:16]
         if resolved_policy is not None:
             doc["attention_policy"] = resolved_policy
+        if instruction is not None:
+            doc["response_instruction"] = instruction
         if normalized_credentials is not None:
             await self._channel_credentials.put(deployment_id, normalized_credentials)
         try:
@@ -706,19 +811,22 @@ class DeploymentService:
         assistant_id: str = "",
         patch: dict[str, Any],
         actor: UserContext | None = None,
+        owner_user_id: str = "",
+        owner_org_id: str = "",
     ) -> dict[str, Any]:
         # Resolve visibility before validating the patch so missing, deleted and
         # foreign ids remain indistinguishable.  The repository repeats the
         # same scope/deleted predicates on the eventual atomic write, closing
         # the read -> mutation race.
         existing = await self._get_for_deployment(
-            deployment_id, agent_id, assistant_id=assistant_id
+            deployment_id, agent_id, assistant_id=assistant_id, owner_user_id=owner_user_id, owner_org_id=owner_org_id
         )
         allowed = {
             "enabled",
             "prompt_prefix",
             "scene",
             "attention_policy",
+            "response_instruction",
             "channel_config",
             "credentials",
             "name",
@@ -819,8 +927,20 @@ class DeploymentService:
                 updates.pop("attention_policy")
             else:
                 updates["attention_policy"] = resolved_policy
+        if "attention_policy" in updates or "response_instruction" in updates:
+            effective_policy = str(
+                updates.get("attention_policy", existing.get("attention_policy")) or ""
+            ).strip().lower() or None
+            # An instruction only steers the response judge; a policy without
+            # one cannot keep a stored instruction it would never read.
+            updates["response_instruction"] = self._validate_response_instruction(
+                updates.get("response_instruction", existing.get("response_instruction"))
+                if effective_policy in RESPONSE_POLICIES else updates.get("response_instruction"),
+                policy=effective_policy,
+            )
         if existing_scene == SCENE_SCHEDULE:
             updates.pop("attention_policy", None)
+            updates.pop("response_instruction", None)
             if "channel_config" in updates or "credentials" in updates:
                 raise APIError(
                     code="INVALID_REQUEST",
@@ -860,7 +980,7 @@ class DeploymentService:
                     deployment_id,
                     agent_id,
                     {**updates, "updated_at": candidate["updated_at"]},
-                    assistant_id=assistant_id,
+                    assistant_id=assistant_id, owner_user_id=owner_user_id, owner_org_id=owner_org_id,
                 )
             except Exception:
                 await self._restore_schedule_projection(existing)
@@ -1011,7 +1131,54 @@ class DeploymentService:
                 ),
                 status_code=400,
             )
+        if policy in RESPONSE_POLICIES:
+            from astrabox.core.service.orchestrator.channel_response_judge import (
+                active_channel_response_judge,
+            )
+
+            if active_channel_response_judge() is None:
+                raise APIError(
+                    code="CHANNEL_RESPONSE_JUDGE_UNAVAILABLE",
+                    message=(
+                        f"attention_policy {policy} needs a response judge: enable the "
+                        "title model (ASTRABOX_TITLE_MODEL_ENABLED) or install an "
+                        "astrabox.providers.channel_response judge"
+                    ),
+                    status_code=409,
+                )
         return policy
+
+    @staticmethod
+    def _validate_response_instruction(value: Any, *, policy: str | None) -> str | None:
+        """The judge's instruction, or None; refused where no judge reads it."""
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return None
+        if not isinstance(value, str):
+            raise APIError(
+                code="INVALID_REQUEST",
+                message="response_instruction must be a string",
+                status_code=400,
+            )
+        if policy not in RESPONSE_POLICIES:
+            raise APIError(
+                code="INVALID_REQUEST",
+                message=(
+                    "response_instruction applies only to attention_policy "
+                    f"{' or '.join(RESPONSE_POLICIES)}"
+                ),
+                status_code=400,
+            )
+        instruction = value.strip()
+        if len(instruction) > MAX_RESPONSE_INSTRUCTION_CHARS:
+            raise APIError(
+                code="INVALID_REQUEST",
+                message=(
+                    "response_instruction is longer than "
+                    f"{MAX_RESPONSE_INSTRUCTION_CHARS} characters"
+                ),
+                status_code=400,
+            )
+        return instruction
 
     @staticmethod
     async def _validate_channel_configuration(
@@ -1066,17 +1233,19 @@ class DeploymentService:
         return result
 
     async def delete(
-        self, deployment_id: str, *, agent_id: str = "", assistant_id: str = ""
+        self, deployment_id: str, *, agent_id: str = "", assistant_id: str = "",
+        owner_user_id: str = "",
+        owner_org_id: str = "",
     ) -> None:
         existing = await self._deployment_repo.get_for_deployment(
-            deployment_id, agent_id, assistant_id=assistant_id
+            deployment_id, agent_id, assistant_id=assistant_id, owner_user_id=owner_user_id, owner_org_id=owner_org_id
         )
         if not existing:
             # Repeat the guarded mutation even for an invisible id. Besides
             # preserving the one atomic repository boundary, this keeps a
             # missing/deleted/foreign id indistinguishable under a race.
             await self._deployment_repo.soft_delete_for_deployment(
-                deployment_id, agent_id, assistant_id=assistant_id
+                deployment_id, agent_id, assistant_id=assistant_id, owner_user_id=owner_user_id, owner_org_id=owner_org_id
             )
             self._raise_deployment_not_found()
         if str(existing.get("scene") or "") == SCENE_SCHEDULE:
@@ -1088,7 +1257,7 @@ class DeploymentService:
             await self._channel_credentials.purge(deployment_id)
         try:
             deleted = await self._deployment_repo.soft_delete_for_deployment(
-                deployment_id, agent_id, assistant_id=assistant_id
+                deployment_id, agent_id, assistant_id=assistant_id, owner_user_id=owner_user_id, owner_org_id=owner_org_id
             )
         except Exception:
             if str(existing.get("scene") or "") == SCENE_SCHEDULE:
@@ -1128,10 +1297,12 @@ class DeploymentService:
             raise
 
     async def _get_for_deployment(
-        self, deployment_id: str, agent_id: str, *, assistant_id: str = ""
+        self, deployment_id: str, agent_id: str, *, assistant_id: str = "",
+        owner_user_id: str = "",
+        owner_org_id: str = "",
     ) -> dict[str, Any]:
         existing = await self._deployment_repo.get_for_deployment(
-            deployment_id, agent_id, assistant_id=assistant_id
+            deployment_id, agent_id, assistant_id=assistant_id, owner_user_id=owner_user_id, owner_org_id=owner_org_id
         )
         if not existing:
             self._raise_deployment_not_found()
@@ -1263,10 +1434,12 @@ class DeploymentService:
         *,
         agent_id: str = "",
         assistant_id: str = "",
+        owner_user_id: str = "",
+        owner_org_id: str = "",
         limit: int = 50,
     ) -> list[dict[str, Any]]:
         deployment = await self._get_for_deployment(
-            deployment_id, agent_id, assistant_id=assistant_id
+            deployment_id, agent_id, assistant_id=assistant_id, owner_user_id=owner_user_id, owner_org_id=owner_org_id
         )
         self._require_schedule(deployment)
         scheduler = self._require_scheduler()
@@ -1293,10 +1466,12 @@ class DeploymentService:
         ]
 
     async def trigger_now(
-        self, deployment_id: str, *, agent_id: str = "", assistant_id: str = ""
+        self, deployment_id: str, *, agent_id: str = "", assistant_id: str = "",
+        owner_user_id: str = "",
+        owner_org_id: str = "",
     ) -> dict[str, Any]:
         deployment = await self._get_for_deployment(
-            deployment_id, agent_id, assistant_id=assistant_id
+            deployment_id, agent_id, assistant_id=assistant_id, owner_user_id=owner_user_id, owner_org_id=owner_org_id
         )
         self._require_schedule(deployment)
         scheduler = self._require_scheduler()
@@ -1315,6 +1490,8 @@ class DeploymentService:
         deployment_id: str,
         agent_id: str = "",
         assistant_id: str = "",
+        owner_user_id: str = "",
+        owner_org_id: str = "",
     ) -> dict[str, Any]:
         """Start a new Run with the prompt a previous Run of this Deployment captured.
 
@@ -1324,7 +1501,7 @@ class DeploymentService:
         """
 
         deployment = await self._get_for_deployment(
-            deployment_id, agent_id, assistant_id=assistant_id
+            deployment_id, agent_id, assistant_id=assistant_id, owner_user_id=owner_user_id, owner_org_id=owner_org_id
         )
         self._require_schedule(deployment)
         scheduler = self._require_scheduler()
@@ -1348,6 +1525,24 @@ class DeploymentService:
         if not run.session_id:
             return None
         return await self._session_snapshots_repo.get_snapshot(run.session_id)
+
+    async def _personal_run_user(self, context: dict[str, Any]) -> UserContext:
+        deployment = await self._deployment_repo.get_by_id(str(context.get("deployment_id") or ""))
+        owner = str(context.get("owner_user_id") or "")
+        owner_org = str(context.get("owner_org_id") or "")
+        if (not deployment or deployment.get("deleted") is True
+                or deployment.get("scope") != "personal" or deployment.get("scene") != SCENE_SCHEDULE
+                or not owner or deployment.get("owner_user_id") != owner
+                or not owner_org or deployment.get("owner_org_id") != owner_org
+                or target_ref(deployment) != target_ref(context)):
+            raise RunPermanentError("personal schedule no longer exists or changed identity")
+        if context.get("trigger", "schedule") == "schedule" and deployment.get("enabled") is False:
+            raise RunPermanentError("personal schedule is disabled")
+        try:
+            await self._assert_personal_target_access(str(deployment["agent_id"]), owner)
+        except APIError as exc:
+            raise RunPermanentError("personal schedule owner cannot use the target Agent") from exc
+        return UserContext(user_id=owner, org_id=owner_org)
 
     async def start_run_session(
         self, context: dict[str, Any], *, run_id: str
@@ -1377,10 +1572,12 @@ class DeploymentService:
             raise RunPermanentError(
                 "scheduled Deployment's Agent or owner is missing"
             )
+        if deployment.get("scope") == "personal" and context.get("scope") != "personal":
+            raise RunPermanentError("personal schedule invocation has no captured owner")
+        user = (await self._personal_run_user(context) if context.get("scope") == "personal"
+                else UserContext(user_id=target.owner_user_id))
         started = await self._targets.start_conversation(
-            target,
-            UserContext(user_id=target.owner_user_id),
-            idempotency_key=f"deployment-run:{run_id}",
+            target, user, idempotency_key=f"deployment-run:{run_id}",
         )
         session_id = str((started or {}).get("session_id") or "").strip()
         if not session_id:
@@ -1402,7 +1599,14 @@ class DeploymentService:
         """
 
         target = await self._targets.resolve(context)
-        creator_user_id = target.owner_user_id if target is not None else ""
+        personal_user = (await self._personal_run_user(context)
+                         if context.get("scope") == "personal" else None)
+        creator_user_id = (personal_user.user_id if personal_user is not None
+                           else target.owner_user_id if target is not None else "")
+        if personal_user is not None:
+            session = await self._sessions_repo.get_session(session_id)
+            if not session or session.get("user_id") != creator_user_id:
+                raise RunPermanentError("personal schedule Session belongs to another account")
         if not creator_user_id:
             raise RunPermanentError(
                 "Deployment Run's Agent or owner is missing"
@@ -1420,7 +1624,7 @@ class DeploymentService:
             return self._run_turn_binding(command)
 
         receipt = await self._dispatch_turn_input(
-            UserContext(user_id=creator_user_id),
+            personal_user or UserContext(user_id=creator_user_id),
             session_id,
             str(context.get("input_text") or ""),
             client_message_id=client_message_id,

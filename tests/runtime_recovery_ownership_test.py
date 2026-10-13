@@ -65,7 +65,9 @@ class Worker(_RecoverSessionMixin):
         self.release = release
         self.creates = 0
 
-    async def _derive_effective_session_state_for_recover(self, *, session_id, session):
+    async def _derive_effective_session_state_for_recover(
+        self, *, session_id, session, admitted_input=None
+    ):
         return session["state"]
 
     async def _recover_owned_session(self, *, ownership, **_kwargs):

@@ -81,7 +81,9 @@ The Deployment's `attention_policy` decides whether an authenticated message
 needs a direct-message, mention, or reply signal. The adapter reports those
 facts; it does not decide the policy. A message the policy does not address
 is kept as retained context, so a later signal that addresses the same
-`dedup_key` can still run it.
+`dedup_key` can still run it. Under the `participated` and `proactive` response
+policies, core asks a response judge about ordinary retained messages; report
+the same facts, and never fake a signal to make a message run.
 
 ### Separate context and trigger feeds
 

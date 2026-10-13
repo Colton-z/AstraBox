@@ -16,6 +16,8 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
 
+from astrabox.core.service.orchestrator.session_kernel.workers.turn.state import _BridgeRunState
+
 from astrabox.core.service.orchestrator.session_kernel.workers.turn import (
     bridge_journal,
     bridge_terminal,
@@ -26,13 +28,7 @@ _COMMAND = "cmd-1"
 
 
 def _state() -> Any:
-    return SimpleNamespace(
-        effective_turn_id=_TURN,
-        terminal_frame_proof=None,
-        dispatch_confirmed=True,
-        live_frame_seq=0,
-        turn_settled=False,
-    )
+    return _BridgeRunState(effective_turn_id=_TURN, dispatch_confirmed=True)
 
 
 def _ctx() -> Any:

@@ -40,6 +40,7 @@ from astrabox.core.service.orchestrator.runtime_manager import RemoteAgentRuntim
 from astrabox.common.utils.time_utils import utcnow_iso
 from astrabox.core.service.orchestrator.runtime.storage import mounts as mounts_module
 from astrabox.core.service.orchestrator.runtime import sandbox_quota
+from astrabox.core.service.orchestrator.agent import prepared_capacity
 
 
 #: An agent that RESOLVES but carries no idle window of its own, as distinct from
@@ -155,6 +156,9 @@ class _FakeRuntimeManager:
         self._paused = paused
         self.agent_rows: list[dict[str, Any]] = []
 
+    def live_runtimes(self) -> list[Any]:
+        return []
+
     async def agent_box_has_other_recorded_occupants(
         self, sandbox_id: str, *, excluding: str, agent_id: str = "",
     ) -> bool:
@@ -214,9 +218,12 @@ def _no_workspace_mount_reconciliation(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep the watcher tick off the real database and sandbox backend.
 
     These cases judge idle parking, but the same tick also reconciles
-    workspace mounts and the sandbox quota against the deployment's own
-    storage and backend, which a unit run must not reach; a full run once hung
-    in this file for 120 s while the same case passes alone.
+    workspace mounts, the sandbox quota and prepared-unit bindings against the
+    deployment's own storage and backend, which a unit run must not reach; a
+    full run hung in this file for 120 s on whichever of them was left real,
+    while the same case passes alone. The fakes in ``_watcher`` give the
+    Assistant passes nothing to do for the same reason: a pass that fails is
+    logged, and an error log is written to the deployment's error store.
     """
 
     async def _nothing_to_reconcile(*_args: Any, **_kwargs: Any) -> dict[str, int]:
@@ -224,6 +231,9 @@ def _no_workspace_mount_reconciliation(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(mounts_module, "reconcile_workspace_mounts", _nothing_to_reconcile)
     monkeypatch.setattr(sandbox_quota, "reconcile_sandbox_quota", _nothing_to_reconcile)
+    monkeypatch.setattr(
+        prepared_capacity, "release_abandoned_unit_bindings", _nothing_to_reconcile,
+    )
 
 
 def _watcher(
@@ -275,6 +285,11 @@ def _watcher(
         _session_snapshots_repo=SimpleNamespace(get_snapshot=_get_snapshot),
         _agent_config=SimpleNamespace(resolve_agent_harness=_resolve_agent_harness),
         _session_kernel=SimpleNamespace(_get_background_task_state=_get_background_task_state),
+        # No Assistant workspaces: the tick's Assistant passes find nothing to do
+        # rather than failing, since a failure is logged to the real error store.
+        _assistant_workspace_service=SimpleNamespace(
+            list_ready_workspaces=AsyncMock(return_value=[]),
+        ),
     )
     watcher = ExpirationWatcher(platform_service=platform)
     settings = SimpleNamespace(

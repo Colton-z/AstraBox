@@ -94,6 +94,7 @@ class _ResumeCursorTracker:
         self.response_messages = response_messages
         self._pending_message_start: dict[str, Any] | None = None
         self._message_started = False
+        self._input_message_started = False
         self._open_text_ids: set[tuple[str, str]] = set()
         self._open_reasoning_ids: set[tuple[str, str]] = set()
         self._open_tool_input_ids: set[tuple[str, str]] = set()
@@ -120,13 +121,20 @@ class _ResumeCursorTracker:
             response_id = str(data.get("responseMessageId") or "").strip() if isinstance(data, dict) else ""
             if not response_id or not turn_id:
                 raise ValueError("input consumption is missing response or turn identity")
+            # Retain boundaries inside the SDK's one native reply aggregate.
+            # Later tool output must still update its original toolCallId part;
+            # the console splits display messages at these retained markers.
+            marker = {**payload, "transient": False}
+            if self._input_message_started:
+                return [marker]
             metadata = dict((self._pending_message_start or {}).get("messageMetadata") or {})
             metadata["turn_id"] = turn_id
             self._message_started = True
+            self._input_message_started = True
             self._pending_message_start = None
             return [
                 {"type": "start", "messageId": response_id, "messageMetadata": metadata},
-                payload,
+                marker,
             ]
         if (
             not self._message_started

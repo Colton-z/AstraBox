@@ -1217,6 +1217,28 @@ class AdminService:
                 continue
             yield {"session_id": session_id, "files": files}
 
+    async def admin_import_session_history(
+        self, session_id: str, messages: Any,
+    ) -> dict[str, int]:
+        """Import a migrated conversation's earlier messages for reading only."""
+        from astrabox.core.service.orchestrator.session_history_import import (
+            SessionHistoryImporter,
+            validate_history_import,
+        )
+
+        session = await self._sessions_repo.get_session(session_id)
+        if session is None or str(session.get("state") or "") == SessionState.DELETED.value:
+            raise APIError(code="SESSION_NOT_FOUND", message="session not found", status_code=404)
+        validated = validate_history_import(messages)
+        result = await SessionHistoryImporter(self._session_events_repo).import_messages(
+            session_id, validated,
+        )
+        logger.info(
+            "session history imported: session=%s imported=%s unchanged=%s",
+            session_id, result["imported"], result["unchanged"],
+        )
+        return result
+
     async def admin_kill_session(self, user, session_id: str) -> dict[str, Any]:
         session = await self._sessions_repo.get_session(session_id)
         if session is None:

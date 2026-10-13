@@ -112,6 +112,7 @@ function ComposerSubmit({
 // Composer footer used when no pending interaction is active. It contains the
 // queued-message strip, slash-command popup, and prompt input.
 export function SessionComposerBox({
+  userAction,
   sessionId,
   displayedQueue,
   removeQueueItem,
@@ -146,6 +147,7 @@ export function SessionComposerBox({
   isInterruptSettling,
   wrappedStopGeneration,
 }: {
+  userAction?: React.ReactNode;
   sessionId: string;
   displayedQueue: QueuedMessageItem[];
   removeQueueItem: (id: string) => void;
@@ -195,6 +197,7 @@ export function SessionComposerBox({
   const composerAnchorRef = useRef<HTMLDivElement | null>(null);
   return (
     <ReadingColumn className="pb-4 pt-2">
+      {userAction}
       <ComposerQueue
         queuedMessages={displayedQueue}
         onRemoveQueuedMessage={removeQueueItem}

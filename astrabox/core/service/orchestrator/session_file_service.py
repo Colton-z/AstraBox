@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from astrabox.core.service.orchestrator.sandbox_viewer import mint_viewer_url
+
 import contextlib
 import dataclasses
 import posixpath
@@ -12,6 +14,7 @@ from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.user_context import UserContext
 from astrabox.core.service.orchestrator.engine.capabilities import require_session_kind
+from astrabox.core.service.orchestrator.expose_port_service import ExposePortService
 from astrabox.core.service.orchestrator.runtime_binding import (
     reconcile_session_runtime_binding,
 )
@@ -484,6 +487,31 @@ class SessionFileService:
     ) -> FileDownload:
         """Open a file of the owner's session for streaming; see :class:`FileDownload`."""
         return await self._open_download(user, session_id, path=path)
+
+    async def preview_file(
+        self,
+        user: UserContext,
+        session_id: str,
+        *,
+        path: str,
+        expose_port: ExposePortService,
+    ) -> dict[str, Any]:
+        """Authorize the Files root and mint a short-lived static resource URL."""
+        async with self._resolve_session_context(user, session_id) as (session, sandbox, root):
+            target = self._resolve_client_path(root, path)
+            filesystem = self._resolve_filesystem(sandbox, session.get("runtime_identity"))
+            info = await self._assert_path_resolves_within_root(
+                filesystem, root_path=root, target_path=target,
+            )
+            if info is None or info.kind != "file":
+                raise APIError(code="INVALID_REQUEST", message="preview requires a file", status_code=400)
+            endpoint = await expose_port.expose_port(deployment_id=session_id, port=8002)
+            source_root = identity_file_root_source_dir(session.get("runtime_identity")) or root
+            return await mint_viewer_url(
+                sandbox, endpoint,
+                arguments=["grant", "--", source_root, posixpath.relpath(target, root)],
+                prefix="p/", error_code="FILE_PREVIEW_UNAVAILABLE",
+            )
 
     async def list_entries_for_session(
         self,

@@ -93,7 +93,6 @@ provider is installed rather than at the first conversation that needs it.
 | `supports_correlated_create` | `find_sandbox_by_assignment` |
 | `supports_egress_credential_injection` | `apply_credential_vault` |
 | `supports_inventory_listing` | `list_sandboxes` and `describe_sandbox` |
-| `supports_turn_preparation` | `prepare_turn` and `owns_sandbox` |
 | `supports_process_sessions` | the handle's `processes` |
 
 AstraBox refuses configuration that needs a capability the selected backend

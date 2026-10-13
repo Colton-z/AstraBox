@@ -10,6 +10,7 @@ from astrabox.common.utils.errors import APIError
 EXPOSE_PORT_PLATFORM_SERVER = "expose_port"
 ARTIFACTS_PLATFORM_SERVER = "artifacts"
 CONNECTIONS_PLATFORM_SERVER = "connections"
+AGENTS_PLATFORM_SERVER = "agents"
 #: A work-app connector, relayed to the connector hub as the Session's person.
 CONNECTOR_PLATFORM_SERVER = "connector"
 
@@ -71,6 +72,7 @@ def binding_mcp_server_definitions(
     *,
     session_source_type: str | None = None,
     agent_id: str | None = None,
+    assistant_id: str | None = None,
     artifacts_enabled: bool,
 ) -> dict[str, Any]:
     """The servers one Session's engine is given.
@@ -87,6 +89,17 @@ def binding_mcp_server_definitions(
     the Agent's other Sessions need.
     """
     servers = template_mcp_servers(mcp_config)
+    if assistant_id:
+        if AGENTS_PLATFORM_SERVER in servers:
+            raise APIError(
+                code="AGENT_MCP_NAME_CONFLICT",
+                message="the MCP server name agents belongs to Assistant coordination tools",
+                status_code=409,
+            )
+        servers = {**servers, AGENTS_PLATFORM_SERVER: {"platform_server": AGENTS_PLATFORM_SERVER}}
+    else:
+        servers = {name: config for name, config in servers.items()
+                   if platform_mcp_server_id(name, config) != AGENTS_PLATFORM_SERVER}
     if not personal_connections_enabled(session_source_type, agent_id=agent_id):
         servers = {name: config for name, config in servers.items()
                    if platform_mcp_server_id(name, config) != CONNECTOR_PLATFORM_SERVER}
@@ -343,6 +356,7 @@ def runtime_mcp_servers_for_binding(
     deployment_id: str,
     session_source_type: str | None = None,
     agent_id: str | None = None,
+    assistant_id: str | None = None,
     artifacts_enabled: bool,
 ) -> dict[str, dict[str, Any]]:
     from astrabox.core.service.orchestrator.transcript_capability import mint_platform_mcp_capability
@@ -352,7 +366,7 @@ def runtime_mcp_servers_for_binding(
     bound = binds_artifact_tools(session_source_type, agent_artifacts_enabled=artifacts_enabled)
     servers = (binding_mcp_server_definitions(
                    mcp_config, session_source_type=session_source_type,
-                   agent_id=agent_id, artifacts_enabled=artifacts_enabled,
+                   agent_id=agent_id, assistant_id=assistant_id, artifacts_enabled=artifacts_enabled,
                )
                if (base and bid) or not bound
                else template_mcp_servers(mcp_config))
