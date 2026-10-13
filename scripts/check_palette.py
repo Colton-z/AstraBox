@@ -24,16 +24,18 @@ pattern — a rule with exceptions in it stops being decidable:
     are mask CHANNELS — what they select, not what anything is painted; no
     reader ever sees either value.
 
-  · `ai-elements/tool.tsx` and `ai-elements/file-tree.tsx` are vendored from the
-    AI SDK registry and held byte-identical to it
+  · `ai-elements/tool.tsx`, `ai-elements/file-tree.tsx` and
+    `ai-elements/web-preview.tsx` are vendored from the AI SDK registry and
+    held byte-identical to it
     (`scripts/check_upstream.py`, docs/maintainers/upstream-drift-ledger.md), so
     the seven ramp names in them are upstream's text, which this repository does
     not edit. What they RESOLVE to is a local decision: `styles.css` redefines
     those six ramp steps in `@theme inline` onto the palette, so the tool states
-    paint citrine / teal / mint / plasma / crimson and the folder icon paints
-    muted — the meanings §7 assigns. This check reads SOURCE, so it counts a
+    paint citrine / teal / mint / plasma / crimson, the folder icon paints
+    muted and a preview console warning paints citrine — the meanings §7
+    assigns. This check reads SOURCE, so it counts a
     name the page never paints; the row is here to say the name is accounted
-    for, not that the colour is wrong. Both rows leave the baseline the day
+    for, not that the colour is wrong. These rows leave the baseline the day
     upstream stops spelling a hue into a component.
 
   · `ai-elements/terminal.tsx` is vendored the same way and spells a fixed

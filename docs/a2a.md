@@ -59,7 +59,7 @@ for subsequent progress.
 These two tools call the same A2A service as native peers, with the current
 Assistant owner resolved from its workspace binding on every call. Task access,
 target access and interaction validity remain enforced by that service. Results
-use the same public projection. No Hermes plugin replacement or separate Agent
+have the same public shape. No Hermes plugin replacement or separate Agent
 execution path is needed: the MCP bridge supplies the structured operation the
 pinned text-only tool cannot encode.
 
@@ -89,8 +89,8 @@ read its result.
 `historyLength` limits the returned Task history. `acceptedOutputModes` can
 select text, JSON, or both; a single format converts the other result parts into
 that format, retaining their content. Unrestricted Task reads retain the native
-text and public transcript blocks, using the same public projection as the
-Session API. Runtime locators and raw diagnostic envelopes remain server-side.
+text and public transcript blocks, in the same public shape as the Session
+API. Runtime locators and raw diagnostic envelopes remain server-side.
 The protocol definition is the
 [A2A 1.0 specification](https://a2a-protocol.org/v1.0.0/specification/);
 the SDK handles its transport, while AstraBox projects its task semantics from
