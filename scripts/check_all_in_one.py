@@ -95,6 +95,7 @@ PASS_THROUGH = frozenset(
         # The Docker runtime refuses Secure Access (sandbox_server).
         "ASTRABOX_SANDBOX_SECURE_ACCESS",
         "ASTRABOX_SANDBOX_SERVER_PORT_RANGE",
+        "ASTRABOX_SANDBOX_SERVER_EXECD_IMAGE",
         "ASTRABOX_SECRET_STORE",
         "ASTRABOX_AWS_KMS_KEY_ARN",
         "ASTRABOX_VAULT_MASTER_KEY",
