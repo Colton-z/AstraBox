@@ -82,6 +82,7 @@ const sidebars: SidebarsConfig = {
       label: 'Self-host AstraBox',
       items: [
         'deploy',
+        'data-import',
         'deploy-distributed',
         'team-login',
         'egress-credential-injection',

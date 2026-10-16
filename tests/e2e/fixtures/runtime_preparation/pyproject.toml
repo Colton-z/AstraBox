@@ -9,5 +9,8 @@ version = "0.0.1"
 [project.entry-points."astrabox.providers.runtime_preparation"]
 fixture = "preparation_fixture:PreparationFixture"
 
+[project.entry-points."astrabox.api.routers"]
+preparation_guard_fixture = "preparation_fixture:register_guard_routes"
+
 [tool.setuptools]
 py-modules = ["preparation_fixture"]

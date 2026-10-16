@@ -9,11 +9,17 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import BigInteger, CheckConstraint, ForeignKey, Index, Text, func, text
-from sqlalchemy.dialects.postgresql import ARRAY, JSONB
+from sqlalchemy import BigInteger, CheckConstraint, ForeignKey, Index, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from astrabox.persistence.sql.base import Base
+from astrabox.persistence.sql.schema import (
+    MYSQL_TABLE_OPTIONS,
+    TextDefault,
+    boolean_checks,
+    string_list_check,
+)
+from astrabox.persistence.sql.types import KeyText, StringList, payload_json, payload_text
 
 
 class Deployment(Base):
@@ -69,43 +75,46 @@ class Deployment(Base):
             "deployment_id",
             postgresql_where=text("enabled AND scene LIKE 'channel:%'"),
         ),
+        *boolean_checks("enabled", "credentials_configured"),
+        string_list_check("allowed_participants"),
+        MYSQL_TABLE_OPTIONS,
     )
 
-    deployment_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    deployment_id: Mapped[str] = mapped_column(KeyText(128), primary_key=True)
     agent_id: Mapped[str | None] = mapped_column(
-        Text, ForeignKey("agents.agent_id", ondelete="CASCADE")
+        KeyText(128), ForeignKey("agents.agent_id", ondelete="CASCADE")
     )
     assistant_id: Mapped[str | None] = mapped_column(
-        Text, ForeignKey("assistants.assistant_id", ondelete="CASCADE")
+        KeyText(128), ForeignKey("assistants.assistant_id", ondelete="CASCADE")
     )
-    created_by: Mapped[str] = mapped_column(Text)
+    created_by: Mapped[str] = mapped_column(payload_text())
     enabled: Mapped[bool] = mapped_column(server_default=text("true"))
     #: ``hmac``, ``scheduler``, ``schedule`` or ``channel:<provider>``.
-    scene: Mapped[str] = mapped_column(Text)
-    prompt_prefix: Mapped[str] = mapped_column(Text, server_default="")
-    scope: Mapped[str | None] = mapped_column(Text)
-    owner_user_id: Mapped[str | None] = mapped_column(Text)
-    owner_org_id: Mapped[str | None] = mapped_column(Text)
+    scene: Mapped[str] = mapped_column(payload_text())
+    prompt_prefix: Mapped[str] = mapped_column(payload_text(), server_default=TextDefault(""))
+    scope: Mapped[str | None] = mapped_column(payload_text())
+    owner_user_id: Mapped[str | None] = mapped_column(KeyText(512))
+    owner_org_id: Mapped[str | None] = mapped_column(KeyText(512))
     source_assistant_id: Mapped[str | None] = mapped_column(
-        Text, ForeignKey("assistants.assistant_id", ondelete="CASCADE")
+        KeyText(128), ForeignKey("assistants.assistant_id", ondelete="CASCADE")
     )
     #: A scheduled Deployment's name and its five-field cron in an IANA zone.
-    name: Mapped[str | None] = mapped_column(Text)
-    schedule_cron: Mapped[str | None] = mapped_column(Text)
-    schedule_timezone: Mapped[str | None] = mapped_column(Text)
+    name: Mapped[str | None] = mapped_column(payload_text())
+    schedule_cron: Mapped[str | None] = mapped_column(payload_text())
+    schedule_timezone: Mapped[str | None] = mapped_column(payload_text())
     #: The trigger secret a calling system signs or authenticates with.
-    secret: Mapped[str | None] = mapped_column(Text)
-    attention_policy: Mapped[str | None] = mapped_column(Text)
-    response_instruction: Mapped[str | None] = mapped_column(Text)
-    execution_mode: Mapped[str | None] = mapped_column(Text)
-    execution_user_id: Mapped[str | None] = mapped_column(Text)
-    allowed_participants: Mapped[list[str] | None] = mapped_column(ARRAY(Text))
+    secret: Mapped[str | None] = mapped_column(payload_text())
+    attention_policy: Mapped[str | None] = mapped_column(payload_text())
+    response_instruction: Mapped[str | None] = mapped_column(payload_text())
+    execution_mode: Mapped[str | None] = mapped_column(payload_text())
+    execution_user_id: Mapped[str | None] = mapped_column(payload_text())
+    allowed_participants: Mapped[list[str] | None] = mapped_column(StringList())
     #: The provider's own configuration, validated by the provider.
-    channel_config: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))
+    channel_config: Mapped[dict[str, Any] | None] = mapped_column(payload_json())
     #: Set once platform credentials are sealed in the secret store under
     #: ``deployment/<deployment_id>``; the row never holds them.
     credentials_configured: Mapped[bool | None]
-    callback_base_url: Mapped[str | None] = mapped_column(Text)
+    callback_base_url: Mapped[str | None] = mapped_column(payload_text())
     #: The last source position a channel source acknowledged durably.
     source_cursor: Mapped[int | None] = mapped_column(BigInteger)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())

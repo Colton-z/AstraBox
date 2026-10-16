@@ -9,16 +9,17 @@
 
 from __future__ import annotations
 
+from astrabox.persistence.errors import ForeignKeyViolation, UniqueViolation
 from astrabox.persistence.sql.base import Base, from_iso, to_iso
 from astrabox.persistence.sql.ops import (
-    ForeignKeyViolation,
-    UniqueViolation,
     execute,
     fetch_all,
     fetch_one,
     fetch_value,
     transaction,
 )
+
+from astrabox.persistence.sql import statements as _statements  # noqa: F401 - registers dialect compilers
 
 __all__ = [
     "Base",

@@ -14,7 +14,7 @@ from pathlib import Path
 from alembic import command
 from alembic.config import Config
 
-from astrabox.persistence.sql.engine import database_url
+from astrabox.providers.postgres.engine import database_url
 
 _SCRIPT_LOCATION = Path(__file__).resolve().parent / "alembic"
 

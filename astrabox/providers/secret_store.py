@@ -31,11 +31,11 @@ from typing import cast
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from sqlalchemy import Table, delete, select
-from sqlalchemy.dialects.postgresql import Insert, insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from astrabox.persistence.sql import execute, fetch_value
+from astrabox.persistence.sql import execute, fetch_value, transaction
 from astrabox.persistence.sql.models.vaults import Secret
+from astrabox.persistence.sql.statements import upsert_primary_key
 from astrabox.seams.secrets import SecretStore, register_secret_store
 
 MASTER_KEY_ENV = "ASTRABOX_VAULT_MASTER_KEY"
@@ -183,12 +183,17 @@ class EncryptedCollectionSecretStore(SecretStore):
             )
         if put:
             await conn.execute(
-                _upsert([{"scope": scope, "key": key, "sealed": sealed} for key, sealed in put.items()])
+                upsert_primary_key(
+                    conn,
+                    _SECRETS,
+                    [{"scope": scope, "key": key, "sealed": sealed} for key, sealed in put.items()],
+                    update_columns=["sealed"],
+                )
             )
 
     async def put(self, *, scope: str, key: str, value: str) -> None:
         sealed = await self._seal_value(scope=scope, key=key, value=value)
-        await execute(_upsert([{"scope": scope, "key": key, "sealed": sealed}]))
+        await transaction(lambda conn: self.apply(conn, scope=scope, put={key: sealed}))
 
     async def get(self, *, scope: str, key: str) -> str | None:
         sealed = await fetch_value(
@@ -203,18 +208,6 @@ class EncryptedCollectionSecretStore(SecretStore):
 
     async def purge_scope(self, *, scope: str) -> None:
         await execute(delete(_SECRETS).where(_SECRETS.c.scope == scope))
-
-
-def _upsert(rows: list[dict[str, str]]) -> Insert:
-    """Store ``rows``, replacing the sealed value of any (scope, key) already present.
-
-    One statement, so concurrent first writes of one key leave one row.
-    """
-    statement = insert(_SECRETS).values(rows)
-    return statement.on_conflict_do_update(
-        index_elements=[_SECRETS.c.scope, _SECRETS.c.key],
-        set_={"sealed": statement.excluded.sealed},
-    )
 
 
 class LocalEncryptedSecretStore(EncryptedCollectionSecretStore):

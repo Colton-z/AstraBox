@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "astrabox-contract-postgres"
+version = "0.0.1"
+description = "External entry-point binding of the native PostgreSQL persistence provider"
+requires-python = ">=3.12"
+
+[project.entry-points."astrabox.providers.persistence"]
+contract-postgres = "contract_postgres:ContractPostgresPersistenceProvider"
+
+[tool.setuptools]
+py-modules = ["contract_postgres"]

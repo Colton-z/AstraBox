@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, CheckConstraint, ForeignKey, Index, Text, func, true
+from sqlalchemy import BigInteger, CheckConstraint, ForeignKey, Index, func, true
 from sqlalchemy.orm import Mapped, mapped_column
 
 from astrabox.persistence.sql.base import Base
+from astrabox.persistence.sql.schema import MYSQL_TABLE_OPTIONS, boolean_checks
+from astrabox.persistence.sql.types import KeyText, payload_text
 
 
 class Installation(Base):
@@ -22,10 +24,12 @@ class Installation(Base):
     __table_args__ = (
         CheckConstraint("singleton", name="singleton"),
         CheckConstraint("installation_id <> ''", name="installation_id_present"),
+        *boolean_checks("singleton"),
+        MYSQL_TABLE_OPTIONS,
     )
 
     singleton: Mapped[bool] = mapped_column(primary_key=True, server_default=true())
-    installation_id: Mapped[str] = mapped_column(Text)
+    installation_id: Mapped[str] = mapped_column(payload_text())
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
 
@@ -37,9 +41,12 @@ class UserProfile(Base):
     """
 
     __tablename__ = "user_profiles"
+    __table_args__ = (
+        MYSQL_TABLE_OPTIONS,
+    )
 
-    user_id: Mapped[str] = mapped_column(Text, primary_key=True)
-    display_name: Mapped[str] = mapped_column(Text)
+    user_id: Mapped[str] = mapped_column(KeyText(512), primary_key=True)
+    display_name: Mapped[str] = mapped_column(payload_text())
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
 
@@ -53,15 +60,18 @@ class CapturedRuntimeError(Base):
 
     __tablename__ = "runtime_errors"
     # Serves the newest-first listing and the retention delete.
-    __table_args__ = (Index(None, "last_seen"),)
+    __table_args__ = (
+        Index(None, "last_seen"),
+        MYSQL_TABLE_OPTIONS,
+    )
 
-    signature: Mapped[str] = mapped_column(Text, primary_key=True)
-    logger: Mapped[str] = mapped_column(Text)
-    severity: Mapped[str] = mapped_column(Text)
-    error_type: Mapped[str | None] = mapped_column(Text)
-    message: Mapped[str] = mapped_column(Text)
-    location: Mapped[str] = mapped_column(Text)
-    traceback: Mapped[str | None] = mapped_column(Text)
+    signature: Mapped[str] = mapped_column(KeyText(128), primary_key=True)
+    logger: Mapped[str] = mapped_column(payload_text())
+    severity: Mapped[str] = mapped_column(payload_text())
+    error_type: Mapped[str | None] = mapped_column(payload_text())
+    message: Mapped[str] = mapped_column(payload_text())
+    location: Mapped[str] = mapped_column(payload_text())
+    traceback: Mapped[str | None] = mapped_column(payload_text())
     count: Mapped[int] = mapped_column(BigInteger)
     first_seen: Mapped[datetime]
     last_seen: Mapped[datetime]
@@ -78,12 +88,15 @@ class HermesCronJob(Base):
     __tablename__ = "hermes_cron_jobs"
     # Leads with the conversation so the same index serves a reader's listing
     # and the cascade when the conversation is deleted.
-    __table_args__ = (Index(None, "session_id", "profile_key"),)
+    __table_args__ = (
+        Index(None, "session_id", "profile_key"),
+        MYSQL_TABLE_OPTIONS,
+    )
 
-    profile_key: Mapped[str] = mapped_column(Text, primary_key=True)
-    job_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    profile_key: Mapped[str] = mapped_column(KeyText(1024), primary_key=True)
+    job_id: Mapped[str] = mapped_column(KeyText(512), primary_key=True)
     session_id: Mapped[str] = mapped_column(
-        Text, ForeignKey("sessions.session_id", ondelete="CASCADE")
+        KeyText(128), ForeignKey("sessions.session_id", ondelete="CASCADE")
     )
     #: The newest run already delivered; it only moves forward.
     delivered_run_at: Mapped[datetime | None]
@@ -107,22 +120,23 @@ class AgentTaskReference(Base):
         # same index serves the cascade when the Agent is deleted.
         Index(None, "agent_id", "user_id", "org_id", "created_at", "reference_id"),
         Index(None, "session_id"),
+        MYSQL_TABLE_OPTIONS,
     )
 
-    reference_id: Mapped[str] = mapped_column(Text, primary_key=True)
-    kind: Mapped[str] = mapped_column(Text)
+    reference_id: Mapped[str] = mapped_column(KeyText(1024), primary_key=True)
+    kind: Mapped[str] = mapped_column(payload_text())
     agent_id: Mapped[str] = mapped_column(
-        Text, ForeignKey("agents.agent_id", ondelete="CASCADE")
+        KeyText(128), ForeignKey("agents.agent_id", ondelete="CASCADE")
     )
-    user_id: Mapped[str] = mapped_column(Text)
-    org_id: Mapped[str] = mapped_column(Text)
-    context_id: Mapped[str] = mapped_column(Text)
-    message_id: Mapped[str | None] = mapped_column(Text)
-    task_id: Mapped[str | None] = mapped_column(Text)
+    user_id: Mapped[str] = mapped_column(KeyText(512))
+    org_id: Mapped[str] = mapped_column(KeyText(512))
+    context_id: Mapped[str] = mapped_column(payload_text())
+    message_id: Mapped[str | None] = mapped_column(payload_text())
+    task_id: Mapped[str | None] = mapped_column(payload_text())
     #: Digest of the request a message id first named, so a different request
     #: reusing the id is refused.
-    fingerprint: Mapped[str | None] = mapped_column(Text)
+    fingerprint: Mapped[str | None] = mapped_column(payload_text())
     session_id: Mapped[str | None] = mapped_column(
-        Text, ForeignKey("sessions.session_id", ondelete="CASCADE")
+        KeyText(128), ForeignKey("sessions.session_id", ondelete="CASCADE")
     )
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())

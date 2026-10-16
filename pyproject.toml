@@ -226,6 +226,11 @@ gateway = "astrabox.providers.channel_satori:GatewayChannelProvider"
 [project.entry-points."astrabox.providers.channel_accounts"]
 links = "astrabox.providers.channel_account_links:LinkTableChannelAccountResolver"
 
+# Relational engines and physical database capabilities; shared repositories
+# retain the platform's atomic storage recipes.
+[project.entry-points."astrabox.providers.persistence"]
+postgres = "astrabox.providers.relational_postgres:PostgresPersistenceProvider"
+
 # Scheduler providers (cron dispatch, Run ledger, retries and recovery for
 # scheduled Deployments — see astrabox/seams/scheduler.py). `dbos` keeps its
 # state in the repository's SQL database; ASTRABOX_SCHEDULER_PROVIDER selects one.

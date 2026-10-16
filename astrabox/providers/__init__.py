@@ -42,12 +42,12 @@ CHANNEL_RESPONSE_GROUP = "astrabox.providers.channel_response"
 EXTENSIONS_GROUP = "astrabox.providers.extensions"
 SKILLS_GROUP = "astrabox.providers.skills"
 SCHEDULER_GROUP = "astrabox.providers.scheduler"
+PERSISTENCE_GROUP = "astrabox.providers.persistence"
 
 # Groups whose members are eagerly loaded at bootstrap so their register_* side
 # effects (or class registrations) run without the host importing the plugin
-# module by name. The repository group is deliberately absent: repository
-# backends are lazily selected by name (astrabox/repositories) and must not be
-# instantiated eagerly.
+# module by name. Persistence is deliberately absent: only the explicitly
+# selected relational provider is loaded, without importing other backends.
 _EAGER_GROUPS = (
     SANDBOX_GROUP,
     STORAGE_GROUP,

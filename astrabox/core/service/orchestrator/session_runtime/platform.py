@@ -26,7 +26,8 @@ from astrabox.core.service.orchestrator.session_runtime.host import (
     RuntimeStartFailed,
 )
 from astrabox.core.service.orchestrator.session_runtime.reader import InputPreparationRefused, ReaderHooks
-from astrabox.persistence.repository.session_repository import SessionRepository, session_runtime_lock
+from astrabox.persistence.repository.session_repository import SessionRepository
+from astrabox.persistence.provider import get_persistence
 from astrabox.persistence.repository.session_runtime_repository import FactBatch, SessionRuntimeRepository
 from astrabox.seams.runtime_preparation import (
     TURN_PREPARATION_FAILED,
@@ -65,7 +66,7 @@ class PlatformRuntimeConnector:
         self._replace = replace
 
     async def connect(self, session_id: str) -> ConnectedRuntime:
-        async with session_runtime_lock(session_id):
+        async with get_persistence().coordination.runtime_lock(session_id):
             session = await self._sessions.get_session(session_id)
             if (
                 session is None

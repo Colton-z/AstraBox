@@ -11,20 +11,21 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 **Upgrading:**
 
-- AstraBox stores its records only in PostgreSQL. The server brings the
-  database schema to its release's version with Alembic when it starts;
-  replicas that start together take turns on a PostgreSQL advisory lock.
-  `ASTRABOX_DB_URL` must be a `postgresql://` URL: the server does not start
-  with a SQLite or MongoDB database. Connect it to PostgreSQL directly or through a pooler in session
-  mode, because it listens for PostgreSQL notifications. See
+- PostgreSQL remains the supported default database. With the built-in
+  `postgres` persistence provider, startup upgrades the schema with Alembic;
+  concurrent replicas serialize upgrades on a PostgreSQL advisory lock.
+  This provider requires a `postgresql://` `ASTRABOX_DB_URL` and a direct
+  connection or a pooler in session mode for PostgreSQL notifications.
+  The selected provider validates its native URL; selecting an external
+  provider does not establish support for another database. See
   [The AstraBox database](docs/deploy.md#the-astrabox-database).
-- There is no data migration from 0.1.8. An upgraded installation starts with
-  an empty AstraBox database: Agents, Environments, Assistants, Sessions and
-  their history, Deployments, Vaults and the other records of 0.1.8 are not
-  carried over. Remove the sandboxes the 0.1.8 installation created before
-  starting 0.1.9: a new database gets a new installation id, and an
-  installation never removes or counts sandboxes that carry another
-  installation's id. See
+- There is no automatic conversion of 0.1.8 data. Operators preserving selected
+  records can convert and load the current PostgreSQL schema before startup;
+  the [offline import guide](docs/data-import.md) defines ordering, identity,
+  credential and history/native-state requirements. It is not an automatic
+  importer or arbitrary legacy-format compatibility. The documented fresh-start
+  option discards old AstraBox records and creates a new installation identity,
+  which does not own the old installation's sandboxes. See
   [Upgrade from AstraBox 0.1.8](docs/deploy.md#upgrade-from-0-1-8).
 - Clients send a message with `POST /api/v1/sessions/{id}/inputs`
   (`{content, client_message_id?}`), which returns a receipt
@@ -70,9 +71,17 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   `{through_seq, responses}`.
 - `SEAMS_API_VERSION` is 7. A provider that pins `seams_api_version = 6` is
   refused at startup; update the pin after making the changes below.
-- The record store is not a plugin: `astrabox.seams.AsyncDocumentCollection`,
+- The document-collection interface `astrabox.seams.AsyncDocumentCollection`,
   the `astrabox.providers.repository` entry-point group, the `mongo` extra and
-  `astrabox.testing.collection_conformance` are removed.
+  `astrabox.testing.collection_conformance` are removed. Relational providers
+  now register through `astrabox.providers.persistence` and are selected by
+  `ASTRABOX_PERSISTENCE_PROVIDER` (default `postgres`). Business repositories
+  remain shared, as in 0.1.8; providers supply SQLAlchemy engines, native
+  conflict operations, schema initialization, error classification and physical
+  coordination: transaction-bound notifications, runtime locks and listening
+  with resynchronization. Reusable MySQL conflict operations are not a complete
+  MySQL backend. See
+  [Relational persistence providers](docs/providers/relational-persistence.md).
 - `SchedulerProvider.configure` takes `database_url`, the platform's PostgreSQL
   URL, in place of `repository_backend`.
 - Inline Environment credentials require a Secret Store derived from

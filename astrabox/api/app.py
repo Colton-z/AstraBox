@@ -362,10 +362,9 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
        set (settings) to the seam; the only place backend names enter the
        dispatch path. The scheduler provider is selected and checked against
        the database in the same composition step.
-    5. ``upgrade_to_head()`` — brings the PostgreSQL schema to this build's
-       Alembic head (:mod:`astrabox.persistence.sql.migrate`); replicas
-       starting together serialize on a PostgreSQL advisory lock, so each
-       revision runs once.
+    5. ``get_persistence().initialize_schema()`` — initializes the selected
+       provider's schema. The built-in PostgreSQL provider upgrades to this
+       build's Alembic head and serializes replicas with an advisory lock.
        ``sandbox_installation_id()`` then reads the installation id this
        database holds (creating it on a new database), which every sandbox
        create stamps and the ownerless reap matches, so a database that cannot
@@ -403,7 +402,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     logged, not fatal.
     """
     # --- Startup composition, persistence, and default resources --------------
-    from astrabox.persistence.sql.migrate import upgrade_to_head
+    from astrabox.persistence.provider import get_persistence
     from astrabox.seams.sandbox import enabled_sandbox_providers, sandbox_installation_id
     from astrabox.core.service.orchestrator.runtime.sandbox_quota import (
         configure_sandbox_quotas,
@@ -425,7 +424,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     validate_signing_key_config()
     session_signing_secret()
     bootstrap()
-    await upgrade_to_head()
+    await get_persistence().initialize_schema()
     await sandbox_installation_id()
     await warn_about_catalog_selections_without_a_catalog()
     await _warn_about_environments_on_disabled_backends()
@@ -518,6 +517,11 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             logger.warning(
                 "service shutdown cleanup failed (non-fatal)", exc_info=True
             )
+
+        try:
+            await get_persistence().dispose()
+        except Exception:  # noqa: BLE001 - shutdown must continue
+            logger.warning("persistence shutdown failed (non-fatal)", exc_info=True)
 
 
 def _register_feature_routes(app: FastAPI) -> None:

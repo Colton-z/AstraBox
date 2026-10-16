@@ -14,7 +14,7 @@ from typing import Any
 from sqlalchemy import delete, func, insert, literal, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from astrabox.persistence.sql import UniqueViolation, fetch_all, fetch_one, to_iso, transaction
+from astrabox.persistence.sql import UniqueViolation, fetch_all, to_iso, transaction
 from astrabox.persistence.sql.models.agents import Agent, AgentCategory, AgentCategoryLink
 
 _CATEGORIES = AgentCategory.__table__
@@ -42,18 +42,27 @@ class AgentCategoryRepository:
 
     async def create(self, *, name: str, name_key: str) -> dict[str, Any]:
         """Add a category after the last one; raises :class:`CategoryNameTaken`."""
+        category_id = f"cat_{uuid.uuid4().hex}"
         after_last = select(
-            literal(f"cat_{uuid.uuid4().hex}"),
-            literal(name),
-            literal(name_key),
+            literal(category_id, type_=_CATEGORIES.c.category_id.type),
+            literal(name, type_=_CATEGORIES.c.name.type),
+            literal(name_key, type_=_CATEGORIES.c.name_key.type),
             func.coalesce(func.max(_CATEGORIES.c.position), -1) + 1,
         )
-        try:
-            row = await fetch_one(
-                insert(_CATEGORIES)
-                .from_select(["category_id", "name", "name_key", "position"], after_last)
-                .returning(_CATEGORIES)
+
+        async def add(conn: AsyncConnection) -> dict[str, Any]:
+            await conn.execute(
+                insert(_CATEGORIES).from_select(
+                    ["category_id", "name", "name_key", "position"], after_last
+                )
             )
+            result = await conn.execute(
+                select(_CATEGORIES).where(_CATEGORIES.c.category_id == category_id)
+            )
+            return dict(result.mappings().one())
+
+        try:
+            row = await transaction(add)
         except UniqueViolation as exc:
             raise CategoryNameTaken(name) from exc
         stored = _view(row)
@@ -62,13 +71,22 @@ class AgentCategoryRepository:
 
     async def rename(self, category_id: str, *, name: str, name_key: str) -> dict[str, Any] | None:
         """Rename a category; ``None`` when it does not exist. Raises :class:`CategoryNameTaken`."""
-        try:
-            row = await fetch_one(
+
+        async def change(conn: AsyncConnection) -> dict[str, Any] | None:
+            changed = await conn.execute(
                 update(_CATEGORIES)
                 .where(_CATEGORIES.c.category_id == category_id)
                 .values(name=name, name_key=name_key, updated_at=func.now())
-                .returning(_CATEGORIES)
             )
+            if changed.rowcount != 1:
+                return None
+            result = await conn.execute(
+                select(_CATEGORIES).where(_CATEGORIES.c.category_id == category_id)
+            )
+            return dict(result.mappings().one())
+
+        try:
+            row = await transaction(change)
         except UniqueViolation as exc:
             raise CategoryNameTaken(name) from exc
         return _view(row)

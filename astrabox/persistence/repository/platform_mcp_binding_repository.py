@@ -19,10 +19,11 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import delete, func, or_, select, update
-from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.ext.asyncio import AsyncConnection
 
-from astrabox.persistence.sql import execute, fetch_one, from_iso, to_iso
+from astrabox.persistence.sql import execute, fetch_one, from_iso, to_iso, transaction
 from astrabox.persistence.sql.models.sessions import PlatformMCPBinding
+from astrabox.persistence.sql.statements import upsert_primary_key
 
 _BINDINGS = PlatformMCPBinding.__table__
 
@@ -59,16 +60,23 @@ class PlatformMCPBindingRepository:
             for key, value in binding.items()
         }
         values["deployment_id"] = deployment_id
-        statement = pg_insert(_BINDINGS).values(**values)
-        row = await fetch_one(
-            statement.on_conflict_do_update(
-                index_elements=[_BINDINGS.c.deployment_id],
-                set_={
-                    **{key: statement.excluded[key] for key in values if key != "deployment_id"},
-                    "updated_at": func.now(),
-                },
-            ).returning(_BINDINGS)
-        )
+
+        async def publish(conn: AsyncConnection) -> dict[str, Any]:
+            await conn.execute(
+                upsert_primary_key(
+                    conn,
+                    _BINDINGS,
+                    values,
+                    update_columns=[key for key in values if key != "deployment_id"],
+                    update_values={"updated_at": func.now()},
+                )
+            )
+            result = await conn.execute(
+                select(_BINDINGS).where(_BINDINGS.c.deployment_id == deployment_id)
+            )
+            return dict(result.mappings().one())
+
+        row = await transaction(publish)
         stored = _view(row)
         assert stored is not None
         return stored
@@ -79,7 +87,7 @@ class PlatformMCPBindingRepository:
         """Route a prepared unit's address to the session that claimed the unit.
 
         A session runs one runtime, so the addresses its earlier runtimes
-        claimed are deleted in the same statement. ``False`` when the address
+        claimed are deleted in the same transaction. ``False`` when the address
         has no route left to claim: the unit's row was deleted, or another
         session holds it.
         """
@@ -87,27 +95,29 @@ class PlatformMCPBindingRepository:
         session = str(session_id or "").strip()
         if not target or not session:
             raise ValueError("claiming a prepared binding requires its address and a session")
-        superseded = (
-            delete(_BINDINGS)
-            .where(_BINDINGS.c.session_id == session, _BINDINGS.c.deployment_id != target)
-            .cte("superseded")
-        )
-        claimed = (
-            update(_BINDINGS)
-            .where(
-                _BINDINGS.c.deployment_id == target,
-                _BINDINGS.c.source == "prepared_slot",
-                or_(_BINDINGS.c.session_id.is_(None), _BINDINGS.c.session_id == session),
+
+        async def claim(conn: AsyncConnection) -> bool:
+            await conn.execute(
+                delete(_BINDINGS).where(
+                    _BINDINGS.c.session_id == session, _BINDINGS.c.deployment_id != target
+                )
             )
-            .values(
-                session_id=session,
-                user_id=str(user_id or "").strip() or None,
-                updated_at=func.now(),
+            claimed = await conn.execute(
+                update(_BINDINGS)
+                .where(
+                    _BINDINGS.c.deployment_id == target,
+                    _BINDINGS.c.source == "prepared_slot",
+                    or_(_BINDINGS.c.session_id.is_(None), _BINDINGS.c.session_id == session),
+                )
+                .values(
+                    session_id=session,
+                    user_id=str(user_id or "").strip() or None,
+                    updated_at=func.now(),
+                )
             )
-            .returning(_BINDINGS.c.deployment_id)
-            .add_cte(superseded)
-        )
-        return await fetch_one(claimed) is not None
+            return claimed.rowcount == 1
+
+        return await transaction(claim)
 
     async def get_binding(self, deployment_id: str) -> dict[str, Any] | None:
         normalized = str(deployment_id or "").strip()

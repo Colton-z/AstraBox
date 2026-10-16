@@ -10,7 +10,7 @@ Every operation names the platform session the request was authorized for.
 The rest of a scope's key comes from the box, which any caller can echo, so
 the platform session is what keeps one tenant out of another's transcripts.
 
-Appends are batches named by the sender's ``append_id``. One statement creates
+Appends are batches named by the sender's ``append_id``. One transaction creates
 the scope if needed, numbers the batch after the scope's last entry and stores
 it, so a scope's entries are always ``1..N`` without gaps, and a batch is
 either wholly stored or not at all. Re-sending a stored batch returns the
@@ -27,24 +27,26 @@ from datetime import datetime, timezone
 from typing import Any, cast
 
 from sqlalchemy import (
-    ARRAY,
     ColumnElement,
     Table,
     Text,
     UniqueConstraint,
     and_,
     func,
-    literal,
+    insert,
     select,
-    true,
+    update,
 )
-from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.ext.asyncio import AsyncConnection
 from sqlalchemy.sql import Select
 
-from astrabox.persistence.sql import ForeignKeyViolation, UniqueViolation, fetch_all, fetch_value
-from astrabox.persistence.sql.models.sessions import TranscriptEntry, TranscriptScope
-from astrabox.persistence.sql.notify import notice
+from astrabox.persistence.sql import ForeignKeyViolation, UniqueViolation, fetch_all, fetch_value, transaction
+from astrabox.persistence.sql.models.sessions import Session, TranscriptEntry, TranscriptScope
+from astrabox.persistence.sql.statements import insert_if_absent
+from astrabox.persistence.provider import get_persistence
+from astrabox.seams.persistence_coordination import SessionNotice
 
+_SESSIONS = Session.__table__
 _SCOPES = cast(Table, TranscriptScope.__table__)
 _ENTRIES = cast(Table, TranscriptEntry.__table__)
 
@@ -125,7 +127,7 @@ class TranscriptEntryRepository:
                 platform_session_id, project_key, native_session_id, subpath, batch, texts
             )
         except UniqueViolation as exc:
-            if exc.constraint != _BATCH_KEY:
+            if (exc.constraint or "").rsplit(".", 1)[-1] != _BATCH_KEY:
                 raise
             # Another delivery of this append_id committed while this one ran;
             # the key check waited for it, so its rows are there to compare.
@@ -147,73 +149,55 @@ class TranscriptEntryRepository:
         append_id: str,
         texts: list[str],
     ) -> int | None:
-        """Store a batch the scope does not hold yet; ``None`` when it holds it.
+        """Store one atomic batch under its Session and native scope locks.
 
-        Inserting the scope, or updating its existing row, takes the row's
-        lock, so concurrent appends to one scope number their batches one
-        after another from the count the previous one committed.
+        Parent exclusion serializes scope creation before the exact unique-key
+        insert. The scope then owns numbering until entries and notice commit.
         """
-        count = len(texts)
-        # The batch is looked up through the scope's key, so the subquery
-        # stands alone instead of referring to the upsert's conflicting row.
-        existing = _SCOPES.alias("existing")
-        held = (
-            select(true())
-            .select_from(existing.join(_ENTRIES, _ENTRIES.c.scope_id == existing.c.scope_id))
-            .where(
-                existing.c.platform_session_id == platform_session_id,
-                existing.c.project_key == project_key,
-                existing.c.native_session_id == native_session_id,
-                existing.c.subpath == (subpath or ""),
-                _ENTRIES.c.append_id == append_id,
+        async def write(conn: AsyncConnection) -> int | None:
+            parent = (await conn.execute(
+                select(_SESSIONS.c.session_id)
+                .where(_SESSIONS.c.session_id == platform_session_id)
+                .with_for_update(key_share=True)
+            )).first()
+            if parent is None:
+                raise TranscriptSessionMissing(platform_session_id)
+            await insert_if_absent(
+                conn, _SCOPES,
+                {"platform_session_id": platform_session_id, "project_key": project_key,
+                 "native_session_id": native_session_id, "subpath": subpath or "",
+                 "last_sequence": 0},
+                index_columns=["platform_session_id", "project_key", "native_session_id", "subpath"],
             )
-            .correlate(None)
-            .exists()
-        )
-        proposed = pg_insert(_SCOPES).values(
-            platform_session_id=platform_session_id,
-            project_key=project_key,
-            native_session_id=native_session_id,
-            subpath=subpath or "",
-            last_sequence=count,
-        )
-        scope = (
-            proposed.on_conflict_do_update(
-                index_elements=[
-                    _SCOPES.c.platform_session_id,
-                    _SCOPES.c.project_key,
-                    _SCOPES.c.native_session_id,
-                    _SCOPES.c.subpath,
-                ],
-                set_={"last_sequence": _SCOPES.c.last_sequence + count, "updated_at": func.now()},
-                where=~held,
+            scope = (await conn.execute(
+                select(_SCOPES.c.scope_id, _SCOPES.c.last_sequence)
+                .where(_scope_key(platform_session_id, project_key, native_session_id, subpath))
+                .with_for_update()
+            )).one()
+            held = (await conn.execute(
+                select(_ENTRIES.c.seq)
+                .where(_ENTRIES.c.scope_id == scope.scope_id, _ENTRIES.c.append_id == append_id)
+                .limit(1)
+            )).first()
+            if held is not None:
+                return None
+            first = int(scope.last_sequence) + 1
+            last = int(scope.last_sequence) + len(texts)
+            await conn.execute(
+                update(_SCOPES).where(_SCOPES.c.scope_id == scope.scope_id)
+                .values(last_sequence=last, updated_at=func.now())
             )
-            .returning(_SCOPES.c.scope_id, _SCOPES.c.last_sequence)
-            .cte("scope")
-        )
-        lines = (
-            func.unnest(literal(texts, ARRAY(Text)))
-            .table_valued("entry_json", with_ordinality="ordinal")
-            .render_derived()
-        )
-        rows = (
-            _ENTRIES.insert()
-            .from_select(
-                ["scope_id", "seq", "append_id", "batch_index", "entry_json"],
-                select(
-                    scope.c.scope_id,
-                    scope.c.last_sequence - count + lines.c.ordinal,
-                    literal(append_id),
-                    lines.c.ordinal - 1,
-                    lines.c.entry_json,
-                ).select_from(scope.join(lines, true())),
+            await conn.execute(insert(_ENTRIES), [
+                {"scope_id": scope.scope_id, "seq": first + index,
+                 "append_id": append_id, "batch_index": index, "entry_json": text}
+                for index, text in enumerate(texts)
+            ])
+            await get_persistence().coordination.notify(
+                conn, SessionNotice(session_id=platform_session_id, kind="transcript", seq=0),
             )
-            .cte("stored")
-        )
-        last = await fetch_value(
-            select(scope.c.last_sequence, notice(platform_session_id, "transcript")).add_cte(rows)
-        )
-        return None if last is None else int(last)
+            return last
+
+        return await transaction(write)
 
     @staticmethod
     async def _stored_batch(

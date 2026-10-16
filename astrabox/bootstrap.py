@@ -482,6 +482,9 @@ def bootstrap(
 
     register_builtin_providers()
     load_entry_point_providers()
+    from astrabox.persistence.provider import get_persistence
+
+    get_persistence()
     effective_backend = (
         sandbox_backend if sandbox_backend is not None else get_settings().sandbox_backend
     )

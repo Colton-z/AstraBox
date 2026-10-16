@@ -18,15 +18,21 @@ from sqlalchemy import (
     ForeignKeyConstraint,
     Index,
     Integer,
-    Text,
     UniqueConstraint,
     func,
     text,
 )
-from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from astrabox.persistence.sql.base import Base
+from astrabox.persistence.sql.schema import (
+    MYSQL_TABLE_OPTIONS,
+    EmptyListDefault,
+    TextDefault,
+    boolean_checks,
+    string_list_check,
+)
+from astrabox.persistence.sql.types import KeyText, StringList, payload_json, payload_text
 
 _BINDING = "deployments.deployment_id"
 _SESSION = "sessions.session_id"
@@ -85,75 +91,78 @@ class ChannelInbound(Base):
             ),
         ),
         Index(None, "session_id", postgresql_where=text("session_id IS NOT NULL")),
+        *boolean_checks("retain_context", "participated", "judgment_respond", "explicit_attention", "context_excluded", "context_submitted"),
+        string_list_check("frozen_context_ids"),
+        MYSQL_TABLE_OPTIONS,
     )
 
-    item_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    item_id: Mapped[str] = mapped_column(KeyText(128), primary_key=True)
     deployment_id: Mapped[str] = mapped_column(
-        Text, ForeignKey(_BINDING, ondelete="CASCADE")
+        KeyText(128), ForeignKey(_BINDING, ondelete="CASCADE")
     )
-    dedup_key: Mapped[str | None] = mapped_column(Text)
-    channel_name: Mapped[str] = mapped_column(Text)
-    agent_id: Mapped[str | None] = mapped_column(Text)
-    assistant_id: Mapped[str | None] = mapped_column(Text)
-    state: Mapped[str] = mapped_column(Text)
-    owner_token: Mapped[str | None] = mapped_column(Text)
+    dedup_key: Mapped[str | None] = mapped_column(KeyText(1024))
+    channel_name: Mapped[str] = mapped_column(payload_text())
+    agent_id: Mapped[str | None] = mapped_column(payload_text())
+    assistant_id: Mapped[str | None] = mapped_column(payload_text())
+    state: Mapped[str] = mapped_column(payload_text())
+    owner_token: Mapped[str | None] = mapped_column(payload_text())
     generation: Mapped[int] = mapped_column(BigInteger, server_default=text("1"))
     lease_expires_at: Mapped[datetime | None]
     authorization_expires_at: Mapped[datetime | None]
     #: Recorded drive failures; also part of the turn's dispatch token.
     attempts: Mapped[int] = mapped_column(Integer, server_default=text("0"))
     #: Evidence of the last failure, kept for operators.
-    last_error: Mapped[str | None] = mapped_column(Text)
+    last_error: Mapped[str | None] = mapped_column(payload_text())
     #: Why the message was refused or classified away, kept for operators.
-    ignored_reason: Mapped[str | None] = mapped_column(Text)
+    ignored_reason: Mapped[str | None] = mapped_column(payload_text())
     session_id: Mapped[str | None] = mapped_column(
-        Text, ForeignKey(_SESSION, ondelete="SET NULL")
+        KeyText(128), ForeignKey(_SESSION, ondelete="SET NULL")
     )
     #: The conversation the bound Session was resolved for: a re-drive takes
     #: that conversation's lock without resolving the Session again.
-    resolved_conversation_key: Mapped[str | None] = mapped_column(Text)
+    resolved_conversation_key: Mapped[str | None] = mapped_column(payload_text())
 
-    content: Mapped[str] = mapped_column(Text, server_default="")
-    reply_text: Mapped[str | None] = mapped_column(Text)
-    action: Mapped[str | None] = mapped_column(Text)
-    conversation_key: Mapped[str | None] = mapped_column(Text)
+    content: Mapped[str] = mapped_column(payload_text(), server_default=TextDefault(""))
+    reply_text: Mapped[str | None] = mapped_column(payload_text())
+    action: Mapped[str | None] = mapped_column(payload_text())
+    conversation_key: Mapped[str | None] = mapped_column(payload_text())
     #: The conversation the message continues, decided before it was recorded.
-    conversation: Mapped[str | None] = mapped_column(Text)
+    conversation: Mapped[str | None] = mapped_column(KeyText(1024))
     #: The provider's destination for a reply, handed back to the provider.
-    reply_context: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))
-    reference: Mapped[str | None] = mapped_column(Text)
-    participant: Mapped[str | None] = mapped_column(Text)
-    provider_ignore_reason: Mapped[str | None] = mapped_column(Text)
-    creator_user_id: Mapped[str] = mapped_column(Text, server_default="")
+    reply_context: Mapped[dict[str, Any] | None] = mapped_column(payload_json())
+    reference: Mapped[str | None] = mapped_column(payload_text())
+    participant: Mapped[str | None] = mapped_column(payload_text())
+    provider_ignore_reason: Mapped[str | None] = mapped_column(payload_text())
+    creator_user_id: Mapped[str] = mapped_column(payload_text(), server_default=TextDefault(""))
     #: Empty until a linked binding's message captures its account.
-    execution_user_id: Mapped[str] = mapped_column(Text, server_default="")
-    execution_mode: Mapped[str | None] = mapped_column(Text)
+    execution_user_id: Mapped[str] = mapped_column(payload_text(), server_default=TextDefault(""))
+    execution_mode: Mapped[str | None] = mapped_column(payload_text())
     retain_context: Mapped[bool] = mapped_column(server_default=text("false"))
     #: The provider's message time; retained context orders by it as text.
-    message_timestamp: Mapped[str | None] = mapped_column(Text)
+    message_timestamp: Mapped[str | None] = mapped_column(KeyText(128))
     #: The binding's ``updated_at`` when the message was admitted.
-    binding_revision: Mapped[str | None] = mapped_column(Text)
-    prompt_prefix: Mapped[str] = mapped_column(Text, server_default="")
-    selection: Mapped[str | None] = mapped_column(Text)
-    selection_reason: Mapped[str | None] = mapped_column(Text)
+    binding_revision: Mapped[str | None] = mapped_column(KeyText(64))
+    prompt_prefix: Mapped[str] = mapped_column(payload_text(), server_default=TextDefault(""))
+    selection: Mapped[str | None] = mapped_column(payload_text())
+    selection_reason: Mapped[str | None] = mapped_column(payload_text())
     participated: Mapped[bool | None]
-    response_policy_mode: Mapped[str | None] = mapped_column(Text)
-    response_instruction: Mapped[str | None] = mapped_column(Text)
+    response_policy_mode: Mapped[str | None] = mapped_column(payload_text())
+    response_instruction: Mapped[str | None] = mapped_column(payload_text())
 
     judgment_respond: Mapped[bool | None]
-    judgment_reason: Mapped[str | None] = mapped_column(Text)
-    judgment_judge: Mapped[str | None] = mapped_column(Text)
+    judgment_reason: Mapped[str | None] = mapped_column(payload_text())
+    judgment_judge: Mapped[str | None] = mapped_column(payload_text())
     judged_at: Mapped[datetime | None]
     explicit_attention: Mapped[bool] = mapped_column(server_default=text("false"))
-    answer_ref: Mapped[str | None] = mapped_column(Text)
+    answer_ref: Mapped[str | None] = mapped_column(payload_text())
     answer_question_index: Mapped[int | None] = mapped_column(Integer)
-    recall_event_id: Mapped[str | None] = mapped_column(Text)
-    recall_timestamp: Mapped[str | None] = mapped_column(Text)
+    recall_event_id: Mapped[str | None] = mapped_column(payload_text())
+    recall_timestamp: Mapped[str | None] = mapped_column(payload_text())
     #: The turn input as submitted, frozen before the first submission so a
     #: re-drive submits exactly the same input.
-    frozen_content: Mapped[str | None] = mapped_column(Text)
+    frozen_content: Mapped[str | None] = mapped_column(payload_text())
     #: The retained messages ``frozen_content`` quotes, oldest first.
-    frozen_context_ids: Mapped[list[str] | None] = mapped_column(ARRAY(Text))
+    frozen_context_ids: Mapped[list[str] | None] = mapped_column(StringList())
     context_excluded: Mapped[bool] = mapped_column(server_default=text("false"))
     #: Consumed as context: quoted by a turn, or older than the window a turn
     #: quoted. A consumed message is never quoted again.
@@ -169,14 +178,17 @@ class ChannelConversation(Base):
     """
 
     __tablename__ = "channel_conversations"
-    __table_args__ = (Index(None, "session_id"),)
+    __table_args__ = (
+        Index(None, "session_id"),
+        MYSQL_TABLE_OPTIONS,
+    )
 
     deployment_id: Mapped[str] = mapped_column(
-        Text, ForeignKey(_BINDING, ondelete="CASCADE"), primary_key=True
+        KeyText(128), ForeignKey(_BINDING, ondelete="CASCADE"), primary_key=True
     )
-    execution_user_id: Mapped[str] = mapped_column(Text, primary_key=True)
-    conversation_key: Mapped[str] = mapped_column(Text, primary_key=True)
-    session_id: Mapped[str] = mapped_column(Text, ForeignKey(_SESSION, ondelete="CASCADE"))
+    execution_user_id: Mapped[str] = mapped_column(KeyText(512), primary_key=True)
+    conversation_key: Mapped[str] = mapped_column(KeyText(1024), primary_key=True)
+    session_id: Mapped[str] = mapped_column(KeyText(128), ForeignKey(_SESSION, ondelete="CASCADE"))
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
@@ -191,13 +203,16 @@ class ChannelConversationLock(Base):
     """
 
     __tablename__ = "channel_conversation_locks"
+    __table_args__ = (
+        MYSQL_TABLE_OPTIONS,
+    )
 
     deployment_id: Mapped[str] = mapped_column(
-        Text, ForeignKey(_BINDING, ondelete="CASCADE"), primary_key=True
+        KeyText(128), ForeignKey(_BINDING, ondelete="CASCADE"), primary_key=True
     )
-    execution_user_id: Mapped[str] = mapped_column(Text, primary_key=True)
-    conversation_key: Mapped[str] = mapped_column(Text, primary_key=True)
-    owner: Mapped[str | None] = mapped_column(Text)
+    execution_user_id: Mapped[str] = mapped_column(KeyText(512), primary_key=True)
+    conversation_key: Mapped[str] = mapped_column(KeyText(1024), primary_key=True)
+    owner: Mapped[str | None] = mapped_column(payload_text())
     generation: Mapped[int] = mapped_column(BigInteger, server_default=text("0"))
     expires_at: Mapped[datetime | None]
 
@@ -211,17 +226,21 @@ class ChannelOutputSubscription(Base):
     """
 
     __tablename__ = "channel_output_subscriptions"
-    __table_args__ = (Index(None, "session_id"),)
+    __table_args__ = (
+        Index(None, "session_id"),
+        *boolean_checks("streaming"),
+        MYSQL_TABLE_OPTIONS,
+    )
 
     deployment_id: Mapped[str] = mapped_column(
-        Text, ForeignKey(_BINDING, ondelete="CASCADE"), primary_key=True
+        KeyText(128), ForeignKey(_BINDING, ondelete="CASCADE"), primary_key=True
     )
     session_id: Mapped[str] = mapped_column(
-        Text, ForeignKey(_SESSION, ondelete="CASCADE"), primary_key=True
+        KeyText(128), ForeignKey(_SESSION, ondelete="CASCADE"), primary_key=True
     )
-    channel_name: Mapped[str] = mapped_column(Text)
+    channel_name: Mapped[str] = mapped_column(payload_text())
     reply_context: Mapped[dict[str, Any]]
-    conversation_key: Mapped[str | None] = mapped_column(Text)
+    conversation_key: Mapped[str | None] = mapped_column(payload_text())
     streaming: Mapped[bool]
     after_seq: Mapped[int] = mapped_column(BigInteger)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
@@ -256,36 +275,39 @@ class ChannelOutbox(Base):
             postgresql_where=text("state IN ('PENDING', 'SENDING')"),
         ),
         Index(None, "session_id"),
+        *boolean_checks("streaming", "stream_started"),
+        string_list_check("delivery_aliases"),
+        MYSQL_TABLE_OPTIONS,
     )
 
-    outbox_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    outbox_id: Mapped[str] = mapped_column(KeyText(128), primary_key=True)
     deployment_id: Mapped[str] = mapped_column(
-        Text, ForeignKey(_BINDING, ondelete="CASCADE")
+        KeyText(128), ForeignKey(_BINDING, ondelete="CASCADE")
     )
-    session_id: Mapped[str] = mapped_column(Text, ForeignKey(_SESSION, ondelete="CASCADE"))
+    session_id: Mapped[str] = mapped_column(KeyText(128), ForeignKey(_SESSION, ondelete="CASCADE"))
     #: The reply: the response id, or ``<response_id>~<interaction_id>`` for
     #: what the response says after that interaction
     #: (:mod:`astrabox.core.service.orchestrator.channel_replies`).
-    response_id: Mapped[str] = mapped_column(Text)
+    response_id: Mapped[str] = mapped_column(KeyText(1024))
     #: The Session output position of the reply's ``start`` part; replies of
     #: one Session are delivered in this order.
     response_seq: Mapped[int] = mapped_column(BigInteger)
-    channel_name: Mapped[str] = mapped_column(Text)
-    conversation_key: Mapped[str | None] = mapped_column(Text)
+    channel_name: Mapped[str] = mapped_column(payload_text())
+    conversation_key: Mapped[str | None] = mapped_column(payload_text())
     reply_context: Mapped[dict[str, Any]]
     streaming: Mapped[bool]
     #: A streaming delivery already opened the reply on the platform.
     stream_started: Mapped[bool] = mapped_column(server_default=text("false"))
-    state: Mapped[str] = mapped_column(Text, server_default="PENDING")
-    lease_owner: Mapped[str | None] = mapped_column(Text)
+    state: Mapped[str] = mapped_column(payload_text(), server_default=TextDefault("PENDING"))
+    lease_owner: Mapped[str | None] = mapped_column(payload_text())
     lease_generation: Mapped[int] = mapped_column(BigInteger, server_default=text("0"))
     lease_expires_at: Mapped[datetime | None]
     attempts: Mapped[int] = mapped_column(Integer, server_default=text("0"))
-    last_error: Mapped[str | None] = mapped_column(Text)
+    last_error: Mapped[str | None] = mapped_column(payload_text())
     next_attempt_at: Mapped[datetime | None] = mapped_column(server_default=func.now())
     #: The platform message ids the delivery created, in creation order.
     delivery_aliases: Mapped[list[str]] = mapped_column(
-        ARRAY(Text), server_default=text("'{}'")
+        StringList(), server_default=EmptyListDefault(text_array=True)
     )
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now())
@@ -300,15 +322,18 @@ class ChannelAlias(Base):
     """
 
     __tablename__ = "channel_aliases"
-    __table_args__ = (Index(None, "session_id"),)
+    __table_args__ = (
+        Index(None, "session_id"),
+        MYSQL_TABLE_OPTIONS,
+    )
 
     deployment_id: Mapped[str] = mapped_column(
-        Text, ForeignKey(_BINDING, ondelete="CASCADE"), primary_key=True
+        KeyText(128), ForeignKey(_BINDING, ondelete="CASCADE"), primary_key=True
     )
-    alias: Mapped[str] = mapped_column(Text, primary_key=True)
-    conversation_key: Mapped[str | None] = mapped_column(Text)
-    session_id: Mapped[str] = mapped_column(Text, ForeignKey(_SESSION, ondelete="CASCADE"))
-    interaction_ref: Mapped[str | None] = mapped_column(Text)
+    alias: Mapped[str] = mapped_column(KeyText(1024), primary_key=True)
+    conversation_key: Mapped[str | None] = mapped_column(payload_text())
+    session_id: Mapped[str] = mapped_column(KeyText(128), ForeignKey(_SESSION, ondelete="CASCADE"))
+    interaction_ref: Mapped[str | None] = mapped_column(payload_text())
     question_index: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
@@ -326,22 +351,23 @@ class ChannelInteraction(Base):
     __table_args__ = (
         CheckConstraint("state IN ('OPEN', 'ANSWERED', 'CLOSED')", name="state"),
         Index(None, "session_id"),
+        MYSQL_TABLE_OPTIONS,
     )
 
     deployment_id: Mapped[str] = mapped_column(
-        Text, ForeignKey(_BINDING, ondelete="CASCADE"), primary_key=True
+        KeyText(128), ForeignKey(_BINDING, ondelete="CASCADE"), primary_key=True
     )
-    ref: Mapped[str] = mapped_column(Text, primary_key=True)
-    session_id: Mapped[str] = mapped_column(Text, ForeignKey(_SESSION, ondelete="CASCADE"))
-    interaction_id: Mapped[str] = mapped_column(Text)
-    conversation_key: Mapped[str | None] = mapped_column(Text)
-    channel_name: Mapped[str] = mapped_column(Text)
+    ref: Mapped[str] = mapped_column(KeyText(1024), primary_key=True)
+    session_id: Mapped[str] = mapped_column(KeyText(128), ForeignKey(_SESSION, ondelete="CASCADE"))
+    interaction_id: Mapped[str] = mapped_column(payload_text())
+    conversation_key: Mapped[str | None] = mapped_column(payload_text())
+    channel_name: Mapped[str] = mapped_column(payload_text())
     reply_context: Mapped[dict[str, Any]]
     view: Mapped[dict[str, Any]]
-    state: Mapped[str] = mapped_column(Text, server_default="OPEN")
+    state: Mapped[str] = mapped_column(payload_text(), server_default=TextDefault("OPEN"))
     #: The question being asked now, from 0.
     question_index: Mapped[int] = mapped_column(Integer, server_default=text("0"))
-    answering_item: Mapped[str | None] = mapped_column(Text)
+    answering_item: Mapped[str | None] = mapped_column(payload_text())
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
@@ -356,16 +382,17 @@ class ChannelInteractionAnswer(Base):
             ["channel_interactions.deployment_id", "channel_interactions.ref"],
             ondelete="CASCADE",
         ),
+        MYSQL_TABLE_OPTIONS,
     )
 
-    deployment_id: Mapped[str] = mapped_column(Text, primary_key=True)
-    ref: Mapped[str] = mapped_column(Text, primary_key=True)
+    deployment_id: Mapped[str] = mapped_column(KeyText(128), primary_key=True)
+    ref: Mapped[str] = mapped_column(KeyText(1024), primary_key=True)
     question_index: Mapped[int] = mapped_column(Integer, primary_key=True)
     #: The answer in the interaction contract's row shape, given to the engine.
     answer_row: Mapped[dict[str, Any]]
     #: The chosen label of a decision or approval; empty for a form row.
-    choice: Mapped[str | None] = mapped_column(Text)
-    participant: Mapped[str | None] = mapped_column(Text)
+    choice: Mapped[str | None] = mapped_column(payload_text())
+    participant: Mapped[str | None] = mapped_column(payload_text())
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
 
@@ -373,11 +400,14 @@ class ChannelAccountLink(Base):
     """The AstraBox account one participant of a linked binding runs as."""
 
     __tablename__ = "channel_account_links"
+    __table_args__ = (
+        MYSQL_TABLE_OPTIONS,
+    )
 
     deployment_id: Mapped[str] = mapped_column(
-        Text, ForeignKey(_BINDING, ondelete="CASCADE"), primary_key=True
+        KeyText(128), ForeignKey(_BINDING, ondelete="CASCADE"), primary_key=True
     )
-    participant: Mapped[str] = mapped_column(Text, primary_key=True)
-    user_id: Mapped[str] = mapped_column(Text)
-    linked_by: Mapped[str] = mapped_column(Text)
+    participant: Mapped[str] = mapped_column(KeyText(1024), primary_key=True)
+    user_id: Mapped[str] = mapped_column(payload_text())
+    linked_by: Mapped[str] = mapped_column(payload_text())
     linked_at: Mapped[datetime] = mapped_column(server_default=func.now())

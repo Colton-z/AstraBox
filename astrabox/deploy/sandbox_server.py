@@ -2055,17 +2055,16 @@ def installation_id() -> str:
     import asyncio
 
     from astrabox.persistence.installation import load_installation_id
-    from astrabox.persistence.sql.engine import dispose_engine
-    from astrabox.persistence.sql.migrate import upgrade_to_head
+    from astrabox.persistence.provider import get_persistence
 
     async def _read() -> str:
         try:
-            await upgrade_to_head()
+            await get_persistence().initialize_schema()
             return await load_installation_id()
         finally:
             # The pool belongs to this short-lived loop; asyncpg connections
             # cannot be closed once the loop is gone.
-            await dispose_engine()
+            await get_persistence().dispose()
 
     try:
         return asyncio.run(_read())

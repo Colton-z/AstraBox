@@ -5,11 +5,12 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import CheckConstraint, ForeignKey, Index, Text, UniqueConstraint, func, text
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import CheckConstraint, ForeignKey, Index, UniqueConstraint, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from astrabox.persistence.sql.base import Base
+from astrabox.persistence.sql.schema import MYSQL_TABLE_OPTIONS, boolean_checks, conditional_unique
+from astrabox.persistence.sql.types import KeyText, payload_json, payload_text
 
 #: The states an Assistant workspace moves through; ``AssistantWorkspaceService``
 #: documents each transition.
@@ -43,50 +44,52 @@ class Assistant(Base):
         Index(None, "environment_name"),
         # An owner has at most one live primary Assistant, whichever of two
         # concurrent first opens inserts it.
-        Index(
-            "ix_assistants_live_primary",
-            "owner_id",
-            unique=True,
-            postgresql_where=text("is_primary AND NOT deleted"),
+        *conditional_unique(
+            "ix_assistants_live_primary", "owner_id",
+            predicate=text("is_primary AND NOT deleted"), marker="_primary_slot",
         ),
         CheckConstraint("deleted OR environment_name IS NOT NULL", name="live_environment"),
+        *boolean_checks("is_primary", "deleted"),
+        MYSQL_TABLE_OPTIONS,
     )
 
-    assistant_id: Mapped[str] = mapped_column(Text, primary_key=True)
-    owner_id: Mapped[str] = mapped_column(Text)
-    org_id: Mapped[str | None] = mapped_column(Text)
+    assistant_id: Mapped[str] = mapped_column(KeyText(128), primary_key=True)
+    owner_id: Mapped[str] = mapped_column(KeyText(512))
+    org_id: Mapped[str | None] = mapped_column(payload_text())
     is_primary: Mapped[bool] = mapped_column(server_default=text("false"))
-    display_name: Mapped[str] = mapped_column(Text)
-    icon: Mapped[str | None] = mapped_column(Text)
-    description: Mapped[str | None] = mapped_column(Text)
-    engine_kind: Mapped[str] = mapped_column(Text)
+    display_name: Mapped[str] = mapped_column(payload_text())
+    icon: Mapped[str | None] = mapped_column(payload_text())
+    description: Mapped[str | None] = mapped_column(payload_text())
+    engine_kind: Mapped[str] = mapped_column(payload_text())
     environment_name: Mapped[str | None] = mapped_column(
-        Text, ForeignKey("environments.name", ondelete="SET NULL")
+        KeyText(512), ForeignKey(
+            "environments.name", ondelete="SET NULL", info={"mysql_restrict_environment": True},
+        ),
     )
-    permission_mode_default: Mapped[str | None] = mapped_column(Text)
-    system: Mapped[str | None] = mapped_column(Text)
-    timezone: Mapped[str | None] = mapped_column(Text)
+    permission_mode_default: Mapped[str | None] = mapped_column(payload_text())
+    system: Mapped[str | None] = mapped_column(payload_text())
+    timezone: Mapped[str | None] = mapped_column(payload_text())
     #: The model the Assistant's own override names; the inherited layers'
     #: model applies when it is NULL.
-    model_name: Mapped[str | None] = mapped_column(Text)
+    model_name: Mapped[str | None] = mapped_column(payload_text())
     #: The engine-native documents below are validated against what the
     #: Assistant's engine declares and then stored verbatim.
-    mcp_servers: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))
-    skills: Mapped[list[Any] | None] = mapped_column(JSONB(none_as_null=True))
-    packages: Mapped[list[Any] | None] = mapped_column(JSONB(none_as_null=True))
-    engine_options: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))
+    mcp_servers: Mapped[dict[str, Any] | None] = mapped_column(payload_json())
+    skills: Mapped[list[Any] | None] = mapped_column(payload_json())
+    packages: Mapped[list[Any] | None] = mapped_column(payload_json())
+    engine_options: Mapped[dict[str, Any] | None] = mapped_column(payload_json())
     #: The Skill descriptors a catalog selection compiled, as the extension
     #: provider produced them.
-    extension_catalog: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))
-    credentials_updated_by: Mapped[str | None] = mapped_column(Text)
+    extension_catalog: Mapped[dict[str, Any] | None] = mapped_column(payload_json())
+    credentials_updated_by: Mapped[str | None] = mapped_column(payload_text())
     credentials_updated_at: Mapped[datetime | None]
     #: Sessions also name their Assistant, so this constraint is added after
     #: both tables exist (``use_alter``).
     main_session_id: Mapped[str | None] = mapped_column(
-        Text, ForeignKey("sessions.session_id", ondelete="SET NULL", use_alter=True)
+        KeyText(128), ForeignKey("sessions.session_id", ondelete="SET NULL", use_alter=True)
     )
     #: The platform's name for the Assistant's durable files, minted once.
-    workspace_id: Mapped[str | None] = mapped_column(Text, unique=True)
+    workspace_id: Mapped[str | None] = mapped_column(KeyText(128), unique=True)
     version: Mapped[int] = mapped_column(server_default=text("1"))
     deleted: Mapped[bool] = mapped_column(server_default=text("false"))
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
@@ -100,27 +103,31 @@ class AssistantVaultBinding(Base):
     __table_args__ = (
         UniqueConstraint("assistant_id", "vault_id"),
         Index(None, "vault_id"),
+        MYSQL_TABLE_OPTIONS,
     )
 
     assistant_id: Mapped[str] = mapped_column(
-        Text, ForeignKey("assistants.assistant_id", ondelete="CASCADE"), primary_key=True
+        KeyText(128), ForeignKey("assistants.assistant_id", ondelete="CASCADE"), primary_key=True
     )
     position: Mapped[int] = mapped_column(primary_key=True)
-    vault_id: Mapped[str] = mapped_column(Text, ForeignKey("vaults.vault_id"))
+    vault_id: Mapped[str] = mapped_column(KeyText(128), ForeignKey("vaults.vault_id"))
 
 
 class AssistantMcpAssignment(Base):
     """A catalog MCP server assigned to an Assistant, at its place in the Assistant's order."""
 
     __tablename__ = "assistant_mcp_assignments"
-    __table_args__ = (UniqueConstraint("assistant_id", "provider", "item_id"),)
+    __table_args__ = (
+        UniqueConstraint("assistant_id", "provider", "item_id"),
+        MYSQL_TABLE_OPTIONS,
+    )
 
     assistant_id: Mapped[str] = mapped_column(
-        Text, ForeignKey("assistants.assistant_id", ondelete="CASCADE"), primary_key=True
+        KeyText(128), ForeignKey("assistants.assistant_id", ondelete="CASCADE"), primary_key=True
     )
     position: Mapped[int] = mapped_column(primary_key=True)
-    provider: Mapped[str] = mapped_column(Text)
-    item_id: Mapped[str] = mapped_column(Text)
+    provider: Mapped[str] = mapped_column(KeyText(128))
+    item_id: Mapped[str] = mapped_column(KeyText(1024))
 
 
 class AssistantConnector(Base):
@@ -134,13 +141,15 @@ class AssistantConnector(Base):
     __tablename__ = "assistant_connectors"
     __table_args__ = (
         CheckConstraint("hub_server_id IS NOT NULL OR turned_off", name="records_a_choice"),
+        *boolean_checks("turned_off"),
+        MYSQL_TABLE_OPTIONS,
     )
 
     assistant_id: Mapped[str] = mapped_column(
-        Text, ForeignKey("assistants.assistant_id", ondelete="CASCADE"), primary_key=True
+        KeyText(128), ForeignKey("assistants.assistant_id", ondelete="CASCADE"), primary_key=True
     )
-    connector_id: Mapped[str] = mapped_column(Text, primary_key=True)
-    hub_server_id: Mapped[str | None] = mapped_column(Text)
+    connector_id: Mapped[str] = mapped_column(KeyText(512), primary_key=True)
+    hub_server_id: Mapped[str | None] = mapped_column(payload_text())
     turned_off: Mapped[bool] = mapped_column(server_default=text("false"))
 
 
@@ -171,28 +180,30 @@ class AssistantWorkspace(Base):
             "assistant_id",
             postgresql_where=text("current_sandbox_id IS NOT NULL"),
         ),
+        *boolean_checks("post_commit_cleanup_pending"),
+        MYSQL_TABLE_OPTIONS,
     )
 
     assistant_id: Mapped[str] = mapped_column(
-        Text, ForeignKey("assistants.assistant_id", ondelete="CASCADE"), primary_key=True
+        KeyText(128), ForeignKey("assistants.assistant_id", ondelete="CASCADE"), primary_key=True
     )
-    created_by_user_id: Mapped[str] = mapped_column(Text)
-    engine_kind: Mapped[str] = mapped_column(Text)
-    state: Mapped[str] = mapped_column(Text)
-    current_sandbox_id: Mapped[str | None] = mapped_column(Text)
+    created_by_user_id: Mapped[str] = mapped_column(payload_text())
+    engine_kind: Mapped[str] = mapped_column(payload_text())
+    state: Mapped[str] = mapped_column(payload_text())
+    current_sandbox_id: Mapped[str | None] = mapped_column(KeyText(128))
     current_sandbox_expires_at: Mapped[datetime | None]
     #: The workload identity the engine adapter assigned in the box.
-    runtime_identity: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))
-    provisioning_session_id: Mapped[str | None] = mapped_column(Text)
-    provisioning_sandbox_generation: Mapped[str | None] = mapped_column(Text)
-    last_error: Mapped[str | None] = mapped_column(Text)
+    runtime_identity: Mapped[dict[str, Any] | None] = mapped_column(payload_json())
+    provisioning_session_id: Mapped[str | None] = mapped_column(payload_text())
+    provisioning_sandbox_generation: Mapped[str | None] = mapped_column(payload_text())
+    last_error: Mapped[str | None] = mapped_column(payload_text())
     hibernated_at: Mapped[datetime | None]
     post_commit_cleanup_pending: Mapped[bool] = mapped_column(server_default=text("false"))
-    profile_refresh_revision: Mapped[str | None] = mapped_column(Text)
-    profile_refresh_session_id: Mapped[str | None] = mapped_column(Text)
+    profile_refresh_revision: Mapped[str | None] = mapped_column(payload_text())
+    profile_refresh_session_id: Mapped[str | None] = mapped_column(payload_text())
     profile_refresh_started_at: Mapped[datetime | None]
-    prepared_operation_provider: Mapped[str | None] = mapped_column(Text)
-    prepared_operation_id: Mapped[str | None] = mapped_column(Text)
+    prepared_operation_provider: Mapped[str | None] = mapped_column(payload_text())
+    prepared_operation_id: Mapped[str | None] = mapped_column(payload_text())
     prepared_operation_deadline: Mapped[datetime | None]
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now())
@@ -210,16 +221,19 @@ class AssistantProfile(Base):
     """
 
     __tablename__ = "assistant_profiles"
+    __table_args__ = (
+        MYSQL_TABLE_OPTIONS,
+    )
 
     assistant_id: Mapped[str] = mapped_column(
-        Text,
+        KeyText(128),
         ForeignKey("assistant_workspaces.assistant_id", ondelete="CASCADE"),
         primary_key=True,
     )
-    marker_key: Mapped[str] = mapped_column(Text, primary_key=True)
-    user_id: Mapped[str] = mapped_column(Text)
-    sandbox_id: Mapped[str] = mapped_column(Text)
-    configuration_revision: Mapped[str] = mapped_column(Text)
+    marker_key: Mapped[str] = mapped_column(KeyText(512), primary_key=True)
+    user_id: Mapped[str] = mapped_column(payload_text())
+    sandbox_id: Mapped[str] = mapped_column(payload_text())
+    configuration_revision: Mapped[str] = mapped_column(payload_text())
     ready_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
 
@@ -232,18 +246,21 @@ class AssistantDefaults(Base):
     """
 
     __tablename__ = "assistant_defaults"
+    __table_args__ = (
+        MYSQL_TABLE_OPTIONS,
+    )
 
-    scope: Mapped[str] = mapped_column(Text, primary_key=True)
-    environment_name: Mapped[str | None] = mapped_column(Text, ForeignKey("environments.name"))
-    model_name: Mapped[str | None] = mapped_column(Text)
-    instructions: Mapped[str | None] = mapped_column(Text)
-    skills: Mapped[list[Any] | None] = mapped_column(JSONB(none_as_null=True))
-    mcp_servers: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))
-    packages: Mapped[list[Any] | None] = mapped_column(JSONB(none_as_null=True))
-    engine_options: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))
-    extension_catalog: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))
+    scope: Mapped[str] = mapped_column(KeyText(128), primary_key=True)
+    environment_name: Mapped[str | None] = mapped_column(KeyText(512), ForeignKey("environments.name"))
+    model_name: Mapped[str | None] = mapped_column(payload_text())
+    instructions: Mapped[str | None] = mapped_column(payload_text())
+    skills: Mapped[list[Any] | None] = mapped_column(payload_json())
+    mcp_servers: Mapped[dict[str, Any] | None] = mapped_column(payload_json())
+    packages: Mapped[list[Any] | None] = mapped_column(payload_json())
+    engine_options: Mapped[dict[str, Any] | None] = mapped_column(payload_json())
+    extension_catalog: Mapped[dict[str, Any] | None] = mapped_column(payload_json())
     version: Mapped[int] = mapped_column(server_default=text("1"))
-    updated_by: Mapped[str | None] = mapped_column(Text)
+    updated_by: Mapped[str | None] = mapped_column(payload_text())
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
@@ -255,24 +272,28 @@ class AssistantDefaultVaultBinding(Base):
     __table_args__ = (
         UniqueConstraint("scope", "vault_id"),
         Index(None, "vault_id"),
+        MYSQL_TABLE_OPTIONS,
     )
 
     scope: Mapped[str] = mapped_column(
-        Text, ForeignKey("assistant_defaults.scope", ondelete="CASCADE"), primary_key=True
+        KeyText(128), ForeignKey("assistant_defaults.scope", ondelete="CASCADE"), primary_key=True
     )
     position: Mapped[int] = mapped_column(primary_key=True)
-    vault_id: Mapped[str] = mapped_column(Text, ForeignKey("vaults.vault_id"))
+    vault_id: Mapped[str] = mapped_column(KeyText(128), ForeignKey("vaults.vault_id"))
 
 
 class AssistantDefaultMcpAssignment(Base):
     """A catalog MCP server a defaults layer assigns, at its place in the layer's order."""
 
     __tablename__ = "assistant_default_mcp_assignments"
-    __table_args__ = (UniqueConstraint("scope", "provider", "item_id"),)
+    __table_args__ = (
+        UniqueConstraint("scope", "provider", "item_id"),
+        MYSQL_TABLE_OPTIONS,
+    )
 
     scope: Mapped[str] = mapped_column(
-        Text, ForeignKey("assistant_defaults.scope", ondelete="CASCADE"), primary_key=True
+        KeyText(128), ForeignKey("assistant_defaults.scope", ondelete="CASCADE"), primary_key=True
     )
     position: Mapped[int] = mapped_column(primary_key=True)
-    provider: Mapped[str] = mapped_column(Text)
-    item_id: Mapped[str] = mapped_column(Text)
+    provider: Mapped[str] = mapped_column(KeyText(128))
+    item_id: Mapped[str] = mapped_column(KeyText(1024))

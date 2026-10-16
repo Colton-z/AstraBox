@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import func, select
-from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy import func, select, update
+from sqlalchemy.ext.asyncio import AsyncConnection
 
-from astrabox.persistence.repository._artifact_repository import every, run
-from astrabox.persistence.sql import ForeignKeyViolation
+from astrabox.persistence.repository._artifact_repository import every, one, run
+from astrabox.persistence.sql import ForeignKeyViolation, transaction
 from astrabox.persistence.sql.models.artifacts import ArtifactViewer
+from astrabox.persistence.sql.statements import insert_if_absent_primary_key
 
 _VIEWERS = ArtifactViewer.__table__
 
@@ -22,26 +23,38 @@ class ArtifactViewerRepository:
     ) -> bool:
         """Record the viewer; False when the artifact has been deleted.
 
-        One statement, outside any lock on the artifact. A row is rewritten
-        only when the display name changed, so a returning viewer's request
-        writes nothing.
+        Registration does not acquire the artifact's mutation lock. A profile
+        is rewritten only when the display name changed, so returning viewers
+        keep their stored timestamp and user identity.
         """
-        try:
+        async def register(conn: AsyncConnection) -> None:
             await run(
-                pg_insert(_VIEWERS)
-                .values(
-                    artifact_id=artifact_id,
-                    viewer_id=viewer_id,
-                    user_id=user_id,
-                    display_name=display_name,
-                )
-                .on_conflict_do_update(
-                    index_elements=[_VIEWERS.c.artifact_id, _VIEWERS.c.viewer_id],
-                    set_={"display_name": display_name, "updated_at": func.now()},
-                    where=_VIEWERS.c.display_name != display_name,
-                ),
-                None,
+                insert_if_absent_primary_key(conn, _VIEWERS, {
+                    "artifact_id": artifact_id,
+                    "viewer_id": viewer_id,
+                    "user_id": user_id,
+                    "display_name": display_name,
+                }),
+                conn,
             )
+            existing = await one(
+                select(_VIEWERS.c.display_name)
+                .where(_VIEWERS.c.artifact_id == artifact_id, _VIEWERS.c.viewer_id == viewer_id)
+                .with_for_update(),
+                conn,
+            )
+            assert existing is not None
+            if existing["display_name"] == display_name:
+                return
+            await run(
+                update(_VIEWERS)
+                .where(_VIEWERS.c.artifact_id == artifact_id, _VIEWERS.c.viewer_id == viewer_id)
+                .values(display_name=display_name, updated_at=func.now()),
+                conn,
+            )
+
+        try:
+            await transaction(register)
         except ForeignKeyViolation:
             return False
         return True

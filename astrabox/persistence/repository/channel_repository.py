@@ -3,7 +3,8 @@
 The tables are declared in :mod:`astrabox.persistence.sql.models.channels`;
 the contract they serve is ``docs/channel-spine.md``. Every record belongs to
 one binding (a Deployment) and is deleted with it, and every compare-and-set
-below is a single conditional statement.
+below uses a conditional statement; row readbacks retain the write lock in
+that statement's transaction.
 
 * ``channel_inbound``: one record per platform message. It is the message's
   dedup identity, ``(deployment_id, dedup_key)``, and its recoverable unit of
@@ -58,7 +59,7 @@ from __future__ import annotations
 import os
 import uuid
 from collections.abc import Sequence
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import (
@@ -67,15 +68,13 @@ from sqlalchemy import (
     delete,
     exists,
     func,
+    insert,
     literal,
     or_,
     select,
-    text,
     tuple_,
     update,
 )
-from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP, aggregate_order_by
-from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 from sqlalchemy.sql import ColumnElement
 
@@ -87,6 +86,12 @@ from astrabox.persistence.sql import (
     from_iso,
     to_iso,
     transaction,
+)
+from astrabox.persistence.sql.statements import (
+    TimestampAfter,
+    insert_if_absent,
+    insert_if_absent_primary_key,
+    upsert_primary_key,
 )
 from astrabox.persistence.sql.models.channels import (
     ChannelAccountLink,
@@ -246,11 +251,11 @@ def _instant(now: float | None) -> ColumnElement[datetime]:
     """``now`` in epoch seconds, or the database's clock when ``None``."""
     if now is None:
         return func.now()
-    return literal(datetime.fromtimestamp(now, tz=timezone.utc), TIMESTAMP(timezone=True))
+    return literal(datetime.fromtimestamp(now, tz=timezone.utc), _INBOUND.c.lease_expires_at.type)
 
 
 def _after(now: float | None, seconds: float) -> ColumnElement[datetime]:
-    return _instant(now) + timedelta(seconds=seconds)
+    return TimestampAfter(_instant(now), seconds)
 
 
 def _times(row: dict[str, Any], *names: str) -> dict[str, Any]:
@@ -485,8 +490,8 @@ class ChannelRepository:
 
         Only RECEIVED and AUTHORIZED requests admit work, so only they take a
         live item whose lease expired or revive a DEAD one. The insert and
-        that takeover are one statement, its condition re-checking the lease,
-        so of several concurrent redeliveries exactly one owns the item. A
+        conditional takeover share a transaction; the takeover re-checks the
+        lease, so concurrent redeliveries have one owner. A
         taken item keeps the input it was admitted with and its prior evidence.
         """
         if state not in _INBOUND_CLAIM_STATES:
@@ -511,46 +516,62 @@ class ChannelRepository:
         if state == INBOUND_AUTHORIZED:
             values["authorization_expires_at"] = _after(now, _AUTHORIZATION_WAIT_SECONDS)
         admits = state in (INBOUND_RECEIVED, INBOUND_AUTHORIZED)
-        identity = [c.deployment_id, c.dedup_key]
-        statement = pg_insert(_INBOUND).values(**values)
-        if admits:
-            statement = statement.on_conflict_do_update(
-                index_elements=identity,
-                set_={
-                    "state": INBOUND_RECEIVED,
-                    "owner_token": owner,
-                    "generation": c.generation + 1,
-                    "lease_expires_at": _after(now, _inbound_lease_seconds()),
-                    "updated_at": func.now(),
-                },
-                where=or_(
-                    and_(
-                        c.state.in_(_states(*_INBOUND_LIVE_STATES)),
-                        c.lease_expires_at <= _instant(now),
-                    ),
-                    c.state == _const(INBOUND_DEAD),
-                ),
-            )
-        else:
-            statement = statement.on_conflict_do_nothing(index_elements=identity)
-        written = _inbound_view(await fetch_one(statement.returning(_INBOUND)))
-        if written is not None:
-            return written, _WRITTEN_OUTCOMES[written["state"]]
+        identity = and_(c.deployment_id == deployment_id, c.dedup_key == (dedup_key or None))
 
-        existing = await self.get_message_record(
-            deployment_id=deployment_id, dedup_key=str(dedup_key)
-        )
-        if existing is None:
-            raise RuntimeError("inbound record vanished after its conflicting insert")
-        current = existing["state"]
-        if current == INBOUND_SETTLED:
-            return existing, CLAIM_OUTCOME_DUPLICATE
-        if current in (INBOUND_IGNORED, INBOUND_OBSERVED, INBOUND_AUTHORIZED):
-            return existing, _WRITTEN_OUTCOMES[current]
-        if current == INBOUND_DEAD and not admits:
-            return existing, CLAIM_OUTCOME_DUPLICATE
-        # A live owner holds it, or another admission revived it first.
-        return existing, CLAIM_OUTCOME_IN_PROGRESS
+        async def claim(conn: AsyncConnection) -> tuple[dict[str, Any], str]:
+            # Serialize dedup insertion before it can retain a shared duplicate
+            # lock that a concurrent takeover would need to upgrade.
+            await conn.execute(
+                select(_DEPLOYMENTS.c.deployment_id)
+                .where(_DEPLOYMENTS.c.deployment_id == deployment_id)
+                .with_for_update()
+            )
+            inserted = await insert_if_absent(
+                conn, _INBOUND, values, index_columns=("deployment_id", "dedup_key"),
+            )
+            written = inserted
+            if not inserted and admits:
+                changed = await conn.execute(
+                    update(_INBOUND)
+                    .where(
+                        identity,
+                        or_(
+                            and_(
+                                c.state.in_(_states(*_INBOUND_LIVE_STATES)),
+                                c.lease_expires_at <= _instant(now),
+                            ),
+                            c.state == _const(INBOUND_DEAD),
+                        ),
+                    )
+                    .values(
+                        state=INBOUND_RECEIVED,
+                        owner_token=owner,
+                        generation=c.generation + 1,
+                        lease_expires_at=_after(now, _inbound_lease_seconds()),
+                        updated_at=func.now(),
+                    )
+                )
+                written = changed.rowcount == 1
+            row = (await conn.execute(
+                select(_INBOUND)
+                .where(c.item_id == values["item_id"] if inserted else identity)
+                .with_for_update()
+            )).first()
+            record = _inbound_view(dict(row._mapping) if row is not None else None)
+            if record is None:
+                raise RuntimeError("inbound record vanished after its conflicting insert")
+            if written:
+                return record, _WRITTEN_OUTCOMES[record["state"]]
+            current = record["state"]
+            if current == INBOUND_SETTLED:
+                return record, CLAIM_OUTCOME_DUPLICATE
+            if current in (INBOUND_IGNORED, INBOUND_OBSERVED, INBOUND_AUTHORIZED):
+                return record, _WRITTEN_OUTCOMES[current]
+            if current == INBOUND_DEAD and not admits:
+                return record, CLAIM_OUTCOME_DUPLICATE
+            return record, CLAIM_OUTCOME_IN_PROGRESS
+
+        return await transaction(claim)
 
     async def promote_inbound(
         self,
@@ -573,24 +594,33 @@ class ChannelRepository:
         if expected_state not in _INBOUND_UNADMITTED_STATES:
             raise ValueError(f"not an unadmitted inbound state: {expected_state!r}")
         c = _INBOUND.c
-        return _inbound_view(await fetch_one(
-            update(_INBOUND)
-            .where(
-                c.item_id == item_id,
-                c.state == expected_state,
-                c.generation == int(expected_generation),
-                c.recall_event_id.is_(None),
+
+        async def change(conn: AsyncConnection) -> dict[str, Any] | None:
+            changed = await conn.execute(
+                update(_INBOUND)
+                .where(
+                    c.item_id == item_id,
+                    c.state == expected_state,
+                    c.generation == int(expected_generation),
+                    c.recall_event_id.is_(None),
+                )
+                .values(
+                    state=INBOUND_RECEIVED,
+                    owner_token=new_owner_token(),
+                    generation=c.generation + 1,
+                    lease_expires_at=_after(now, _inbound_lease_seconds()),
+                    updated_at=func.now(),
+                    **_payload_columns(payload),
+                )
             )
-            .values(
-                state=INBOUND_RECEIVED,
-                owner_token=new_owner_token(),
-                generation=c.generation + 1,
-                lease_expires_at=_after(now, _inbound_lease_seconds()),
-                updated_at=func.now(),
-                **_payload_columns(payload),
-            )
-            .returning(_INBOUND)
-        ))
+            if changed.rowcount != 1:
+                return None
+            row = (await conn.execute(
+                select(_INBOUND).where(_INBOUND.c.item_id == item_id)
+            )).one()
+            return _inbound_view(dict(row._mapping))
+
+        return await transaction(change)
 
     async def observe_authorized_inbound(
         self,
@@ -607,21 +637,30 @@ class ChannelRepository:
         that content, never RECEIVED.
         """
         c = _INBOUND.c
-        return _inbound_view(await fetch_one(
-            update(_INBOUND)
-            .where(
-                c.item_id == item_id,
-                c.state == INBOUND_AUTHORIZED,
-                c.generation == int(expected_generation),
+
+        async def change(conn: AsyncConnection) -> dict[str, Any] | None:
+            changed = await conn.execute(
+                update(_INBOUND)
+                .where(
+                    c.item_id == item_id,
+                    c.state == INBOUND_AUTHORIZED,
+                    c.generation == int(expected_generation),
+                )
+                .values(
+                    state=INBOUND_OBSERVED,
+                    generation=c.generation + 1,
+                    updated_at=func.now(),
+                    **_payload_columns(payload),
+                )
             )
-            .values(
-                state=INBOUND_OBSERVED,
-                generation=c.generation + 1,
-                updated_at=func.now(),
-                **_payload_columns(payload),
-            )
-            .returning(_INBOUND)
-        ))
+            if changed.rowcount != 1:
+                return None
+            row = (await conn.execute(
+                select(_INBOUND).where(_INBOUND.c.item_id == item_id)
+            )).one()
+            return _inbound_view(dict(row._mapping))
+
+        return await transaction(change)
 
     async def refuse_unadmitted_inbound(
         self,
@@ -660,9 +699,9 @@ class ChannelRepository:
     ) -> list[dict[str, Any]]:
         """Move AUTHORIZED records whose wait has expired to DEAD, with evidence.
 
-        One statement takes the due records it can lock and skips the ones
-        another replica is expiring, so replicas sweeping together expire each
-        record once. Returns the expired records for the caller to report.
+        The transaction locks due records, skipping those another replica is
+        expiring, then updates and reads them before releasing those locks.
+        Returns the expired records for the caller to report.
         """
         c = _INBOUND.c
         due = (
@@ -675,16 +714,24 @@ class ChannelRepository:
             .limit(int(limit))
             .with_for_update(skip_locked=True)
         )
-        return _views(await fetch_all(
-            update(_INBOUND)
-            .where(c.item_id.in_(due), c.state == _const(INBOUND_AUTHORIZED))
-            .values(
-                state=INBOUND_DEAD,
-                last_error="the observation of this authorized message never arrived",
-                updated_at=func.now(),
+
+        async def expire(conn: AsyncConnection) -> list[dict[str, Any]]:
+            keys = list((await conn.execute(due)).scalars())
+            if not keys:
+                return []
+            await conn.execute(
+                update(_INBOUND)
+                .where(c.item_id.in_(keys), c.state == _const(INBOUND_AUTHORIZED))
+                .values(
+                    state=INBOUND_DEAD,
+                    last_error="the observation of this authorized message never arrived",
+                    updated_at=func.now(),
+                )
             )
-            .returning(_INBOUND)
-        ))
+            rows = (await conn.execute(select(_INBOUND).where(c.item_id.in_(keys)))).all()
+            return _views([dict(row._mapping) for row in rows])
+
+        return await transaction(expire)
 
     async def _update_owned(
         self,
@@ -758,16 +805,25 @@ class ChannelRepository:
         account its first drive resolved. ``None`` when this worker does not
         own the item.
         """
-        captured = _inbound_view(await fetch_one(
-            update(_INBOUND)
-            .where(
-                _owned(item_id, owner_token, generation),
-                _INBOUND.c.execution_user_id == "",
+        async def change(conn: AsyncConnection) -> dict[str, Any] | None:
+            changed = await conn.execute(
+                update(_INBOUND)
+                .where(
+                    _owned(item_id, owner_token, generation),
+                    _INBOUND.c.execution_user_id == "",
+                )
+                .values(creator_user_id=user_id, execution_user_id=user_id, updated_at=func.now())
             )
-            .values(creator_user_id=user_id, execution_user_id=user_id, updated_at=func.now())
-            .returning(_INBOUND)
-        ))
-        return None if captured is None else dict(captured["payload"])
+            if changed.rowcount != 1:
+                return None
+            row = (await conn.execute(
+                select(_INBOUND).where(_INBOUND.c.item_id == item_id)
+            )).one()
+            captured = _inbound_view(dict(row._mapping))
+            assert captured is not None
+            return dict(captured["payload"])
+
+        return await transaction(change)
 
     async def mark_inbound_answer(
         self,
@@ -841,21 +897,30 @@ class ChannelRepository:
         record is never suppressed, so the explicit signal is not lost.
         """
         c = _INBOUND.c
-        return _inbound_view(await fetch_one(
-            update(_INBOUND)
-            .where(
-                _owned(item_id, owner_token, generation, INBOUND_DISPATCHING),
-                c.explicit_attention.is_(False),
+
+        async def change(conn: AsyncConnection) -> dict[str, Any] | None:
+            changed = await conn.execute(
+                update(_INBOUND)
+                .where(
+                    _owned(item_id, owner_token, generation, INBOUND_DISPATCHING),
+                    c.explicit_attention.is_(False),
+                )
+                .values(
+                    state=INBOUND_OBSERVED,
+                    owner_token=None,
+                    lease_expires_at=None,
+                    generation=c.generation + 1,
+                    updated_at=func.now(),
+                )
             )
-            .values(
-                state=INBOUND_OBSERVED,
-                owner_token=None,
-                lease_expires_at=None,
-                generation=c.generation + 1,
-                updated_at=func.now(),
-            )
-            .returning(_INBOUND)
-        ))
+            if changed.rowcount != 1:
+                return None
+            row = (await conn.execute(
+                select(_INBOUND).where(_INBOUND.c.item_id == item_id)
+            )).one()
+            return _inbound_view(dict(row._mapping))
+
+        return await transaction(change)
 
     async def note_explicit_attention(self, *, item_id: str) -> bool:
         """Mark a message under judgment as addressed to the agent by another copy.
@@ -897,7 +962,7 @@ class ChannelRepository:
         c = _INBOUND.c
 
         async def settle(conn: AsyncConnection) -> bool:
-            settled = (await conn.execute(
+            changed = await conn.execute(
                 update(_INBOUND)
                 .where(_owned(item_id, owner_token, generation, INBOUND_DISPATCHING))
                 .values(
@@ -906,8 +971,10 @@ class ChannelRepository:
                     context_submitted=c.context_submitted | bool(submit_context),
                     updated_at=func.now(),
                 )
-                .returning(c.deployment_id, c.frozen_content, c.frozen_context_ids)
-            )).first()
+            )
+            settled = (await conn.execute(
+                select(c.deployment_id, c.frozen_content, c.frozen_context_ids).where(c.item_id == item_id)
+            )).first() if changed.rowcount == 1 else None
             if settled is None:
                 return False
             if not submit_context:
@@ -980,13 +1047,23 @@ class ChannelRepository:
             )
         else:
             values["state"] = INBOUND_DEAD
-        failed = await fetch_one(
-            update(_INBOUND)
-            .where(_owned(item_id, owner_token, generation))
-            .values(**values)
-            .returning(c.state)
-        )
-        return None if failed is None else str(failed["state"])
+
+        async def fail(conn: AsyncConnection) -> str | None:
+            changed = await conn.execute(
+                update(_INBOUND)
+                .where(_owned(item_id, owner_token, generation))
+                .ordered_values(
+                    *((name, value) for name, value in values.items() if name != "attempts"),
+                    ("attempts", values["attempts"]),
+                )
+            )
+            if changed.rowcount != 1:
+                return None
+            return str((await conn.execute(
+                select(_INBOUND.c.state).where(_INBOUND.c.item_id == item_id)
+            )).scalar_one())
+
+        return await transaction(fail)
 
     async def release_inbound_lease(
         self, *, item_id: str, owner_token: str, generation: int
@@ -1032,22 +1109,31 @@ class ChannelRepository:
         already exist (attach path); RECEIVED means dispatch never began.
         """
         c = _INBOUND.c
-        return _inbound_view(await fetch_one(
-            update(_INBOUND)
-            .where(
-                c.item_id == item_id,
-                c.state.in_(_states(*_INBOUND_LIVE_STATES)),
-                c.generation == int(expected_generation),
-                c.lease_expires_at <= _instant(now),
+
+        async def change(conn: AsyncConnection) -> dict[str, Any] | None:
+            changed = await conn.execute(
+                update(_INBOUND)
+                .where(
+                    c.item_id == item_id,
+                    c.state.in_(_states(*_INBOUND_LIVE_STATES)),
+                    c.generation == int(expected_generation),
+                    c.lease_expires_at <= _instant(now),
+                )
+                .values(
+                    owner_token=new_owner_token(),
+                    generation=c.generation + 1,
+                    lease_expires_at=_after(now, _inbound_lease_seconds()),
+                    updated_at=func.now(),
+                )
             )
-            .values(
-                owner_token=new_owner_token(),
-                generation=c.generation + 1,
-                lease_expires_at=_after(now, _inbound_lease_seconds()),
-                updated_at=func.now(),
-            )
-            .returning(_INBOUND)
-        ))
+            if changed.rowcount != 1:
+                return None
+            row = (await conn.execute(
+                select(_INBOUND).where(_INBOUND.c.item_id == item_id)
+            )).one()
+            return _inbound_view(dict(row._mapping))
+
+        return await transaction(change)
 
     async def get_inbound(self, item_id: str) -> dict[str, Any] | None:
         return _inbound_view(
@@ -1085,7 +1171,7 @@ class ChannelRepository:
         awaiting_content = and_(
             c.state == INBOUND_AUTHORIZED, func.coalesce(c.conversation_key, "") == "",
         )
-        recorded = await fetch_one(
+        recorded = await execute(
             update(_INBOUND)
             .where(
                 c.deployment_id == deployment_id,
@@ -1094,9 +1180,8 @@ class ChannelRepository:
                 or_(c.conversation_key == conversation_key, awaiting_content),
             )
             .values(recall_event_id=event_id, recall_timestamp=timestamp, updated_at=func.now())
-            .returning(c.item_id)
         )
-        if recorded is not None:
+        if recorded == 1:
             return True
         target = await self.get_message_record(deployment_id=deployment_id, dedup_key=message_id)
         if target is None:
@@ -1186,18 +1271,20 @@ class ChannelRepository:
         quoted = [str(entry["item_id"]) for entry in context]
 
         async def freeze(conn: AsyncConnection) -> dict[str, Any] | None:
-            frozen = (await conn.execute(
+            changed = await conn.execute(
                 update(_INBOUND)
                 .where(
                     _owned(item_id, owner_token, generation, INBOUND_DISPATCHING),
                     c.frozen_content.is_(None),
                 )
                 .values(frozen_content=content, frozen_context_ids=quoted, updated_at=func.now())
-                .returning(
+            )
+            frozen = (await conn.execute(
+                select(
                     c.deployment_id, c.conversation, c.binding_revision,
                     c.frozen_content, c.frozen_context_ids,
-                )
-            )).first()
+                ).where(c.item_id == item_id)
+            )).first() if changed.rowcount == 1 else None
             if frozen is None:
                 frozen = (await conn.execute(
                     select(c.frozen_content, c.frozen_context_ids)
@@ -1277,27 +1364,27 @@ class ChannelRepository:
         conversation continues in the new one.
         """
         if replaces_session_id is None:
-            inserted = await fetch_one(
-                pg_insert(_CONVERSATIONS)
-                .values(
-                    deployment_id=deployment_id,
-                    execution_user_id=execution_user_id,
-                    conversation_key=conversation_key,
-                    session_id=session_id,
-                )
-                .on_conflict_do_nothing()
-                .returning(_CONVERSATIONS)
-            )
-            if inserted is not None:
-                return _times(inserted, "created_at", "updated_at")
-            return await self.get_conversation(
-                deployment_id=deployment_id,
-                conversation_key=conversation_key,
-                execution_user_id=execution_user_id,
-            )
+            async def create(conn: AsyncConnection) -> dict[str, Any]:
+                await conn.execute(insert_if_absent_primary_key(
+                    conn, _CONVERSATIONS,
+                    {
+                        "deployment_id": deployment_id,
+                        "execution_user_id": execution_user_id,
+                        "conversation_key": conversation_key,
+                        "session_id": session_id,
+                    },
+                ))
+                row = (await conn.execute(
+                    select(_CONVERSATIONS).where(self._conversation(
+                        _CONVERSATIONS, deployment_id, conversation_key, execution_user_id,
+                    )).with_for_update(read=True)
+                )).one()
+                return _times(dict(row._mapping), "created_at", "updated_at")
+
+            return await transaction(create)
 
         async def replace(conn: AsyncConnection) -> dict[str, Any] | None:
-            replaced = (await conn.execute(
+            changed = await conn.execute(
                 update(_CONVERSATIONS)
                 .where(
                     self._conversation(
@@ -1306,8 +1393,12 @@ class ChannelRepository:
                     _CONVERSATIONS.c.session_id == replaces_session_id,
                 )
                 .values(session_id=session_id, updated_at=func.now())
-                .returning(_CONVERSATIONS)
-            )).first()
+            )
+            replaced = (await conn.execute(
+                select(_CONVERSATIONS).where(self._conversation(
+                    _CONVERSATIONS, deployment_id, conversation_key, execution_user_id,
+                ))
+            )).first() if changed.rowcount == 1 else None
             if replaced is None:
                 return None
             await _end_subscription(conn, deployment_id, replaces_session_id)
@@ -1336,29 +1427,36 @@ class ChannelRepository:
         generation)``, so a holder whose lease lapsed cannot renew or release
         its successor's lock.
         """
-        statement = pg_insert(_LOCKS).values(
-            deployment_id=deployment_id,
-            execution_user_id=execution_user_id,
-            conversation_key=conversation_key,
-            owner=owner,
-            generation=1,
-            expires_at=_after(now, _CONVERSATION_LOCK_SECONDS),
-        )
-        acquired = await fetch_one(
-            statement.on_conflict_do_update(
-                index_elements=[
-                    _LOCKS.c.deployment_id, _LOCKS.c.execution_user_id, _LOCKS.c.conversation_key,
-                ],
-                set_={
-                    "owner": owner,
-                    "expires_at": _after(now, _CONVERSATION_LOCK_SECONDS),
-                    "generation": _LOCKS.c.generation + 1,
+        identity = self._conversation(_LOCKS, deployment_id, conversation_key, execution_user_id)
+
+        async def acquire(conn: AsyncConnection) -> int | None:
+            await conn.execute(insert_if_absent_primary_key(
+                conn, _LOCKS,
+                {
+                    "deployment_id": deployment_id,
+                    "execution_user_id": execution_user_id,
+                    "conversation_key": conversation_key,
+                    "owner": None,
+                    "generation": 0,
+                    "expires_at": None,
                 },
-                where=or_(_LOCKS.c.owner.is_(None), _LOCKS.c.expires_at <= _instant(now)),
+            ))
+            changed = await conn.execute(
+                update(_LOCKS)
+                .where(identity, or_(_LOCKS.c.owner.is_(None), _LOCKS.c.expires_at <= _instant(now)))
+                .values(
+                    owner=owner,
+                    expires_at=_after(now, _CONVERSATION_LOCK_SECONDS),
+                    generation=_LOCKS.c.generation + 1,
+                )
             )
-            .returning(_LOCKS.c.generation)
-        )
-        return None if acquired is None else int(acquired["generation"])
+            if changed.rowcount != 1:
+                return None
+            return int((await conn.execute(
+                select(_LOCKS.c.generation).where(identity)
+            )).scalar_one())
+
+        return await transaction(acquire)
 
     async def renew_conversation_lock(
         self,
@@ -1415,19 +1513,21 @@ class ChannelRepository:
         destination and position stay: a later input in the Session neither
         replaces the destination nor moves the position.
         """
-        await execute(
-            pg_insert(_SUBSCRIPTIONS)
-            .values(
-                deployment_id=deployment_id,
-                session_id=session_id,
-                channel_name=channel_name,
-                reply_context=dict(reply_context),
-                conversation_key=conversation_key,
-                streaming=bool(streaming),
-                after_seq=int(after_seq),
-            )
-            .on_conflict_do_nothing()
-        )
+        async def subscribe(conn: AsyncConnection) -> None:
+            await conn.execute(insert_if_absent_primary_key(
+                conn, _SUBSCRIPTIONS,
+                {
+                    "deployment_id": deployment_id,
+                    "session_id": session_id,
+                    "channel_name": channel_name,
+                    "reply_context": dict(reply_context),
+                    "conversation_key": conversation_key,
+                    "streaming": bool(streaming),
+                    "after_seq": int(after_seq),
+                },
+            ))
+
+        await transaction(subscribe)
 
     async def session_output_subscriptions(self, session_id: str) -> list[dict[str, Any]]:
         """The subscriptions of one Session whose binding is enabled."""
@@ -1522,34 +1622,36 @@ class ChannelRepository:
         the same output again finds the same row and keeps its delivery state.
         """
         o = _OUTBOX.c
-        created = await fetch_one(
-            pg_insert(_OUTBOX)
-            .values(
-                outbox_id=uuid.uuid4().hex,
-                deployment_id=deployment_id,
-                session_id=session_id,
-                response_id=response_id,
-                response_seq=int(response_seq),
-                channel_name=channel_name,
-                conversation_key=conversation_key,
-                reply_context=dict(reply_context),
-                streaming=bool(streaming),
-                next_attempt_at=func.now() if due else None,
+
+        async def create(conn: AsyncConnection) -> dict[str, Any]:
+            await insert_if_absent(
+                conn, _OUTBOX,
+                {
+                    "outbox_id": uuid.uuid4().hex,
+                    "deployment_id": deployment_id,
+                    "session_id": session_id,
+                    "response_id": response_id,
+                    "response_seq": int(response_seq),
+                    "channel_name": channel_name,
+                    "conversation_key": conversation_key,
+                    "reply_context": dict(reply_context),
+                    "streaming": bool(streaming),
+                    "next_attempt_at": func.now() if due else None,
+                },
+                index_columns=("deployment_id", "session_id", "response_id"),
             )
-            .on_conflict_do_nothing(index_elements=[o.deployment_id, o.session_id, o.response_id])
-            .returning(_OUTBOX)
-        )
-        if created is None:
-            created = await fetch_one(select(_OUTBOX).where(
-                o.deployment_id == deployment_id,
-                o.session_id == session_id,
-                o.response_id == response_id,
-            ))
-            if created is None:
-                raise RuntimeError("outbox row vanished after its conflicting insert")
-        view = _outbox_view(created)
-        assert view is not None
-        return view
+            row = (await conn.execute(
+                select(_OUTBOX).where(
+                    o.deployment_id == deployment_id,
+                    o.session_id == session_id,
+                    o.response_id == response_id,
+                ).with_for_update(read=True)
+            )).one()
+            view = _outbox_view(dict(row._mapping))
+            assert view is not None
+            return view
+
+        return await transaction(create)
 
     async def complete_reply(
         self, *, deployment_id: str, session_id: str, response_id: str,
@@ -1560,18 +1662,31 @@ class ChannelRepository:
         twice, or one whose row a deliverer already holds, changes nothing.
         """
         o = _OUTBOX.c
-        return _outbox_view(await fetch_one(
-            update(_OUTBOX)
-            .where(
-                o.deployment_id == deployment_id,
-                o.session_id == session_id,
-                o.response_id == response_id,
-                o.state == _const(OUTBOX_PENDING),
-                o.next_attempt_at.is_(None),
+
+        async def change(conn: AsyncConnection) -> dict[str, Any] | None:
+            changed = await conn.execute(
+                update(_OUTBOX)
+                .where(
+                    o.deployment_id == deployment_id,
+                    o.session_id == session_id,
+                    o.response_id == response_id,
+                    o.state == _const(OUTBOX_PENDING),
+                    o.next_attempt_at.is_(None),
+                )
+                .values(next_attempt_at=func.now(), updated_at=func.now())
             )
-            .values(next_attempt_at=func.now(), updated_at=func.now())
-            .returning(_OUTBOX)
-        ))
+            if changed.rowcount != 1:
+                return None
+            row = (await conn.execute(
+                select(_OUTBOX).where(
+                    _OUTBOX.c.deployment_id == deployment_id,
+                    _OUTBOX.c.session_id == session_id,
+                    _OUTBOX.c.response_id == response_id,
+                )
+            )).one()
+            return _outbox_view(dict(row._mapping))
+
+        return await transaction(change)
 
     async def discard_reply(
         self, *, deployment_id: str, session_id: str, response_id: str,
@@ -1601,28 +1716,44 @@ class ChannelRepository:
         """Lease a due row for delivery; return the leased row, or ``None``.
 
         Due means PENDING past its backoff, or SENDING with a lapsed lease (a
-        deliverer that stopped). The same statement checks that no earlier
-        reply of the Session to this binding is undelivered, so replies reach
-        the binding in order however many deliverers sweep. Two replicas
+        deliverer that stopped). The transaction locks a due row only when no
+        earlier reply of the Session to this binding is undelivered, then
+        leases it before releasing that lock. Two replicas
         claiming one row: only one leases it. Every acquisition raises
         ``lease_generation``, and every settlement write matches ``(owner,
         generation)``, so a deliverer whose lease lapsed mid-flight cannot
         complete or fail the row once a successor owns it.
         """
         o = _OUTBOX.c
-        return _outbox_view(await fetch_one(
-            update(_OUTBOX)
-            .where(o.outbox_id == outbox_id, _outbox_due(now), _outbox_head())
-            .values(
-                state=OUTBOX_SENDING,
-                lease_owner=owner,
-                lease_expires_at=_after(now, _OUTBOX_LEASE_SECONDS),
-                lease_generation=o.lease_generation + 1,
-                next_attempt_at=None,
-                updated_at=func.now(),
+
+        async def change(conn: AsyncConnection) -> dict[str, Any] | None:
+            eligible = (await conn.execute(
+                select(o.outbox_id)
+                .where(o.outbox_id == outbox_id, _outbox_due(now), _outbox_head())
+                .with_for_update()
+            )).first()
+            if eligible is None:
+                return None
+            changed = await conn.execute(
+                update(_OUTBOX)
+                .where(o.outbox_id == outbox_id, _outbox_due(now))
+                .values(
+                    state=OUTBOX_SENDING,
+                    lease_owner=owner,
+                    lease_expires_at=_after(now, _OUTBOX_LEASE_SECONDS),
+                    lease_generation=o.lease_generation + 1,
+                    next_attempt_at=None,
+                    updated_at=func.now(),
+                )
             )
-            .returning(_OUTBOX)
-        ))
+            if changed.rowcount != 1:
+                return None
+            row = (await conn.execute(
+                select(_OUTBOX).where(_OUTBOX.c.outbox_id == outbox_id)
+            )).one()
+            return _outbox_view(dict(row._mapping))
+
+        return await transaction(change)
 
     async def renew_outbox_lease(
         self, outbox_id: str, *, owner: str, generation: int, now: float | None = None,
@@ -1673,36 +1804,37 @@ class ChannelRepository:
         o = _OUTBOX.c
 
         async def record(conn: AsyncConnection) -> bool:
-            leased = (await conn.execute(
+            changed = await conn.execute(
                 update(_OUTBOX)
                 .where(_leased(outbox_id, owner, generation))
                 .values(delivery_aliases=recorded, updated_at=func.now())
-                .returning(
-                    o.deployment_id, o.session_id, o.conversation_key, o.channel_name,
-                    o.reply_context,
-                )
-            )).first()
+            )
+            leased = (await conn.execute(
+                select(
+                    o.deployment_id, o.session_id, o.conversation_key,
+                    o.channel_name, o.reply_context,
+                ).where(o.outbox_id == outbox_id)
+            )).first() if changed.rowcount == 1 else None
             if leased is None:
                 return False
             ref: str | None = None
             if interaction is not None:
                 ref = str(interaction["ref"])
-                await conn.execute(
-                    pg_insert(_INTERACTIONS)
-                    .values(
-                        deployment_id=leased.deployment_id,
-                        ref=ref,
-                        session_id=leased.session_id,
-                        interaction_id=str(interaction["interaction_id"]),
-                        conversation_key=leased.conversation_key,
-                        channel_name=leased.channel_name,
-                        reply_context=leased.reply_context,
-                        view=dict(interaction["view"]),
-                    )
-                    .on_conflict_do_nothing()
-                )
+                await conn.execute(insert_if_absent_primary_key(
+                    conn, _INTERACTIONS,
+                    {
+                        "deployment_id": leased.deployment_id,
+                        "ref": ref,
+                        "session_id": leased.session_id,
+                        "interaction_id": str(interaction["interaction_id"]),
+                        "conversation_key": leased.conversation_key,
+                        "channel_name": leased.channel_name,
+                        "reply_context": leased.reply_context,
+                        "view": dict(interaction["view"]),
+                    },
+                ))
             if recorded:
-                statement = pg_insert(_ALIASES).values([
+                values = [
                     {
                         "deployment_id": leased.deployment_id,
                         "alias": alias,
@@ -1712,19 +1844,15 @@ class ChannelRepository:
                         "question_index": 0 if ref is not None else None,
                     }
                     for alias in recorded
-                ])
-                await conn.execute(statement.on_conflict_do_update(
-                    index_elements=[_ALIASES.c.deployment_id, _ALIASES.c.alias],
-                    set_={
-                        "conversation_key": statement.excluded.conversation_key,
-                        "session_id": statement.excluded.session_id,
-                        # A later receipt for the same message without a
-                        # question keeps the question it showed.
-                        "interaction_ref": func.coalesce(
-                            statement.excluded.interaction_ref, _ALIASES.c.interaction_ref,
-                        ),
+                ]
+                await conn.execute(upsert_primary_key(
+                    conn, _ALIASES, values,
+                    update_columns=("conversation_key", "session_id"),
+                    update_values={
+                        # Receipts without a question retain the question already shown.
+                        "interaction_ref": func.coalesce(ref, _ALIASES.c.interaction_ref),
                         "question_index": func.coalesce(
-                            statement.excluded.question_index, _ALIASES.c.question_index,
+                            0 if ref is not None else None, _ALIASES.c.question_index,
                         ),
                     },
                 ))
@@ -1788,13 +1916,23 @@ class ChannelRepository:
         else:
             values["state"] = OUTBOX_DEAD
             values["next_attempt_at"] = None
-        failed = await fetch_one(
-            update(_OUTBOX)
-            .where(_leased(outbox_id, owner, generation))
-            .values(**values)
-            .returning(o.state)
-        )
-        return None if failed is None else str(failed["state"])
+
+        async def fail(conn: AsyncConnection) -> str | None:
+            changed = await conn.execute(
+                update(_OUTBOX)
+                .where(_leased(outbox_id, owner, generation))
+                .ordered_values(
+                    *((name, value) for name, value in values.items() if name != "attempts"),
+                    ("attempts", values["attempts"]),
+                )
+            )
+            if changed.rowcount != 1:
+                return None
+            return str((await conn.execute(
+                select(_OUTBOX.c.state).where(_OUTBOX.c.outbox_id == outbox_id)
+            )).scalar_one())
+
+        return await transaction(fail)
 
     async def release_outbox_lease(self, outbox_id: str, *, owner: str, generation: int) -> bool:
         """Hand a delivery back without counting a failure; it is due again at once."""
@@ -1852,41 +1990,42 @@ class ChannelRepository:
         Post-delivery alias enrichment (docs/channel-spine.md): some
         platforms mint the quotable message id only after the delivery ack;
         the provider observes the correlation and the spine records it here.
-        The new alias copies the chain of ``existing_alias`` in one statement,
+        The new alias copies the chain of ``existing_alias`` in one transaction,
         so an enrichment can only attach to a chain a delivery receipt already
         anchored, never create one, and redeliveries and replica races
         converge on the same row. ``None`` when the anchor is not recorded.
         """
         a = _ALIASES.c
-        anchor = select(
-            a.deployment_id,
-            literal(str(new_alias)).label("alias"),
-            a.conversation_key,
-            a.session_id,
-            a.interaction_ref,
-            a.question_index,
-        ).where(a.deployment_id == deployment_id, a.alias == str(existing_alias))
-        statement = pg_insert(_ALIASES).from_select(
-            ["deployment_id", "alias", "conversation_key", "session_id",
-             "interaction_ref", "question_index"],
-            anchor,
-        )
-        return _alias_view(await fetch_one(
-            statement.on_conflict_do_update(
-                index_elements=[a.deployment_id, a.alias],
-                set_={
-                    "conversation_key": statement.excluded.conversation_key,
-                    "session_id": statement.excluded.session_id,
-                    "interaction_ref": func.coalesce(
-                        statement.excluded.interaction_ref, a.interaction_ref,
-                    ),
-                    "question_index": func.coalesce(
-                        statement.excluded.question_index, a.question_index,
-                    ),
+        async def link(conn: AsyncConnection) -> dict[str, Any] | None:
+            anchor = (await conn.execute(
+                select(_ALIASES).where(
+                    a.deployment_id == deployment_id, a.alias == str(existing_alias),
+                )
+            )).first()
+            if anchor is None:
+                return None
+            values = {
+                "deployment_id": deployment_id,
+                "alias": str(new_alias),
+                "conversation_key": anchor.conversation_key,
+                "session_id": anchor.session_id,
+                "interaction_ref": anchor.interaction_ref,
+                "question_index": anchor.question_index,
+            }
+            await conn.execute(upsert_primary_key(
+                conn, _ALIASES, values,
+                update_columns=("conversation_key", "session_id"),
+                update_values={
+                    "interaction_ref": func.coalesce(anchor.interaction_ref, a.interaction_ref),
+                    "question_index": func.coalesce(anchor.question_index, a.question_index),
                 },
-            )
-            .returning(_ALIASES)
-        ))
+            ))
+            row = (await conn.execute(select(_ALIASES).where(
+                a.deployment_id == deployment_id, a.alias == str(new_alias),
+            ))).one()
+            return _alias_view(dict(row._mapping))
+
+        return await transaction(link)
 
     async def record_question_aliases(
         self,
@@ -1902,7 +2041,7 @@ class ChannelRepository:
         recorded = list(dict.fromkeys(str(alias) for alias in aliases))
         if not recorded:
             return
-        statement = pg_insert(_ALIASES).values([
+        values = [
             {
                 "deployment_id": deployment_id,
                 "alias": alias,
@@ -1912,16 +2051,15 @@ class ChannelRepository:
                 "question_index": int(question_index),
             }
             for alias in recorded
-        ])
-        await execute(statement.on_conflict_do_update(
-            index_elements=[_ALIASES.c.deployment_id, _ALIASES.c.alias],
-            set_={
-                "conversation_key": statement.excluded.conversation_key,
-                "session_id": statement.excluded.session_id,
-                "interaction_ref": statement.excluded.interaction_ref,
-                "question_index": statement.excluded.question_index,
-            },
-        ))
+        ]
+
+        async def record(conn: AsyncConnection) -> None:
+            await conn.execute(upsert_primary_key(
+                conn, _ALIASES, values,
+                update_columns=("conversation_key", "session_id", "interaction_ref", "question_index"),
+            ))
+
+        await transaction(record)
 
     async def resolve_alias(
         self, *, deployment_id: str, alias: str
@@ -1938,28 +2076,30 @@ class ChannelRepository:
     ) -> dict[str, Any] | None:
         """One shown question with its answers so far (``answers``, by question)."""
         i, a = _INTERACTIONS.c, _ANSWERS.c
-        answers = (
-            select(func.coalesce(
-                func.jsonb_agg(aggregate_order_by(
-                    func.jsonb_build_object(
-                        "row", a.answer_row, "choice", a.choice,
-                        "participant", a.participant, "question_index", a.question_index,
-                    ),
-                    a.question_index,
-                )),
-                text("'[]'::jsonb"),
-                type_=JSONB,
-            ))
-            .where(a.deployment_id == i.deployment_id, a.ref == i.ref)
-            .scalar_subquery()
-        )
-        row = await fetch_one(
-            select(_INTERACTIONS, answers.label("answers"))
-            .where(i.deployment_id == deployment_id, i.ref == ref)
-        )
-        if row is None:
-            return None
-        return {**_times(row, "created_at", "updated_at"), "answers": list(row["answers"] or [])}
+
+        async def read(conn: AsyncConnection) -> dict[str, Any] | None:
+            row = (await conn.execute(
+                select(_INTERACTIONS)
+                .where(i.deployment_id == deployment_id, i.ref == ref)
+                .with_for_update(read=True)
+            )).first()
+            if row is None:
+                return None
+            answers = (await conn.execute(
+                select(a.answer_row, a.choice, a.participant, a.question_index)
+                .where(a.deployment_id == deployment_id, a.ref == ref)
+                .order_by(a.question_index)
+            )).all()
+            return {
+                **_times(dict(row._mapping), "created_at", "updated_at"),
+                "answers": [
+                    {"row": answer.answer_row, "choice": answer.choice,
+                     "participant": answer.participant, "question_index": answer.question_index}
+                    for answer in answers
+                ],
+            }
+
+        return await transaction(read)
 
     @staticmethod
     def _answer_values(
@@ -1999,11 +2139,10 @@ class ChannelRepository:
                     i.question_index == int(question_index),
                 )
                 .values(question_index=i.question_index + 1, updated_at=func.now())
-                .returning(i.ref)
-            )).first()
-            if moved is None:
+            )).rowcount
+            if moved != 1:
                 return False
-            await conn.execute(pg_insert(_ANSWERS).values(
+            await conn.execute(insert(_ANSWERS).values(
                 **self._answer_values(deployment_id, ref, question_index, answer)
             ))
             return True
@@ -2037,11 +2176,10 @@ class ChannelRepository:
                     i.answering_item.is_(None),
                 )
                 .values(answering_item=item_id, updated_at=func.now())
-                .returning(i.ref)
-            )).first()
-            if claimed is None:
+            )).rowcount
+            if claimed != 1:
                 return False
-            await conn.execute(pg_insert(_ANSWERS).values(
+            await conn.execute(insert(_ANSWERS).values(
                 **self._answer_values(deployment_id, ref, question_index, answer)
             ))
             return True
@@ -2089,21 +2227,20 @@ class ChannelRepository:
         Messages already admitted keep the account they captured; the link
         decides only messages whose first drive is still ahead.
         """
-        statement = pg_insert(_LINKS).values(
-            deployment_id=deployment_id,
-            participant=participant,
-            user_id=user_id,
-            linked_by=linked_by,
-        )
-        row = await fetch_one(
-            statement.on_conflict_do_update(
-                index_elements=[_LINKS.c.deployment_id, _LINKS.c.participant],
-                set_={"user_id": user_id, "linked_by": linked_by, "linked_at": func.now()},
-            )
-            .returning(_LINKS)
-        )
-        assert row is not None
-        return _times(row, "linked_at")
+        async def put(conn: AsyncConnection) -> dict[str, Any]:
+            await conn.execute(upsert_primary_key(
+                conn, _LINKS,
+                {"deployment_id": deployment_id, "participant": participant,
+                 "user_id": user_id, "linked_by": linked_by},
+                update_columns=("user_id", "linked_by"),
+                update_values={"linked_at": func.now()},
+            ))
+            row = (await conn.execute(select(_LINKS).where(
+                _LINKS.c.deployment_id == deployment_id, _LINKS.c.participant == participant,
+            ))).one()
+            return _times(dict(row._mapping), "linked_at")
+
+        return await transaction(put)
 
     async def delete_account_link(self, *, deployment_id: str, participant: str) -> bool:
         removed = await execute(delete(_LINKS).where(

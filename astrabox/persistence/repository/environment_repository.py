@@ -19,14 +19,16 @@ from collections.abc import Awaitable, Callable
 from typing import Any, TypeVar
 
 from sqlalchemy import and_, delete, func, select, update
-from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from astrabox.common.utils.errors import APIError
 from astrabox.persistence.sql import ForeignKeyViolation, fetch_all, fetch_one, fetch_value, to_iso
 from astrabox.persistence.sql import transaction
+from astrabox.persistence.sql.models.agents import Agent
+from astrabox.persistence.sql.models.assistants import Assistant
 from astrabox.persistence.sql.models.environments import Environment
 from astrabox.persistence.sql.models.vaults import Secret
+from astrabox.persistence.sql.statements import upsert_primary_key
 from astrabox.providers.secret_store import EncryptedCollectionSecretStore
 from astrabox.seams.secrets import secret_store_for_name
 
@@ -241,14 +243,17 @@ class EnvironmentRepository:
         async def replace(conn: AsyncConnection) -> dict[str, Any]:
             # The upsert locks an existing row and serializes concurrent first
             # creates too, before either write changes this scope's secrets.
-            stored = (await conn.execute(
-                insert(_ENVIRONMENTS)
-                .values(name=name, **values, updated_by=updated_by)
-                .on_conflict_do_update(
-                    index_elements=[_ENVIRONMENTS.c.name],
-                    set_={**values, "updated_by": updated_by, "updated_at": func.now()},
+            await conn.execute(
+                upsert_primary_key(
+                    conn,
+                    _ENVIRONMENTS,
+                    {"name": name, **values, "updated_by": updated_by},
+                    update_columns=[*values, "updated_by"],
+                    update_values={"updated_at": func.now()},
                 )
-                .returning(_ENVIRONMENTS)
+            )
+            stored = (await conn.execute(
+                select(_ENVIRONMENTS).where(_ENVIRONMENTS.c.name == name)
             )).one()._mapping
             references = {
                 column: submitted[column] if column in submitted else stored[column]
@@ -261,11 +266,13 @@ class EnvironmentRepository:
             ]
             if sealed or any(stored[column] for _h, _f, column in _SECRET_REFERENCES):
                 await (store or _secret_store()).apply(conn, scope=scope, put=sealed, remove=replaced)
-            row = (await conn.execute(
+            await conn.execute(
                 update(_ENVIRONMENTS)
                 .where(_ENVIRONMENTS.c.name == name)
                 .values(**references)
-                .returning(_ENVIRONMENTS)
+            )
+            row = (await conn.execute(
+                select(_ENVIRONMENTS).where(_ENVIRONMENTS.c.name == name)
             )).one()
             return dict(row._mapping)
 
@@ -297,6 +304,16 @@ class EnvironmentRepository:
                     code="ENVIRONMENT_NOT_FOUND", message="environment not found", status_code=404,
                 )
             await check_references(conn)
+            await conn.execute(
+                update(Agent.__table__)
+                .where(Agent.environment_name == name, Agent.state == "DELETED")
+                .values(environment_name=None)
+            )
+            await conn.execute(
+                update(Assistant.__table__)
+                .where(Assistant.environment_name == name, Assistant.deleted.is_(True))
+                .values(environment_name=None)
+            )
             await conn.execute(delete(_ENVIRONMENTS).where(_ENVIRONMENTS.c.name == name))
             if any(row):
                 await _secret_store().apply(conn, scope=secret_scope(name), purge=True)

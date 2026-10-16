@@ -6,12 +6,12 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import delete, select
-from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from astrabox.persistence.repository._artifact_repository import every, one, run
 from astrabox.persistence.sql import to_iso
 from astrabox.persistence.sql.models.artifacts import ArtifactDocument
+from astrabox.persistence.sql.statements import upsert_primary_key
 
 _DOCUMENTS = ArtifactDocument.__table__
 
@@ -45,19 +45,19 @@ class ArtifactDataRepository:
     ) -> None:
         """Create or replace the document at ``path``; a replaced document keeps its ``created_at``."""
         await run(
-            pg_insert(_DOCUMENTS)
-            .values(
-                artifact_id=artifact_id,
-                path=path,
-                collection=collection,
-                data=data,
-                updated_by=updated_by,
-                created_at=now,
-                updated_at=now,
-            )
-            .on_conflict_do_update(
-                index_elements=[_DOCUMENTS.c.artifact_id, _DOCUMENTS.c.path],
-                set_={"data": data, "updated_by": updated_by, "updated_at": now},
+            upsert_primary_key(
+                conn,
+                _DOCUMENTS,
+                {
+                    "artifact_id": artifact_id,
+                    "path": path,
+                    "collection": collection,
+                    "data": data,
+                    "updated_by": updated_by,
+                    "created_at": now,
+                    "updated_at": now,
+                },
+                update_columns=["data", "updated_by", "updated_at"],
             ),
             conn,
         )

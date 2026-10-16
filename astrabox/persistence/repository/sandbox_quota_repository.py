@@ -18,23 +18,22 @@ from typing import Any, TypeVar
 from sqlalchemy import (
     BigInteger,
     Select,
-    Text,
-    all_,
     and_,
     cast,
+    case,
+    insert,
     delete,
     exists,
     func,
-    literal,
     or_,
     select,
     true,
     update,
 )
-from sqlalchemy.dialects.postgresql import ARRAY, insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from astrabox.persistence.sql import execute, fetch_all, fetch_one, fetch_value, to_iso, transaction
+from astrabox.persistence.sql.statements import insert_if_absent_primary_key, upsert_primary_key
 from astrabox.persistence.sql.models.sandboxes import (
     SandboxCapacity,
     SandboxInventoryBox,
@@ -86,7 +85,7 @@ def _usage_statement(backend: str) -> Select[Any]:
             cast(func.coalesce(func.sum(_RESERVATIONS.c.cpu_millicores), 0), BigInteger).label(
                 "cpu"
             ),
-            func.count().filter(_RESERVATIONS.c.state == "creating").label("creating"),
+            func.count(case((_RESERVATIONS.c.state == "creating", 1))).label("creating"),
         )
         .where(_RESERVATIONS.c.backend == backend, ~_held_by_inventory())
         .subquery()
@@ -184,9 +183,7 @@ class SandboxQuotaRepository:
 
         async def work(conn: AsyncConnection) -> int | None:
             await conn.execute(
-                insert(_CAPACITY)
-                .values(backend=backend)
-                .on_conflict_do_nothing(index_elements=[_CAPACITY.c.backend])
+                insert_if_absent_primary_key(conn, _CAPACITY, {"backend": backend})
             )
             newer = (
                 await conn.execute(
@@ -199,41 +196,30 @@ class SandboxQuotaRepository:
                         ),
                     )
                     .values(inventory_at=taken_at)
-                    .returning(_CAPACITY.c.backend)
                 )
-            ).first()
-            if newer is None:
+            ).rowcount
+            if newer != 1:
                 return None
             await conn.execute(
                 delete(_INVENTORY).where(
                     _INVENTORY.c.backend == backend,
-                    _INVENTORY.c.sandbox_id != all_(literal(list(listed), ARRAY(Text))),
+                    _INVENTORY.c.sandbox_id.not_in(list(listed)),
                 )
             )
             if rows:
-                upsert = insert(_INVENTORY)
-                changed = upsert.excluded
-                await conn.execute(
-                    upsert.on_conflict_do_update(
-                        index_elements=[_INVENTORY.c.backend, _INVENTORY.c.sandbox_id],
-                        set_={
-                            "cpu_millicores": changed.cpu_millicores,
-                            "memory_bytes": changed.memory_bytes,
-                            "released": changed.released,
-                            "state": changed.state,
-                            "session_id": changed.session_id,
-                        },
-                        # A box listed unchanged keeps its row version.
-                        where=or_(
-                            _INVENTORY.c.cpu_millicores.is_distinct_from(changed.cpu_millicores),
-                            _INVENTORY.c.memory_bytes.is_distinct_from(changed.memory_bytes),
-                            _INVENTORY.c.released.is_distinct_from(changed.released),
-                            _INVENTORY.c.state.is_distinct_from(changed.state),
-                            _INVENTORY.c.session_id.is_distinct_from(changed.session_id),
-                        ),
-                    ),
-                    rows,
-                )
+                # Every inventory writer holds this ledger, so the comparison
+                # and upsert cannot lose a concurrent inventory change.
+                existing = {row["sandbox_id"]: row for row in (
+                    await conn.execute(select(_INVENTORY).where(_INVENTORY.c.backend == backend))
+                ).mappings()}
+                columns = ("cpu_millicores", "memory_bytes", "released", "state", "session_id")
+                changed = [row for row in rows if row["sandbox_id"] not in existing or any(
+                    existing[row["sandbox_id"]][key] != row.get(key) for key in columns
+                )]
+                if changed:
+                    await conn.execute(upsert_primary_key(
+                        conn, _INVENTORY, changed, update_columns=columns,
+                    ))
             # Charged by the inventory from now on: moved, not released.
             await conn.execute(
                 delete(_RESERVATIONS).where(

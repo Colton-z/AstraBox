@@ -6,8 +6,16 @@ import uuid
 from typing import Any
 
 from sqlalchemy import delete, func, insert, select, update
+from sqlalchemy.ext.asyncio import AsyncConnection
 
-from astrabox.persistence.sql import UniqueViolation, execute, fetch_all, fetch_one, to_iso
+from astrabox.persistence.sql import (
+    UniqueViolation,
+    execute,
+    fetch_all,
+    fetch_one,
+    to_iso,
+    transaction,
+)
 from astrabox.persistence.sql.models.mcp import MCPServer
 
 _SERVERS = MCPServer.__table__
@@ -39,8 +47,16 @@ class MCPServerRepository:
             "created_by": doc.get("created_by"),
             "updated_by": doc.get("updated_by"),
         }
+
+        async def add(conn: AsyncConnection) -> dict[str, Any]:
+            await conn.execute(insert(_SERVERS).values(**values))
+            result = await conn.execute(
+                select(_SERVERS).where(_SERVERS.c.mcp_server_id == values["mcp_server_id"])
+            )
+            return dict(result.mappings().one())
+
         try:
-            row = await fetch_one(insert(_SERVERS).values(**values).returning(_SERVERS))
+            row = await transaction(add)
         except UniqueViolation as exc:
             raise MCPServerNameTaken(values["name"]) from exc
         stored = _view(row)
@@ -79,13 +95,22 @@ class MCPServerRepository:
         """
         allowed = {"name", "description", "url", "transport", "enabled", "updated_by"}
         values = {key: value for key, value in updates.items() if key in allowed}
-        try:
-            row = await fetch_one(
+
+        async def change(conn: AsyncConnection) -> dict[str, Any] | None:
+            changed = await conn.execute(
                 update(_SERVERS)
                 .where(_SERVERS.c.mcp_server_id == mcp_server_id)
                 .values(**values, updated_at=func.now())
-                .returning(_SERVERS)
             )
+            if changed.rowcount != 1:
+                return None
+            result = await conn.execute(
+                select(_SERVERS).where(_SERVERS.c.mcp_server_id == mcp_server_id)
+            )
+            return dict(result.mappings().one())
+
+        try:
+            row = await transaction(change)
         except UniqueViolation as exc:
             raise MCPServerNameTaken(str(values.get("name") or "")) from exc
         return _view(row)

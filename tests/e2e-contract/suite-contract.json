@@ -30,7 +30,7 @@
       }
     },
     "tests": {
-      "no_volume_core": 582,
+      "no_volume_core": 583,
       "persistent_files": 19
     }
   },
@@ -116,8 +116,8 @@
       "workers": 5
     },
     "parallel": {
-      "files": 29,
-      "tests": 42,
+      "files": 30,
+      "tests": 43,
       "workers": 5
     }
   },

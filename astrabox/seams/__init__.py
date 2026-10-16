@@ -60,7 +60,8 @@ from astrabox.seams.sandbox import (
     SandboxRuntimeDefaults,
 )
 from astrabox.seams.runtime_preparation import (
-    PreparedPackage, PreparationSubject, ResourcePreparationOperation, ResourcePreparationContext,
+    PreparedPackage, PreparationSubject, PreparationCommitGuard,
+    ResourcePreparationOperation, ResourcePreparationContext,
     RuntimePreparationProvider, RuntimePreparationPlan, RuntimeMaterials, RuntimeFile,
     SessionPreparationContext, TurnPreparationContext, PreparationUserActionRequired,
     SessionUserActionContext, SessionUserActionCommand, SessionUserActionState,
@@ -75,6 +76,7 @@ __all__ = [
     "SEAMS_API_VERSION",
     "PreparedPackage",
     "PreparationSubject",
+    "PreparationCommitGuard",
     "ResourcePreparationOperation",
     "ResourcePreparationContext",
     "RuntimePreparationProvider",

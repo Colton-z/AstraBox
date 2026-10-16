@@ -5,12 +5,13 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import func, or_, select, tuple_, update
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy import func, literal, or_, select, tuple_, update
+from sqlalchemy.ext.asyncio import AsyncConnection
 from sqlalchemy.sql import ColumnElement
 
-from astrabox.persistence.sql import fetch_one, fetch_all, fetch_value, to_iso
+from astrabox.persistence.sql import execute, fetch_all, fetch_one, fetch_value, to_iso, transaction
 from astrabox.persistence.sql.models.platform import AgentTaskReference
+from astrabox.persistence.sql.statements import insert_if_absent
 
 _REFERENCES = AgentTaskReference.__table__
 
@@ -57,17 +58,19 @@ class AgentTaskReferenceRepository:
         its request to tell a retry from a different request reusing the id.
         """
         values = {key: reference[key] for key in _RESERVED_FIELDS if key in reference}
-        created = await fetch_one(
-            insert(_REFERENCES)
-            .values(**values)
-            .on_conflict_do_nothing(index_elements=[_REFERENCES.c.reference_id])
-            .returning(_REFERENCES)
-        )
-        if created is not None:
-            return {**created, "created_at": to_iso(created["created_at"])}
-        # The conflicting row is committed by the time the insert reports the
-        # conflict, so a new read sees it.
-        stored = await self.get(str(values["reference_id"]))
+
+        async def reserve(conn: AsyncConnection) -> dict[str, Any] | None:
+            await insert_if_absent(conn, _REFERENCES, values, index_columns=["reference_id"])
+            # Read-only confirmation must not upgrade a duplicate's shared lock.
+            result = await conn.execute(
+                select(_REFERENCES)
+                .where(_REFERENCES.c.reference_id == values["reference_id"])
+                .with_for_update(read=True)
+            )
+            row = result.mappings().first()
+            return dict(row) if row is not None else None
+
+        stored = _view(await transaction(reserve))
         if stored is None:
             raise RuntimeError("reserved Agent task reference is missing")
         return stored
@@ -85,7 +88,7 @@ class AgentTaskReferenceRepository:
         Raises ``RuntimeError`` when the reference is bound to another
         conversation, or does not exist.
         """
-        bound = await fetch_value(
+        bound = await execute(
             update(_REFERENCES)
             .where(
                 _REFERENCES.c.reference_id == reference_id,
@@ -95,9 +98,8 @@ class AgentTaskReferenceRepository:
                 ),
             )
             .values(session_id=session_id)
-            .returning(_REFERENCES.c.reference_id)
         )
-        if bound is None:
+        if bound != 1:
             raise RuntimeError("Agent task reference has conflicting Session bindings")
 
     async def list_tasks(
@@ -120,7 +122,11 @@ class AgentTaskReferenceRepository:
         )
         if after is not None:
             statement = statement.where(
-                tuple_(_REFERENCES.c.created_at, _REFERENCES.c.reference_id) < tuple_(*after)
+                tuple_(_REFERENCES.c.created_at, _REFERENCES.c.reference_id)
+                < tuple_(
+                    literal(after[0], type_=_REFERENCES.c.created_at.type),
+                    literal(after[1], type_=_REFERENCES.c.reference_id.type),
+                )
             )
         rows = await fetch_all(
             statement.order_by(

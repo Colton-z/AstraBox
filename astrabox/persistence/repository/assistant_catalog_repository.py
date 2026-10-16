@@ -22,21 +22,26 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import (
+    JSON,
     Select,
     Text,
+    case,
+    cast,
     delete,
     exists,
     func,
     insert,
     literal,
-    literal_column,
     or_,
     select,
     tuple_,
     update,
 )
-from sqlalchemy.dialects.postgresql import aggregate_order_by
+from sqlalchemy.dialects.postgresql import JSONB, aggregate_order_by
 from sqlalchemy.ext.asyncio import AsyncConnection
+from sqlalchemy.ext.compiler import compiles
+from sqlalchemy.sql.compiler import SQLCompiler
+from sqlalchemy.sql.functions import FunctionElement
 
 from astrabox.persistence.sql import (
     ForeignKeyViolation,
@@ -114,47 +119,84 @@ def _model_name(override: Any) -> str | None:
     return str(value) if value is not None else None
 
 
+class _ChildObject(FunctionElement[dict[str, Any]]):
+    """A native JSON object in the Assistant's child projection."""
+
+    type = JSON().with_variant(JSONB(), "postgresql")
+    inherit_cache = True
+
+
+@compiles(_ChildObject, "postgresql")
+def _pg_child_object(element: _ChildObject, compiler: SQLCompiler, **kw: Any) -> str:
+    return compiler.process(func.jsonb_build_object(*element.clauses), **kw)
+
+
+@compiles(_ChildObject, "mysql")
+def _mysql_child_object(element: _ChildObject, compiler: SQLCompiler, **kw: Any) -> str:
+    return compiler.process(func.json_object(*element.clauses), **kw)
+
+
+class _OrderedChildren(FunctionElement[list[Any]]):
+    """Ordered child values for a correlated scalar query limited to one row."""
+
+    type = JSON().with_variant(JSONB(), "postgresql")
+    inherit_cache = True
+
+
+@compiles(_OrderedChildren, "postgresql")
+def _pg_ordered_children(element: _OrderedChildren, compiler: SQLCompiler, **kw: Any) -> str:
+    value, *ordering = element.clauses
+    return compiler.process(func.jsonb_agg(aggregate_order_by(value, *ordering)), **kw)
+
+
+@compiles(_OrderedChildren, "mysql")
+def _mysql_ordered_children(element: _OrderedChildren, compiler: SQLCompiler, **kw: Any) -> str:
+    value, *ordering = element.clauses
+    return compiler.process(
+        func.json_arrayagg(value).over(order_by=ordering, rows=(None, None)), **kw
+    )
+
+
 def _child_columns() -> list[Any]:
     """The child rows of the Assistant in the enclosing query, aggregated in their order."""
     vault_ids = (
-        select(func.jsonb_agg(aggregate_order_by(_VAULTS.c.vault_id, _VAULTS.c.position)))
+        select(_OrderedChildren(cast(_VAULTS.c.vault_id, Text), _VAULTS.c.position))
         .where(_VAULTS.c.assistant_id == _ASSISTANTS.c.assistant_id)
+        .limit(1)
         .scalar_subquery()
     )
     assignments = (
         select(
-            func.jsonb_agg(
-                aggregate_order_by(
-                    func.jsonb_build_object(
-                        literal_column("'provider'"),
-                        _ASSIGNMENTS.c.provider,
-                        literal_column("'item_id'"),
-                        _ASSIGNMENTS.c.item_id,
-                    ),
-                    _ASSIGNMENTS.c.position,
-                )
+            _OrderedChildren(
+                _ChildObject(
+                    literal("provider"),
+                    cast(_ASSIGNMENTS.c.provider, Text),
+                    literal("item_id"),
+                    cast(_ASSIGNMENTS.c.item_id, Text),
+                ),
+                _ASSIGNMENTS.c.position,
             )
         )
         .where(_ASSIGNMENTS.c.assistant_id == _ASSISTANTS.c.assistant_id)
+        .limit(1)
         .scalar_subquery()
     )
     connectors = (
         select(
-            func.jsonb_agg(
-                aggregate_order_by(
-                    func.jsonb_build_object(
-                        literal_column("'connector_id'"),
-                        _CONNECTORS.c.connector_id,
-                        literal_column("'hub_server_id'"),
-                        _CONNECTORS.c.hub_server_id,
-                        literal_column("'turned_off'"),
-                        _CONNECTORS.c.turned_off,
-                    ),
-                    _CONNECTORS.c.connector_id,
-                )
+            _OrderedChildren(
+                _ChildObject(
+                    literal("connector_id"),
+                    cast(_CONNECTORS.c.connector_id, Text),
+                    literal("hub_server_id"),
+                    cast(_CONNECTORS.c.hub_server_id, Text),
+                    literal("turned_off"),
+                    _CONNECTORS.c.turned_off,
+                ),
+                _CONNECTORS.c.connector_id,
             )
         )
         .where(_CONNECTORS.c.assistant_id == _ASSISTANTS.c.assistant_id)
+        .limit(1)
         .scalar_subquery()
     )
     return [
@@ -253,8 +295,8 @@ def _version_cas(
 ) -> Any:
     """Move a live Assistant from ``expected_version`` to the next, writing ``values``.
 
-    ``touch`` moves ``updated_at`` too. The statement returns the id only when
-    the Assistant was still at that version.
+    ``touch`` moves ``updated_at`` too. A matched row means the Assistant was
+    still at that version.
     """
     changes: dict[str, Any] = {**(values or {}), "version": _ASSISTANTS.c.version + 1}
     if touch:
@@ -267,12 +309,11 @@ def _version_cas(
             _ASSISTANTS.c.deleted.is_(False),
         )
         .values(**changes)
-        .returning(_ASSISTANTS.c.assistant_id)
     )
 
 
 async def _moved(conn: AsyncConnection, statement: Any) -> bool:
-    return (await conn.execute(statement)).first() is not None
+    return (await conn.execute(statement)).rowcount == 1
 
 
 class AssistantCatalogRepository:
@@ -304,8 +345,16 @@ class AssistantCatalogRepository:
             "skills": payload.get("skills"),
             "engine_options": payload.get("engine_options"),
         }
+
+        async def create(conn: AsyncConnection) -> dict[str, Any]:
+            await conn.execute(insert(_ASSISTANTS).values(**values))
+            result = await conn.execute(
+                select(_ASSISTANTS).where(_ASSISTANTS.c.assistant_id == values["assistant_id"])
+            )
+            return dict(result.mappings().one())
+
         try:
-            row = await fetch_one(insert(_ASSISTANTS).values(**values).returning(_ASSISTANTS))
+            row = await transaction(create)
         except UniqueViolation as exc:
             raise AssistantExists(values["assistant_id"]) from exc
         except ForeignKeyViolation as exc:
@@ -342,19 +391,25 @@ class AssistantCatalogRepository:
         )
         return [record for record in map(_record, rows) if record is not None]
 
-    async def list_assistants_by_environment(self, name: str) -> list[dict[str, Any]]:
+    async def list_assistants_by_environment(
+        self, name: str, *, connection: AsyncConnection | None = None
+    ) -> list[dict[str, Any]]:
         """Every Assistant that names the Environment, deleted ones included.
 
         A deleted Assistant still names its Environment while conversations it
         left behind may hold compute, which the Environment's cleanup check reads.
+        ``connection`` keeps that check on the caller's deletion transaction.
         """
-        rows = await fetch_all(
+        statement = (
             select(
                 _ASSISTANTS.c.assistant_id, _ASSISTANTS.c.display_name, _ASSISTANTS.c.deleted
             )
             .where(_ASSISTANTS.c.environment_name == name)
             .order_by(_ASSISTANTS.c.assistant_id)
         )
+        if connection is not None:
+            return [dict(row) for row in (await connection.execute(statement)).mappings()]
+        rows = await fetch_all(statement)
         return [dict(row) for row in rows]
 
     async def list_catalog_selections(self) -> list[dict[str, Any]]:
@@ -415,7 +470,7 @@ class AssistantCatalogRepository:
             statement = statement.where(
                 or_(
                     *(
-                        column.icontains(needle, autoescape=True)
+                        cast(column, Text).icontains(needle, autoescape=True)
                         for column in (
                             _ASSISTANTS.c.display_name,
                             _ASSISTANTS.c.assistant_id,
@@ -435,7 +490,7 @@ class AssistantCatalogRepository:
                 tuple_(_ASSISTANTS.c.updated_at, _ASSISTANTS.c.assistant_id)
                 < tuple_(
                     literal(updated_at, _ASSISTANTS.c.updated_at.type),
-                    literal(assistant_id, Text),
+                    literal(assistant_id, _ASSISTANTS.c.assistant_id.type),
                 )
             )
         rows = await fetch_all(
@@ -450,7 +505,7 @@ class AssistantCatalogRepository:
         row = await fetch_one(
             select(
                 func.count().label("total"),
-                func.count().filter(_WORKSPACES.c.state == "READY").label("ready"),
+                func.count(case((_WORKSPACES.c.state == "READY", 1))).label("ready"),
             )
             .select_from(
                 _ASSISTANTS.outerjoin(
@@ -494,24 +549,31 @@ class AssistantCatalogRepository:
         Raises :class:`AssistantExists` when another Assistant of the owner
         became the live primary first.
         """
-        earliest = _ASSISTANTS.alias("earliest")
-        first = (
-            select(earliest.c.assistant_id)
-            .where(earliest.c.owner_id == str(owner_id or ""), earliest.c.deleted.is_(False))
-            .order_by(earliest.c.created_at, earliest.c.assistant_id)
-            .limit(1)
-            .scalar_subquery()
-        )
-        try:
-            row = await fetch_one(
+
+        async def mark(conn: AsyncConnection) -> str | None:
+            first = await conn.scalar(
+                select(_ASSISTANTS.c.assistant_id)
+                .where(
+                    _ASSISTANTS.c.owner_id == str(owner_id or ""),
+                    _ASSISTANTS.c.deleted.is_(False),
+                )
+                .order_by(_ASSISTANTS.c.created_at, _ASSISTANTS.c.assistant_id)
+                .limit(1)
+                .with_for_update()
+            )
+            if first is None:
+                return None
+            changed = await conn.execute(
                 update(_ASSISTANTS)
                 .where(_ASSISTANTS.c.assistant_id == first, _ASSISTANTS.c.deleted.is_(False))
                 .values(is_primary=True)
-                .returning(_ASSISTANTS.c.assistant_id)
             )
+            return str(first) if changed.rowcount == 1 else None
+
+        try:
+            return await transaction(mark)
         except UniqueViolation as exc:
             raise AssistantExists(owner_id) from exc
-        return str(row["assistant_id"]) if row is not None else None
 
     async def update_definition(
         self,
@@ -539,7 +601,7 @@ class AssistantCatalogRepository:
         statement = _version_cas(
             assistant_id, expected_version=expected_version, touch=touch, values=changes
         )
-        return await fetch_one(statement) is not None
+        return await execute(statement) == 1
 
     async def set_vault_bindings(
         self,
@@ -680,16 +742,33 @@ class AssistantCatalogRepository:
     async def mint_workspace_id(self, assistant_id: str, candidate: str) -> str | None:
         """The Assistant's durable workspace id, recording ``candidate`` when it has none.
 
-        One statement: concurrent first mounts all receive the id the first of
-        them recorded. ``None`` when the Assistant does not exist.
+        Concurrent first mounts all receive the id the first of them recorded.
+        The write lock lasts through readback. ``None`` when the Assistant does
+        not exist.
         """
-        row = await fetch_one(
-            update(_ASSISTANTS)
-            .where(_ASSISTANTS.c.assistant_id == assistant_id, _ASSISTANTS.c.deleted.is_(False))
-            .values(workspace_id=func.coalesce(_ASSISTANTS.c.workspace_id, candidate))
-            .returning(_ASSISTANTS.c.workspace_id)
-        )
-        return str(row["workspace_id"]) if row is not None else None
+
+        async def mint(conn: AsyncConnection) -> str | None:
+            changed = await conn.execute(
+                update(_ASSISTANTS)
+                .where(
+                    _ASSISTANTS.c.assistant_id == assistant_id,
+                    _ASSISTANTS.c.deleted.is_(False),
+                )
+                .values(
+                    workspace_id=func.coalesce(
+                        _ASSISTANTS.c.workspace_id,
+                        literal(candidate, type_=_ASSISTANTS.c.workspace_id.type),
+                    )
+                )
+            )
+            if changed.rowcount != 1:
+                return None
+            stored = await conn.scalar(
+                select(_ASSISTANTS.c.workspace_id).where(_ASSISTANTS.c.assistant_id == assistant_id)
+            )
+            return str(stored) if stored is not None else None
+
+        return await transaction(mint)
 
     async def delete_assistant(self, assistant_id: str, *, owner_id: str) -> bool:
         """Delete the owner's Assistant together with its workspace and Vault bindings.
@@ -714,9 +793,8 @@ class AssistantCatalogRepository:
                     _ASSISTANTS.c.deleted.is_(False),
                 )
                 .values(deleted=True)
-                .returning(_ASSISTANTS.c.assistant_id)
             )
-            if deleted.first() is None:
+            if deleted.rowcount != 1:
                 return False
             held = (
                 await conn.execute(

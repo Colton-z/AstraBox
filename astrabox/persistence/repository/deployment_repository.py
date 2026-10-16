@@ -5,9 +5,10 @@ from __future__ import annotations
 from typing import Any
 
 from sqlalchemy import and_, delete, func, insert, literal, or_, select, update
+from sqlalchemy.ext.asyncio import AsyncConnection
 from sqlalchemy.sql import ColumnElement
 
-from astrabox.persistence.sql import ForeignKeyViolation, execute, fetch_all, fetch_one, to_iso
+from astrabox.persistence.sql import ForeignKeyViolation, execute, fetch_all, fetch_one, to_iso, transaction
 from astrabox.persistence.sql.models.deployments import Deployment
 
 _DEPLOYMENTS = Deployment.__table__
@@ -221,7 +222,7 @@ class DeploymentRepository:
         if not wid or not expected_scene.startswith("channel:") or cursor_value < 0:
             return False
         table = _DEPLOYMENTS.c
-        advanced = await fetch_one(
+        advanced = await execute(
             update(_DEPLOYMENTS)
             .where(
                 table.deployment_id == wid,
@@ -229,9 +230,8 @@ class DeploymentRepository:
                 table.enabled,
             )
             .values(source_cursor=func.greatest(func.coalesce(table.source_cursor, -1), cursor_value))
-            .returning(table.deployment_id)
         )
-        return advanced is not None
+        return advanced == 1
 
     async def create(self, deployment_id: str, doc: dict[str, Any]) -> dict[str, Any]:
         """Insert a new Deployment; returns the stored row.
@@ -243,17 +243,24 @@ class DeploymentRepository:
             {key: value for key, value in doc.items() if key != "deployment_id"},
             allowed=_WRITABLE | _IDENTITY,
         )
-        try:
-            row = await fetch_one(
+        wid = str(deployment_id or "").strip()
+
+        async def create(conn: AsyncConnection) -> dict[str, Any]:
+            await conn.execute(
                 insert(_DEPLOYMENTS)
-                .values(deployment_id=str(deployment_id or "").strip(), **values)
-                .returning(_DEPLOYMENTS)
+                .values(deployment_id=wid, **values)
             )
+            row = (await conn.execute(
+                select(_DEPLOYMENTS).where(_DEPLOYMENTS.c.deployment_id == wid)
+            )).one()
+            stored = _view(dict(row._mapping))
+            assert stored is not None
+            return stored
+
+        try:
+            return await transaction(create)
         except ForeignKeyViolation as exc:
             raise DeploymentTargetMissing(str(exc.constraint or "")) from exc
-        stored = _view(row)
-        assert stored is not None
-        return stored
 
     async def update_for_deployment(
         self,
@@ -278,12 +285,19 @@ class DeploymentRepository:
             {key: value for key, value in dict(updates or {}).items() if key not in _IDENTITY},
             allowed=_WRITABLE,
         )
-        return _view(await fetch_one(
-            update(_DEPLOYMENTS)
-            .where(fence)
-            .values(**values, updated_at=func.now())
-            .returning(_DEPLOYMENTS)
-        ))
+
+        async def change(conn: AsyncConnection) -> dict[str, Any] | None:
+            changed = await conn.execute(
+                update(_DEPLOYMENTS)
+                .where(fence)
+                .values(**values, updated_at=func.now())
+            )
+            if changed.rowcount != 1:
+                return None
+            row = (await conn.execute(select(_DEPLOYMENTS).where(fence))).one()
+            return _view(dict(row._mapping))
+
+        return await transaction(change)
 
     async def delete_for_deployment(
         self, deployment_id: str, agent_id: str, *, assistant_id: str = "", owner_user_id: str = "",
@@ -317,4 +331,17 @@ class DeploymentRepository:
             if aid
             else or_(table.assistant_id == sid, table.source_assistant_id == sid)
         )
-        return _views(await fetch_all(delete(_DEPLOYMENTS).where(target).returning(_DEPLOYMENTS)))
+
+        async def remove(conn: AsyncConnection) -> list[dict[str, Any]]:
+            rows = (await conn.execute(
+                select(_DEPLOYMENTS).where(target)
+                .order_by(table.deployment_id).with_for_update()
+            )).all()
+            if not rows:
+                return []
+            await conn.execute(delete(_DEPLOYMENTS).where(
+                target, table.deployment_id.in_([row.deployment_id for row in rows]),
+            ))
+            return _views([dict(row._mapping) for row in rows])
+
+        return await transaction(remove)

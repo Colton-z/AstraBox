@@ -8,21 +8,26 @@ other favorites the way a single per-user list would.
 from __future__ import annotations
 
 from sqlalchemy import delete, select
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.ext.asyncio import AsyncConnection
 
-from astrabox.persistence.sql import execute, fetch_all
+from astrabox.persistence.sql import execute, fetch_all, transaction
 from astrabox.persistence.sql.models.agents import AgentFavorite
+from astrabox.persistence.sql.statements import insert_if_absent
 
 _FAVORITES = AgentFavorite.__table__
 
 
 class AgentFavoriteRepository:
     async def add(self, user_id: str, agent_id: str) -> None:
-        await execute(
-            insert(_FAVORITES)
-            .values(user_id=user_id, agent_id=agent_id)
-            .on_conflict_do_nothing(index_elements=[_FAVORITES.c.user_id, _FAVORITES.c.agent_id])
-        )
+        async def add(conn: AsyncConnection) -> None:
+            await insert_if_absent(
+                conn,
+                _FAVORITES,
+                {"user_id": user_id, "agent_id": agent_id},
+                index_columns=["user_id", "agent_id"],
+            )
+
+        await transaction(add)
 
     async def remove(self, user_id: str, agent_id: str) -> None:
         await execute(

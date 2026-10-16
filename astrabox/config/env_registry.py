@@ -461,13 +461,26 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "astrabox.config.settings",
     ),
     (
+        "ASTRABOX_PERSISTENCE_PROVIDER",
+        "public",
+        "postgres",
+        "Relational persistence provider registered in astrabox.providers.persistence. "
+        "The built-in postgres provider uses SQLAlchemy and asyncpg. Providers supply "
+        "compatible SQLAlchemy engines, native conflict operations, schema and physical "
+        "coordination guarantees; repository "
+        "workflows stay shared in the platform. Selecting a provider alone does not "
+        "establish dialect support.",
+        "astrabox.config.settings",
+    ),
+    (
         "ASTRABOX_DB_URL",
         "public",
         "",
-        "PostgreSQL connection URL (postgresql://). The maintained local launchers "
+        "Native connection URL for ASTRABOX_PERSISTENCE_PROVIDER; postgres uses "
+        "postgresql://. The maintained local launchers "
         "populate it from generated service-scoped credentials; direct and external "
         "deployments must set it explicitly. The server does not start with any "
-        "other database URL.",
+        "URL unsupported by the selected provider.",
         "astrabox.config.settings",
     ),
     (

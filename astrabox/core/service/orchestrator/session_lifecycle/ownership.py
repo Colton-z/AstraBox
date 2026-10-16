@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from typing import Any, NoReturn
 
 from astrabox.common.utils.errors import APIError
-from astrabox.persistence.sql.notify import NoticeKind
+from astrabox.seams.persistence_coordination import NoticeKind
 
 #: The startup (by its assignment id) that last reached the sandbox provider
 #: for this session; see :meth:`RecoveryOwnership.claim_first_provider_attempt`.

@@ -2,7 +2,7 @@
 
 Four writers, each with its own statements:
 
-* The send path accepts an input with one statement
+* The send path accepts an input and enqueues its notice in one transaction
   (:meth:`SessionRuntimeRepository.accept_input`) and records what became of
   handing it to the runtime.
 * The session's reader holds a lease (:meth:`SessionRuntimeRepository.claim_reader`)
@@ -38,7 +38,6 @@ from sqlalchemy import (
     union_all,
     update,
 )
-from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from astrabox.core.model import SessionState
@@ -51,7 +50,11 @@ from astrabox.persistence.sql import (
     to_iso,
     transaction,
 )
-from astrabox.persistence.sql.notify import notice
+from astrabox.persistence.provider import get_persistence
+from astrabox.persistence.sql.statements import (
+    TimestampAfter, insert_if_absent, insert_if_absent_primary_key,
+)
+from astrabox.seams.persistence_coordination import SessionNotice
 from astrabox.persistence.sql.models.agents import Agent
 from astrabox.persistence.sql.models.sessions import (
     Session,
@@ -220,56 +223,40 @@ class SessionRuntimeRepository:
         author_user_id: str | None,
         source: str | None,
     ) -> tuple[dict[str, Any], bool] | None:
-        """Accept one input for a session that can take it, in one statement.
+        """Accept one input and enqueue its notice in the same transaction.
 
         ``owner_user_id``, when given, must own the session. Returns the stored
         input and whether this call created it (``False`` when the same
         ``client_message_id`` was accepted before), or ``None`` when no live,
         owned session can take input.
         """
-        session = (
-            select(
-                literal(input_id).label("input_id"),
-                _SESSIONS.c.session_id,
-                literal(client_message_id).label("client_message_id"),
-                literal(author_user_id).label("author_user_id"),
-                literal(source).label("source"),
-                literal(content).label("content"),
-                literal(content_blocks, type_=_INPUTS.c.content_blocks.type).label("content_blocks"),
+        async def accept(conn: AsyncConnection) -> dict[str, Any] | None:
+            eligible = select(_SESSIONS.c.session_id).where(
+                _SESSIONS.c.session_id == session_id, *_accepting(owner_user_id),
+            ).exists()
+            if not await insert_if_absent(
+                conn, _INPUTS,
+                {"input_id": input_id, "session_id": session_id,
+                 "client_message_id": client_message_id, "author_user_id": author_user_id,
+                 "source": source, "content": content, "content_blocks": content_blocks},
+                index_columns=["session_id", "client_message_id"], where=eligible,
+            ):
+                return None
+            await conn.execute(
+                update(_SESSIONS).where(_SESSIONS.c.session_id == session_id)
+                .values(updated_at=func.now())
             )
-            .where(_SESSIONS.c.session_id == session_id, *_accepting(owner_user_id))
-        )
-        statement = (
-            pg_insert(_INPUTS)
-            .from_select(
-                [
-                    "input_id",
-                    "session_id",
-                    "client_message_id",
-                    "author_user_id",
-                    "source",
-                    "content",
-                    "content_blocks",
-                ],
-                session,
+            row = (await conn.execute(
+                select(_INPUTS).where(_INPUTS.c.input_id == input_id)
+            )).mappings().one()
+            await get_persistence().coordination.notify(
+                conn, SessionNotice(session_id=session_id, kind="input", seq=0),
             )
-            .on_conflict_do_nothing(index_elements=["session_id", "client_message_id"])
-            .returning(*_INPUTS.c)
-            .cte("accepted")
-        )
-        activity = (
-            update(_SESSIONS)
-            .where(_SESSIONS.c.session_id == statement.c.session_id)
-            .values(updated_at=func.now())
-            .returning(_SESSIONS.c.session_id)
-            .cte("activity")
-        )
-        accepted = await fetch_one(
-            select(statement, notice(statement.c.session_id, "input").label("notified"))
-            .join(activity, activity.c.session_id == statement.c.session_id)
-        )
+            return dict(row)
+
+        accepted = await transaction(accept)
         if accepted is not None:
-            return _row({key: value for key, value in accepted.items() if key != "notified"}), True
+            return _row(accepted), True
         existing = _view(
             await fetch_one(
                 select(_INPUTS)
@@ -359,7 +346,7 @@ class SessionRuntimeRepository:
 
         ``False`` when the interaction is not open or already has an answer.
         """
-        rows = await fetch_all(
+        statement = (
             update(_INTERACTIONS)
             .where(
                 _INTERACTIONS.c.session_id == session_id,
@@ -368,9 +355,17 @@ class SessionRuntimeRepository:
                 _INTERACTIONS.c.answer.is_(None),
             )
             .values(answer=answer, answered_by=answered_by, answered_at=func.now())
-            .returning(notice(_INTERACTIONS.c.session_id, "answer"))
         )
-        return bool(rows)
+
+        async def write(conn: AsyncConnection) -> bool:
+            if (await conn.execute(statement)).rowcount == 0:
+                return False
+            await get_persistence().coordination.notify(
+                conn, SessionNotice(session_id=session_id, kind="answer", seq=0),
+            )
+            return True
+
+        return await transaction(write)
 
     async def pending_answers(self, session_id: str) -> list[dict[str, Any]]:
         """Open interactions with an answer the runtime has not taken yet."""
@@ -393,25 +388,29 @@ class SessionRuntimeRepository:
 
         Without a live reader nothing is running, so there is nothing to steer.
         """
+        control_id = str(uuid.uuid4())
         live = select(
-            literal(str(uuid.uuid4())).label("control_id"),
+            literal(control_id, type_=_CONTROLS.c.control_id.type).label("control_id"),
             _READERS.c.session_id,
-            literal(kind).label("kind"),
-            literal(target).label("target"),
+            literal(kind, type_=_CONTROLS.c.kind.type).label("kind"),
+            literal(target, type_=_CONTROLS.c.target.type).label("target"),
             _READERS.c.generation.label("reader_generation"),
-            literal(requested_by).label("requested_by"),
+            literal(requested_by, type_=_CONTROLS.c.requested_by.type).label("requested_by"),
         ).where(_READERS.c.session_id == session_id, _READERS.c.expires_at > func.now())
-        inserted = (
-            pg_insert(_CONTROLS)
-            .from_select(
-                ["control_id", "session_id", "kind", "target", "reader_generation", "requested_by"],
-                live,
-            )
-            .returning(_CONTROLS.c.control_id, _CONTROLS.c.session_id)
-            .cte("requested")
+        statement = insert(_CONTROLS).from_select(
+            ["control_id", "session_id", "kind", "target", "reader_generation", "requested_by"],
+            live,
         )
-        row = await fetch_one(select(inserted.c.control_id, notice(inserted.c.session_id, "control")))
-        return str(row["control_id"]) if row else None
+
+        async def write(conn: AsyncConnection) -> str | None:
+            if (await conn.execute(statement)).rowcount == 0:
+                return None
+            await get_persistence().coordination.notify(
+                conn, SessionNotice(session_id=session_id, kind="control", seq=0),
+            )
+            return control_id
+
+        return await transaction(write)
 
     async def pending_controls(self, lease: ReaderLease) -> list[dict[str, Any]]:
         """Controls the lease's reader generation has yet to apply, oldest first."""
@@ -459,25 +458,31 @@ class SessionRuntimeRepository:
             select(_SESSIONS.c.session_id).where(_SESSIONS.c.session_id == session_id, _WORKSPACE_OWN)
         ) is not None:
             return None
-        expires = func.now() + func.make_interval(0, 0, 0, 0, 0, 0, ttl_s)
-        statement = (
-            pg_insert(_READERS)
-            .values(session_id=session_id, owner=owner, generation=1, expires_at=expires)
-            .on_conflict_do_update(
-                index_elements=["session_id"],
-                set_={
-                    "owner": owner,
-                    "generation": _READERS.c.generation + 1,
-                    "expires_at": expires,
-                },
-                where=or_(_READERS.c.expires_at < func.now(), _READERS.c.owner == owner),
+        async def claim(conn: AsyncConnection) -> ReaderLease | None:
+            # Seed the missing row without changing an existing incarnation.
+            # The conditional update owns the row through the generation read.
+            await conn.execute(insert_if_absent_primary_key(
+                conn, _READERS,
+                {"session_id": session_id, "owner": owner, "generation": 0,
+                 "expires_at": TimestampAfter(func.now(), ttl_s)},
+            ))
+            result = await conn.execute(
+                update(_READERS)
+                .where(
+                    _READERS.c.session_id == session_id,
+                    or_(_READERS.c.expires_at < func.now(), _READERS.c.owner == owner),
+                )
+                .values(owner=owner, generation=_READERS.c.generation + 1,
+                        expires_at=TimestampAfter(func.now(), ttl_s))
             )
-            .returning(_READERS.c.generation)
-        )
-        generation = await fetch_value(statement)
-        if generation is None:
-            return None
-        return ReaderLease(session_id=session_id, owner=owner, generation=int(generation))
+            if result.rowcount == 0:
+                return None
+            generation = (await conn.execute(
+                select(_READERS.c.generation).where(_READERS.c.session_id == session_id)
+            )).scalar_one()
+            return ReaderLease(session_id=session_id, owner=owner, generation=int(generation))
+
+        return await transaction(claim)
 
     async def renew_reader(self, lease: ReaderLease, *, ttl_s: float) -> bool:
         """Extend the lease; ``False`` when another reader has taken it."""
@@ -485,7 +490,7 @@ class SessionRuntimeRepository:
             await execute(
                 update(_READERS)
                 .where(*_holds(lease))
-                .values(expires_at=func.now() + func.make_interval(0, 0, 0, 0, 0, 0, ttl_s))
+                .values(expires_at=TimestampAfter(func.now(), ttl_s))
             )
             > 0
         )
@@ -583,7 +588,7 @@ class SessionRuntimeRepository:
             held = await conn.execute(
                 update(_READERS)
                 .where(*_holds(lease))
-                .values(expires_at=func.now() + func.make_interval(0, 0, 0, 0, 0, 0, ttl_s))
+                .values(expires_at=TimestampAfter(func.now(), ttl_s))
             )
             if held.rowcount == 0:
                 return False
@@ -615,7 +620,10 @@ class SessionRuntimeRepository:
                     # followers read the log through ``seq``; a batch of facts
                     # alone (an interaction closed, a status changed) carries 0.
                     last = max((part.seq for part in batch.output), default=0)
-                    await conn.execute(statement.returning(notice(sid, "output", last)))
+                    if (await conn.execute(statement)).rowcount > 0:
+                        await get_persistence().coordination.notify(
+                            conn, SessionNotice(session_id=sid, kind="output", seq=last),
+                        )
                 else:
                     await conn.execute(statement)
             return True
@@ -1069,22 +1077,17 @@ def _holds(lease: ReaderLease) -> list[ColumnElement[bool]]:
 
 async def _apply(conn: AsyncConnection, session_id: str, fact: Fact) -> None:
     if isinstance(fact, ResponseStart):
-        await conn.execute(
-            pg_insert(_RESPONSES)
-            .values(session_id=session_id, response_id=fact.response_id, origin=fact.origin, status="running")
-            .on_conflict_do_nothing(index_elements=["session_id", "response_id"])
-        )
+        await conn.execute(insert_if_absent_primary_key(
+            conn, _RESPONSES,
+            {"session_id": session_id, "response_id": fact.response_id,
+             "origin": fact.origin, "status": "running"},
+        ))
         if fact.input_ids:
-            await conn.execute(
-                pg_insert(_RESPONSE_INPUTS)
-                .values(
-                    [
-                        {"session_id": session_id, "response_id": fact.response_id, "input_id": input_id}
-                        for input_id in fact.input_ids
-                    ]
-                )
-                .on_conflict_do_nothing()
-            )
+            await conn.execute(insert_if_absent_primary_key(
+                conn, _RESPONSE_INPUTS,
+                [{"session_id": session_id, "response_id": fact.response_id, "input_id": input_id}
+                 for input_id in fact.input_ids],
+            ))
             await conn.execute(
                 update(_INPUTS)
                 .where(_INPUTS.c.session_id == session_id, _INPUTS.c.input_id.in_(list(fact.input_ids)))
@@ -1117,17 +1120,11 @@ async def _apply(conn: AsyncConnection, session_id: str, fact: Fact) -> None:
             .values(status="withdrawn", closed_at=func.now())
         )
     elif isinstance(fact, InteractionOpen):
-        await conn.execute(
-            pg_insert(_INTERACTIONS)
-            .values(
-                session_id=session_id,
-                interaction_id=fact.interaction_id,
-                response_id=fact.response_id,
-                contract=fact.contract,
-                status="open",
-            )
-            .on_conflict_do_nothing(index_elements=["session_id", "interaction_id"])
-        )
+        await conn.execute(insert_if_absent_primary_key(
+            conn, _INTERACTIONS,
+            {"session_id": session_id, "interaction_id": fact.interaction_id,
+             "response_id": fact.response_id, "contract": fact.contract, "status": "open"},
+        ))
         await conn.execute(
             update(_RESPONSES)
             .where(
@@ -1138,19 +1135,19 @@ async def _apply(conn: AsyncConnection, session_id: str, fact: Fact) -> None:
             .values(status="waiting")
         )
     elif isinstance(fact, InteractionClose):
-        closed = (
-            await conn.execute(
-                update(_INTERACTIONS)
-                .where(
-                    _INTERACTIONS.c.session_id == session_id,
-                    _INTERACTIONS.c.interaction_id == fact.interaction_id,
-                    _INTERACTIONS.c.status == "open",
-                )
-                .values(status=fact.status, closed_at=func.now())
-                .returning(_INTERACTIONS.c.response_id)
-            )
-        ).first()
+        closing = [
+            _INTERACTIONS.c.session_id == session_id,
+            _INTERACTIONS.c.interaction_id == fact.interaction_id,
+            _INTERACTIONS.c.status == "open",
+        ]
+        closed = (await conn.execute(
+            select(_INTERACTIONS.c.response_id).where(*closing).with_for_update()
+        )).first()
         if closed is not None:
+            await conn.execute(
+                update(_INTERACTIONS).where(*closing)
+                .values(status=fact.status, closed_at=func.now())
+            )
             still_open = (
                 select(_INTERACTIONS.c.interaction_id)
                 .where(

@@ -158,10 +158,17 @@ sends the same reply. There is no second conversation store. See
 
 ### Data and credentials
 
-AstraBox keeps its records in PostgreSQL, the only database it supports; every
-replica uses the same database. The server brings the schema to its release's
-version when it starts; see [Deploy AstraBox](deploy.md). The bundled
-LiteLLM service uses a separate database and database role.
+PostgreSQL is AstraBox's supported default database; every replica uses the
+same persistence provider and database. The built-in `postgres` provider
+upgrades the schema at startup; see [Deploy AstraBox](deploy.md). External
+[relational providers](providers/relational-persistence.md) supply SQLAlchemy
+engines, native conflict operations, schema initialization, error classification
+and physical coordination. Repository workflows use shared SQLAlchemy
+statements; native differences use provider conflict operations and dialect
+compiler extensions. The models include [MySQL type and DDL mappings](relational-types.md),
+but a complete MySQL provider still needs compatible schema initialization,
+physical coordination and live acceptance. These mappings do not establish
+MySQL support. The bundled LiteLLM service uses a separate database and role.
 
 Scheduled Deployments run through a scheduler provider. The built-in `dbos`
 provider embeds DBOS Transact in each server process and keeps its schedules

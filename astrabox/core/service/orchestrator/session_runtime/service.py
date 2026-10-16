@@ -25,7 +25,8 @@ from astrabox.core.service.orchestrator.session_runtime.feed import SessionFeed
 from astrabox.core.service.orchestrator.session_runtime.follow import follow_output
 from astrabox.core.service.orchestrator.session_runtime.host import ReaderHost
 from astrabox.core.service.orchestrator.session_runtime.ui_message import history_messages
-from astrabox.persistence.repository.session_repository import SessionRepository, session_runtime_lock
+from astrabox.persistence.repository.session_repository import SessionRepository
+from astrabox.persistence.provider import get_persistence
 from astrabox.persistence.repository.session_runtime_repository import SessionRuntimeRepository
 from astrabox.seams.admission import ADMISSION_KIND_INPUT, AdmissionRequest, enforce_admission
 
@@ -191,7 +192,7 @@ class SessionRuntimeService:
                     status_code=409,
                 )
         input_id = str(uuid.uuid4())
-        async with session_runtime_lock(session_id):
+        async with get_persistence().coordination.runtime_lock(session_id):
             accepted = await self._repo.accept_input(
                 session_id=session_id,
                 input_id=input_id,

@@ -1,12 +1,12 @@
-import { useEffect, useState } from 'react';
 import { Navigate, useLocation } from 'react-router-dom';
 
-import { probeAuthSession, type AuthProbe } from '@/api';
+import { useAuthProbe } from '@/hooks/useAuthProbe';
+import { AuthProbeFailure } from './AuthProbeFailure';
 
 /**
  * Gate in front of the console: ask once who this browser is, then render.
  *
- * The probe answers three ways and each gets its own outcome (see `AuthProbe`).
+ * Probe failures stay on an error surface with a manual retry.
  * A deployment with no identity configured passes straight through — demanding
  * a sign-in there would ask for an account that cannot exist.
  *
@@ -16,21 +16,10 @@ import { probeAuthSession, type AuthProbe } from '@/api';
  */
 export function RequireAuth({ children }: { children: React.ReactNode }) {
   const location = useLocation();
-  const [probe, setProbe] = useState<AuthProbe | null>(null);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    probeAuthSession(controller.signal)
-      .then(setProbe)
-      // A probe that cannot be reached is not evidence of being signed out —
-      // the network is down, or the server is restarting. Letting the console
-      // render lets its own requests report what is actually wrong; a sign-in
-      // page here would blame the reader for an outage.
-      .catch(() => setProbe({ mode: 'no-auth' }));
-    return () => controller.abort();
-  }, []);
+  const { probe, retry } = useAuthProbe();
 
   if (!probe) return <div className="min-h-svh bg-background" aria-busy="true" />;
+  if (probe.mode === 'error') return <AuthProbeFailure onRetry={retry} />;
   if (probe.mode === 'signed-out') {
     const next = location.pathname + location.search;
     return <Navigate to={`/login?next=${encodeURIComponent(next)}`} replace />;

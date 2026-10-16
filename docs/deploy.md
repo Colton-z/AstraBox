@@ -142,12 +142,18 @@ service are removed.
 
 ### Upgrade from AstraBox 0.1.8 {#upgrade-from-0-1-8}
 
-AstraBox 0.1.9 keeps its records in a new database schema and does not read the
-records of 0.1.8. An installation upgraded from 0.1.8 starts with an empty
-AstraBox database: its Agents, Environments, Assistants, Sessions and their
-history, Deployments, and Vaults are not carried over. The new release creates
-its default Environment and Agent as on a new installation; recreate the rest
-after the upgrade.
+AstraBox 0.1.9 uses a new PostgreSQL schema and does not automatically convert
+0.1.8 records. To preserve selected records, an operator can convert and load
+them into the current schema before normal startup. Follow the
+[offline import guide](data-import.md) for object ordering, stable IDs,
+authorization, key custody and history/native-state limits. Conversion and
+execution belong to the operator; there is no built-in installation-wide
+import command or general legacy-format compatibility.
+
+The procedure below **starts fresh without the old AstraBox records**. Agents,
+Environments, Assistants, Sessions/history, Deployments and Vaults are not
+carried over. The release seeds its default Environment and Agent; recreate
+the other resources if choosing this path.
 
 A new database also gives the installation a new identity. AstraBox removes,
 reuses, and counts only the sandboxes its own installation created, so the
@@ -522,21 +528,30 @@ The hub keeps people's vendor tokens in its own encrypted database (the
 
 ## The AstraBox database {#the-astrabox-database}
 
-AstraBox keeps its records in PostgreSQL and supports no other database: the
-server does not start when `ASTRABOX_DB_URL` is not a `postgresql://` URL. The
-maintained Compose stack and the all-in-one container run PostgreSQL and build
-the URL from their generated credentials; any other deployment sets
-`ASTRABOX_DB_URL` to its own PostgreSQL service. Every platform replica uses
-the same database.
+PostgreSQL is the supported default database, selected by
+`ASTRABOX_PERSISTENCE_PROVIDER=postgres`. This built-in provider requires a
+`postgresql://` `ASTRABOX_DB_URL`. The maintained Compose stack and all-in-one
+container run PostgreSQL and build the URL from generated credentials;
+other deployments using this provider set the URL to their own PostgreSQL
+service. Every platform replica uses the same provider and database.
 
-The server brings the database schema to its release's version when it starts,
-before it serves requests. Replicas that start together take turns on a
+External providers register through `astrabox.providers.persistence` and
+validate their own native URL. They must supply compatible SQLAlchemy engines,
+native conflict operations, schema initialization, error classification and
+physical coordination, including transaction-bound notifications, runtime locks
+and listening with resynchronization. Registration or the reusable MySQL
+conflict operations alone do not establish a complete backend. See
+[Relational persistence providers](providers/relational-persistence.md).
+
+With the built-in `postgres` provider, the server brings the database schema
+to its release's version at startup, before it serves requests. Replicas that
+start together take turns on a
 PostgreSQL advisory lock, so each schema change runs once. A schema change that
 fails stops the server and leaves the schema as it was. A database that a
 newer release has already upgraded does not start an older release.
 
-Each server process keeps up to 30 pooled connections for repository queries
-and up to 30 more for runtime attachment and archive locks. The separate pools
+With this provider, each server process keeps up to 30 pooled connections for
+repository queries and up to 30 more for runtime attachment and archive locks. The separate pools
 let a lock holder run repository queries without waiting behind other lock
 holders. It also uses one connection for PostgreSQL notifications and the
 connections of the built-in scheduler. Size the database's connection limit
@@ -551,9 +566,9 @@ The [platform-replica deployment recipe](deploy-distributed.md) connects
 multiple API hosts to shared services and signing keys. A request can reach
 either API replica; Kubernetes schedules the sandbox independently. One replica
 at a time holds each Session's connection to its Agent program. A replica that
-accepts a message or an answer for the Session records it, and a PostgreSQL
-notification tells the replica that holds the connection. When that replica
-stops, another replica takes the Session over: within seconds after a clean
+accepts a message or an answer for the Session records it; with the default
+`postgres` provider, a PostgreSQL notification tells the replica that holds the
+connection. When that replica stops, another replica takes the Session over: within seconds after a clean
 shutdown, or once the stopped replica's 30-second lease expires. Adding API replicas does not make local workspace disks shared
 or turn a single OpenSandbox lifecycle service into a highly available service.
 

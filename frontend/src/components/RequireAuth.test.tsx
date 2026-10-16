@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -76,16 +76,6 @@ describe('RequireAuth', () => {
     vi.stubGlobal('fetch', vi.fn(() => new Promise(() => {})));
     renderGate();
     expect(screen.queryByText('console')).toBeNull();
-    expect(screen.queryByText('sign-in page')).toBeNull();
-  });
-
-  it('does not read an unreachable probe as being signed out', async () => {
-    // A failed probe means the network or the server is down. Sending the
-    // reader to sign in would blame them for an outage, and signing in cannot
-    // fix it; the console's own requests report what is actually wrong.
-    stubProbe(new Error('network down'));
-    renderGate();
-    await waitFor(() => expect(screen.queryByText('console')).toBeTruthy());
     expect(screen.queryByText('sign-in page')).toBeNull();
   });
 });

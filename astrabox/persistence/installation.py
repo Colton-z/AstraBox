@@ -17,10 +17,11 @@ from __future__ import annotations
 import uuid
 
 from sqlalchemy import select
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.ext.asyncio import AsyncConnection
 
-from astrabox.persistence.sql import fetch_value
+from astrabox.persistence.sql import fetch_value, transaction
 from astrabox.persistence.sql.models.platform import Installation
+from astrabox.persistence.sql.statements import insert_if_absent_primary_key
 
 _INSTALLATION = Installation.__table__
 
@@ -28,30 +29,29 @@ _INSTALLATION = Installation.__table__
 async def load_installation_id() -> str:
     """Return this database's installation id, creating it on first use.
 
-    Replicas starting against a new database race to insert the row; the
-    losers' inserts do nothing, and each reads back the winner's id.
+    Replicas starting against a new database race to insert the singleton;
+    each reads the winner's id on the same transaction connection.
     """
     stored = await fetch_value(select(_INSTALLATION.c.installation_id))
     if stored:
         return str(stored)
-    created = await fetch_value(
-        insert(_INSTALLATION)
-        .values(installation_id=uuid.uuid4().hex)
-        .on_conflict_do_nothing(index_elements=[_INSTALLATION.c.singleton])
-        .returning(_INSTALLATION.c.installation_id)
-    )
-    if created:
-        return str(created)
-    # Another replica inserted first; its row is committed by the time this
-    # insert reports the conflict, so a new read sees it.
-    stored = await fetch_value(select(_INSTALLATION.c.installation_id))
-    if not stored:
-        raise RuntimeError(
-            "the installation row disappeared while this replica read it; restore it "
-            "from a backup of this database rather than generating a new id, which "
-            "would orphan every sandbox this installation created"
-        )
-    return str(stored)
+    async def create(conn: AsyncConnection) -> str:
+        await conn.execute(insert_if_absent_primary_key(
+            conn, _INSTALLATION,
+            {"singleton": True, "installation_id": uuid.uuid4().hex},
+        ))
+        identity = (await conn.execute(
+            select(_INSTALLATION.c.installation_id).with_for_update(read=True)
+        )).scalar_one_or_none()
+        if not identity:
+            raise RuntimeError(
+                "the installation row disappeared while this replica read it; restore it "
+                "from a backup of this database rather than generating a new id, which "
+                "would orphan every sandbox this installation created"
+            )
+        return str(identity)
+
+    return await transaction(create)
 
 
 __all__ = ["load_installation_id"]

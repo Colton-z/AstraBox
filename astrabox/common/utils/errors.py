@@ -589,6 +589,9 @@ for _code, _status, _category, _retryable, _owner in (
     ("RESOURCE_SYNC_BUSY", 409, "state", True, "platform"),
     ("RESOURCE_SYNC_UNRESOLVED", 409, "state", False, "platform"),
     ("RESOURCE_SYNC_FAILED", 502, "runtime", False, "platform"),
+    # Replaying the same guard cannot make its captured subject state current.
+    # The caller must resolve the conflict before issuing another guarded write.
+    ("PREPARATION_SUBJECT_CONFLICT", 409, "state", False, "platform"),
     ("RUNTIME_PREPARATION_FAILED", 502, "runtime", False, "platform"),
     ("CHANNEL_RESPONSE_JUDGE_UNAVAILABLE", 409, "configuration", False, "platform"),
     ("HISTORY_IMPORT_AFTER_CONVERSATION", 409, "state", False, "session"),

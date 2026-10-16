@@ -14,9 +14,10 @@ import uuid
 from typing import Any
 
 from sqlalchemy import delete, func, insert, select, update
+from sqlalchemy.ext.asyncio import AsyncConnection
 
 from astrabox.common.logger.logger_factory import get_logger
-from astrabox.persistence.sql import execute, fetch_all, fetch_one, from_iso, to_iso
+from astrabox.persistence.sql import execute, fetch_all, fetch_one, from_iso, to_iso, transaction
 from astrabox.persistence.sql.models.mcp import MCPClientToken
 
 logger = get_logger(__name__)
@@ -48,19 +49,26 @@ class MCPClientTokenRepository:
         secret_digest: str,
         expires_at: str | None,
     ) -> dict[str, Any]:
-        row = await fetch_one(
-            insert(_TOKENS)
-            .values(
-                token_id=f"mtk_{uuid.uuid4().hex}",
-                user_id=user_id,
-                org_id=org_id,
-                name=name,
-                scope=scope,
-                secret_digest=secret_digest,
-                expires_at=from_iso(expires_at),
+        token_id = f"mtk_{uuid.uuid4().hex}"
+
+        async def add(conn: AsyncConnection) -> dict[str, Any]:
+            await conn.execute(
+                insert(_TOKENS).values(
+                    token_id=token_id,
+                    user_id=user_id,
+                    org_id=org_id,
+                    name=name,
+                    scope=scope,
+                    secret_digest=secret_digest,
+                    expires_at=from_iso(expires_at),
+                )
             )
-            .returning(_TOKENS)
-        )
+            result = await conn.execute(
+                select(_TOKENS).where(_TOKENS.c.token_id == token_id)
+            )
+            return dict(result.mappings().one())
+
+        row = await transaction(add)
         stored = _view(row)
         assert stored is not None
         return stored
@@ -93,7 +101,9 @@ class MCPClientTokenRepository:
         """Record use. Best-effort: a failure here must not refuse a good call."""
         try:
             await execute(
-                update(_TOKENS).where(_TOKENS.c.token_id == token_id).values(last_used_at=func.now())
+                update(_TOKENS)
+                .where(_TOKENS.c.token_id == token_id)
+                .values(last_used_at=func.now())
             )
         except Exception:  # noqa: BLE001 - liveness reporting, never authorization
             logger.warning("MCP client token use was not recorded token=%s", token_id, exc_info=True)

@@ -40,7 +40,7 @@ from astrabox.core.service.orchestrator.session_lifecycle.permission_modes impor
 from astrabox.core.service.orchestrator.session_lifecycle.recovery import SessionRecovery
 from astrabox.core.service.orchestrator.session_lifecycle.startup import SessionStartup
 from astrabox.core.service.orchestrator.session_service import SessionService
-from astrabox.persistence.repository.session_repository import session_runtime_lock
+from astrabox.persistence.provider import get_persistence
 from astrabox.seams.admission import (
     ADMISSION_KIND_SANDBOX,
     AdmissionRequest,
@@ -395,7 +395,7 @@ class SessionLifecycleService:
         return {"session_id": session_id, "deleted": True}
 
     async def archive_session(self, user: UserContext, session_id: str) -> dict[str, Any]:
-        async with session_runtime_lock(session_id) as check_lock:
+        async with get_persistence().coordination.runtime_lock(session_id) as check_lock:
             session = await self._session_service.must_get_owned_session(user, session_id)
             if is_assistant_user_conversation(session):
                 _refuse_while_working(session, "archive session")
@@ -421,7 +421,7 @@ class SessionLifecycleService:
         return await self._reclaim_sandbox(session)
 
     async def end_conversation(self, user: UserContext, session_id: str) -> dict[str, Any]:
-        async with session_runtime_lock(session_id) as check_lock:
+        async with get_persistence().coordination.runtime_lock(session_id) as check_lock:
             session = await self._session_service.must_get_owned_session(user, session_id)
             if not is_assistant_user_conversation(session):
                 raise APIError(

@@ -12,10 +12,10 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import func, select, update
-from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy import func, insert, select, update
+from sqlalchemy.ext.asyncio import AsyncConnection
 
-from astrabox.persistence.sql import execute, fetch_one, from_iso, to_iso
+from astrabox.persistence.sql import execute, fetch_one, from_iso, to_iso, transaction
 from astrabox.persistence.sql.models.sessions import Session, SessionShare
 
 _SHARES = SessionShare.__table__
@@ -42,28 +42,44 @@ class SessionShareRepository:
         expires_at: str | None,
     ) -> dict[str, Any]:
         """Enable the session's link, keeping the token it already has; ``token`` names a new link."""
-        statement = (
-            pg_insert(_SHARES)
-            .values(
-                token=token,
-                session_id=session_id,
-                enabled=True,
-                allow_download=bool(allow_download),
-                expires_at=from_iso(expires_at),
-                created_by=created_by,
+        values = {
+            "enabled": True,
+            "allow_download": bool(allow_download),
+            "expires_at": from_iso(expires_at),
+        }
+
+        async def enable(conn: AsyncConnection) -> dict[str, Any]:
+            # The parent exists before the first share, so it serializes creates
+            # without treating a collision on another session's token as an upsert.
+            await conn.execute(
+                select(_SESSIONS.c.session_id)
+                .where(_SESSIONS.c.session_id == session_id)
+                .with_for_update()
             )
-            .on_conflict_do_update(
-                index_elements=["session_id"],
-                set_={
-                    "enabled": True,
-                    "allow_download": bool(allow_download),
-                    "expires_at": from_iso(expires_at),
-                    "updated_at": func.now(),
-                },
+            result = await conn.execute(
+                select(_SHARES.c.token)
+                .where(_SHARES.c.session_id == session_id)
+                .with_for_update()
             )
-            .returning(*_SHARES.c)
-        )
-        row = _view(await fetch_one(statement))
+            existing = result.first()
+            if existing is None:
+                await conn.execute(
+                    insert(_SHARES).values(
+                        **values, token=token, session_id=session_id, created_by=created_by
+                    )
+                )
+            else:
+                await conn.execute(
+                    update(_SHARES)
+                    .where(_SHARES.c.session_id == session_id)
+                    .values(**values, updated_at=func.now())
+                )
+            result = await conn.execute(
+                select(_SHARES).where(_SHARES.c.session_id == session_id)
+            )
+            return dict(result.mappings().one())
+
+        row = _view(await transaction(enable))
         if row is None:
             raise RuntimeError(f"share of session {session_id!r} was not stored")
         return row

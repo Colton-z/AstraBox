@@ -21,6 +21,8 @@ import httpx
 import pytest
 
 from tests.e2e._sandbox_helpers import (
+    OPEN_AGENTS,
+    OPEN_ASSISTANTS,
     Reply,
     SessionStream,
     current_profile,
@@ -33,6 +35,7 @@ from tests.e2e._sandbox_helpers import (
     output_position,
     poll_until_ready,
     psql,
+    psql_rows,
     release_agent,
     release_assistant,
     release_session,
@@ -48,6 +51,7 @@ from tests.e2e.test_prepared_runtime_activation import (
     _prepared_identity,
     _run_json,
     _sandbox_exec,
+    _supplier_processes,
     _wait_prepared,
     _wait_prepared_count,
 )
@@ -60,6 +64,220 @@ pytestmark = [pytest.mark.e2e, pytest.mark.deployment_shape]
 PREPARATION_IMAGE_ENV = "ASTRABOX_E2E_PREPARATION_IMAGE"
 # Skills at a fixed commit, so a change of the Assistant is a change of its Skills.
 _SKILLS = "https://github.com/anthropics/skills.git@34040c9c568585f6929bedeaad110ad08f079624"
+
+
+def test_provider_state_commit_is_fenced_by_current_subject(
+    e2e_client: httpx.Client, live_test_deadline: float,
+) -> None:
+    """Provider rows commit with current subjects on the caller's actual transaction."""
+    client = e2e_client
+    profile = current_profile()
+    assert profile["engine_kind"] == "claude_code", profile["engine_kind"]
+    assistant_environment = os.environ["ASTRABOX_E2E_ASSISTANT_ENVIRONMENT"]
+    assistant_model = os.environ["ASTRABOX_E2E_ASSISTANT_MODEL"]
+    assert psql("SELECT count(*) FROM assistant_defaults WHERE scope = 'deployment'") == ["0"], (
+        "this exclusive fixture requires absent defaults; do not delete shared defaults"
+    )
+    nonce = uuid.uuid4().hex
+    path = f"/api/v1/runtime-preparation-fixture/guards/{nonce}"
+    principal = data(client.get("/api/v1/user/current"))["user_id"]
+    environments = data(client.get("/api/v1/admin/environments"))
+    source_name = environment_with_tenancy(client, "agent")
+    source = next(row for row in environments if row["name"] == source_name)
+    environment = f"guard-{nonce}"
+    data(client.put(f"/api/v1/admin/environments/{environment}", json={**source, "name": environment}))
+    agent_fields = {
+        "name": f"Guard {nonce}", "environment_name": environment,
+        "model": profile["model"], "prepared_capacity": 0,
+    }
+    created_agent = data(client.post("/api/v1/agents", json=agent_fields))
+    agent = created_agent["agent_id"]
+    release_agent(agent)
+    assistant = data(client.post("/api/v1/assistants", json={
+        "display_name": f"Guard {nonce}", "environment_name": assistant_environment,
+        "model_config_override": {"model_name": assistant_model},
+    }, timeout=max(1, live_test_deadline - time.monotonic())))["assistant_id"]
+    release_assistant(assistant)
+    _assistant_workspace(client, assistant, live_test_deadline)
+    assert psql("SELECT count(*) FROM assistant_defaults WHERE scope = 'deployment'") == ["0"]
+
+    def capture(kind: str, subject_id: str, name: str) -> None:
+        data(client.post(f"{path}/capture/{kind}/{subject_id}/{name}"))
+
+    def rows() -> list[dict]:
+        return psql_rows(
+            "SELECT subject_kind, subject_id, marker FROM runtime_preparation_fixture_state "
+            f"WHERE nonce = {sql_literal(nonce)}", order_by="marker",
+        )
+
+    def refused(name: str, marker: str) -> None:
+        response = client.post(f"{path}/commit/{name}/{marker}")
+        assert response.status_code == 409, response.text
+        error = response.json()["error"]
+        assert {key: error[key] for key in ("code", "status_code", "category", "owner", "retryable")} == {
+            "code": "PREPARATION_SUBJECT_CONFLICT", "status_code": 409,
+            "category": "state", "owner": "platform", "retryable": False,
+        }, error
+        assert marker not in [row["marker"] for row in rows()], rows()
+
+    def held(marker: str) -> int:
+        while time.monotonic() < live_test_deadline:
+            current = data(client.get(path))["held"]
+            if marker in current:
+                return int(current[marker])
+            time.sleep(0.2)
+        pytest.fail(f"guarded transaction never held marker {marker}")
+
+    def operation(kind: str, subject_id: str) -> dict:
+        if kind == "agent":
+            query = (
+                "SELECT a.created_by AS owner, a.version, r.runtime_generation, r.client_pool_epoch, "
+                "r.resources_operation_provider AS provider, r.resources_operation_id AS operation_id, "
+                "r.resources_operation_deadline > extract(epoch FROM clock_timestamp()) AS unexpired "
+                "FROM agents a JOIN agent_runtimes r USING (agent_id) "
+                f"WHERE a.agent_id = {sql_literal(subject_id)} AND a.state = 'ACTIVE'"
+            )
+        else:
+            query = (
+                "SELECT a.owner_id AS owner, w.current_sandbox_id, "
+                "w.prepared_operation_provider AS provider, w.prepared_operation_id AS operation_id, "
+                "w.prepared_operation_deadline > clock_timestamp() AS unexpired "
+                "FROM assistants a JOIN assistant_workspaces w USING (assistant_id) "
+                f"WHERE a.assistant_id = {sql_literal(subject_id)} AND NOT a.deleted"
+            )
+        result = psql_rows(query)
+        assert len(result) == 1, result
+        return result[0]
+
+    def settled(kind: str, subject_id: str) -> None:
+        while time.monotonic() < live_test_deadline:
+            current = operation(kind, subject_id)
+            if current["operation_id"] is None:
+                return
+            time.sleep(0.2)
+        pytest.fail(f"{kind} synchronization did not settle: {current}")
+
+    opened = False
+    passed = False
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        try:
+            with httpx.Client(base_url=str(client.base_url), timeout=30) as anonymous:
+                response = anonymous.post(f"{path}/capture/agent/{agent}/anonymous")
+                assert response.status_code == 401, response.text
+            data(client.put(f"/api/v1/admin/environments/{environment}", json={
+                **source, "name": environment, "enabled": False,
+            }))
+            capture("agent", agent, "agent-old")
+            opened = True
+            data(client.post(f"{path}/commit/agent-old/agent-disabled"))
+            assert [row["marker"] for row in rows()] == ["agent-disabled"], rows()
+            agent_fields["description"] = nonce
+            updated_agent = data(client.put(f"/api/v1/agents/{agent}", json={
+                **agent_fields, "version": created_agent["version"],
+            }))
+            refused("agent-old", "stale-agent")
+            data(client.put(f"/api/v1/admin/environments/{environment}", json={**source, "name": environment}))
+            print("guard: disabled Environment accepted; stale Agent guard refused", flush=True)
+
+            capture("assistant", assistant, "assistant-old")
+            write = pool.submit(
+                client.post, f"{path}/commit/assistant-old/assistant-atomic", params={"hold": True},
+                timeout=max(1, live_test_deadline - time.monotonic()),
+            )
+            pid = held("assistant-atomic")
+            assert "assistant-atomic" not in [row["marker"] for row in rows()], rows()
+            defaults = pool.submit(
+                client.put, "/api/v1/admin/assistant-defaults", json={"instructions": nonce},
+                timeout=max(1, live_test_deadline - time.monotonic()),
+            )
+            blocked: list[str] = []
+            while time.monotonic() < live_test_deadline:
+                blocked = psql(
+                    "SELECT pid::text FROM pg_stat_activity "
+                    f"WHERE {pid} = ANY(pg_blocking_pids(pid)) AND query LIKE '%installation%'"
+                )
+                if blocked:
+                    break
+                assert not defaults.done(), "first defaults writer overtook the guarded transaction"
+                time.sleep(0.2)
+            assert blocked and not defaults.done(), f"defaults writer never blocked behind guard backend {pid}"
+            data(client.post(f"{path}/release/assistant-atomic"))
+            data(write.result(timeout=max(1, live_test_deadline - time.monotonic())))
+            data(defaults.result(timeout=max(1, live_test_deadline - time.monotonic())))
+            assert psql("SELECT instructions FROM assistant_defaults WHERE scope = 'deployment'") == [nonce]
+            assert [row["marker"] for row in rows()].count("assistant-atomic") == 1, rows()
+            refused("assistant-old", "stale-defaults")
+            capture("assistant", assistant, "assistant-fresh")
+            data(client.post(f"{path}/commit/assistant-fresh/assistant-fresh"))
+            print("guard: uncommitted row invisible; first defaults insert blocked then committed", flush=True)
+
+            for kind, subject_id in (("agent", agent), ("assistant", assistant)):
+                data(client.post(f"{path}/arm/{kind}/{subject_id}"))
+                mutation = pool.submit(
+                    client.put if kind == "agent" else client.patch,
+                    f"/api/v1/{'agents' if kind == 'agent' else 'assistants'}/{subject_id}",
+                    json={**agent_fields, "prepared_capacity": 1, "version": updated_agent["version"]}
+                    if kind == "agent" else {"system": nonce},
+                    timeout=max(1, live_test_deadline - time.monotonic()),
+                )
+                marker = f"callback-{kind}"
+                held(marker)
+                native = operation(kind, subject_id)
+                assert native["owner"] == principal, native
+                assert native["provider"] == "native-startup-material-fixture", native
+                assert native["operation_id"] and native["unexpired"] is True, native
+                if kind == "agent":
+                    assert native["runtime_generation"] and native["client_pool_epoch"], native
+                else:
+                    assert native["current_sandbox_id"], native
+                assert marker not in [row["marker"] for row in rows()], rows()
+                data(client.post(f"{path}/release/{marker}"))
+                data(mutation.result(timeout=max(1, live_test_deadline - time.monotonic())))
+                if kind == "agent":
+                    prepared = _wait_prepared(client, subject_id, live_test_deadline)
+                    assert prepared["runtime_generation"] == native["runtime_generation"], (prepared, native)
+                    execute = _sandbox_exec(prepared["sandbox_id"])
+                    receipt = _prepared_identity(subject_id, "agent", execute)
+                    _supplier_processes(execute, receipt["runtime_identity"], "claude_code")
+                else:
+                    workspace = _assistant_workspace(client, subject_id, live_test_deadline)
+                    assert workspace["current_sandbox_id"] == native["current_sandbox_id"], (workspace, native)
+                settled(kind, subject_id)
+                refused(marker, f"late-{kind}")
+                capture(kind, subject_id, f"final-{kind}")
+                data(client.post(f"{path}/commit/final-{kind}/settled-{kind}"))
+                print(f"guard: real {kind} callback committed; settled operation cannot write again", flush=True)
+
+            assert [row["marker"] for row in rows()] == sorted([
+                "agent-disabled", "assistant-atomic", "assistant-fresh", "callback-agent",
+                "callback-assistant", "settled-agent", "settled-assistant",
+            ]), rows()
+            deletion = pool.submit(
+                client.delete, f"/api/v1/agents/{agent}",
+                timeout=max(1, live_test_deadline - time.monotonic()),
+            )
+            while time.monotonic() < live_test_deadline:
+                state = psql(f"SELECT state FROM agents WHERE agent_id = {sql_literal(agent)}")
+                if state in (["DELETING"], ["DELETED"]):
+                    break
+                time.sleep(0.2)
+            assert state in (["DELETING"], ["DELETED"]), state
+            refused("final-agent", "deleted-agent")
+            data(deletion.result(timeout=max(1, live_test_deadline - time.monotonic())))
+            assert psql(f"SELECT state FROM agents WHERE agent_id = {sql_literal(agent)}") == ["DELETED"]
+            OPEN_AGENTS.remove(agent)
+            data(client.delete(f"/api/v1/assistants/{assistant}", timeout=max(1, live_test_deadline - time.monotonic())))
+            assert psql(f"SELECT deleted FROM assistants WHERE assistant_id = {sql_literal(assistant)}") == ["t"]
+            OPEN_ASSISTANTS.remove(assistant)
+            refused("final-assistant", "deleted-assistant")
+            print(json.dumps({"guard_receipts": rows(), "first_defaults_blocked_backend": blocked}), flush=True)
+            passed = True
+        finally:
+            if opened:
+                data(client.post(f"{path}/release/all"))
+                if passed:
+                    data(client.delete(path))
+                    data(client.delete(f"/api/v1/admin/environments/{environment}"))
 
 # Settings come from the running server process, not from `docker exec`'s
 # environment, which lacks what the launcher injects into `astrabox serve`.

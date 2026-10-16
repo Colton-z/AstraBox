@@ -24,12 +24,11 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from datetime import timedelta
 from typing import Any
 
-from sqlalchemy import BindParameter, Text, any_, bindparam, delete, func, insert, or_, select, update
-from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy import case, delete, func, insert, literal, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection
+from sqlalchemy.sql import ColumnElement
 
 from astrabox.persistence.sql import (
     ForeignKeyViolation,
@@ -42,6 +41,7 @@ from astrabox.persistence.sql import (
     transaction,
 )
 from astrabox.persistence.sql.models.vaults import Vault, VaultCredential
+from astrabox.persistence.sql.statements import TimestampAfter
 
 _VAULTS = Vault.__table__
 _CREDENTIALS = VaultCredential.__table__
@@ -92,9 +92,15 @@ def new_credential_id() -> str:
     return f"vcr_{uuid.uuid4().hex}"
 
 
-def _texts(values: Sequence[str]) -> BindParameter[list[str]]:
-    """One ``text[]`` parameter, so a list of any length keeps one statement text."""
-    return bindparam(None, list(values), type_=ARRAY(Text))
+def _vault_position(vault_ids: Sequence[str]) -> ColumnElement[int]:
+    """Order credentials by the first occurrence of their Vault in the selection."""
+    return case(
+        *(
+            (literal(vault_id, type_=_CREDENTIALS.c.vault_id.type), position)
+            for position, vault_id in enumerate(dict.fromkeys(vault_ids))
+        ),
+        value=_CREDENTIALS.c.vault_id,
+    )
 
 
 def _vault_view(row: Mapping[str, Any]) -> dict[str, Any]:
@@ -191,18 +197,22 @@ class VaultRepository:
     # ── vaults ──────────────────────────────────────────────────────────────
 
     async def create_vault(self, doc: dict[str, Any]) -> dict[str, Any]:
-        row = await fetch_one(
-            insert(_VAULTS)
-            .values(
-                vault_id=str(doc.get("vault_id") or f"vlt_{uuid.uuid4().hex}"),
-                org_id=doc["org_id"],
-                created_by=doc["created_by"],
-                display_name=doc["display_name"],
-                metadata=dict(doc.get("metadata") or {}),
+        vault_id = str(doc.get("vault_id") or f"vlt_{uuid.uuid4().hex}")
+
+        async def work(conn: AsyncConnection) -> dict[str, Any]:
+            await conn.execute(
+                insert(_VAULTS).values(
+                    vault_id=vault_id,
+                    org_id=doc["org_id"],
+                    created_by=doc["created_by"],
+                    display_name=doc["display_name"],
+                    metadata=dict(doc.get("metadata") or {}),
+                )
             )
-            .returning(_VAULTS)
-        )
-        assert row is not None
+            row = await conn.execute(select(_VAULTS).where(_VAULTS.c.vault_id == vault_id))
+            return dict(row.mappings().one())
+
+        row = await transaction(work)
         return _vault_view(row)
 
     async def get_vault(self, vault_id: str) -> dict[str, Any] | None:
@@ -213,7 +223,7 @@ class VaultRepository:
         """The Vaults among ``vault_ids`` that exist, in no particular order."""
         if not vault_ids:
             return []
-        rows = await fetch_all(select(_VAULTS).where(_VAULTS.c.vault_id == any_(_texts(vault_ids))))
+        rows = await fetch_all(select(_VAULTS).where(_VAULTS.c.vault_id.in_(vault_ids)))
         return [_vault_view(row) for row in rows]
 
     async def list_vaults(self, *, org_id: str, limit: int = 200) -> list[dict[str, Any]]:
@@ -256,15 +266,15 @@ class VaultRepository:
                 .where(_CREDENTIALS.c.vault_id == vault_id, _CREDENTIALS.c.archived_at.is_(None))
                 .values(archived_at=func.now(), updated_at=func.now())
             )
-            archived = await conn.execute(
+            await conn.execute(
                 update(_VAULTS)
                 .where(_VAULTS.c.vault_id == vault_id)
                 .values(
                     archived_at=func.coalesce(_VAULTS.c.archived_at, func.now()),
                     updated_at=func.now(),
                 )
-                .returning(_VAULTS)
             )
+            archived = await conn.execute(select(_VAULTS).where(_VAULTS.c.vault_id == vault_id))
             row = dict(archived.mappings().one())
             await secrets(conn)
             return row
@@ -348,7 +358,10 @@ class VaultRepository:
             ).scalar_one()
             if active >= max_active:
                 raise CredentialLimitReached(vault_id)
-            inserted = await conn.execute(insert(_CREDENTIALS).values(**values).returning(_CREDENTIALS))
+            await conn.execute(insert(_CREDENTIALS).values(**values))
+            inserted = await conn.execute(
+                select(_CREDENTIALS).where(_CREDENTIALS.c.credential_id == values["credential_id"])
+            )
             row = dict(inserted.mappings().one())
             await secrets(conn)
             return row
@@ -380,14 +393,14 @@ class VaultRepository:
         """
         if not vault_ids:
             return []
-        statement = select(_CREDENTIALS).where(_CREDENTIALS.c.vault_id == any_(_texts(vault_ids)))
+        statement = select(_CREDENTIALS).where(_CREDENTIALS.c.vault_id.in_(vault_ids))
         if active_only:
             statement = statement.where(_CREDENTIALS.c.archived_at.is_(None))
         if auth_types:
-            statement = statement.where(_CREDENTIALS.c.auth_type == any_(_texts(auth_types)))
+            statement = statement.where(_CREDENTIALS.c.auth_type.in_(auth_types))
         rows = await fetch_all(
             statement.order_by(
-                func.array_position(_texts(vault_ids), _CREDENTIALS.c.vault_id),
+                _vault_position(vault_ids),
                 _CREDENTIALS.c.created_at,
                 _CREDENTIALS.c.credential_id,
             )
@@ -404,18 +417,25 @@ class VaultRepository:
         """
         if not vault_ids or not server_urls:
             return []
-        rows = await fetch_all(
-            select(_CREDENTIALS)
-            .distinct(_CREDENTIALS.c.mcp_server_url)
+        ranked = (
+            select(
+                _CREDENTIALS,
+                func.row_number().over(
+                    partition_by=_CREDENTIALS.c.mcp_server_url,
+                    order_by=_vault_position(vault_ids),
+                ).label("vault_rank"),
+            )
             .where(
-                _CREDENTIALS.c.vault_id == any_(_texts(vault_ids)),
-                _CREDENTIALS.c.mcp_server_url == any_(_texts(server_urls)),
+                _CREDENTIALS.c.vault_id.in_(vault_ids),
+                _CREDENTIALS.c.mcp_server_url.in_(server_urls),
                 _CREDENTIALS.c.archived_at.is_(None),
             )
-            .order_by(
-                _CREDENTIALS.c.mcp_server_url,
-                func.array_position(_texts(vault_ids), _CREDENTIALS.c.vault_id),
-            )
+            .subquery()
+        )
+        rows = await fetch_all(
+            select(*(ranked.c[column.name] for column in _CREDENTIALS.c))
+            .where(ranked.c.vault_rank == 1)
+            .order_by(ranked.c.mcp_server_url)
         )
         return [_credential_view(row) for row in rows]
 
@@ -447,13 +467,14 @@ class VaultRepository:
                     _CREDENTIALS.c.archived_at.is_(None),
                 )
                 .values(**values, updated_at=func.now())
-                .returning(_CREDENTIALS)
             )
-            row = updated.mappings().first()
-            if row is None:
+            if updated.rowcount == 0:
                 return None
+            row = await conn.execute(
+                select(_CREDENTIALS).where(_CREDENTIALS.c.credential_id == credential_id)
+            )
             await secrets(conn)
-            return dict(row)
+            return dict(row.mappings().one())
 
         row = await transaction(work)
         return _credential_view(row) if row is not None else None
@@ -477,13 +498,14 @@ class VaultRepository:
                     archived_at=func.coalesce(_CREDENTIALS.c.archived_at, func.now()),
                     updated_at=func.now(),
                 )
-                .returning(_CREDENTIALS)
             )
-            row = archived.mappings().first()
-            if row is None:
+            if archived.rowcount == 0:
                 return None
+            row = await conn.execute(
+                select(_CREDENTIALS).where(_CREDENTIALS.c.credential_id == credential_id)
+            )
             await secrets(conn)
-            return dict(row)
+            return dict(row.mappings().one())
 
         row = await transaction(work)
         return _credential_view(row) if row is not None else None
@@ -500,9 +522,8 @@ class VaultRepository:
                     _CREDENTIALS.c.credential_id == credential_id,
                     _CREDENTIALS.c.vault_id == vault_id,
                 )
-                .returning(_CREDENTIALS.c.credential_id)
             )
-            if deleted.first() is None:
+            if deleted.rowcount == 0:
                 return False
             await secrets(conn)
             return True
@@ -522,20 +543,29 @@ class VaultRepository:
         Returns the claimed credential, whose ``refresh_claimed_until``
         identifies the claim, or ``None``.
         """
-        row = await fetch_one(
-            update(_CREDENTIALS)
-            .where(
-                _CREDENTIALS.c.credential_id == credential_id,
-                _CREDENTIALS.c.archived_at.is_(None),
-                _CREDENTIALS.c.expires_at == from_iso(expires_at),
-                or_(
-                    _CREDENTIALS.c.refresh_claimed_until.is_(None),
-                    _CREDENTIALS.c.refresh_claimed_until <= func.now(),
-                ),
+
+        async def work(conn: AsyncConnection) -> dict[str, Any] | None:
+            claimed = await conn.execute(
+                update(_CREDENTIALS)
+                .where(
+                    _CREDENTIALS.c.credential_id == credential_id,
+                    _CREDENTIALS.c.archived_at.is_(None),
+                    _CREDENTIALS.c.expires_at == from_iso(expires_at),
+                    or_(
+                        _CREDENTIALS.c.refresh_claimed_until.is_(None),
+                        _CREDENTIALS.c.refresh_claimed_until <= func.now(),
+                    ),
+                )
+                .values(refresh_claimed_until=TimestampAfter(func.now(), lease_s))
             )
-            .values(refresh_claimed_until=func.now() + timedelta(seconds=lease_s))
-            .returning(_CREDENTIALS)
-        )
+            if claimed.rowcount == 0:
+                return None
+            row = await conn.execute(
+                select(_CREDENTIALS).where(_CREDENTIALS.c.credential_id == credential_id)
+            )
+            return dict(row.mappings().one())
+
+        row = await transaction(work)
         return _credential_view(row) if row is not None else None
 
     async def complete_oauth_refresh(
@@ -567,13 +597,14 @@ class VaultRepository:
                     refresh_claimed_until=None,
                     updated_at=func.now(),
                 )
-                .returning(_CREDENTIALS)
             )
-            row = refreshed.mappings().first()
-            if row is None:
+            if refreshed.rowcount == 0:
                 return None
+            row = await conn.execute(
+                select(_CREDENTIALS).where(_CREDENTIALS.c.credential_id == credential_id)
+            )
             await secrets(conn)
-            return dict(row)
+            return dict(row.mappings().one())
 
         row = await transaction(work)
         return _credential_view(row) if row is not None else None

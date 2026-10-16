@@ -5,16 +5,17 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import delete, func, select
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy import delete, func, literal, select
+from sqlalchemy.ext.asyncio import AsyncConnection
 
-from astrabox.persistence.sql import execute, fetch_all, to_iso
+from astrabox.persistence.sql import fetch_all, to_iso, transaction
 from astrabox.persistence.sql.models.platform import CapturedRuntimeError
+from astrabox.persistence.sql.statements import upsert_primary_key
 
 #: An error that has not recurred for this long is deleted.
 RUNTIME_ERROR_RETENTION = timedelta(days=7)
 
-#: Most rows one retention pass deletes, so a pass is one short statement;
+#: Most rows one retention pass deletes, so a pass is one short transaction;
 #: the rest go on the following passes.
 RETENTION_BATCH = 1000
 
@@ -42,31 +43,25 @@ class RuntimeErrorRepository:
         count, and the row keeps the earliest and latest sighting whatever
         order the sightings arrive in.
         """
-        statement = insert(_ERRORS).values(
-            signature=signature,
-            logger=logger,
-            severity=severity,
-            error_type=error_type,
-            message=message,
-            location=location,
-            traceback=traceback,
-            count=1,
-            first_seen=seen,
-            last_seen=seen,
-        )
-        await execute(
-            statement.on_conflict_do_update(
-                index_elements=[_ERRORS.c.signature],
-                set_={
+        async def record(conn: AsyncConnection) -> None:
+            await conn.execute(upsert_primary_key(
+                conn, _ERRORS,
+                {"signature": signature, "logger": logger, "severity": severity,
+                 "error_type": error_type, "message": message, "location": location,
+                 "traceback": traceback, "count": 1, "first_seen": seen, "last_seen": seen},
+                update_columns=("severity", "message", "traceback"),
+                update_values={
                     "count": _ERRORS.c.count + 1,
-                    "first_seen": func.least(_ERRORS.c.first_seen, statement.excluded.first_seen),
-                    "last_seen": func.greatest(_ERRORS.c.last_seen, statement.excluded.last_seen),
-                    "severity": statement.excluded.severity,
-                    "message": statement.excluded.message,
-                    "traceback": statement.excluded.traceback,
+                    "first_seen": func.least(
+                        _ERRORS.c.first_seen, literal(seen, type_=_ERRORS.c.first_seen.type),
+                    ),
+                    "last_seen": func.greatest(
+                        _ERRORS.c.last_seen, literal(seen, type_=_ERRORS.c.last_seen.type),
+                    ),
                 },
-            )
-        )
+            ))
+
+        await transaction(record)
 
     async def list_recent(self, limit: int) -> list[dict[str, Any]]:
         """The ``limit`` most recently seen errors, newest first."""
@@ -96,4 +91,14 @@ class RuntimeErrorRepository:
             # and replicas running this together delete disjoint rows.
             .with_for_update(skip_locked=True)
         )
-        return await execute(delete(_ERRORS).where(_ERRORS.c.signature.in_(expired)))
+
+        async def remove(conn: AsyncConnection) -> int:
+            keys = list((await conn.execute(expired)).scalars())
+            if not keys:
+                return 0
+            removed = await conn.execute(delete(_ERRORS).where(
+                _ERRORS.c.signature.in_(keys), _ERRORS.c.last_seen < cutoff,
+            ))
+            return int(removed.rowcount)
+
+        return await transaction(remove)

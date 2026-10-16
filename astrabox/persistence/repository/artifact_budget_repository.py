@@ -5,17 +5,17 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, cast
 
-from sqlalchemy import Table, delete, extract, func, literal, select, update
-from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy import Table, and_, case, delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from astrabox.persistence.repository._artifact_repository import every, one, run
-from astrabox.persistence.sql import to_iso
+from astrabox.persistence.sql import to_iso, transaction
 from astrabox.persistence.sql.models.artifacts import (
     ArtifactBudget,
     ArtifactRunReservation,
     ArtifactSampleReservation,
 )
+from astrabox.persistence.sql.statements import insert_if_absent_primary_key
 
 _BUDGETS = cast(Table, ArtifactBudget.__table__)
 _SAMPLES = cast(Table, ArtifactSampleReservation.__table__)
@@ -37,25 +37,33 @@ class ArtifactBudgetRepository:
         """Spend one token of the viewer's room bucket; False when it is empty.
 
         The bucket holds up to ``burst`` tokens and refills at ``per_second``.
-        Refill and spend are one statement: a viewer's first write creates
-        the row, and writes from several replicas serialize on it.
+        First use creates the row; refill and spend hold its exclusive lock
+        on the caller's transaction, serializing writes from every replica.
         """
-        elapsed = func.greatest(
-            0.0, extract("epoch", literal(now, _BUDGETS.c.updated_at.type) - _BUDGETS.c.updated_at)
-        )
-        refilled = func.least(float(burst), _BUDGETS.c.tokens + elapsed * per_second)
-        spent = await one(
-            pg_insert(_BUDGETS)
-            .values(budget_key=budget_key, kind="room", tokens=float(burst - 1), updated_at=now)
-            .on_conflict_do_update(
-                index_elements=[_BUDGETS.c.budget_key],
-                set_={"tokens": refilled - 1, "updated_at": now},
-                where=refilled >= 1,
-            )
-            .returning(_BUDGETS.c.tokens),
+        await run(
+            insert_if_absent_primary_key(conn, _BUDGETS, {
+                "budget_key": budget_key, "kind": "room", "tokens": float(burst), "updated_at": now,
+            }),
             conn,
         )
-        return spent is not None
+        row = await one(
+            select(_BUDGETS)
+            .where(_BUDGETS.c.budget_key == budget_key)
+            .with_for_update(key_share=True),
+            conn,
+        )
+        assert row is not None
+        elapsed = max(0.0, (now - row["updated_at"]).total_seconds())
+        refilled = min(float(burst), row["tokens"] + elapsed * per_second)
+        if refilled < 1:
+            return False
+        await run(
+            update(_BUDGETS)
+            .where(_BUDGETS.c.budget_key == budget_key)
+            .values(tokens=refilled - 1, updated_at=now),
+            conn,
+        )
+        return True
 
     async def prune_room_tokens(self, *, before: datetime, limit: int) -> int:
         """Delete up to ``limit`` room buckets last spent before ``before``.
@@ -63,13 +71,22 @@ class ArtifactBudgetRepository:
         ``before`` must be at least a full refill ago: such a bucket is full,
         the same as having no row.
         """
-        idle = (
-            select(_BUDGETS.c.budget_key)
-            .where(_BUDGETS.c.kind == "room", _BUDGETS.c.updated_at < before)
-            .limit(limit)
-            .with_for_update(skip_locked=True)
-        )
-        return await run(delete(_BUDGETS).where(_BUDGETS.c.budget_key.in_(idle)), None)
+        async def prune(conn: AsyncConnection) -> int:
+            idle = await every(
+                select(_BUDGETS.c.budget_key)
+                .where(_BUDGETS.c.kind == "room", _BUDGETS.c.updated_at < before)
+                .limit(limit)
+                .with_for_update(skip_locked=True),
+                conn,
+            )
+            if not idle:
+                return 0
+            return await run(
+                delete(_BUDGETS).where(_BUDGETS.c.budget_key.in_([row["budget_key"] for row in idle])),
+                conn,
+            )
+
+        return await transaction(prune)
 
     async def lock(self, budget_key: str, kind: str, *, conn: AsyncConnection) -> None:
         """Hold the viewer's ``kind`` budget until ``conn`` commits, creating it on first use.
@@ -78,9 +95,7 @@ class ArtifactBudgetRepository:
         transaction is creating waits for it and then does nothing.
         """
         await run(
-            pg_insert(_BUDGETS)
-            .values(budget_key=budget_key, kind=kind)
-            .on_conflict_do_nothing(index_elements=[_BUDGETS.c.budget_key]),
+            insert_if_absent_primary_key(conn, _BUDGETS, {"budget_key": budget_key, "kind": kind}),
             conn,
         )
         await one(
@@ -98,10 +113,10 @@ class ArtifactBudgetRepository:
         """``(active, recent)``: unreleased unexpired reservations, and those started since ``window_start``."""
         row = await one(
             select(
-                func.count()
-                .filter(_SAMPLES.c.released_at.is_(None), _SAMPLES.c.expires_at > now)
-                .label("active"),
-                func.count().filter(_SAMPLES.c.created_at > window_start).label("recent"),
+                func.count(case(
+                    (and_(_SAMPLES.c.released_at.is_(None), _SAMPLES.c.expires_at > now), 1)
+                )).label("active"),
+                func.count(case((_SAMPLES.c.created_at > window_start, 1))).label("recent"),
             ).where(_SAMPLES.c.budget_key == budget_key),
             conn,
         )

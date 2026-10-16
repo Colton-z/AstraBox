@@ -27,6 +27,7 @@ from typing import Any
 from sqlalchemy import ColumnElement, and_, case, func, literal, select
 
 from astrabox.persistence.sql import fetch_all, fetch_one, to_iso
+from astrabox.persistence.sql.runtime_expressions import json_without_key
 from astrabox.persistence.sql.models.sessions import (
     SessionInput,
     SessionInteraction,
@@ -113,7 +114,7 @@ class SessionReadRepository:
                 _OUTPUT.c.session_id == session_id,
                 _OUTPUT.c.response_id.in_(list(response_ids)),
                 _OUTPUT.c.seq <= through_seq,
-                _OUTPUT.c.part["type"].astext == part_type,
+                _OUTPUT.c.part["type"].as_string() == part_type,
             )
             .order_by(_OUTPUT.c.seq)
         )
@@ -131,20 +132,20 @@ class SessionReadRepository:
         data = _OUTPUT.c.part["data"]
         conditions: list[ColumnElement[bool]] = [
             _OUTPUT.c.session_id == session_id,
-            _OUTPUT.c.part["type"].astext == CHILD_RUN_PART,
+            _OUTPUT.c.part["type"].as_string() == CHILD_RUN_PART,
         ]
         if engine_ref is not None:
-            conditions.append(data["engineRef"].astext == engine_ref)
+            conditions.append(data["engineRef"].as_string() == engine_ref)
         projected: Any = data
         if not with_content:
             projected = case(
-                (data["kind"].astext == "message", data.op("-")(literal("content"))),
+                (data["kind"].as_string() == "message", json_without_key(data, literal("content"))),
                 else_=data,
             )
         rows = await fetch_all(
             select(
                 _OUTPUT.c.seq,
-                _OUTPUT.c.part["id"].astext.label("part_id"),
+                _OUTPUT.c.part["id"].as_string().label("part_id"),
                 projected.label("data"),
             )
             .where(*conditions)

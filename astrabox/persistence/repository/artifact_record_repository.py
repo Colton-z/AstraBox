@@ -6,7 +6,6 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import Select, delete, func, insert, or_, select, tuple_, update
-from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from astrabox.persistence.repository._artifact_repository import one, every, run
@@ -115,11 +114,10 @@ class ArtifactRecordRepository:
     async def lock(self, artifact_id: str, *, conn: AsyncConnection) -> dict[str, Any] | None:
         """Lock the artifact against every other mutation until ``conn`` commits; its record.
 
-        The lock is ``FOR NO KEY UPDATE``: it excludes other writers of the
-        artifact but not the foreign-key checks of rows that reference it, so
-        registering a viewer never waits behind a write. The record is read
-        after the lock is held, so it includes everything the previous holder
-        committed, its share included.
+        PostgreSQL uses ``FOR NO KEY UPDATE``, which permits foreign-key
+        checks by viewer registration; MySQL uses its exclusive row lock.
+        The record and its share are read after the lock under READ COMMITTED,
+        so they include everything the previous holder committed.
         """
         locked = await one(
             select(_ARTIFACTS.c.artifact_id)
@@ -160,6 +158,7 @@ class ArtifactRecordRepository:
     async def put_share(
         self, artifact_id: str, share: dict[str, Any], *, conn: AsyncConnection
     ) -> None:
+        """Replace the share while the caller holds the artifact's mutation lock."""
         values = {
             "enabled": share["enabled"],
             "token": share["token"],
@@ -169,12 +168,16 @@ class ArtifactRecordRepository:
             "created_at": from_iso(share["created_at"]),
             "expires_at": from_iso(share["expires_at"]),
         }
-        await run(
-            pg_insert(_SHARES)
-            .values(artifact_id=artifact_id, **values)
-            .on_conflict_do_update(index_elements=[_SHARES.c.artifact_id], set_=values),
+        existing = await one(
+            select(_SHARES.c.artifact_id)
+            .where(_SHARES.c.artifact_id == artifact_id)
+            .with_for_update(),
             conn,
         )
+        if existing is None:
+            await run(insert(_SHARES).values(artifact_id=artifact_id, **values), conn)
+        else:
+            await run(update(_SHARES).where(_SHARES.c.artifact_id == artifact_id).values(**values), conn)
 
     async def delete_owned(self, artifact_id: str, owner_id: str) -> bool:
         """Delete the artifact and everything stored for it; False unless ``owner_id`` owns it."""
@@ -212,11 +215,11 @@ class ArtifactRecordRepository:
             if value:
                 conditions.append(column == value)
         if search:
-            needle = func.lower(search)
+            needle = func.lower(search.replace("/", "//").replace("%", "/%").replace("_", "/_"))
             conditions.append(
                 or_(
-                    func.strpos(func.lower(_ARTIFACTS.c.title), needle) > 0,
-                    func.strpos(func.lower(_ARTIFACTS.c.description), needle) > 0,
+                    func.lower(_ARTIFACTS.c.title).contains(needle, escape="/"),
+                    func.lower(_ARTIFACTS.c.description).contains(needle, escape="/"),
                 )
             )
         if after is not None:

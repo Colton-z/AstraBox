@@ -310,17 +310,18 @@ function buildUnexpectedResponseMessage(response: Response, body: unknown): stri
 /**
  * What the deployment's identity mode is, and whether this browser is signed in.
  *
- * Three answers, because there are three states and a console that collapses
+ * Three identity answers, plus probe failure. A console that collapses
  * them guesses wrong in both directions. `GET /api/v1/auth/session` never
- * answers 401 — it exists to be asked — and it is absent on a deployment that
- * configures no identity, which is how `no-auth` is told apart from `signed-out`.
+ * answers 401 — it exists to be asked. Its absence means the deployment has
+ * no built-in OIDC login flow; local and external-auth deployments pass through.
  * Showing a sign-in page on a no-auth deployment would demand an account nobody
  * can have; skipping it on a signed-out one drops the reader at a blank console.
  */
 export type AuthProbe =
   | { mode: 'no-auth' }
   | { mode: 'signed-in'; user: { user_id: string; display_name?: string | null } }
-  | { mode: 'signed-out' };
+  | { mode: 'signed-out' }
+  | { mode: 'error' };
 
 /**
  * Asked with a bare fetch, not through the generated client, because the route
@@ -331,23 +332,36 @@ export type AuthProbe =
  * ask this question at all.
  */
 export async function probeAuthSession(signal?: AbortSignal): Promise<AuthProbe> {
-  const response = await fetchWithNetworkRecovery(buildApiUrl('/api/v1/auth/session'), {
-    credentials: 'include',
-    signal,
-  });
-  if (response.status === 404) return { mode: 'no-auth' };
-  if (!response.ok) return { mode: 'signed-out' };
-  const payload = (await response.json().catch(() => null)) as
-    | { authenticated?: boolean; user?: { user_id?: string; display_name?: string | null } }
-    | null;
-  if (!payload?.authenticated) return { mode: 'signed-out' };
-  return {
-    mode: 'signed-in',
-    user: {
-      user_id: String(payload.user?.user_id ?? ''),
-      display_name: payload.user?.display_name ?? null,
-    },
-  };
+  try {
+    const response = await fetchWithNetworkRecovery(buildApiUrl('/api/v1/auth/session'), {
+      credentials: 'include',
+      signal,
+    });
+    if (response.status === 404) return { mode: 'no-auth' };
+    if (!response.ok) return { mode: 'error' };
+    const payload = await response.json() as unknown;
+    if (!payload || typeof payload !== 'object' || !('authenticated' in payload)) {
+      return { mode: 'error' };
+    }
+    if (payload.authenticated === false) return { mode: 'signed-out' };
+    if (payload.authenticated !== true || !('user' in payload)) return { mode: 'error' };
+    const user = payload.user;
+    if (!user || typeof user !== 'object' || !('user_id' in user)
+      || typeof user.user_id !== 'string' || !user.user_id.trim()) {
+      return { mode: 'error' };
+    }
+    return {
+      mode: 'signed-in',
+      user: {
+        user_id: user.user_id,
+        display_name: 'display_name' in user && typeof user.display_name === 'string'
+          ? user.display_name : null,
+      },
+    };
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    return { mode: 'error' };
+  }
 }
 
 /**

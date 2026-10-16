@@ -9,7 +9,7 @@ transition depends on — the state, the box the pointer names, the Session
 elected to build the next box and its startup generation — so a transition
 computed from a row that has since moved changes nothing and returns
 ``False``. ``AssistantWorkspaceService`` documents what each one fences. The
-transitions that retire a box delete its profile rows in the same statement.
+transitions that retire a box delete its profile rows in the same transaction.
 """
 
 from __future__ import annotations
@@ -23,18 +23,19 @@ from sqlalchemy import (
     ColumnElement,
     Select,
     Text,
+    cast,
     delete,
     exists,
     func,
-    literal,
-    literal_column,
     or_,
     select,
     update,
 )
-from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.ext.asyncio import AsyncConnection
 
-from astrabox.persistence.sql import fetch_all, fetch_one, fetch_value, from_iso, to_iso
+from astrabox.persistence.repository.assistant_catalog_repository import _ChildObject, _OrderedChildren
+from astrabox.persistence.sql import execute, fetch_all, fetch_one, fetch_value, from_iso, to_iso, transaction
+from astrabox.persistence.sql.statements import insert_if_absent, upsert_primary_key
 from astrabox.persistence.sql.models.assistants import (
     WORKSPACE_STATES,
     Assistant,
@@ -57,22 +58,16 @@ def _deadline(epoch_seconds: Any) -> datetime:
 
 
 def _profiles_column() -> Any:
-    """The workspace's profile rows, keyed by marker key."""
+    """The workspace's complete profile rows for the public marker-key map."""
     return (
-        select(
-            func.jsonb_object_agg(
-                _PROFILES.c.marker_key,
-                func.jsonb_build_object(
-                    literal_column("'user_id'"),
-                    _PROFILES.c.user_id,
-                    literal_column("'sandbox_id'"),
-                    _PROFILES.c.sandbox_id,
-                    literal_column("'configuration_revision'"),
-                    _PROFILES.c.configuration_revision,
-                ),
-            )
-        )
+        select(_OrderedChildren(_ChildObject(
+            "marker_key", cast(_PROFILES.c.marker_key, Text),
+            "user_id", cast(_PROFILES.c.user_id, Text),
+            "sandbox_id", cast(_PROFILES.c.sandbox_id, Text),
+            "configuration_revision", cast(_PROFILES.c.configuration_revision, Text),
+        ), _PROFILES.c.marker_key))
         .where(_PROFILES.c.assistant_id == _COLUMNS.assistant_id)
+        .limit(1)
         .scalar_subquery()
         .label("assistant_profiles")
     )
@@ -117,7 +112,11 @@ def _view(row: Mapping[str, Any] | None) -> dict[str, Any] | None:
         "updated_at": to_iso(row["updated_at"]),
     }
     if "assistant_profiles" in row:
-        workspace["assistant_profiles"] = dict(row["assistant_profiles"] or {})
+        workspace["assistant_profiles"] = {
+            item["marker_key"]: {key: item[key] for key in (
+                "user_id", "sandbox_id", "configuration_revision",
+            )} for item in row["assistant_profiles"] or []
+        }
     return workspace
 
 
@@ -269,37 +268,29 @@ class AssistantWorkspaceRepository:
         The Assistant row is share-locked for the insert, so a concurrent
         deletion either waits for it or makes it insert nothing.
         """
-        live = (
-            select(_ASSISTANTS.c.assistant_id)
-            .where(_ASSISTANTS.c.assistant_id == assistant_id, _ASSISTANTS.c.deleted.is_(False))
-            .with_for_update(read=True)
-            .cte("live")
-        )
-        statement = (
-            pg_insert(_WORKSPACES)
-            .from_select(
-                [
-                    "assistant_id",
-                    "created_by_user_id",
-                    "engine_kind",
-                    "state",
-                    "provisioning_session_id",
-                ],
-                select(
-                    live.c.assistant_id,
-                    literal(created_by_user_id, Text),
-                    literal(engine_kind, Text),
-                    literal("MATERIALIZING", Text),
-                    literal(provisioning_session_id, Text),
-                ),
+        async def create(conn: AsyncConnection) -> dict[str, Any] | None:
+            live = await conn.scalar(
+                select(_ASSISTANTS.c.assistant_id)
+                .where(_ASSISTANTS.c.assistant_id == assistant_id, _ASSISTANTS.c.deleted.is_(False))
+                .with_for_update(read=True)
             )
-            .on_conflict_do_nothing(index_elements=["assistant_id"])
-            .returning(_WORKSPACES)
-        )
-        row = await fetch_one(statement)
-        if row is None:
-            return None
-        return _view({**row, "assistant_profiles": None})
+            if live is None:
+                return None
+            created = await insert_if_absent(conn, _WORKSPACES, {
+                "assistant_id": assistant_id,
+                "created_by_user_id": created_by_user_id,
+                "engine_kind": engine_kind,
+                "state": "MATERIALIZING",
+                "provisioning_session_id": provisioning_session_id,
+            }, index_columns=["assistant_id"])
+            if not created:
+                return None
+            row = (await conn.execute(
+                select(_WORKSPACES).where(_COLUMNS.assistant_id == assistant_id)
+            )).mappings().one()
+            return _view({**row, "assistant_profiles": None})
+
+        return await transaction(create)
 
     # ── transitions ──────────────────────────────────────────────────────
 
@@ -316,20 +307,17 @@ class AssistantWorkspaceRepository:
             update(_WORKSPACES)
             .where(_COLUMNS.assistant_id == assistant_id, *conditions)
             .values(**values, updated_at=func.now())
-            .returning(_COLUMNS.assistant_id)
         )
         if not retire_profiles:
-            return await fetch_one(moved) is not None
-        transitioned = moved.cte("transitioned")
-        retired = (
-            delete(_PROFILES)
-            .where(_PROFILES.c.assistant_id.in_(select(transitioned.c.assistant_id)))
-            .cte("retired")
-        )
-        count = await fetch_value(
-            select(func.count()).select_from(transitioned).add_cte(retired)
-        )
-        return bool(count)
+            return await execute(moved) == 1
+
+        async def retire(conn: AsyncConnection) -> bool:
+            if (await conn.execute(moved)).rowcount != 1:
+                return False
+            await conn.execute(delete(_PROFILES).where(_PROFILES.c.assistant_id == assistant_id))
+            return True
+
+        return await transaction(retire)
 
     async def record_lease(
         self, assistant_id: str, *, sandbox_id: str, expires_at: str | None
@@ -469,43 +457,42 @@ class AssistantWorkspaceRepository:
         user_id: str,
         configuration_revision: str,
     ) -> bool:
-        """Bind the started box, publish READY and the materializer's profile, in one statement.
+        """Bind the started box, publish READY and the materializer's profile, in one transaction.
 
         Only the claiming Session at its generation can publish. A retry after
         a publication that already landed answers ``True`` without writing.
         """
-        ready = (
-            update(_WORKSPACES)
-            .where(
-                _COLUMNS.assistant_id == assistant_id,
-                _COLUMNS.state == "MATERIALIZING",
-                _COLUMNS.provisioning_session_id == provisioning_session_id,
-                _COLUMNS.provisioning_sandbox_generation == provisioning_sandbox_generation,
+        async def publish(conn: AsyncConnection) -> bool:
+            ready = (
+                update(_WORKSPACES)
+                .where(
+                    _COLUMNS.assistant_id == assistant_id,
+                    _COLUMNS.state == "MATERIALIZING",
+                    _COLUMNS.provisioning_session_id == provisioning_session_id,
+                    _COLUMNS.provisioning_sandbox_generation == provisioning_sandbox_generation,
+                )
+                .values(
+                    state="READY",
+                    current_sandbox_id=sandbox_id,
+                    current_sandbox_expires_at=from_iso(expires_at),
+                    hibernated_at=None,
+                    last_error=None,
+                    runtime_identity=dict(runtime_identity) if runtime_identity is not None else None,
+                    provisioning_session_id=None,
+                    provisioning_sandbox_generation=None,
+                    updated_at=func.now(),
+                )
             )
-            .values(
-                state="READY",
-                current_sandbox_id=sandbox_id,
-                current_sandbox_expires_at=from_iso(expires_at),
-                hibernated_at=None,
-                last_error=None,
-                runtime_identity=dict(runtime_identity) if runtime_identity is not None else None,
-                provisioning_session_id=None,
-                provisioning_sandbox_generation=None,
-                updated_at=func.now(),
-            )
-            .returning(_COLUMNS.assistant_id)
-            .cte("ready")
-        )
-        published = await fetch_one(
-            self._profile_upsert(
-                select(ready.c.assistant_id),
-                marker_key=marker_key,
-                user_id=user_id,
-                sandbox_id=sandbox_id,
+            if (await conn.execute(ready)).rowcount != 1:
+                return False
+            await self._profile_upsert(
+                conn, assistant_id,
+                marker_key=marker_key, user_id=user_id, sandbox_id=sandbox_id,
                 configuration_revision=configuration_revision,
             )
-        )
-        if published is not None:
+            return True
+
+        if await transaction(publish):
             return True
         return bool(
             await fetch_value(
@@ -534,57 +521,44 @@ class AssistantWorkspaceRepository:
         configuration_revision: str,
     ) -> bool:
         """Record a user's profile prepared in the box while the workspace is READY on it."""
-        current = (
-            select(_COLUMNS.assistant_id)
-            .where(
-                _COLUMNS.assistant_id == assistant_id,
-                _COLUMNS.state == "READY",
-                _COLUMNS.current_sandbox_id == sandbox_id,
-            )
-            .with_for_update(read=True)
-            .cte("bound")
-        )
-        return (
-            await fetch_one(
-                self._profile_upsert(
-                    select(current.c.assistant_id),
-                    marker_key=marker_key,
-                    user_id=user_id,
-                    sandbox_id=sandbox_id,
-                    configuration_revision=configuration_revision,
+        async def publish(conn: AsyncConnection) -> bool:
+            current = await conn.scalar(
+                select(_COLUMNS.assistant_id)
+                .where(
+                    _COLUMNS.assistant_id == assistant_id,
+                    _COLUMNS.state == "READY",
+                    _COLUMNS.current_sandbox_id == sandbox_id,
                 )
+                .with_for_update(read=True)
             )
-            is not None
-        )
+            if current is None:
+                return False
+            await self._profile_upsert(
+                conn, assistant_id,
+                marker_key=marker_key, user_id=user_id, sandbox_id=sandbox_id,
+                configuration_revision=configuration_revision,
+            )
+            return True
+
+        return await transaction(publish)
 
     @staticmethod
-    def _profile_upsert(
-        source: Select[Any],
+    async def _profile_upsert(
+        conn: AsyncConnection,
+        assistant_id: str,
         *,
         marker_key: str,
         user_id: str,
         sandbox_id: str,
         configuration_revision: str,
-    ) -> Any:
-        """Insert or replace one profile row for each workspace id ``source`` selects."""
-        statement = pg_insert(_PROFILES).from_select(
-            ["assistant_id", "marker_key", "user_id", "sandbox_id", "configuration_revision"],
-            source.add_columns(
-                literal(marker_key, Text),
-                literal(user_id, Text),
-                literal(sandbox_id, Text),
-                literal(configuration_revision, Text),
-            ),
-        )
-        return statement.on_conflict_do_update(
-            index_elements=["assistant_id", "marker_key"],
-            set_={
-                "user_id": statement.excluded.user_id,
-                "sandbox_id": statement.excluded.sandbox_id,
-                "configuration_revision": statement.excluded.configuration_revision,
-                "ready_at": func.now(),
-            },
-        ).returning(_PROFILES.c.assistant_id)
+    ) -> None:
+        """Store the profile while the caller holds the workspace's binding lock."""
+        await conn.execute(upsert_primary_key(conn, _PROFILES, {
+            "assistant_id": assistant_id, "marker_key": marker_key,
+            "user_id": user_id, "sandbox_id": sandbox_id,
+            "configuration_revision": configuration_revision,
+        }, update_columns=["user_id", "sandbox_id", "configuration_revision"],
+            update_values={"ready_at": func.now()}))
 
     async def mark_post_commit_failure(
         self,

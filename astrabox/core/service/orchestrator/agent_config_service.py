@@ -1306,7 +1306,9 @@ class AgentConfigService:
             ]
             # A deleted Assistant holds no workspace (its deletion removes it), so
             # the compute it can still own is in the conversations it left.
-            assistants = await self._assistant_repo.list_assistants_by_environment(target)
+            assistants = await self._assistant_repo.list_assistants_by_environment(
+                target, connection=connection,
+            )
             deleted_assistant_ids = [
                 str(assistant["assistant_id"]) for assistant in assistants if assistant.get("deleted") is True
             ]
@@ -1351,7 +1353,9 @@ class AgentConfigService:
                     "target_id": str(layer["scope"]),
                     "target_name": "Assistant defaults",
                 }
-                for layer in await AssistantDefaultsRepository().list_by_environment(target)
+                for layer in await AssistantDefaultsRepository().list_by_environment(
+                    target, connection=connection,
+                )
             )
             if holders:
                 shown = ", ".join(

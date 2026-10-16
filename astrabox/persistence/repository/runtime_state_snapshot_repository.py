@@ -21,11 +21,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy import delete, insert, select, update
-from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from astrabox.persistence.sql import fetch_all, fetch_one, transaction
 from astrabox.persistence.sql.models.sessions import RuntimeStateChunk, RuntimeStateHead
+from astrabox.persistence.sql.statements import insert_if_absent
 
 CHUNK_SIZE = 256 * 1024
 
@@ -228,12 +228,10 @@ class RuntimeStateSnapshotRepository:
             # The head moves first: its row lock orders concurrent saves, and a
             # save that lost the compare-and-set stops before writing chunks.
             if expected_snapshot_id is None:
-                moved = await conn.execute(
-                    pg_insert(_HEADS)
-                    .values(**head)
-                    .on_conflict_do_nothing()
-                    .returning(_HEADS.c.snapshot_id)
-                )
+                if not await insert_if_absent(
+                    conn, _HEADS, head, index_columns=["archive", "owner_key"]
+                ):
+                    raise _NotPublished
             else:
                 moved = await conn.execute(
                     update(_HEADS)
@@ -249,10 +247,9 @@ class RuntimeStateSnapshotRepository:
                         size=size,
                         chunk_count=head["chunk_count"],
                     )
-                    .returning(_HEADS.c.snapshot_id)
                 )
-            if moved.first() is None:
-                raise _NotPublished
+                if moved.rowcount != 1:
+                    raise _NotPublished
             await conn.execute(insert(_CHUNKS), chunks)
             await conn.execute(
                 delete(_CHUNKS).where(

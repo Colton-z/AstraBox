@@ -14,10 +14,11 @@ from __future__ import annotations
 from typing import Any
 
 from sqlalchemy import delete, or_, select, update
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.ext.asyncio import AsyncConnection
 
-from astrabox.persistence.sql import execute, fetch_all, from_iso, to_iso
+from astrabox.persistence.sql import execute, fetch_all, from_iso, to_iso, transaction
 from astrabox.persistence.sql.models.platform import HermesCronJob
+from astrabox.persistence.sql.statements import insert_if_absent_primary_key
 
 _JOBS = HermesCronJob.__table__
 
@@ -35,11 +36,13 @@ class HermesCronJobRepository:
 
     async def claim(self, *, profile_key: str, job_id: str, session_id: str) -> None:
         """Record the conversation that created ``job_id``; the first claim wins."""
-        await execute(
-            insert(_JOBS)
-            .values(profile_key=profile_key, job_id=job_id, session_id=session_id)
-            .on_conflict_do_nothing(index_elements=[_JOBS.c.profile_key, _JOBS.c.job_id])
-        )
+        async def claim(conn: AsyncConnection) -> None:
+            await conn.execute(insert_if_absent_primary_key(
+                conn, _JOBS,
+                {"profile_key": profile_key, "job_id": job_id, "session_id": session_id},
+            ))
+
+        await transaction(claim)
 
     async def list_for_session(
         self, *, profile_key: str, session_id: str

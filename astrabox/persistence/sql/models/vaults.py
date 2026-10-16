@@ -5,11 +5,18 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import CheckConstraint, ForeignKey, Index, Text, func, text
-from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy import CheckConstraint, ForeignKey, Index, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from astrabox.persistence.sql.base import Base
+from astrabox.persistence.sql.schema import (
+    MYSQL_TABLE_OPTIONS,
+    EmptyObjectDefault,
+    boolean_checks,
+    conditional_unique,
+    string_list_check,
+)
+from astrabox.persistence.sql.types import KeyText, StringList, payload_text
 
 
 class Vault(Base):
@@ -21,17 +28,20 @@ class Vault(Base):
     """
 
     __tablename__ = "vaults"
-    __table_args__ = (Index(None, "org_id", "created_at"),)
+    __table_args__ = (
+        Index(None, "org_id", "created_at"),
+        MYSQL_TABLE_OPTIONS,
+    )
 
-    vault_id: Mapped[str] = mapped_column(Text, primary_key=True)
-    org_id: Mapped[str] = mapped_column(Text)
-    created_by: Mapped[str] = mapped_column(Text)
-    display_name: Mapped[str] = mapped_column(Text)
+    vault_id: Mapped[str] = mapped_column(KeyText(128), primary_key=True)
+    org_id: Mapped[str] = mapped_column(KeyText(512))
+    created_by: Mapped[str] = mapped_column(payload_text())
+    display_name: Mapped[str] = mapped_column(payload_text())
     #: Free-form administrator labels, stored and returned as given. The
     #: attribute carries a trailing underscore because declarative classes
     #: reserve ``metadata``; the column is ``metadata``.
     metadata_: Mapped[dict[str, Any]] = mapped_column(
-        "metadata", server_default=text("'{}'::jsonb")
+        "metadata", server_default=EmptyObjectDefault(postgres_sql="'{}'::jsonb")
     )
     archived_at: Mapped[datetime | None]
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
@@ -68,59 +78,55 @@ class VaultCredential(Base):
             " AND secret_name IS NOT NULL AND mcp_server_url IS NULL AND url IS NULL)",
             name="one_key_per_type",
         ),
-        Index(
-            None,
-            "vault_id",
-            "mcp_server_url",
-            unique=True,
-            postgresql_where=text("archived_at IS NULL AND mcp_server_url IS NOT NULL"),
+        *conditional_unique(
+            "ix_vault_credentials_vault_id_mcp_server_url", "vault_id", "mcp_server_url",
+            predicate=text("archived_at IS NULL AND mcp_server_url IS NOT NULL"), marker="_mcp_slot",
         ),
-        Index(
-            None,
-            "vault_id",
-            "url",
-            unique=True,
-            postgresql_where=text("archived_at IS NULL AND url IS NOT NULL"),
+        *conditional_unique(
+            "ix_vault_credentials_vault_id_url", "vault_id", "url",
+            predicate=text("archived_at IS NULL AND url IS NOT NULL"), marker="_http_slot",
         ),
-        Index(
-            None,
-            "vault_id",
-            "secret_name",
-            unique=True,
-            postgresql_where=text("archived_at IS NULL AND secret_name IS NOT NULL"),
+        *conditional_unique(
+            "ix_vault_credentials_vault_id_secret_name", "vault_id", "secret_name",
+            predicate=text("archived_at IS NULL AND secret_name IS NOT NULL"), marker="_environment_slot",
         ),
         Index(None, "vault_id", "created_at"),
+        *boolean_checks("inject_header", "inject_body", "allow_insecure_http"),
+        string_list_check("allowed_hosts"),
+        string_list_check("allowed_methods"),
+        string_list_check("allowed_paths"),
+        MYSQL_TABLE_OPTIONS,
     )
 
-    credential_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    credential_id: Mapped[str] = mapped_column(KeyText(128), primary_key=True)
     vault_id: Mapped[str] = mapped_column(
-        Text, ForeignKey("vaults.vault_id", ondelete="CASCADE")
+        KeyText(128), ForeignKey("vaults.vault_id", ondelete="CASCADE")
     )
-    display_name: Mapped[str | None] = mapped_column(Text)
-    auth_type: Mapped[str] = mapped_column(Text)
-    mcp_server_url: Mapped[str | None] = mapped_column(Text)
-    url: Mapped[str | None] = mapped_column(Text)
-    secret_name: Mapped[str | None] = mapped_column(Text)
-    username: Mapped[str | None] = mapped_column(Text)
-    header_name: Mapped[str | None] = mapped_column(Text)
+    display_name: Mapped[str | None] = mapped_column(payload_text())
+    auth_type: Mapped[str] = mapped_column(payload_text())
+    mcp_server_url: Mapped[str | None] = mapped_column(KeyText(2048))
+    url: Mapped[str | None] = mapped_column(KeyText(2048))
+    secret_name: Mapped[str | None] = mapped_column(KeyText(512))
+    username: Mapped[str | None] = mapped_column(payload_text())
+    header_name: Mapped[str | None] = mapped_column(payload_text())
     #: When an ``mcp_oauth`` access token expires; ``NULL`` when unknown.
     expires_at: Mapped[datetime | None]
     #: An ``mcp_oauth`` refresh configuration is present exactly when its token
     #: endpoint is.
-    refresh_token_endpoint: Mapped[str | None] = mapped_column(Text)
-    refresh_client_id: Mapped[str | None] = mapped_column(Text)
-    refresh_auth_method: Mapped[str | None] = mapped_column(Text)
-    refresh_scope: Mapped[str | None] = mapped_column(Text)
+    refresh_token_endpoint: Mapped[str | None] = mapped_column(payload_text())
+    refresh_client_id: Mapped[str | None] = mapped_column(payload_text())
+    refresh_auth_method: Mapped[str | None] = mapped_column(payload_text())
+    refresh_scope: Mapped[str | None] = mapped_column(payload_text())
     refresh_claimed_until: Mapped[datetime | None]
     #: ``environment_variable`` delivery rules. ``network_access`` is
     #: ``limited`` (with ``allowed_hosts``) or ``unrestricted``; a ``NULL``
     #: method or path list leaves that part of the request unrestricted.
-    network_access: Mapped[str | None] = mapped_column(Text)
-    allowed_hosts: Mapped[list[str] | None] = mapped_column(ARRAY(Text))
+    network_access: Mapped[str | None] = mapped_column(payload_text())
+    allowed_hosts: Mapped[list[str] | None] = mapped_column(StringList())
     inject_header: Mapped[bool | None]
     inject_body: Mapped[bool | None]
-    allowed_methods: Mapped[list[str] | None] = mapped_column(ARRAY(Text))
-    allowed_paths: Mapped[list[str] | None] = mapped_column(ARRAY(Text))
+    allowed_methods: Mapped[list[str] | None] = mapped_column(StringList())
+    allowed_paths: Mapped[list[str] | None] = mapped_column(StringList())
     allow_insecure_http: Mapped[bool | None]
     archived_at: Mapped[datetime | None]
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
@@ -137,7 +143,10 @@ class Secret(Base):
     """
 
     __tablename__ = "secrets"
+    __table_args__ = (
+        MYSQL_TABLE_OPTIONS,
+    )
 
-    scope: Mapped[str] = mapped_column(Text, primary_key=True)
-    key: Mapped[str] = mapped_column(Text, primary_key=True)
-    sealed: Mapped[str] = mapped_column(Text)
+    scope: Mapped[str] = mapped_column(KeyText(768), primary_key=True)
+    key: Mapped[str] = mapped_column(KeyText(512), primary_key=True)
+    sealed: Mapped[str] = mapped_column(payload_text())

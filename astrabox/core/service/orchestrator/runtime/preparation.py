@@ -164,13 +164,13 @@ async def _synchronize(provider: Any, guard: _SyncGuard, *, timeout_seconds: flo
         "provider": provider.name, "operation_id": uuid.uuid4().hex,
         "deadline": time.time() + timeout_seconds,
     }
-    context = guard.context(row, ResourcePreparationOperation(
-        subject=subject, operation_id=operation["operation_id"],
-    ))
     if not await guard.write(guard.starting(row), {_OPERATION: operation}):
         await guard.current()
         raise _failure(code="RESOURCE_SYNC_BUSY", subject=subject)
     try:
+        context = guard.context(row, ResourcePreparationOperation(
+            subject=subject, operation_id=operation["operation_id"],
+        ))
         async with asyncio.timeout(timeout_seconds):
             await provider.synchronize(context=context)
     except BaseException as exc:
@@ -212,14 +212,23 @@ async def synchronize_prepared_resources(
     packages, skills_path = _prepared_paths(config)
 
     def context(row: dict[str, Any], operation: ResourcePreparationOperation) -> ResourcePreparationContext:
+        from astrabox.core.service.orchestrator.runtime.preparation_commit import callback_commit_guard
+
+        owner_user_id = str(row.get("created_by") or "")
+        revision = str(config["version"])
+        preparation_id = str(config["client_pool_epoch"])
         return ResourcePreparationContext(
             operation=operation,
-            owner_user_id=str(row.get("created_by") or ""),
-            revision=str(config["version"]),
-            preparation_id=str(config["client_pool_epoch"]),
+            owner_user_id=owner_user_id,
+            revision=revision,
+            preparation_id=preparation_id,
             runtime_generation=str(config["runtime_generation"]),
             config=copy.deepcopy(config), sandbox=sandbox,
             packages=packages, skills_path=skills_path,
+            commit_guard=callback_commit_guard(
+                operation=operation, owner_user_id=owner_user_id, revision=revision,
+                provider=provider.name, config=config, preparation_id=preparation_id,
+            ),
         )
 
     await _synchronize(provider, _SyncGuard(
@@ -286,12 +295,18 @@ async def _synchronize_assistant_resources(
         return {**row, _OPERATION: row.get("prepared_operation")}
 
     def build(_row: dict[str, Any], operation: ResourcePreparationOperation) -> ResourcePreparationContext:
+        from astrabox.core.service.orchestrator.runtime.preparation_commit import callback_commit_guard
+
         return ResourcePreparationContext(
             operation=operation, owner_user_id=owner_user_id, revision=revision,
             preparation_id=context.sandbox_id,
             runtime_generation=str(config.get("runtime_generation") or ""),
             config=copy.deepcopy(config), sandbox=get_underlying_sandbox(context.sandbox),
             packages=packages, skills_path=skills_path,
+            commit_guard=callback_commit_guard(
+                operation=operation, owner_user_id=owner_user_id, revision=revision,
+                provider=provider.name, config=config, preparation_id=context.sandbox_id,
+            ),
         )
 
     guard = _SyncGuard(

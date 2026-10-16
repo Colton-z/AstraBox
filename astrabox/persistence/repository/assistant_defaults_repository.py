@@ -16,17 +16,19 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from sqlalchemy import delete, func, insert, literal_column, select, update
-from sqlalchemy.dialects.postgresql import aggregate_order_by
-from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy import Text, cast, delete, func, insert, literal, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from astrabox.persistence.repository.assistant_catalog_repository import _ChildObject, _OrderedChildren
 from astrabox.persistence.sql import ForeignKeyViolation, fetch_all, fetch_one, to_iso, transaction
 from astrabox.persistence.sql.models.assistants import (
     AssistantDefaultMcpAssignment,
     AssistantDefaults,
     AssistantDefaultVaultBinding,
 )
+from astrabox.persistence.installation import load_installation_id
+from astrabox.persistence.sql.models.platform import Installation
+from astrabox.persistence.sql.statements import insert_if_absent
 
 DEPLOYMENT_SCOPE = "deployment"
 
@@ -34,7 +36,7 @@ _LAYERS = AssistantDefaults.__table__
 _VAULTS = AssistantDefaultVaultBinding.__table__
 _ASSIGNMENTS = AssistantDefaultMcpAssignment.__table__
 
-#: The constraint PostgreSQL names when a layer's Environment does not exist,
+#: The constraint named when a layer's Environment does not exist,
 #: as ``astrabox.persistence.sql.base.NAMING_CONVENTION`` names it.
 _ENVIRONMENT_FK = "fk_assistant_defaults_environment_name_environments"
 
@@ -61,26 +63,26 @@ class AssistantDefaultsVaultMissing(Exception):
 
 def _layers() -> Any:
     vault_ids = (
-        select(func.jsonb_agg(aggregate_order_by(_VAULTS.c.vault_id, _VAULTS.c.position)))
+        select(_OrderedChildren(cast(_VAULTS.c.vault_id, Text), _VAULTS.c.position))
         .where(_VAULTS.c.scope == _LAYERS.c.scope)
+        .limit(1)
         .scalar_subquery()
         .label("credential_vault_ids")
     )
     assignments = (
         select(
-            func.jsonb_agg(
-                aggregate_order_by(
-                    func.jsonb_build_object(
-                        literal_column("'provider'"),
-                        _ASSIGNMENTS.c.provider,
-                        literal_column("'item_id'"),
-                        _ASSIGNMENTS.c.item_id,
-                    ),
-                    _ASSIGNMENTS.c.position,
-                )
+            _OrderedChildren(
+                _ChildObject(
+                    literal("provider"),
+                    cast(_ASSIGNMENTS.c.provider, Text),
+                    literal("item_id"),
+                    cast(_ASSIGNMENTS.c.item_id, Text),
+                ),
+                _ASSIGNMENTS.c.position,
             )
         )
         .where(_ASSIGNMENTS.c.scope == _LAYERS.c.scope)
+        .limit(1)
         .scalar_subquery()
         .label("mcp_assignments")
     )
@@ -100,6 +102,21 @@ def _view(row: Mapping[str, Any] | None) -> dict[str, Any] | None:
         "created_at": to_iso(row["created_at"]),
         "updated_at": to_iso(row["updated_at"]),
     }
+
+
+async def lock_defaults_scope(conn: AsyncConnection, *, write: bool = False) -> None:
+    """Hold defaults stable, including their absence, until this transaction ends.
+
+    The installation row exists before serving traffic. Defaults writers take
+    it exclusively before changing any layer or child, so a first insert cannot
+    overtake a provider committing against the absence of defaults.
+    """
+    installation = Installation.__table__
+    held = await conn.scalar(
+        select(installation.c.singleton).with_for_update(read=not write)
+    )
+    if held is None:
+        raise RuntimeError("initialize the installation before locking Assistant defaults")
 
 
 class AssistantDefaultsRepository:
@@ -129,13 +146,15 @@ class AssistantDefaultsRepository:
         assignments: Sequence[Mapping[str, Any]] = list(fields.get("mcp_assignments") or [])
 
         async def work(conn: AsyncConnection) -> bool:
+            await lock_defaults_scope(conn, write=True)
             if expected_version is None:
-                saved = await conn.execute(
-                    pg_insert(_LAYERS)
-                    .values(scope=scope, **columns, updated_by=updated_by)
-                    .on_conflict_do_nothing(index_elements=["scope"])
-                    .returning(_LAYERS.c.scope)
-                )
+                if not await insert_if_absent(
+                    conn,
+                    _LAYERS,
+                    {"scope": scope, **columns, "updated_by": updated_by},
+                    index_columns=["scope"],
+                ):
+                    return False
             else:
                 saved = await conn.execute(
                     update(_LAYERS)
@@ -146,10 +165,9 @@ class AssistantDefaultsRepository:
                         version=_LAYERS.c.version + 1,
                         updated_at=func.now(),
                     )
-                    .returning(_LAYERS.c.scope)
                 )
-            if saved.first() is None:
-                return False
+                if saved.rowcount != 1:
+                    return False
             await conn.execute(delete(_VAULTS).where(_VAULTS.c.scope == scope))
             await conn.execute(delete(_ASSIGNMENTS).where(_ASSIGNMENTS.c.scope == scope))
             if vault_ids:
@@ -176,6 +194,7 @@ class AssistantDefaultsRepository:
             return True
 
         try:
+            await load_installation_id()
             return await transaction(work)
         except ForeignKeyViolation as exc:
             if exc.constraint == _ENVIRONMENT_FK:
@@ -195,9 +214,14 @@ class AssistantDefaultsRepository:
             if view is not None
         ]
 
-    async def list_by_environment(self, name: str) -> list[dict[str, Any]]:
-        """The layers that name this Environment."""
-        rows = await fetch_all(
+    async def list_by_environment(
+        self, name: str, *, connection: AsyncConnection | None = None
+    ) -> list[dict[str, Any]]:
+        """The layers naming this Environment, on the caller's transaction when supplied."""
+        statement = (
             select(_LAYERS.c.scope).where(_LAYERS.c.environment_name == name).order_by(_LAYERS.c.scope)
         )
+        if connection is not None:
+            return [dict(row) for row in (await connection.execute(statement)).mappings()]
+        rows = await fetch_all(statement)
         return [dict(row) for row in rows]

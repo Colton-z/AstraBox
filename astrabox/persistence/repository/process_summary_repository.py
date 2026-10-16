@@ -19,11 +19,12 @@ from collections.abc import Sequence
 from typing import Any
 
 from sqlalchemy import and_, case, func, literal, or_, select, update
-from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.ext.asyncio import AsyncConnection
 
 from astrabox.common.logger.logger_factory import get_logger
-from astrabox.persistence.sql import fetch_all, fetch_value
+from astrabox.persistence.sql import execute, fetch_all, transaction
 from astrabox.persistence.sql.models.sessions import ProcessSummary
+from astrabox.persistence.sql.statements import TimestampAfter, insert_if_absent_primary_key
 
 logger = get_logger(__name__)
 
@@ -37,7 +38,7 @@ _EXPIRED_ERROR = "process summary generation expired"
 
 
 def _lease_end() -> Any:
-    return func.now() + func.make_interval(0, 0, 0, 0, 0, 0, CLAIM_LEASE_S)
+    return TimestampAfter(func.now(), CLAIM_LEASE_S)
 
 
 def _expired() -> Any:
@@ -54,7 +55,7 @@ class ProcessSummaryRepository:
         response_completed: bool,
         retry_failed: bool = False,
     ) -> str | None:
-        """Take the generation claim for one response's label, in one statement.
+        """Take the generation claim for one response's label, in one transaction.
 
         Returns the claim token, which :meth:`finish` must present, or ``None``
         when the row exists and is not reopened. ``retry_failed`` reopens a
@@ -71,14 +72,32 @@ class ProcessSummaryRepository:
             "error": None,
             "expires_at": _lease_end(),
         }
-        statement = pg_insert(_SUMMARIES).values(session_id=session_id, response_id=response_id, **values)
-        statement = statement.on_conflict_do_update(
-            index_elements=["session_id", "response_id"],
-            set_={**values, "updated_at": func.now()},
-            where=and_(literal(bool(retry_failed)), or_(_SUMMARIES.c.status == "failed", _expired())),
-        ).returning(_SUMMARIES.c.claim_token)
-        value = await fetch_value(statement)
-        return str(value) if value is not None else None
+        identity = and_(
+            _SUMMARIES.c.session_id == session_id, _SUMMARIES.c.response_id == response_id,
+        )
+
+        async def claim(conn: AsyncConnection) -> str | None:
+            # PK ensure preserves an existing token and avoids upgrading a
+            # duplicate ordinary INSERT's shared lock on MySQL.
+            await conn.execute(insert_if_absent_primary_key(
+                conn, _SUMMARIES,
+                {"session_id": session_id, "response_id": response_id, **values},
+            ))
+            current = (await conn.execute(
+                select(_SUMMARIES.c.claim_token).where(identity).with_for_update()
+            )).scalar_one()
+            if current == token:
+                return token
+            if not retry_failed:
+                return None
+            changed = await conn.execute(
+                update(_SUMMARIES)
+                .where(identity, or_(_SUMMARIES.c.status == "failed", _expired()))
+                .values(**values, updated_at=func.now())
+            )
+            return token if changed.rowcount == 1 else None
+
+        return await transaction(claim)
 
     async def finish(
         self,
@@ -95,7 +114,7 @@ class ProcessSummaryRepository:
         A writer whose claim expired and was reopened by a retry finds another
         token on the row and writes nothing: the retry's outcome stands.
         """
-        written = await fetch_all(
+        written = await execute(
             update(_SUMMARIES)
             .where(
                 _SUMMARIES.c.session_id == session_id,
@@ -104,15 +123,14 @@ class ProcessSummaryRepository:
                 _SUMMARIES.c.claim_token == claim_token,
             )
             .values(status=status, summary=summary, error=error, expires_at=None, updated_at=func.now())
-            .returning(_SUMMARIES.c.response_id)
         )
-        if not written:
+        if written != 1:
             logger.warning(
                 "process summary outcome discarded: claim no longer current session=%s response=%s",
                 session_id,
                 response_id,
             )
-        return bool(written)
+        return written == 1
 
     async def read(self, session_id: str, response_ids: Sequence[str]) -> dict[str, dict[str, Any]]:
         """The stored label of each response that has one.

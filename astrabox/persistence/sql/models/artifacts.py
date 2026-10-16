@@ -5,10 +5,12 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import BigInteger, ForeignKey, ForeignKeyConstraint, Index, Text, func, text
+from sqlalchemy import BigInteger, ForeignKey, ForeignKeyConstraint, Index, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from astrabox.persistence.sql.base import Base
+from astrabox.persistence.sql.schema import MYSQL_TABLE_OPTIONS, boolean_checks, conditional_unique
+from astrabox.persistence.sql.types import KeyText, payload_text
 
 _CASCADE = "CASCADE"
 
@@ -46,21 +48,22 @@ class Artifact(Base):
             None, "owner_id", "origin_agent_id", "updated_at", "artifact_id",
             postgresql_where=text("origin_agent_id IS NOT NULL"),
         ),
+        MYSQL_TABLE_OPTIONS,
     )
 
-    artifact_id: Mapped[str] = mapped_column(Text, primary_key=True)
-    owner_id: Mapped[str] = mapped_column(Text)
-    title: Mapped[str] = mapped_column(Text)
-    description: Mapped[str] = mapped_column(Text)
-    kind: Mapped[str] = mapped_column(Text)
-    language: Mapped[str | None] = mapped_column(Text)
+    artifact_id: Mapped[str] = mapped_column(KeyText(128), primary_key=True)
+    owner_id: Mapped[str] = mapped_column(KeyText(512))
+    title: Mapped[str] = mapped_column(payload_text())
+    description: Mapped[str] = mapped_column(payload_text())
+    kind: Mapped[str] = mapped_column(payload_text())
+    language: Mapped[str | None] = mapped_column(payload_text())
     current_version: Mapped[int]
     #: The validated capability map every runtime operation is authorized against.
     manifest: Mapped[dict[str, Any]]
-    origin_session_kind: Mapped[str | None] = mapped_column(Text)
-    origin_session_id: Mapped[str | None] = mapped_column(Text)
-    origin_agent_id: Mapped[str | None] = mapped_column(Text)
-    origin_assistant_id: Mapped[str | None] = mapped_column(Text)
+    origin_session_kind: Mapped[str | None] = mapped_column(payload_text())
+    origin_session_id: Mapped[str | None] = mapped_column(KeyText(128))
+    origin_agent_id: Mapped[str | None] = mapped_column(KeyText(128))
+    origin_assistant_id: Mapped[str | None] = mapped_column(KeyText(128))
     revision: Mapped[int] = mapped_column(BigInteger)
     #: The last journal sequence allocated; readers start their tail here.
     event_seq: Mapped[int] = mapped_column(BigInteger)
@@ -77,20 +80,23 @@ class ArtifactVersion(Base):
     """
 
     __tablename__ = "artifact_versions"
+    __table_args__ = (
+        MYSQL_TABLE_OPTIONS,
+    )
 
     artifact_id: Mapped[str] = mapped_column(
-        Text, ForeignKey("artifacts.artifact_id", ondelete=_CASCADE), primary_key=True
+        KeyText(128), ForeignKey("artifacts.artifact_id", ondelete=_CASCADE), primary_key=True
     )
     version: Mapped[int] = mapped_column(primary_key=True)
-    sha256: Mapped[str] = mapped_column(Text)
+    sha256: Mapped[str] = mapped_column(payload_text())
     byte_size: Mapped[int]
-    kind: Mapped[str] = mapped_column(Text)
-    title: Mapped[str] = mapped_column(Text)
-    language: Mapped[str | None] = mapped_column(Text)
+    kind: Mapped[str] = mapped_column(payload_text())
+    title: Mapped[str] = mapped_column(payload_text())
+    language: Mapped[str | None] = mapped_column(payload_text())
     #: The manifest published with this version; a restore republishes it.
     manifest: Mapped[dict[str, Any]]
-    author_user_id: Mapped[str] = mapped_column(Text)
-    author_kind: Mapped[str] = mapped_column(Text)
+    author_user_id: Mapped[str] = mapped_column(payload_text())
+    author_kind: Mapped[str] = mapped_column(payload_text())
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
 
@@ -104,11 +110,12 @@ class ArtifactVersionContent(Base):
             ["artifact_versions.artifact_id", "artifact_versions.version"],
             ondelete=_CASCADE,
         ),
+        MYSQL_TABLE_OPTIONS,
     )
 
-    artifact_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    artifact_id: Mapped[str] = mapped_column(KeyText(128), primary_key=True)
     version: Mapped[int] = mapped_column(primary_key=True)
-    content: Mapped[str] = mapped_column(Text)
+    content: Mapped[str] = mapped_column(payload_text())
 
 
 class ArtifactShare(Base):
@@ -128,15 +135,17 @@ class ArtifactShare(Base):
             ["artifact_versions.artifact_id", "artifact_versions.version"],
             ondelete=_CASCADE,
         ),
+        *boolean_checks("enabled"),
+        MYSQL_TABLE_OPTIONS,
     )
 
     artifact_id: Mapped[str] = mapped_column(
-        Text, ForeignKey("artifacts.artifact_id", ondelete=_CASCADE), primary_key=True
+        KeyText(128), ForeignKey("artifacts.artifact_id", ondelete=_CASCADE), primary_key=True
     )
-    token: Mapped[str] = mapped_column(Text, unique=True)
+    token: Mapped[str] = mapped_column(KeyText(512), unique=True)
     enabled: Mapped[bool]
-    access: Mapped[str] = mapped_column(Text)
-    audience: Mapped[str] = mapped_column(Text)
+    access: Mapped[str] = mapped_column(payload_text())
+    audience: Mapped[str] = mapped_column(payload_text())
     #: The pinned version, or ``None`` to follow the latest.
     version: Mapped[int | None]
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
@@ -151,18 +160,21 @@ class ArtifactDocument(Base):
     """
 
     __tablename__ = "artifact_documents"
-    __table_args__ = (Index(None, "artifact_id", "collection", "path"),)
+    __table_args__ = (
+        Index(None, "artifact_id", "collection", "path"),
+        MYSQL_TABLE_OPTIONS,
+    )
 
     artifact_id: Mapped[str] = mapped_column(
-        Text, ForeignKey("artifacts.artifact_id", ondelete=_CASCADE), primary_key=True
+        KeyText(128), ForeignKey("artifacts.artifact_id", ondelete=_CASCADE), primary_key=True
     )
-    path: Mapped[str] = mapped_column(Text(collation="C"), primary_key=True)
+    path: Mapped[str] = mapped_column(KeyText(1024, postgres_collation="C"), primary_key=True)
     #: The parent collection's path, which collection queries select by.
-    collection: Mapped[str] = mapped_column(Text(collation="C"))
+    collection: Mapped[str] = mapped_column(KeyText(1024, postgres_collation="C"))
     #: The page's JSON object, stored as written.
     data: Mapped[dict[str, Any]]
     #: The writer's opaque viewer id.
-    updated_by: Mapped[str] = mapped_column(Text)
+    updated_by: Mapped[str] = mapped_column(payload_text())
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
@@ -181,21 +193,28 @@ class ArtifactEvent(Base):
 
     __tablename__ = "artifact_events"
     __table_args__ = (
-        Index(None, "artifact_id", unique=True, postgresql_where=text("kind = 'version'")),
-        Index(None, "artifact_id", "path", unique=True, postgresql_where=text("kind = 'data'")),
+        *conditional_unique(
+            "ix_artifact_events_artifact_id", "artifact_id",
+            predicate=text("kind = 'version'"), marker="_version_slot",
+        ),
+        *conditional_unique(
+            "ix_artifact_events_artifact_id_path", "artifact_id", "path",
+            predicate=text("kind = 'data'"), marker="_data_slot",
+        ),
         # Expired room and presence events, across artifacts.
         Index(None, "kind", "created_at", postgresql_where=text("kind IN ('room', 'presence')")),
         # The presence a reconnecting reader is replayed.
         Index(None, "artifact_id", "seq", postgresql_where=text("kind = 'presence'")),
+        MYSQL_TABLE_OPTIONS,
     )
 
     artifact_id: Mapped[str] = mapped_column(
-        Text, ForeignKey("artifacts.artifact_id", ondelete=_CASCADE), primary_key=True
+        KeyText(128), ForeignKey("artifacts.artifact_id", ondelete=_CASCADE), primary_key=True
     )
     seq: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    kind: Mapped[str] = mapped_column(Text)
+    kind: Mapped[str] = mapped_column(KeyText(32))
     #: The document path of a ``data`` event.
-    path: Mapped[str | None] = mapped_column(Text)
+    path: Mapped[str | None] = mapped_column(KeyText(1024))
     #: What a reader is sent: page room data is stored as the page sent it.
     payload: Mapped[dict[str, Any]]
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
@@ -205,13 +224,16 @@ class ArtifactViewer(Base):
     """A signed-in viewer's opaque per-artifact id and display name, for ``user.profiles``."""
 
     __tablename__ = "artifact_viewers"
+    __table_args__ = (
+        MYSQL_TABLE_OPTIONS,
+    )
 
     artifact_id: Mapped[str] = mapped_column(
-        Text, ForeignKey("artifacts.artifact_id", ondelete=_CASCADE), primary_key=True
+        KeyText(128), ForeignKey("artifacts.artifact_id", ondelete=_CASCADE), primary_key=True
     )
-    viewer_id: Mapped[str] = mapped_column(Text, primary_key=True)
-    user_id: Mapped[str] = mapped_column(Text)
-    display_name: Mapped[str] = mapped_column(Text)
+    viewer_id: Mapped[str] = mapped_column(KeyText(512), primary_key=True)
+    user_id: Mapped[str] = mapped_column(payload_text())
+    display_name: Mapped[str] = mapped_column(payload_text())
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
 
@@ -227,10 +249,13 @@ class ArtifactBudget(Base):
     """
 
     __tablename__ = "artifact_budgets"
-    __table_args__ = (Index(None, "kind", "updated_at"),)
+    __table_args__ = (
+        Index(None, "kind", "updated_at"),
+        MYSQL_TABLE_OPTIONS,
+    )
 
-    budget_key: Mapped[str] = mapped_column(Text, primary_key=True)
-    kind: Mapped[str] = mapped_column(Text)
+    budget_key: Mapped[str] = mapped_column(KeyText(1024), primary_key=True)
+    kind: Mapped[str] = mapped_column(KeyText(32))
     #: A room bucket's tokens as of ``updated_at``.
     tokens: Mapped[float | None]
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now())
@@ -244,11 +269,14 @@ class ArtifactSampleReservation(Base):
     """
 
     __tablename__ = "artifact_sample_reservations"
-    __table_args__ = (Index(None, "budget_key", "created_at"),)
+    __table_args__ = (
+        Index(None, "budget_key", "created_at"),
+        MYSQL_TABLE_OPTIONS,
+    )
 
-    reservation_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    reservation_id: Mapped[str] = mapped_column(KeyText(128), primary_key=True)
     budget_key: Mapped[str] = mapped_column(
-        Text, ForeignKey("artifact_budgets.budget_key", ondelete=_CASCADE)
+        KeyText(1024), ForeignKey("artifact_budgets.budget_key", ondelete=_CASCADE)
     )
     created_at: Mapped[datetime]
     expires_at: Mapped[datetime]
@@ -263,13 +291,16 @@ class ArtifactRunReservation(Base):
     """
 
     __tablename__ = "artifact_run_reservations"
-    __table_args__ = (Index(None, "budget_key", "created_at"),)
-
-    reservation_id: Mapped[str] = mapped_column(Text, primary_key=True)
-    budget_key: Mapped[str] = mapped_column(
-        Text, ForeignKey("artifact_budgets.budget_key", ondelete=_CASCADE)
+    __table_args__ = (
+        Index(None, "budget_key", "created_at"),
+        MYSQL_TABLE_OPTIONS,
     )
-    artifact_id: Mapped[str] = mapped_column(Text)
+
+    reservation_id: Mapped[str] = mapped_column(KeyText(128), primary_key=True)
+    budget_key: Mapped[str] = mapped_column(
+        KeyText(1024), ForeignKey("artifact_budgets.budget_key", ondelete=_CASCADE)
+    )
+    artifact_id: Mapped[str] = mapped_column(payload_text())
     #: The run's Session, once its conversation has started.
-    session_id: Mapped[str | None] = mapped_column(Text)
+    session_id: Mapped[str | None] = mapped_column(payload_text())
     created_at: Mapped[datetime]

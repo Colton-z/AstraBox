@@ -87,8 +87,8 @@ Read actual prepared files and merge the deployment's declarations. Keep the
 external identity keyed by the subject across revisions and boxes. Skip
 unchanged external writes in the provider. Do not log trusted configuration.
 
-A compare-and-set on the subject's row serializes external updates across
-replicas and boxes: the Agent's row, or the Assistant's workspace row. For an
+A compare-and-set on the platform's stored operation serializes host-dispatched
+`synchronize` invocations across replicas and boxes. For an
 Agent the host checks the version, refresh revision, pool lifetime and
 generations before and after synchronization and before publishing inventory;
 for an Assistant it checks that the revision is still current. A superseded
@@ -105,6 +105,92 @@ operation can never write again, including delayed requests. Recovery must be
 idempotent and must not fence newer operations. The default returns `False`.
 A successful `synchronize` must leave no outstanding external writes. An expired
 lease or absent remote result alone does not prove quiescence.
+
+### Provider state and transaction boundaries
+
+The context is a trusted snapshot supplied by the host, not a held database
+transaction or a lock on the subject. Its owner, revision and operation identify
+the preparation being attempted; they do not guarantee that those values remain
+current while provider code runs. An Assistant's revision includes inherited
+defaults and Environment configuration, not just its authored fields. The host's
+checks reject superseded preparation results; they cannot undo provider writes
+that already committed or remote requests that already took effect.
+
+Keep external bindings and operation journals in provider-owned storage. Key a
+binding by `(subject.kind, subject.id)` so revisions and replacement boxes retain
+the same external identity. Use `operation_id` to identify an invocation's durable
+work and recovery record. Coordinate any provider-owned registration endpoint
+with these same records, using uniqueness and conditional updates to prevent
+competing registrations or stale writes. Host operation coordination does not
+serialize writes initiated independently by that endpoint.
+
+A provider can commit its own binding and journal together with authoritative
+subject validation through the public `PreparationCommitGuard`. A host-dispatched
+`synchronize` context supplies `context.commit_guard`, bound to its real operation
+and prepared generation. Validate it on the **same connection and transaction**
+as the provider-table writes. Reading platform state before and after a write
+does not provide that guarantee. Do not update platform-owned definition fields
+to store private provider state.
+
+For standalone provider-state writes, including registration, import
+`issue_preparation_commit_guard` from `astrabox.runtime_preparation`.
+Call it inside AstraBox's identity middleware, or
+from an embedding application that has bound an identity verified by its identity
+resolver. Never bind a user ID taken from request JSON. The factory requires an
+explicit bound identity and Agent management permission or Assistant ownership;
+machine identities also need `astrabox:write` or `astrabox:admin`. The default
+local identity lookup is insufficient without a bound context. Issuance reads
+the authoritative owner and revision, holds no locks after returning, creates no
+preparation operation, and refuses an active synchronization. Validate again
+inside the write transaction; authorization and operation absence are rechecked.
+
+```python
+from astrabox.persistence.provider import get_persistence
+from astrabox.runtime_preparation import issue_preparation_commit_guard
+from astrabox.seams import PreparationSubject
+
+# Inside an authenticated provider handler; no remote call in this block.
+guard = await issue_preparation_commit_guard(
+    subject=PreparationSubject(kind="agent", id=agent_id),
+)
+async with get_persistence().get_engine().begin() as connection:
+    await guard.validate(connection)
+    # provider_write is a SQLAlchemy statement for the provider's own table.
+    # Its constraints and operation journal remain the provider's responsibility.
+    await connection.execute(provider_write)
+```
+
+Use the selected persistence engine's actual `AsyncConnection` and an active
+root transaction at `READ COMMITTED` isolation. Other engines, autocommit and
+savepoints are refused. Validate before locking provider-owned rows, use only one
+subject per transaction, propagate refusals to roll back, and keep the transaction
+short. Definition, Environment, defaults and operation locks last until that
+transaction commits or rolls back. An Agent must remain `ACTIVE`; a deleted
+Assistant, stale owner/revision or superseded/expired callback operation is
+refused with `PREPARATION_SUBJECT_CONFLICT`. Assistant revision validation uses
+the effective inherited configuration, including the first insertion of defaults.
+An Agent's `revision` is its authored `version`: changing its Environment alone
+does not advance that revision. Agent callbacks additionally check the recorded
+prepared generation; this does not recompute an effective Environment revision.
+The Environment lock prevents concurrent edits during the validated transaction,
+but does not certify that an Agent's Environment is unchanged since guard issuance
+or since its callback configuration was captured. A disabled Environment is
+permitted: startup admission remains the startup path's responsibility. An
+Environment edit still changes an Assistant's effective revision, so a guard
+issued before that edit is stale even if the subject retains its owner.
+Standalone guards require no active operation even if a synchronization starts
+after issuance. A successful validation is not a promise about a later transaction.
+
+Keep remote calls outside database transactions. Record durable intent before
+issuing a remote write, and use the remote service's supported idempotency and
+fencing mechanisms where available. A separate provider database cannot share
+AstraBox's local transaction, and the guard makes no guarantee for it. Neither
+arrangement makes a remote effect
+atomic with a database commit or guarantees exactly-once remote execution. An
+ambiguous outcome must remain unresolved until `recover` can prove that the exact
+old invocation and its delayed requests can no longer write; a journal entry or
+lease expiry alone is not that proof. If you cannot establish that proof, return
+`False` rather than allow a new uncertain write.
 
 ## Deliver Session materials
 

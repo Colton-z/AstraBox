@@ -14,10 +14,13 @@ import hashlib
 import re
 from abc import ABC
 from dataclasses import dataclass, field
-from typing import Any, Literal, Mapping
+from typing import Any, Literal, Mapping, Protocol, TYPE_CHECKING
 from urllib.parse import urlsplit
 
 from astrabox.seams.sandbox import SandboxHandle
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncConnection
 
 TURN_PREPARATION_FAILED = "TURN_PREPARATION_FAILED"
 TURN_PREPARATION_USER_ACTION_REQUIRED = "TURN_PREPARATION_USER_ACTION_REQUIRED"
@@ -52,13 +55,40 @@ class ResourcePreparationOperation:
     operation_id: str
 
 
+class PreparationCommitGuard(Protocol):
+    """Host-issued currentness checks held through the caller's local commit.
+
+    Validate before locking provider rows, on the selected persistence engine's
+    active transaction. One subject per transaction; no savepoints or remote
+    calls while held. A refusal must abort the provider write. The guard neither
+    commits nor makes remote effects atomic with the database.
+    """
+
+    @property
+    def subject(self) -> PreparationSubject: ...
+
+    @property
+    def owner_user_id(self) -> str: ...
+
+    @property
+    def revision(self) -> str: ...
+
+    @property
+    def operation(self) -> ResourcePreparationOperation | None: ...
+
+    async def validate(self, connection: AsyncConnection) -> None:
+        """Lock and validate authoritative subject state on this transaction."""
+        ...
+
+
 @dataclass(frozen=True)
 class ResourcePreparationContext:
     """A subject's resources, already placed in a box no engine has started in.
 
     ``revision`` names the configuration the resources were prepared from: an
     Agent's version, or an Assistant's configuration revision. ``packages``
-    and ``skills_path`` are the actual prepared paths in ``sandbox``.
+    and ``skills_path`` are the actual prepared paths in ``sandbox``. The host
+    supplies ``commit_guard`` for local state writes tied to this operation.
     """
     operation: ResourcePreparationOperation
     owner_user_id: str
@@ -69,6 +99,7 @@ class ResourcePreparationContext:
     sandbox: SandboxHandle = field(repr=False)
     packages: tuple[PreparedPackage, ...]
     skills_path: str | None
+    commit_guard: PreparationCommitGuard = field(repr=False)
 
 
 @dataclass(frozen=True)

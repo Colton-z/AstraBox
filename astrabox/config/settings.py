@@ -214,7 +214,8 @@ class AstraBoxSettings(BaseSettings):
       selected at the storage seam. Independent of ``sandbox_backend``: where a
       workspace's files live is a durability decision, not a runtime one.
     * **State** (``state_dir``) — on-disk root for workspaces and local artifacts.
-    * **Database** (``db_url``) — PostgreSQL via SQLAlchemy+asyncpg, the only
+    * **Database** (``db_url``) — the selected relational provider; PostgreSQL via
+      SQLAlchemy+asyncpg is the built-in
       store. Maintained launchers inject a URL built from their generated
       database credential; another launch path must set one.
     """
@@ -455,10 +456,14 @@ class AstraBoxSettings(BaseSettings):
             "'none' disables them."
         ),
     )
+    persistence_provider: str = Field(
+        default="postgres",
+        description="Registered relational persistence provider; postgres uses SQLAlchemy and asyncpg.",
+    )
     db_url: str | None = Field(
         default=None,
         description=(
-            "PostgreSQL URL. The maintained local launchers supply one from "
+            "Native database URL for the selected persistence provider. Local launchers supply one from "
             "generated service-scoped credentials; there is no fallback password."
         ),
     )
@@ -483,13 +488,13 @@ class AstraBoxSettings(BaseSettings):
 
     @property
     def resolved_db_url(self) -> str:
-        """The configured PostgreSQL URL."""
+        """The configured database URL, interpreted by the selected provider."""
         if self.db_url:
             return self.db_url
         raise ValueError(
             "ASTRABOX_DB_URL is required. Use the maintained Compose/dev launcher "
             "to generate local database credentials, or set a URL for an external "
-            "PostgreSQL service."
+            "database service compatible with the selected persistence provider."
         )
 
     # ---- dotted-key config shim --------------------------------------------

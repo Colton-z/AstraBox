@@ -30,7 +30,7 @@ from astrabox.core.service.orchestrator.bootstrap_reconciler import (
     STARTUP_ALLOCATION_GRACE_SECONDS,
 )
 from astrabox.persistence.repository.keyset import KeysetCursor
-from astrabox.persistence.repository.session_repository import session_runtime_lock
+from astrabox.persistence.provider import get_persistence
 logger = get_logger(__name__)
 
 # Per-tick probe budget: bounds control-plane load when many sessions lapse at
@@ -717,7 +717,7 @@ class ExpirationWatcher:
         # Acceptance uses this same lock only for its durable input/activity
         # write. A message accepted first prevents parking; one arriving during
         # pause is accepted after completion and wakes the parked box.
-        async with session_runtime_lock(session_id) as check_lock:
+        async with get_persistence().coordination.runtime_lock(session_id) as check_lock:
             fresh = await self._platform._sessions_repo.get_session(session_id)
             if not fresh or fresh.get("sandbox_id") != sandbox_id or not self._is_idle_past(
                 fresh, idle_after_seconds=idle_after_seconds,

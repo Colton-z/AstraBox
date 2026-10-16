@@ -1,9 +1,9 @@
 """Declarative base, naming conventions and value conversions for every table.
 
 Tables are declared with SQLAlchemy's typed ORM mapping and queried with Core
-statements. Columns are typed: identifiers are text, times are
-``timestamptz``, and only payloads the platform stores without interpreting are
-JSONB.
+statements. PostgreSQL retains its text keys, ``timestamptz`` and JSONB.
+Selected fields also declare MySQL physical types in :mod:`.types`; this is
+not a claim that every table or repository operation supports that dialect.
 
 Repositories hand services ISO-8601 strings for times, the representation the
 services compare and serialize. :func:`to_iso` and :func:`from_iso` are the only
@@ -15,9 +15,12 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import MetaData
-from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP
+from sqlalchemy import Float, MetaData
+from sqlalchemy.dialects.mysql import DOUBLE
 from sqlalchemy.orm import DeclarativeBase
+
+from astrabox.persistence.sql import schema as _schema  # noqa: F401 - SQLAlchemy compilation rules
+from astrabox.persistence.sql.types import UTCDateTime, payload_json
 
 #: Constraint names are derived from the table and columns, so a migration can
 #: name every constraint it alters.
@@ -38,9 +41,10 @@ class Base(DeclarativeBase):
     # stores by default: both read back as ``None``, but only SQL NULL matches
     # ``IS NULL``, so a compare-and-set expecting "no value" fails on JSON null.
     type_annotation_map = {
-        datetime: TIMESTAMP(timezone=True),
-        dict[str, Any]: JSONB(none_as_null=True),
-        list[Any]: JSONB(none_as_null=True),
+        datetime: UTCDateTime(),
+        float: Float().with_variant(DOUBLE(asdecimal=False), "mysql"),
+        dict[str, Any]: payload_json(),
+        list[Any]: payload_json(),
     }
 
 

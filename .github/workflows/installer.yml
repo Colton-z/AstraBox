@@ -150,11 +150,22 @@ jobs:
           docker pull "${REGISTRY_PREFIX}server:$VERSION"
           scripts/embedded-gateway-acceptance.py "${REGISTRY_PREFIX}server:$VERSION"
 
+      - name: Build the execd image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: containers/execd/Dockerfile
+          push: true
+          tags: ${{ env.REGISTRY_PREFIX }}execd:${{ steps.version.outputs.version }}
+          cache-from: type=gha,scope=installer-execd
+          cache-to: type=gha,mode=max,scope=installer-execd
+
       - name: Build the Claude Code sandbox image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: containers/sandbox-claude-code/Dockerfile
+          build-args: SANDBOX_EXECD_IMAGE=${{ env.REGISTRY_PREFIX }}execd:${{ steps.version.outputs.version }}
           push: true
           tags: ${{ env.REGISTRY_PREFIX }}sandbox-claude-code:${{ steps.version.outputs.version }}
           cache-from: type=gha,scope=installer-sandbox-claude-code
@@ -226,6 +237,7 @@ jobs:
         with:
           context: .
           file: containers/sandbox-codex/Dockerfile
+          build-args: SANDBOX_EXECD_IMAGE=${{ env.REGISTRY_PREFIX }}execd:${{ steps.version.outputs.version }}
           push: true
           tags: ${{ env.REGISTRY_PREFIX }}sandbox-codex:${{ steps.version.outputs.version }}
           cache-from: type=gha,scope=installer-sandbox-codex
@@ -236,6 +248,7 @@ jobs:
         with:
           context: .
           file: containers/sandbox-pi/Dockerfile
+          build-args: SANDBOX_EXECD_IMAGE=${{ env.REGISTRY_PREFIX }}execd:${{ steps.version.outputs.version }}
           push: true
           tags: ${{ env.REGISTRY_PREFIX }}sandbox-pi:${{ steps.version.outputs.version }}
           cache-from: type=gha,scope=installer-sandbox-pi
@@ -246,6 +259,7 @@ jobs:
         with:
           context: .
           file: containers/sandbox-deepseek-harness/Dockerfile
+          build-args: SANDBOX_EXECD_IMAGE=${{ env.REGISTRY_PREFIX }}execd:${{ steps.version.outputs.version }}
           push: true
           tags: ${{ env.REGISTRY_PREFIX }}sandbox-deepseek-harness:${{ steps.version.outputs.version }}
           cache-from: type=gha,scope=installer-sandbox-deepseek-harness

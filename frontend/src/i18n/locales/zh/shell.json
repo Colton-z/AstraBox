@@ -15,6 +15,8 @@
   "settings": "设置",
   "sign_out": "退出登录",
   "signin": {
+    "probe_failed": "无法确认登录状态",
+    "probe_failed_note": "服务器未能确认你的登录状态。连接恢复后请重试。",
     "title": "登录 AstraBox",
     "lede": "AstraBox 在隔离沙箱中运行所选 Agent 程序。",
     "action": "使用组织账号登录",

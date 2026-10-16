@@ -28,18 +28,28 @@ from sqlalchemy import (
     ForeignKeyConstraint,
     Identity,
     Index,
-    LargeBinary,
-    Text,
     UniqueConstraint,
+    column,
     func,
     text,
 )
-from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Mapped, mapped_column
 
 from astrabox.persistence.sql.base import Base
+from astrabox.persistence.sql.schema import (
+    MYSQL_TABLE_OPTIONS,
+    EmptyListDefault,
+    GeneratedOrderIndex,
+    NullableUnique,
+    NullCount,
+    TextDefault,
+    boolean_checks,
+    string_list_check,
+)
+from astrabox.persistence.sql.types import KeyText, StringList, binary_payload, payload_text
 
 _SESSION_FK = "sessions.session_id"
+_RUNNING_TERMINAL = column("status") == "running"
 
 
 class Session(Base):
@@ -59,53 +69,56 @@ class Session(Base):
         Index(None, "owner_type", "owner_id"),
         Index(None, "sandbox_id"),
         Index(None, "state", "updated_at"),
+        string_list_check("undestroyed_sandbox_ids"),
+        *boolean_checks("hidden", "deleted", "runtime_unavailable"),
+        MYSQL_TABLE_OPTIONS,
     )
 
-    session_id: Mapped[str] = mapped_column(Text, primary_key=True)
-    user_id: Mapped[str] = mapped_column(Text)
-    org_id: Mapped[str | None] = mapped_column(Text)
-    session_kind: Mapped[str] = mapped_column(Text)
-    engine_kind: Mapped[str | None] = mapped_column(Text)
+    session_id: Mapped[str] = mapped_column(KeyText(128), primary_key=True)
+    user_id: Mapped[str] = mapped_column(KeyText(512))
+    org_id: Mapped[str | None] = mapped_column(payload_text())
+    session_kind: Mapped[str] = mapped_column(KeyText(32))
+    engine_kind: Mapped[str | None] = mapped_column(payload_text())
     #: ``agent`` or ``assistant``: which subject the conversation runs as.
-    workspace_kind: Mapped[str] = mapped_column(Text)
+    workspace_kind: Mapped[str] = mapped_column(payload_text())
     agent_id: Mapped[str | None] = mapped_column(ForeignKey("agents.agent_id"))
     assistant_id: Mapped[str | None] = mapped_column(ForeignKey("assistants.assistant_id"))
     #: The Assistant workspace's own bootstrap sessions name the workspace here.
-    owner_type: Mapped[str | None] = mapped_column(Text)
-    owner_id: Mapped[str | None] = mapped_column(Text)
-    source_type: Mapped[str | None] = mapped_column(Text)
-    deployment_name: Mapped[str | None] = mapped_column(Text)
+    owner_type: Mapped[str | None] = mapped_column(KeyText(32))
+    owner_id: Mapped[str | None] = mapped_column(KeyText(512))
+    source_type: Mapped[str | None] = mapped_column(payload_text())
+    deployment_name: Mapped[str | None] = mapped_column(payload_text())
     hidden: Mapped[bool] = mapped_column(server_default=text("false"))
 
-    state: Mapped[str] = mapped_column(Text)
+    state: Mapped[str] = mapped_column(KeyText(32))
     deleted: Mapped[bool] = mapped_column(server_default=text("false"))
     deleted_at: Mapped[datetime | None]
-    deleted_by: Mapped[str | None] = mapped_column(Text)
+    deleted_by: Mapped[str | None] = mapped_column(payload_text())
     archived_at: Mapped[datetime | None]
-    archived_by: Mapped[str | None] = mapped_column(Text)
+    archived_by: Mapped[str | None] = mapped_column(payload_text())
 
-    title: Mapped[str | None] = mapped_column(Text)
+    title: Mapped[str | None] = mapped_column(payload_text())
     #: ``user`` when a person set the title, ``generated`` when the title service did.
-    title_source: Mapped[str | None] = mapped_column(Text)
-    title_response_id: Mapped[str | None] = mapped_column(Text)
-    title_user_message_id: Mapped[str | None] = mapped_column(Text)
-    title_assistant_message_id: Mapped[str | None] = mapped_column(Text)
+    title_source: Mapped[str | None] = mapped_column(payload_text())
+    title_response_id: Mapped[str | None] = mapped_column(payload_text())
+    title_user_message_id: Mapped[str | None] = mapped_column(payload_text())
+    title_assistant_message_id: Mapped[str | None] = mapped_column(payload_text())
     title_generated_at: Mapped[datetime | None]
-    title_model_name: Mapped[str | None] = mapped_column(Text)
+    title_model_name: Mapped[str | None] = mapped_column(payload_text())
     #: The title service's single generation claim: ``generating``,
     #: ``completed``, ``failed`` or ``skipped``, for one response.
-    title_generation_status: Mapped[str | None] = mapped_column(Text)
-    title_generation_response_id: Mapped[str | None] = mapped_column(Text)
+    title_generation_status: Mapped[str | None] = mapped_column(payload_text())
+    title_generation_response_id: Mapped[str | None] = mapped_column(payload_text())
     title_generation_response_index: Mapped[int | None]
     title_generation_started_at: Mapped[datetime | None]
     title_generation_completed_at: Mapped[datetime | None]
     title_generation_failed_at: Mapped[datetime | None]
     title_generation_skipped_at: Mapped[datetime | None]
-    title_generation_error: Mapped[str | None] = mapped_column(Text)
-    title_generation_skip_reason: Mapped[str | None] = mapped_column(Text)
+    title_generation_error: Mapped[str | None] = mapped_column(payload_text())
+    title_generation_skip_reason: Mapped[str | None] = mapped_column(payload_text())
 
-    permission_mode: Mapped[str | None] = mapped_column(Text)
-    model_name: Mapped[str | None] = mapped_column(Text)
+    permission_mode: Mapped[str | None] = mapped_column(payload_text())
+    model_name: Mapped[str | None] = mapped_column(payload_text())
     slash_commands: Mapped[list[Any] | None]
     slash_command_details: Mapped[list[Any] | None]
     engine_capabilities: Mapped[dict[str, Any] | None]
@@ -115,40 +128,40 @@ class Session(Base):
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now())
     read_at: Mapped[datetime | None]
     last_output_at: Mapped[datetime | None]
-    runtime_status: Mapped[str | None] = mapped_column(Text)
+    runtime_status: Mapped[str | None] = mapped_column(payload_text())
     runtime_status_at: Mapped[datetime | None]
 
     # The box this conversation runs in.
-    sandbox_backend: Mapped[str | None] = mapped_column(Text)
-    sandbox_id: Mapped[str | None] = mapped_column(Text)
-    sandbox_generation: Mapped[str | None] = mapped_column(Text)
-    sandbox_callback_token: Mapped[str | None] = mapped_column(Text)
+    sandbox_backend: Mapped[str | None] = mapped_column(payload_text())
+    sandbox_id: Mapped[str | None] = mapped_column(KeyText(128))
+    sandbox_generation: Mapped[str | None] = mapped_column(payload_text())
+    sandbox_callback_token: Mapped[str | None] = mapped_column(payload_text())
     expires_at: Mapped[datetime | None]
-    engine_session_key: Mapped[str | None] = mapped_column(Text)
+    engine_session_key: Mapped[str | None] = mapped_column(payload_text())
     runtime_identity: Mapped[dict[str, Any] | None]
     runtime_binding: Mapped[dict[str, Any] | None]
-    terminal_cwd: Mapped[str | None] = mapped_column(Text)
-    workspace_id: Mapped[str | None] = mapped_column(Text)
+    terminal_cwd: Mapped[str | None] = mapped_column(payload_text())
+    workspace_id: Mapped[str | None] = mapped_column(payload_text())
     sandbox_parked_at: Mapped[datetime | None]
     #: A browser endpoint keeps this box out of conversation-idle parking.
-    exposed_sandbox_id: Mapped[str | None] = mapped_column(Text)
+    exposed_sandbox_id: Mapped[str | None] = mapped_column(payload_text())
     #: When the last replacement runtime failed to start; inputs accepted
     #: before it are failed rather than handed to another attempt.
     runtime_start_failed_at: Mapped[datetime | None]
     sandbox_resumed_at: Mapped[datetime | None]
     sandbox_liveness_suspect_at: Mapped[datetime | None]
     undestroyed_sandbox_ids: Mapped[list[str]] = mapped_column(
-        ARRAY(Text), server_default=text("'{}'")
+        StringList(), server_default=EmptyListDefault(text_array=True)
     )
     startup_allocation: Mapped[dict[str, Any] | None]
-    retained_startup_allocations: Mapped[list[Any]] = mapped_column(server_default=text("'[]'"))
+    retained_startup_allocations: Mapped[list[Any]] = mapped_column(server_default=EmptyListDefault())
     runtime_unavailable: Mapped[bool] = mapped_column(server_default=text("false"))
-    recovery_reason: Mapped[str | None] = mapped_column(Text)
-    last_error: Mapped[str | None] = mapped_column(Text)
-    startup_progress: Mapped[str | None] = mapped_column(Text)
+    recovery_reason: Mapped[str | None] = mapped_column(payload_text())
+    last_error: Mapped[str | None] = mapped_column(payload_text())
+    startup_progress: Mapped[str | None] = mapped_column(payload_text())
     startup_user_action: Mapped[dict[str, Any] | None]
-    runtime_recovery_owner: Mapped[str | None] = mapped_column(Text)
-    startup_provider_assignment: Mapped[str | None] = mapped_column(Text)
+    runtime_recovery_owner: Mapped[str | None] = mapped_column(payload_text())
+    startup_provider_assignment: Mapped[str | None] = mapped_column(payload_text())
 
     #: Where the session's reader resumes the runtime's events (opaque).
     reader_cursor: Mapped[dict[str, Any] | None]
@@ -161,6 +174,9 @@ class SessionVaultBinding(Base):
     """A vault the session's runtime may draw credentials from, in priority order."""
 
     __tablename__ = "session_vault_bindings"
+    __table_args__ = (
+        MYSQL_TABLE_OPTIONS,
+    )
 
     session_id: Mapped[str] = mapped_column(ForeignKey(_SESSION_FK, ondelete="CASCADE"), primary_key=True)
     position: Mapped[int] = mapped_column(primary_key=True)
@@ -172,15 +188,19 @@ class SessionShare(Base):
     """A public read-only link to a session."""
 
     __tablename__ = "session_shares"
+    __table_args__ = (
+        *boolean_checks("enabled", "allow_download"),
+        MYSQL_TABLE_OPTIONS,
+    )
 
-    token: Mapped[str] = mapped_column(Text, primary_key=True)
+    token: Mapped[str] = mapped_column(KeyText(512), primary_key=True)
     session_id: Mapped[str] = mapped_column(
         ForeignKey(_SESSION_FK, ondelete="CASCADE"), unique=True
     )
     enabled: Mapped[bool]
     allow_download: Mapped[bool] = mapped_column(server_default=text("false"))
     expires_at: Mapped[datetime | None]
-    created_by: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[str | None] = mapped_column(payload_text())
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
@@ -189,9 +209,12 @@ class SessionReader(Base):
     """The lease of the one process allowed to read a session's runtime and record its facts."""
 
     __tablename__ = "session_readers"
+    __table_args__ = (
+        MYSQL_TABLE_OPTIONS,
+    )
 
     session_id: Mapped[str] = mapped_column(ForeignKey(_SESSION_FK, ondelete="CASCADE"), primary_key=True)
-    owner: Mapped[str] = mapped_column(Text)
+    owner: Mapped[str] = mapped_column(KeyText(128))
     generation: Mapped[int] = mapped_column(BigInteger)
     expires_at: Mapped[datetime]
 
@@ -212,26 +235,29 @@ class SessionInput(Base):
     __tablename__ = "session_inputs"
     __table_args__ = (
         UniqueConstraint("session_id", "client_message_id"),
+        GeneratedOrderIndex("seq", name="ix_session_inputs_generated_seq").ddl_if(dialect="mysql"),
         Index(None, "session_id", "created_at", "seq"),
         Index(
             "ix_session_inputs_open",
             "session_id",
             "seq",
             postgresql_where=text("state IN ('pending', 'delivered')"),
-        ),
+        ).ddl_if(dialect="postgresql"),
+        Index("ix_session_inputs_open_mysql", "session_id", "state", "seq").ddl_if(dialect="mysql"),
+        MYSQL_TABLE_OPTIONS,
     )
 
-    input_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    input_id: Mapped[str] = mapped_column(KeyText(128), primary_key=True)
     session_id: Mapped[str] = mapped_column(ForeignKey(_SESSION_FK, ondelete="CASCADE"))
     #: Acceptance order across the whole store; a session's inputs order by it.
     seq: Mapped[int] = mapped_column(BigInteger, Identity(always=True))
-    client_message_id: Mapped[str] = mapped_column(Text)
-    author_user_id: Mapped[str | None] = mapped_column(Text)
-    source: Mapped[str | None] = mapped_column(Text)
-    content: Mapped[str] = mapped_column(Text)
+    client_message_id: Mapped[str] = mapped_column(KeyText(1024))
+    author_user_id: Mapped[str | None] = mapped_column(payload_text())
+    source: Mapped[str | None] = mapped_column(payload_text())
+    content: Mapped[str] = mapped_column(payload_text())
     content_blocks: Mapped[list[Any] | None]
-    state: Mapped[str] = mapped_column(Text, server_default=text("'pending'"))
-    response_id: Mapped[str | None] = mapped_column(Text)
+    state: Mapped[str] = mapped_column(KeyText(32), server_default=text("'pending'"))
+    response_id: Mapped[str | None] = mapped_column(payload_text())
     failure: Mapped[dict[str, Any] | None]
     #: An imported message's source identity and parent, and the digest of
     #: what was imported.
@@ -259,17 +285,18 @@ class SessionControl(Base):
             "requested_at",
             postgresql_where=text("state = 'pending'"),
         ),
+        MYSQL_TABLE_OPTIONS,
     )
 
-    control_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    control_id: Mapped[str] = mapped_column(KeyText(128), primary_key=True)
     session_id: Mapped[str] = mapped_column(ForeignKey(_SESSION_FK, ondelete="CASCADE"))
     #: ``interrupt`` or ``stop_child`` (``target`` is the runtime's sub-agent handle).
-    kind: Mapped[str] = mapped_column(Text)
-    target: Mapped[str | None] = mapped_column(Text)
+    kind: Mapped[str] = mapped_column(payload_text())
+    target: Mapped[str | None] = mapped_column(payload_text())
     reader_generation: Mapped[int] = mapped_column(BigInteger)
-    requested_by: Mapped[str | None] = mapped_column(Text)
-    state: Mapped[str] = mapped_column(Text, server_default=text("'pending'"))
-    error: Mapped[str | None] = mapped_column(Text)
+    requested_by: Mapped[str | None] = mapped_column(payload_text())
+    state: Mapped[str] = mapped_column(payload_text(), server_default=TextDefault("pending"))
+    error: Mapped[str | None] = mapped_column(payload_text())
     requested_at: Mapped[datetime] = mapped_column(server_default=func.now())
     applied_at: Mapped[datetime | None]
 
@@ -291,19 +318,21 @@ class SessionResponse(Base):
             "session_id",
             postgresql_where=text("status <> 'ended'"),
         ),
+        GeneratedOrderIndex("seq", name="ix_session_responses_generated_seq").ddl_if(dialect="mysql"),
+        MYSQL_TABLE_OPTIONS,
     )
 
     session_id: Mapped[str] = mapped_column(ForeignKey(_SESSION_FK, ondelete="CASCADE"), primary_key=True)
-    response_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    response_id: Mapped[str] = mapped_column(KeyText(512), primary_key=True)
     seq: Mapped[int] = mapped_column(BigInteger, Identity(always=True))
     #: ``input`` or ``engine`` (see ``engine/runtime.py``), or ``import``.
-    origin: Mapped[str] = mapped_column(Text)
+    origin: Mapped[str] = mapped_column(payload_text())
     #: ``running``, ``waiting`` or ``ended``.
-    status: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(payload_text())
     #: ``completed``, ``failed`` or ``cancelled`` once ended. An imported reply
     #: whose source never recorded its ending has none.
-    outcome: Mapped[str | None] = mapped_column(Text)
-    native_reason: Mapped[str | None] = mapped_column(Text)
+    outcome: Mapped[str | None] = mapped_column(payload_text())
+    native_reason: Mapped[str | None] = mapped_column(payload_text())
     usage: Mapped[dict[str, Any] | None]
     error: Mapped[dict[str, Any] | None]
     #: An imported reply's source identity, completion, parent, digest and
@@ -324,10 +353,11 @@ class SessionResponseInput(Base):
             ondelete="CASCADE",
         ),
         Index(None, "input_id"),
+        MYSQL_TABLE_OPTIONS,
     )
 
-    session_id: Mapped[str] = mapped_column(Text, primary_key=True)
-    response_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    session_id: Mapped[str] = mapped_column(KeyText(128), primary_key=True)
+    response_id: Mapped[str] = mapped_column(KeyText(512), primary_key=True)
     input_id: Mapped[str] = mapped_column(
         ForeignKey("session_inputs.input_id", ondelete="CASCADE"), primary_key=True
     )
@@ -349,16 +379,17 @@ class SessionInteraction(Base):
             "session_id",
             postgresql_where=text("status = 'open'"),
         ),
+        MYSQL_TABLE_OPTIONS,
     )
 
     session_id: Mapped[str] = mapped_column(ForeignKey(_SESSION_FK, ondelete="CASCADE"), primary_key=True)
-    interaction_id: Mapped[str] = mapped_column(Text, primary_key=True)
-    response_id: Mapped[str] = mapped_column(Text)
+    interaction_id: Mapped[str] = mapped_column(KeyText(512), primary_key=True)
+    response_id: Mapped[str] = mapped_column(payload_text())
     contract: Mapped[dict[str, Any]]
-    status: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(payload_text())
     #: A person's answer, set once; the session's reader hands it to the runtime.
     answer: Mapped[dict[str, Any] | None]
-    answered_by: Mapped[str | None] = mapped_column(Text)
+    answered_by: Mapped[str | None] = mapped_column(payload_text())
     answered_at: Mapped[datetime | None]
     opened_at: Mapped[datetime] = mapped_column(server_default=func.now())
     closed_at: Mapped[datetime | None]
@@ -386,11 +417,12 @@ class SessionOutput(Base):
             "seq",
             postgresql_where=text("part->>'type' = 'data-subagent'"),
         ),
+        MYSQL_TABLE_OPTIONS,
     )
 
     session_id: Mapped[str] = mapped_column(ForeignKey(_SESSION_FK, ondelete="CASCADE"), primary_key=True)
     seq: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    response_id: Mapped[str | None] = mapped_column(Text)
+    response_id: Mapped[str | None] = mapped_column(KeyText(512))
     part: Mapped[dict[str, Any]]
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
@@ -410,13 +442,14 @@ class TranscriptScope(Base):
     __tablename__ = "transcript_scopes"
     __table_args__ = (
         UniqueConstraint("platform_session_id", "project_key", "native_session_id", "subpath"),
+        MYSQL_TABLE_OPTIONS,
     )
 
     scope_id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
     platform_session_id: Mapped[str] = mapped_column(ForeignKey(_SESSION_FK, ondelete="CASCADE"))
-    project_key: Mapped[str] = mapped_column(Text)
-    native_session_id: Mapped[str] = mapped_column(Text)
-    subpath: Mapped[str] = mapped_column(Text, server_default=text("''"))
+    project_key: Mapped[str] = mapped_column(KeyText(1024))
+    native_session_id: Mapped[str] = mapped_column(KeyText(512))
+    subpath: Mapped[str] = mapped_column(KeyText(1024), server_default=text("''"))
     last_sequence: Mapped[int] = mapped_column(BigInteger)
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
@@ -431,7 +464,10 @@ class TranscriptEntry(Base):
     """
 
     __tablename__ = "transcript_entries"
-    __table_args__ = (UniqueConstraint("scope_id", "append_id", "batch_index"),)
+    __table_args__ = (
+        UniqueConstraint("scope_id", "append_id", "batch_index"),
+        MYSQL_TABLE_OPTIONS,
+    )
 
     scope_id: Mapped[int] = mapped_column(
         BigInteger,
@@ -439,9 +475,9 @@ class TranscriptEntry(Base):
         primary_key=True,
     )
     seq: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    append_id: Mapped[str] = mapped_column(Text)
+    append_id: Mapped[str] = mapped_column(KeyText(128))
     batch_index: Mapped[int]
-    entry_json: Mapped[str] = mapped_column(Text)
+    entry_json: Mapped[str] = mapped_column(payload_text())
 
 
 class RuntimeStateHead(Base):
@@ -462,17 +498,18 @@ class RuntimeStateHead(Base):
         CheckConstraint(
             "subject_kind IN ('assistant', 'agent', 'session')", name="subject_kind"
         ),
+        MYSQL_TABLE_OPTIONS,
     )
 
-    archive: Mapped[str] = mapped_column(Text, primary_key=True)
-    owner_key: Mapped[str] = mapped_column(Text, primary_key=True)
-    user_id: Mapped[str] = mapped_column(Text)
-    subject_kind: Mapped[str] = mapped_column(Text)
-    subject_id: Mapped[str] = mapped_column(Text)
-    engine_kind: Mapped[str] = mapped_column(Text)
-    snapshot_id: Mapped[str] = mapped_column(Text)
-    previous_snapshot_id: Mapped[str | None] = mapped_column(Text)
-    sha256: Mapped[str] = mapped_column(Text)
+    archive: Mapped[str] = mapped_column(KeyText(32), primary_key=True)
+    owner_key: Mapped[str] = mapped_column(KeyText(64), primary_key=True)
+    user_id: Mapped[str] = mapped_column(payload_text())
+    subject_kind: Mapped[str] = mapped_column(payload_text())
+    subject_id: Mapped[str] = mapped_column(payload_text())
+    engine_kind: Mapped[str] = mapped_column(payload_text())
+    snapshot_id: Mapped[str] = mapped_column(payload_text())
+    previous_snapshot_id: Mapped[str | None] = mapped_column(payload_text())
+    sha256: Mapped[str] = mapped_column(payload_text())
     size: Mapped[int] = mapped_column(BigInteger)
     chunk_count: Mapped[int]
 
@@ -492,13 +529,14 @@ class RuntimeStateChunk(Base):
             ["runtime_state_heads.archive", "runtime_state_heads.owner_key"],
             ondelete="CASCADE",
         ),
+        MYSQL_TABLE_OPTIONS,
     )
 
-    archive: Mapped[str] = mapped_column(Text, primary_key=True)
-    owner_key: Mapped[str] = mapped_column(Text, primary_key=True)
-    snapshot_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    archive: Mapped[str] = mapped_column(KeyText(32), primary_key=True)
+    owner_key: Mapped[str] = mapped_column(KeyText(64), primary_key=True)
+    snapshot_id: Mapped[str] = mapped_column(KeyText(64), primary_key=True)
     chunk_index: Mapped[int] = mapped_column(primary_key=True)
-    data: Mapped[bytes] = mapped_column(LargeBinary)
+    data: Mapped[bytes] = mapped_column(binary_payload())
 
 
 class TerminalCommand(Base):
@@ -525,23 +563,28 @@ class TerminalCommand(Base):
             "ix_terminal_commands_running",
             "session_id",
             unique=True,
-            postgresql_where=text("status = 'running'"),
-        ),
+            postgresql_where=_RUNNING_TERMINAL,
+        ).ddl_if(dialect="postgresql"),
+        NullableUnique(
+            "session_id", predicate=_RUNNING_TERMINAL,
+            marker="_running_slot", name="ix_terminal_commands_running",
+        ).ddl_if(dialect="mysql"),
+        MYSQL_TABLE_OPTIONS,
     )
 
-    command_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    command_id: Mapped[str] = mapped_column(KeyText(128), primary_key=True)
     session_id: Mapped[str] = mapped_column(ForeignKey(_SESSION_FK, ondelete="CASCADE"))
-    command: Mapped[str] = mapped_column(Text)
+    command: Mapped[str] = mapped_column(payload_text())
     #: Where the command runs.
-    cwd: Mapped[str | None] = mapped_column(Text)
+    cwd: Mapped[str | None] = mapped_column(payload_text())
     #: Where the shell was when the command ended, and so where the next starts.
-    next_cwd: Mapped[str | None] = mapped_column(Text)
+    next_cwd: Mapped[str | None] = mapped_column(payload_text())
     #: ``running``, ``exited``, ``interrupted`` or ``failed``.
-    status: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(KeyText(32))
     exit_code: Mapped[int | None]
     #: The box process the terminal's shell runs as; ``None`` for a terminal in
     #: an isolation session, which ``sessions.runtime_identity`` names.
-    execution_id: Mapped[str | None] = mapped_column(Text)
+    execution_id: Mapped[str | None] = mapped_column(payload_text())
     expires_at: Mapped[datetime]
     interrupt_requested_at: Mapped[datetime | None]
     started_at: Mapped[datetime] = mapped_column(server_default=func.now())
@@ -552,7 +595,10 @@ class TerminalOutput(Base):
     """One output event of a terminal command, numbered by the database."""
 
     __tablename__ = "terminal_output"
-    __table_args__ = (Index(None, "command_id", "seq"),)
+    __table_args__ = (
+        Index(None, "command_id", "seq"),
+        MYSQL_TABLE_OPTIONS,
+    )
 
     seq: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
     command_id: Mapped[str] = mapped_column(
@@ -572,16 +618,18 @@ class ProcessSummary(Base):
             "expires_at",
             postgresql_where=text("status = 'generating'"),
         ),
+        *boolean_checks("response_completed"),
+        MYSQL_TABLE_OPTIONS,
     )
 
     session_id: Mapped[str] = mapped_column(ForeignKey(_SESSION_FK, ondelete="CASCADE"), primary_key=True)
-    response_id: Mapped[str] = mapped_column(Text, primary_key=True)
-    status: Mapped[str] = mapped_column(Text)
-    claim_token: Mapped[str | None] = mapped_column(Text)
+    response_id: Mapped[str] = mapped_column(KeyText(512), primary_key=True)
+    status: Mapped[str] = mapped_column(payload_text())
+    claim_token: Mapped[str | None] = mapped_column(payload_text())
     through_seq: Mapped[int | None] = mapped_column(BigInteger)
     response_completed: Mapped[bool] = mapped_column(server_default=text("false"))
-    summary: Mapped[str | None] = mapped_column(Text)
-    error: Mapped[str | None] = mapped_column(Text)
+    summary: Mapped[str | None] = mapped_column(payload_text())
+    error: Mapped[str | None] = mapped_column(payload_text())
     expires_at: Mapped[datetime | None]
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now())
@@ -598,17 +646,18 @@ class ToolCard(Base):
 
     __tablename__ = "tool_cards"
     __table_args__ = (
-        CheckConstraint("num_nonnulls(session_id, assistant_id) = 1", name="one_owner"),
+        CheckConstraint(NullCount("session_id", "assistant_id", nonnull=True) == 1, name="one_owner"),
+        MYSQL_TABLE_OPTIONS,
     )
 
-    card_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    card_id: Mapped[str] = mapped_column(KeyText(128), primary_key=True)
     session_id: Mapped[str | None] = mapped_column(ForeignKey(_SESSION_FK, ondelete="CASCADE"))
     assistant_id: Mapped[str | None] = mapped_column(
         ForeignKey("assistants.assistant_id", ondelete="CASCADE")
     )
-    server: Mapped[str] = mapped_column(Text)
-    tool: Mapped[str] = mapped_column(Text)
-    kind: Mapped[str] = mapped_column(Text)
+    server: Mapped[str] = mapped_column(payload_text())
+    tool: Mapped[str] = mapped_column(payload_text())
+    kind: Mapped[str] = mapped_column(payload_text())
     data: Mapped[dict[str, Any]]
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
@@ -647,22 +696,23 @@ class PlatformMCPBinding(Base):
             "created_at",
             postgresql_where=text("source = 'prepared_slot' AND session_id IS NULL"),
         ),
+        MYSQL_TABLE_OPTIONS,
     )
 
-    deployment_id: Mapped[str] = mapped_column(Text, primary_key=True)
-    scope_kind: Mapped[str] = mapped_column(Text)
-    source: Mapped[str] = mapped_column(Text)
+    deployment_id: Mapped[str] = mapped_column(KeyText(128), primary_key=True)
+    scope_kind: Mapped[str] = mapped_column(payload_text())
+    source: Mapped[str] = mapped_column(payload_text())
     #: The Agent a prepared unit was prepared for, or the Assistant's harness.
-    template_name: Mapped[str | None] = mapped_column(Text)
-    user_id: Mapped[str | None] = mapped_column(Text)
-    conversation_user_id: Mapped[str | None] = mapped_column(Text)
+    template_name: Mapped[str | None] = mapped_column(payload_text())
+    user_id: Mapped[str | None] = mapped_column(payload_text())
+    conversation_user_id: Mapped[str | None] = mapped_column(payload_text())
     assistant_id: Mapped[str | None] = mapped_column(
         ForeignKey("assistant_workspaces.assistant_id", ondelete="CASCADE")
     )
     session_id: Mapped[str | None] = mapped_column(ForeignKey(_SESSION_FK, ondelete="CASCADE"))
-    sandbox_id: Mapped[str | None] = mapped_column(Text)
-    sandbox_backend: Mapped[str | None] = mapped_column(Text)
+    sandbox_id: Mapped[str | None] = mapped_column(payload_text())
+    sandbox_backend: Mapped[str | None] = mapped_column(payload_text())
     #: Where an Assistant workspace's files are read from for artifacts.
-    root_path: Mapped[str | None] = mapped_column(Text)
+    root_path: Mapped[str | None] = mapped_column(payload_text())
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now())

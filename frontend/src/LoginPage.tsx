@@ -1,11 +1,13 @@
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate } from 'react-router-dom';
 
 import { AstraMark } from '@/components/AstraConsole';
 import { Button } from '@/components/ui/button';
 import { LanguageSwitcher } from '@/components/LanguageSwitcher';
-import { probeAuthSession, signInHref, type AuthProbe } from './api';
+import { signInHref } from './api';
+import { useAuthProbe } from '@/hooks/useAuthProbe';
+import { AuthProbeFailure } from '@/components/AuthProbeFailure';
 
 /** Where to return after the identity provider hands the browser back. */
 function nextFromSearch(search: string): string {
@@ -33,23 +35,15 @@ export default function LoginPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const next = nextFromSearch(location.search);
-  const [probe, setProbe] = useState<AuthProbe | null>(null);
+  const { probe, retry } = useAuthProbe();
 
   useEffect(() => {
-    const controller = new AbortController();
-    probeAuthSession(controller.signal)
-      .then(setProbe)
-      // A probe that cannot be reached is not evidence of being signed out, and
-      // `RequireAuth` reads it the same way — the gate lets the console render
-      // so its own requests can report the outage, and a sign-in card here
-      // would blame the reader for it instead.
-      .catch(() => setProbe({ mode: 'no-auth' }));
-    return () => controller.abort();
-  }, []);
-
-  useEffect(() => {
-    if (probe && probe.mode !== 'signed-out') navigate(next, { replace: true });
+    if (probe?.mode === 'signed-in' || probe?.mode === 'no-auth') {
+      navigate(next, { replace: true });
+    }
   }, [probe, next, navigate]);
+
+  if (probe?.mode === 'error') return <AuthProbeFailure onRetry={retry} />;
 
   // Render nothing while the probe is open, and while a redirect is pending:
   // a sign-in card that appears for one frame and vanishes reads as a fault.

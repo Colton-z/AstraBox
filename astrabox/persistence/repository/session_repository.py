@@ -10,32 +10,26 @@ to a field that does not exist fails where it is made.
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import json
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
-from contextlib import asynccontextmanager
+from collections.abc import Iterable, Mapping
 from datetime import datetime
 from typing import Any
 
 from sqlalchemy import (
     ColumnElement,
+    JSON,
     Update,
     and_,
     delete,
     func,
     insert,
-    literal,
-    not_,
     or_,
     select,
-    true,
     update,
 )
-from sqlalchemy.dialects.postgresql import JSONB, aggregate_order_by
-from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncConnection
-from sqlalchemy.sql import Select
+from sqlalchemy.sql import Executable, Select
 
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
@@ -52,65 +46,17 @@ from astrabox.persistence.sql import (
     to_iso,
     transaction,
 )
-from astrabox.persistence.sql.engine import get_engine
 from astrabox.persistence.sql.models.agents import Agent
 from astrabox.persistence.sql.models.sessions import (
     PlatformMCPBinding,
     Session,
     SessionVaultBinding,
 )
-from astrabox.persistence.sql.notify import NoticeKind, notice
+from astrabox.persistence.provider import get_persistence
+from astrabox.persistence.sql.runtime_expressions import json_array_matches, json_literal, ordered_values
+from astrabox.seams.persistence_coordination import NoticeKind, SessionNotice
 
 logger = get_logger(__name__)
-
-
-@asynccontextmanager
-async def session_runtime_lock(session_id: str) -> AsyncIterator[Callable[[], Awaitable[None]]]:
-    """Hold a conversation's advisory lock while its database connection lives.
-
-    Yield a check to run before publishing completed supplier work. Detected
-    connection loss cancels the owner and refuses success. Cancellation cannot
-    fence a request already accepted by the supplier or an undetected partition.
-    The connection comes from the separately bounded runtime-lock pool;
-    repository work uses its own pool and commits normally.
-    """
-    async with get_engine(runtime_lock=True).begin() as connection:
-        driver = (await connection.get_raw_connection()).driver_connection
-        owner = asyncio.current_task()
-        assert owner is not None
-        active = True
-
-        def disconnected(_connection: Any) -> None:
-            if active:
-                owner.cancel()
-
-        async def check() -> None:
-            if driver.is_closed():
-                raise APIError(
-                    code="SESSION_RUNTIME_LOCK_LOST",
-                    message="runtime coordination connection was lost; supplier work may be incomplete",
-                    status_code=502,
-                )
-            await connection.execute(select(1))
-
-        driver.add_termination_listener(disconnected)
-        try:
-            await connection.execute(
-                select(
-                    func.pg_advisory_xact_lock(
-                        func.hashtextextended(f"astrabox.session.runtime:{session_id}", 0)
-                    )
-                )
-            )
-            yield check
-            await check()
-        except (asyncio.CancelledError, DBAPIError):
-            if driver.is_closed():
-                await check()
-            raise
-        finally:
-            active = False
-            driver.remove_termination_listener(disconnected)
 
 
 _SESSIONS = Session.__table__
@@ -125,8 +71,9 @@ _TERMINAL_STATES = (SessionState.TERMINATED.value, SessionState.DELETED.value)
 
 #: ``vault_ids`` in priority order, read in the same statement as the row.
 _VAULT_IDS = (
-    select(func.array_agg(aggregate_order_by(_VAULTS.c.vault_id, _VAULTS.c.position)))
+    select(ordered_values(_VAULTS.c.vault_id, _VAULTS.c.position))
     .where(_VAULTS.c.session_id == _SESSIONS.c.session_id)
+    .limit(1)
     .scalar_subquery()
 )
 
@@ -188,11 +135,15 @@ def _condition(key: str, value: Any) -> ColumnElement[bool]:
         return column.is_(None)
     if isinstance(value, dict) and set(value) == {"$ne"}:
         expected = from_iso(value["$ne"]) if key in _TIME_COLUMNS else value["$ne"]
+        if isinstance(column.type, JSON) and expected is not None:
+            return column.is_distinct_from(json_literal(expected))
         return column.is_distinct_from(expected)
     if value is None:
         return column.is_(None)
     if key in _TIME_COLUMNS:
         return column == from_iso(value)
+    if isinstance(column.type, JSON):
+        return column == json_literal(value)
     return column == value
 
 
@@ -224,33 +175,45 @@ def _bound_and_open() -> ColumnElement[bool]:
     )
 
 
-def _retained_elements() -> Any:
-    return (
-        func.jsonb_array_elements(_SESSIONS.c.retained_startup_allocations)
-        .table_valued("value")
-        .alias("retained")
-    )
+async def _retained_matches(
+    conn: AsyncConnection, retained: list[Any], record: dict[str, Any],
+) -> list[bool]:
+    """Compare complete JSON values using native structural equality."""
+    if not retained:
+        return []
+    matches = (await conn.execute(select(
+        json_array_matches(json_literal(retained), json_literal(dict(record)))
+    ))).scalar_one()
+    return [bool(matched) for matched in matches]
 
 
-def _retains(record: ColumnElement[Any]) -> ColumnElement[bool]:
-    """Whether the row's retained list holds exactly ``record``.
-
-    JSONB containment (``@>``) also matches a record that is a subset of a
-    retained one, so the comparison is element equality.
-    """
-    elements = _retained_elements()
-    return select(elements.c.value).where(elements.c.value == record).exists()
-
-
-async def _changed(statement: Update, notify: NoticeKind | None) -> bool:
-    """Run one session ``UPDATE``; whether it changed a row.
-
-    With ``notify``, each changed row sends that notice from the statement
-    itself, so a listener hears of the change only once it is committed.
-    """
+async def _changed(statement: Update, session_id: str, notify: NoticeKind | None) -> bool:
+    """Run one Session update, enqueuing its notice only if it matched."""
     if notify is None:
         return await execute(statement) > 0
-    return bool(await fetch_all(statement.returning(notice(_SESSIONS.c.session_id, notify))))
+
+    async def write(conn: AsyncConnection) -> bool:
+        changed = (await conn.execute(statement)).rowcount > 0
+        if changed:
+            await get_persistence().coordination.notify(
+                conn, SessionNotice(session_id=session_id, kind=notify, seq=0),
+            )
+        return changed
+
+    return await transaction(write)
+
+
+async def _notify_rows(statement: Executable, kind: NoticeKind) -> bool:
+    """Enqueue a notice for each Session id yielded by this statement."""
+    async def write(conn: AsyncConnection) -> bool:
+        ids = (await conn.execute(statement)).scalars().all()
+        for session_id in ids:
+            await get_persistence().coordination.notify(
+                conn, SessionNotice(session_id=str(session_id), kind=kind, seq=0),
+            )
+        return bool(ids)
+
+    return await transaction(write)
 
 
 def _workspace_columns(payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -351,8 +314,8 @@ class SessionRepository:
                             func.coalesce(_SESSIONS.c.sandbox_backend, "") != "",
                         ),
                         and_(
-                            allocation["sandbox_id"].astext == target,
-                            func.coalesce(allocation["sandbox_backend"].astext, "") != "",
+                            allocation["sandbox_id"].as_string() == target,
+                            func.coalesce(allocation["sandbox_backend"].as_string(), "") != "",
                         ),
                     ),
                 )
@@ -416,29 +379,41 @@ class SessionRepository:
 
     async def retain_startup_allocation(self, session_id: str, record: dict[str, Any]) -> None:
         """Keep one orphan allocation's exact scope without touching the current one."""
-        retained = _SESSIONS.c.retained_startup_allocations
-        stored = literal(dict(record), type_=JSONB)
-        changed = await execute(
-            update(_SESSIONS)
-            .where(_SESSIONS.c.session_id == session_id, not_(_retains(stored)))
-            .values(retained_startup_allocations=retained.op("||")(func.jsonb_build_array(stored)))
-        )
-        if not changed and await self.get_session_including_deleted(session_id) is None:
-            raise RuntimeError(f"cannot retain allocation for missing session {session_id!r}")
+        async def write(conn: AsyncConnection) -> None:
+            row = (await conn.execute(
+                select(_SESSIONS.c.retained_startup_allocations)
+                .where(_SESSIONS.c.session_id == session_id).with_for_update()
+            )).first()
+            if row is None:
+                raise RuntimeError(f"cannot retain allocation for missing session {session_id!r}")
+            retained = list(row.retained_startup_allocations)
+            if not any(await _retained_matches(conn, retained, record)):
+                await conn.execute(
+                    update(_SESSIONS).where(_SESSIONS.c.session_id == session_id)
+                    .values(retained_startup_allocations=[*retained, dict(record)])
+                )
+
+        await transaction(write)
 
     async def clear_retained_startup_allocation(self, session_id: str, record: dict[str, Any]) -> None:
         """Remove one exact orphan allocation after its supplier confirms it is gone."""
-        elements = _retained_elements()
-        remaining = (
-            select(func.coalesce(func.jsonb_agg(elements.c.value), literal([], type_=JSONB)))
-            .where(elements.c.value != literal(dict(record), type_=JSONB))
-            .scalar_subquery()
-        )
-        await execute(
-            update(_SESSIONS)
-            .where(_SESSIONS.c.session_id == session_id)
-            .values(retained_startup_allocations=remaining)
-        )
+        async def write(conn: AsyncConnection) -> None:
+            row = (await conn.execute(
+                select(_SESSIONS.c.retained_startup_allocations)
+                .where(_SESSIONS.c.session_id == session_id).with_for_update()
+            )).first()
+            if row is None:
+                return
+            retained = list(row.retained_startup_allocations)
+            matches = await _retained_matches(conn, retained, record)
+            await conn.execute(
+                update(_SESSIONS).where(_SESSIONS.c.session_id == session_id)
+                .values(retained_startup_allocations=[
+                    value for value, matched in zip(retained, matches) if not matched
+                ])
+            )
+
+        await transaction(write)
 
     async def clear_startup_allocation(self, session_id: str, *, allocation: dict[str, Any]) -> bool:
         """Drop the session's reference to one exact released or adopted allocation.
@@ -453,7 +428,7 @@ class SessionRepository:
             update(_SESSIONS)
             .where(
                 _SESSIONS.c.session_id == session_id,
-                _SESSIONS.c.startup_allocation == literal(dict(allocation), type_=JSONB),
+                _SESSIONS.c.startup_allocation == json_literal(dict(allocation)),
             )
             .values(startup_allocation=None)
         )
@@ -466,7 +441,7 @@ class SessionRepository:
         conditions: list[ColumnElement[bool]] = [
             or_(
                 _SESSIONS.c.startup_allocation.isnot(None),
-                _SESSIONS.c.retained_startup_allocations != literal([], type_=JSONB),
+                _SESSIONS.c.retained_startup_allocations != json_literal([]),
             )
         ]
         after = str(after_session_id or "").strip()
@@ -489,7 +464,7 @@ class SessionRepository:
         if not target:
             return []
         return await _many(
-            _selected().where(_SESSIONS.c.startup_allocation["sandbox_id"].astext == target)
+            _selected().where(_SESSIONS.c.startup_allocation["sandbox_id"].as_string() == target)
         )
 
     # -- sandbox sweeps -----------------------------------------------------
@@ -787,17 +762,18 @@ class SessionRepository:
     ) -> bool:
         """Set columns on one session (deleted or not); whether the row exists.
 
-        With ``notify``, the same statement sends that session notice when it
-        commits.
+        With ``notify``, the same transaction enqueues that session's notice.
         """
         values = _column_values(updates)
         if touch_updated_at:
             values["updated_at"] = func.now()
         if not values:
-            marker = true() if notify is None else notice(_SESSIONS.c.session_id, notify)
-            return bool(await fetch_all(select(marker).where(_SESSIONS.c.session_id == session_id)))
+            statement = select(_SESSIONS.c.session_id).where(_SESSIONS.c.session_id == session_id)
+            if notify is not None:
+                return await _notify_rows(statement, notify)
+            return bool(await fetch_all(statement))
         return await _changed(
-            update(_SESSIONS).where(_SESSIONS.c.session_id == session_id).values(**values), notify
+            update(_SESSIONS).where(_SESSIONS.c.session_id == session_id).values(**values), session_id, notify
         )
 
     async def compare_and_update_session(
@@ -814,7 +790,7 @@ class SessionRepository:
         Each expected value is an equality, ``None`` (the column is null),
         ``{"$exists": False}`` (the same) or ``{"$ne": value}``. Returns whether
         the row matched. With ``notify``, a matching row sends that session
-        notice from the same statement, so the notice exists only if the
+        notice from the same transaction, so the notice exists only if the
         change committed; with no ``updates`` it announces the row as it is.
         """
         values = _column_values(updates)
@@ -823,19 +799,20 @@ class SessionRepository:
         conditions = [_SESSIONS.c.session_id == session_id, _live()]
         conditions.extend(_condition(key, value) for key, value in expected.items())
         if not values:
-            marker = true() if notify is None else notice(_SESSIONS.c.session_id, notify)
-            return bool(await fetch_all(select(marker).where(*conditions)))
-        return await _changed(update(_SESSIONS).where(*conditions).values(**values), notify)
+            statement = select(_SESSIONS.c.session_id).where(*conditions)
+            if notify is not None:
+                return await _notify_rows(statement, notify)
+            return bool(await fetch_all(statement))
+        return await _changed(update(_SESSIONS).where(*conditions).values(**values), session_id, notify)
 
     async def set_permission_mode(self, session_id: str, mode: str) -> bool:
         """Store the live session's permission mode; its reader applies it to the runtime."""
-        rows = await fetch_all(
+        return await _changed(
             update(_SESSIONS)
             .where(_SESSIONS.c.session_id == session_id, _live())
-            .values(permission_mode=mode)
-            .returning(notice(_SESSIONS.c.session_id, "permission"))
+            .values(permission_mode=mode),
+            session_id, "permission",
         )
-        return bool(rows)
 
 
     async def archive_session(self, session_id: str, user_id: str) -> bool:
@@ -844,24 +821,20 @@ class SessionRepository:
         )
 
     async def soft_delete(self, session_id: str, user_id: str) -> bool:
-        """Mark the session deleted; whether the row exists.
-
-        The same statement deletes the platform MCP routes the session's
-        runtimes claimed: a deleted session never runs again, so nothing may
-        act as it through them.
-        """
-        released = (
-            delete(_MCP_BINDINGS).where(_MCP_BINDINGS.c.session_id == session_id).cte("released")
-        )
-        return await execute(
-            update(_SESSIONS)
-            .where(_SESSIONS.c.session_id == session_id)
-            .values(
-                deleted=True,
-                state=SessionState.DELETED.value,
-                deleted_at=func.now(),
-                deleted_by=user_id,
-                updated_at=func.now(),
+        """Mark the Session deleted and remove its MCP routes atomically."""
+        async def write(conn: AsyncConnection) -> bool:
+            await conn.execute(delete(_MCP_BINDINGS).where(_MCP_BINDINGS.c.session_id == session_id))
+            result = await conn.execute(
+                update(_SESSIONS)
+                .where(_SESSIONS.c.session_id == session_id)
+                .values(
+                    deleted=True,
+                    state=SessionState.DELETED.value,
+                    deleted_at=func.now(),
+                    deleted_by=user_id,
+                    updated_at=func.now(),
+                )
             )
-            .add_cte(released)
-        ) > 0
+            return result.rowcount > 0
+
+        return await transaction(write)
