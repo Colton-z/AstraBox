@@ -544,7 +544,7 @@ test('a delayed history read keeps the completed live reply and its tools', asyn
     }
     releaseRead();
     await expect.poll(() => delivered).toBe(true);
-    // Observe the merge commit too: it adds the previously unknown user input.
+    // The merged history must include the user input missing from the initial page.
     await expect(page.locator(`[data-message-id="${canonical[0].id}"]`)).toHaveCount(1);
     await expect.poll(async () => normalizeRendered((await row.getByTestId('assistant-text').allTextContents()).join('')))
       .toBe(normalizeRendered(messageText(response)));
