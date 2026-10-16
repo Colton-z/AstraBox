@@ -82,7 +82,7 @@ aws-kms = ["aws-encryption-sdk[MPL]==4.0.6"]
 # OFF unless OTEL_EXPORTER_OTLP_ENDPOINT is set (see astrabox/observability/tracing.py).
 otel = [
   "opentelemetry-api==1.44.0",
-  "opentelemetry-sdk==1.44.0",
+  "opentelemetry-sdk==1.45.1",
   "opentelemetry-exporter-otlp==1.44.0",
   # FastAPI request-span instrumentation — the tracing foundation's span source.
   "opentelemetry-instrumentation-fastapi==0.65b0",
