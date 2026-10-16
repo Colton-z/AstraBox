@@ -406,6 +406,7 @@ for _code, _status, _category, _retryable, _owner in (
     ("ENVIRONMENT_IN_USE", 409, "configuration.environment", False, "template"),
     # The row names a stored credential that is absent from the secret store.
     ("ENVIRONMENT_SECRET_MISSING", 500, "configuration.environment", False, "platform"),
+    ("ENVIRONMENT_SECRET_STORE_NOT_TRANSACTIONAL", 500, "configuration.environment", False, "platform"),
     # Optional engine protocols are requested by the caller. An engine that
     # does not declare one is healthy; the requested operation is unavailable.
     ("ENGINE_CAPABILITY_UNAVAILABLE", 409, "request", False, "client"),
